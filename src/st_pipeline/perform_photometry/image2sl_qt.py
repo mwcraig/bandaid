@@ -26,13 +26,15 @@ from photutils import background, detection, aperture, psf
 from photutils.detection import DAOStarFinder
 from photutils.background import Background2D, MedianBackground
 from astropy.stats import sigma_clipped_stats, SigmaClip
+from astropy.table import Table
+from astroquery.astrometry_net import AstrometryNet
 
 import matplotlib.pyplot as plt
 from astropy.visualization import SqrtStretch
 from astropy.visualization.mpl_normalize import ImageNormalize
 
 import threading
-import os.path
+from pathlib import Path
 import statistics
 import numpy as np
 import tempfile
@@ -41,22 +43,40 @@ import datetime
 import math
 import sys
 import json
+import platform
 import psf_fitting
 #import sep
+
+astrometry_api_key = None
 
 ################################################################
 ##        Algorithmic Stuff Comes First
 ################################################################
 
-use_PSF = False
-
-# Returns a list of (filter,filename) tuples
-#
-# filename: pathname to the image to be de-Bayered
-# pattern: Bayer pattern (e.g., 'BGGR')
-# temp_dir: pathname to a temporary directory where stuff can be put
-#
 def DeBayerFile(filename, pattern, temp_dir):
+    """Split an RGB image into four images, one for each Bayer channel
+    The four channels are extracted using a string description of the
+    Bayer sequence (e.g., 'BGGR'); each extracted sub-image is stored
+    as a new FITS image file. 
+    Parameters
+    ----------
+    filename : str
+        pathname to the original image to be de-Bayered
+    pattern : str exactly 4 chars long
+        The Bayer pattern (e.g., 'BGGR')
+    temp_dir : str
+        pathname to the temporary directory where the new images go
+
+    Returns
+    -------
+    List of named tuples (will always be list of exactly 4 elements)
+        The named tuples are created from namedtuple('filter','filename')
+    filter : str
+        The name of the Bayer filter color (e.g., 'TG1' or 'TB')
+    filename : str
+        The name of the file with that channel's image
+    
+    """
     with fits.open(filename) as hdul:
         temp1 = hdul[0].data[0::2,0::2]
         temp2 = hdul[0].data[1::2,0::2]
@@ -67,7 +87,7 @@ def DeBayerFile(filename, pattern, temp_dir):
 
         for index in range(4):
             color = pattern[index]
-            output_tgt = os.path.join(temp_dir, "image"+str(index)+"_"+color+".fits")
+            output_tgt = Path(temp_dir) / ("image"+str(index)+"_"+color+".fits")
             
             hdu = fits.PrimaryHDU()
             # push keywords in from the original file
@@ -86,7 +106,8 @@ def DeBayerFile(filename, pattern, temp_dir):
             # update_header will "fix" the header to match the data
             hdu.update_header()
             fits.writeto(output_tgt, array[index], header=hdu.header, overwrite=True)
-            output_filenames.append((color,output_tgt))
+            ImageDescriptor = namedtuple('filter','filename')
+            output_filenames.append(ImageDescriptor(color,output_tgt))
         return output_filenames
 
 # pattern triplet: (x_offset, y_offset, weight)
@@ -97,11 +118,39 @@ pattern = [
     [ (0,0,9), (-1,0,3), (0,-1,3), (-1,-1,1) ]  # color 3
 ]
 
-def StackImages(channel_list, options, temp_dir, metadata):
-    output_tgt = os.path.join(temp_dir, "image_S.fits")
+def StackImages(channel_list, options, temp_dir):
+    """ Create a stacked image from 4 individual Bayer sub-images
+
+    Four Bayer sub-images are stacked into a single image. If
+    `options` includes the InterpolateChannels flag, the sub-images
+    will be shifted as they are added, recognizing the offsets between
+    the locations of the different Bayer colors. The resulting sum
+    image will be stored as a new FITS file with floating point pixel
+    values (to avoid overflow issues as the four pixel values are
+    added). The resulting FITS file will have all the FITS
+    keyword/value pairs found in the first sub-image, except that the
+    FILTER keyword will be set to 'CV'.
+
+    Parameters
+    ----------
+    channel_list : list of named tuples (taken from DeBayerFile)
+        Each tuple is a (filtername, filename) pair specifying the
+        input files.
+    options : OptionBox
+        Object of class OptionBox, describing options the user has
+        selected
+    temp_dir : str
+        pathname to the temporary directory where the new images go
+
+    Returns
+    -------
+    str
+        pathname to the new FITS file holding the stacked image
+    """
+    output_tgt = Path(temp_dir) /  "image_S.fits"
     hdu = fits.PrimaryHDU()
     # push keywords in from the original file(s)
-    (_dummy,filename) = channel_list[0]
+    filename = channel_list[0].filename
     with fits.open(filename) as hdul:
         (height,width) = np.shape(hdul[0].data)
         for keyword in hdul[0].header:
@@ -132,6 +181,29 @@ def StackImages(channel_list, options, temp_dir, metadata):
     return output_tgt
                 
 def DuplicateFileWithNewImage(hdul, new_data, new_filter, new_pathname):
+    """ Copy a FITS file, replacing the pixel data with new pixel data
+
+    Create a copy of a FITS file, replacing the original pixels with a
+    new set of pixels (possibly with a different shape). FITS keywords
+    will be copied over, except for those keywords affected by a shape
+    change or a possible pixel numeric type change (e.g., int to float).
+
+    Parameters
+    ----------
+    hdul : list of HDUs as provided by fits.open()
+        The HDU list conveying the contents of the FITS file to be copied.
+    new_data : numpy 2D array of pixel values
+        The new pixel values (data type will be preserved into the new file) 
+    new_filter : str
+        The name of the filter to be put into the new FITS header
+    new_pathname : str
+        The pathname of the file to be created
+
+    Returns
+    -------
+    None
+    
+    """
     output_tgt = new_pathname
             
     hdu = fits.PrimaryHDU()
@@ -153,6 +225,29 @@ def DuplicateFileWithNewImage(hdul, new_data, new_filter, new_pathname):
     fits.writeto(new_pathname, new_data, header=hdu.header, overwrite=True)
 
 def BayerBalanceFile(filename, temp_dir):
+    """Duplicate an image file while adjusting pixel values per the Bayer pattern
+
+    Duplicate an existing FITS file, performing a linear adjustment to
+    each pixel value according to its position in the Bayer
+    pattern. The adjustment factors are calculated so as to give the
+    new file the same background grayness and the same background
+    noise in each of the four Bayer pattern pixels. The new file will
+    have float32 pixels to avoid pixel overflow problems that result
+    from the adjustments. The new file will have the same filename as
+    the original file, but with '_M' appended to the filename 'stem'.
+
+    Parameters
+    ----------
+    filename : str
+        Pathname to the file to be duplicated
+    temp_dir : str
+        Pathname of the directory where the new file will be placed
+
+    Returns
+    -------
+    str
+        The full pathname of the new file.
+    """
     with fits.open(filename) as hdul:
         temp1 = hdul[0].data[0::2,0::2].astype(np.float32)
         temp2 = hdul[0].data[1::2,0::2].astype(np.float32)
@@ -251,8 +346,27 @@ def BayerBalanceFile(filename, temp_dir):
         DuplicateFileWithNewImage(hdul, new_data, "M", new_filename)
         return new_filename
 
-# Figure out what kind of a smart telescope created this image
 def ProbeFileForType(filename):
+    """Figure out what kind of a smart telescope created an image
+
+    Examine the FITS header keywords to determine what kind of smart
+    telescope created the image.
+
+    Parameters
+    ----------
+    filename : str
+        The pathname of the image to be examined
+
+    Returns
+    -------
+    str
+        One of the following: "Unistellar", "Seestar", "Origin", "Dwarf"
+
+    Raises
+    ------
+    ValueError
+        Raised if unable to determine which smart telescope type
+    """
     with fits.open(filename) as hdul:
         hdu0h = hdul[0].header
 
@@ -284,7 +398,7 @@ def ProbeFileForType(filename):
         ## Unrecognized
         ################################
         print("Unable to figure out Smart Telescope Type for file ", filename);
-        raise Exception("Unable to establish telescope type")
+        raise ValueError("Unable to establish telescope type")
 
 ################################################################
 ##                METADATA
@@ -347,11 +461,27 @@ valid_meta_keys = ['AAVSO_VER',
 # providing a way to deal with missing/incorrect FITS header info.
 #
 
-# This function performs an *update* to the dictionary provided as an
-# argument, using the content of the JSON metadata file to augment or
-# replace entries in "dict".
 def ReadMetaFromJSON(filename, dict):
-    bytes = os.path.getsize(filename)
+    """Pull metadata from a JSON metadata file
+
+    Update a meta dictionary using the contents of the JSON metadata
+    file to augment or replace entries in the meta
+    dictionary. Metadata keywords are validated as they are
+    encountered; unrecognized keywords generate a console message.
+    
+    Parameters
+    ----------
+    filename : str
+        Pathname of the JSON metadata file
+    dict : dictionary
+        Metadata dictionary to be modified/augmented
+
+    Returns
+    -------
+    None
+
+    """
+    bytes = Path(filename).stat().st_size
     # This file should NEVER be more than 10K bytes long. In order to
     # limit cyber vulnerability, we immediately quit if we're given a
     # long file here.
@@ -376,6 +506,25 @@ def ReadMetaFromJSON(filename, dict):
 # Read metadata from a FITS header. The metadata that's found will be
 # put into the dictionary that's passed as the argument "dict".
 def ReadMetaFromFITS(filename, dict):
+    """Pull metadata from a FITS image
+
+    Update a meta dictionary using the keywords found in a FITS image
+    file. These values will augment or replace entries in the meta
+    dictionary. The keywords pulled from the FITS file depend on the
+    smart telescope type to account for different spellings used by
+    the different vendors.
+
+    Parameters
+    ----------
+    filename: str
+        Pathname of the FITS file from the smart telescope
+    dict : dictionary
+        Metadata dictionary to be modified/augmented
+
+    Returns
+    -------
+    None
+    """
     telescope_type = ProbeFileForType(filename)
     with fits.open(filename) as hdul:
         hdu0h = hdul[0].header
@@ -452,25 +601,45 @@ def ReadMetaFromFITS(filename, dict):
             print("Telescope type ", telescope_type, " not implemented yet.")
             
 
-# Decode() is a helper function that supports the process of reading a
-# SourceExtractor starlist and turning it into an AAVSO starlist.
-# column_labels: a list of source_extractor output table column label strings
-# words: a list of words in the current input line (a data line)
-# keyword: the keyword we want to fetch. "keyword" must match a column label
-# The return value is the (float) value of the number in the column
-# that corresponds to the keyword.
-def Decode(column_labels, words, keyword):
-    try:
-        i = column_labels.index(keyword)
-        return float(words[i])
-    except:
-        print("Keyword ", keyword, " not in source extractor output.")
-        raise
-
-# This class "is" an AAVSO Starlist. Initial condition: all metadata
-# is populated, but the starlist is otherwise empty.
 class AAVSOStarlist:
+    """Implement an AAVSO Starlist
+
+    This class "is" an AAVSO Starlist. Initial condition: all metadata
+    is populated, but the starlist is otherwise empty.
+
+    Attributes
+    ----------
+    metadata : dict
+        Dictionary containing "extended" metadata
+    gain : float
+        System gain (e-/ADU) in the original (Bayered) image
+    filter : str
+        Two-letter filter name (e.g., 'TG')
+    starlist : dict
+        This dict is a literal image of the official AAVSO starlist,
+        including both  metadata and the stars of the starlist
+    """
     def __init__(self, metadata, filter):
+        """Create a starlist and populate with metadata
+
+        Create a starlist and pull metadata from a `metadata`
+        dictionary that is put into the starlist object. (The stars
+        themselves will be populated with a later invocation of one of
+        the ReadFrom...() member functions.)
+
+        Parameters
+        ----------
+        metadata : dict
+            A dictionary of metadata. See the earlier block comment
+            for a full description
+        filter : str
+            Name of the filter for this starlist
+
+        Returns
+        -------
+        AAVSOStarlist
+            A new object of the class
+        """
         self.metadata = metadata
         self.gain = metadata['SYSTEM_GAIN']
         
@@ -499,10 +668,37 @@ class AAVSOStarlist:
         # The "STARLIST' is a list of dictionaries
         self.starlist['STARLIST'] = [] # the starlist starts off empty
         
-
-    # Read stars from the SourceExtractor output table and create
-    # entries in self.starlist['STARLIST']
     def ReadFromSourceExtractor(self, filename):
+        """Create starlist entries from SourceExtractor output table
+
+        Ingest the output table from Source Extractor and create
+        self.starlist entries for each star in the output table.
+
+        Parameters
+        ----------
+        filename : str
+            The pathname to the source extractor output table
+
+        Returns
+        -------
+        None
+        
+        """
+        # Decode() is a helper function that supports the process of reading a
+        # SourceExtractor starlist and turning it into an AAVSO starlist.
+        # column_labels: a list of source_extractor output table column label strings
+        # words: a list of words in the current input line (a data line)
+        # keyword: the keyword we want to fetch. "keyword" must match a column label
+        # The return value is the (float) value of the number in the column
+        # that corresponds to the keyword.
+        def Decode(column_labels, words, keyword):
+            try:
+                i = column_labels.index(keyword)
+                return float(words[i])
+            except:
+                print("Keyword ", keyword, " not in source extractor output.")
+                raise
+
         column_labels = []      # indexed by column number
         with open(filename, 'r') as fp:
             for line in fp:
@@ -524,26 +720,28 @@ class AAVSOStarlist:
                     star['BKGD_FLUX'] = Decode(column_labels, words, 'BACKGROUND')
                     self.starlist['STARLIST'].append(star)
 
-    def ReadFromSEP(self, sep_array, background, metadata):
-        gain = self.gain
-        for sep_item in sep_array:
-            star = {}
-            star['TOT_FLUX'] = float(sep_item['flux'])
-            if sep_item['flux'] > 0:
-                star['FLUX_ERR'] = math.sqrt(gain*sep_item['flux'])/gain
-            else:
-                star['FLUX_ERR'] = None
-            star['PEAK_FLUX'] = float(sep_item['peak'])
-            star['X'] = float(sep_item['x'])
-            star['Y'] = float(sep_item['y'])
-            star['DEC'] = None
-            star['RA'] = None
-            star['BKGD_FLUX'] = float(background[int(0.5+sep_item['y']),int(0.5+sep_item['x'])])
-            self.starlist['STARLIST'].append(star)
-            ##for (key,value) in star.items():
-            ##    print(key, value, type(value))
-            
     def ReadFromPhotUtils(self, sourcelist, background, metadata):
+        """Create starlist entries from photutils output table
+
+        Ingest the output table from photutils and create
+        self.starlist entries for each star in the output
+
+        Parameters
+        ----------
+        sourcelist : astropy table
+            The astropy table created by one of the astropy source
+            detection methods
+        background : photutils 2D image
+            A copy of the original image holding background levels in
+            each pixel
+        metadata : dict
+            The metadata dictionary for this input file
+
+        Returns
+        -------
+        None
+        
+        """
         for (xc,yc,peak,flux) in sourcelist.iterrows('xcentroid','ycentroid','peak','flux'):
             star = {}
             star['TOT_FLUX'] = float(flux)
@@ -555,14 +753,42 @@ class AAVSOStarlist:
             star['BKGD_FLUX'] = float(background[int(0.5+yc),int(0.5+xc)])
             star['FLUX_ERR'] = None
             self.starlist['STARLIST'].append(star)
-            
 
-    # Create a JSON AAVSO starlist, stored in the specified filename
     def WriteJSON(self, filename):
+        """Create an AAVSO starlist file from an AAVSOStarlist object
+
+        Create an AAVSO starlist file with the contents of the current
+        starlist object.
+
+        Parameters
+        ----------
+        filename : str
+            Pathname of the JSON file to be created
+
+        Returns
+        -------
+        None
+        """
         with open(filename, 'w') as fp:
             json.dump(self.starlist, fp, indent=2)
         
     def ApplyWCS(self, wcs):
+        """Update star Dec/RA in the starlist using a provided WCS
+
+        Update all star positions in the starlist, converting each
+        star's (x,y) pixel-based centroid into a corresponding Dec/RA
+        using the provided WCS. Stars that don't have a valid pixel
+        location will not receive Dec/RA values.
+
+        Parameters
+        ----------
+        wcs : astropy wcs object
+            The WCS mapping pixel coordinates to sky coordinates
+
+        Returns
+        -------
+        None
+        """
         valid_stars = [star for star in self.starlist['STARLIST'] if star['X'] is not None and star['Y'] is not None]
         x_array = [star['X'] for star in valid_stars]
         y_array = [star['Y'] for star in valid_stars]
@@ -570,21 +796,65 @@ class AAVSOStarlist:
         for (star,ra,dec) in zip(valid_stars,ra_array,dec_array):
             star['DEC'] = dec
             star['RA'] = ra
-            print('(',star['X'],',',star['Y'],') -> ', ra, dec)
 
 def WCStext2wcs(wcs_text):
-    lines = []
+    """Convert WCS FITS header text into an astropy WCS object
+
+    Convert a set of FITS header keyword/value pairs describing a WCS
+    into an astropy WCS object
+
+    Parameters
+    ----------
+    wcs_text : str
+        Long string holding relevant WCS FITS header/keyword values in
+        the form of FITS records, concatenated together into a single
+        string.
+
+    Returns
+    -------
+    WCS object
+        An astropy WCS object
+    """
     card_list = []
     while len(wcs_text) >= 80:
+        # Turn the long string into a list of fits.Card objects
         this_line = wcs_text[0:80]
         wcs_text = wcs_text[80:]
         card_list.append(fits.Card.fromstring(this_line))
         print(this_line)
+    # Create a FITS header that contains only the WCS cards
     wcs_header = fits.Header(cards=card_list)
     return WCS(wcs_header)
     
 # Process one (possibly de-Bayered) image
-def ProcessSingleImage(filename, metadata, options, temp_dir, starlist_json_path, filter):
+def ProcessSingleImage(filename, metadata, options, temp_dir,
+                       starlist_json_path, filter):
+    """Turn an image file into a starlist
+
+    In a strictly one-to-one operation, turn an image into a starlist,
+    and store the starlist as a JSON file in the AAVSO starlist
+    format.
+
+    Parameters
+    ----------
+    filename : str
+        The pathname of the image to be turned into a starlist
+    metadata : dict
+        A dictionary of metadata values
+    options : class OptionBox object
+        An object holding all of the operator's conversion options
+    temp_dir : str
+        Pathname of a directory in which temporary files can be put
+    starlist_json_path : str
+        Pathname that will be used to store the resulting starlist
+    filter : str
+        Short string holding the AAVSO reporting name for the filter
+        associated with this image
+    Returns
+    -------
+    str
+        The pathname of the starlist that was created
+    """
     # filter == 'M' is a special case == 'CV'
     if filter == 'M':
         filter = 'CV'
@@ -599,9 +869,9 @@ def ProcessSingleImage(filename, metadata, options, temp_dir, starlist_json_path
     with fits.open(filename) as hdul:
         hdu0h = hdul[0].header
         image_data = hdul[0].data.astype(np.float32)
-        #image_data = hdul[0].data
         (width,height) = np.shape(hdul[0].data)
         print("height = ", height, ", width = ", width)
+
         # Estimate the background
         (mean,median,std) = sigma_clipped_stats(image_data, sigma=3.0)
         sigma_clip = SigmaClip(sigma=3.0)
@@ -610,36 +880,25 @@ def ProcessSingleImage(filename, metadata, options, temp_dir, starlist_json_path
                                   sigma_clip=sigma_clip, bkg_estimator=bkg_estimator).background
         (bkgd_mean,_dummy,bkgd_std) = sigma_clipped_stats(background, sigma=3.0)
         noise_bkgd = bkgd_std/starlist.gain
-        #background = sep.Background(image_data)
-        #background.subfrom(image_data)
-        #sep_objects = sep.extract(image_data,background.globalrms*3.0,gain=starlist.gain)
         daofind = DAOStarFinder(fwhm=3.0, threshold=5.*std)
         clean_image = (image_data - background)
         (mean,median,std) = sigma_clipped_stats(clean_image, sigma=3.0)
         print("mean/median/std = ", (mean, median, std))
         sources = daofind(clean_image)
-        #norm = ImageNormalize(stretch=SqrtStretch())
-        #plt.imshow(image_data - background, norm=norm, cmap='Greys_r', interpolation='nearest')
-        #print("sep created list of ", len(sep_objects), " stars.")
-        print(sources)
+        #print(sources)
         starlist.ReadFromPhotUtils(sources,background,metadata)
 
         ## Now estimate an FWHM for these stars
         star_subset = starlist.starlist['STARLIST']
         star_subset.sort(key = lambda star : star['TOT_FLUX'], reverse=True)
         subset_size = min(10, len(star_subset))
-        #(sigma_x, sigma_y, bkgd_rms, bayer_zero, bayer_scale) = psf_fitting.MeasurePSF(image_data, star_subset[0:subset_size])
-        #fwhm = 2.35482*(sigma_x+sigma_y)/2.0
-        #print("Estimated FWHM = ", fwhm)
-
-        # Now estiamte an FWHM from photutils to compare
         fwhm = statistics.mean(psf.fit_fwhm(clean_image, xypos=[(s['X'],s['Y']) for s in star_subset[0:subset_size]],fit_shape=15))
         print("Estimate FWHM from photutils = ", fwhm)
                             
         phot_radius = 1.0 * fwhm
-        star_x = [s['X'] for s in starlist.starlist['STARLIST']]
-        star_y = [s['Y'] for s in starlist.starlist['STARLIST']]
-        radii = [phot_radius for s in starlist.starlist['STARLIST']]
+        star_x = [s['X'] for s in star_subset]
+        star_y = [s['Y'] for s in star_subset]
+        radii = [phot_radius for s in star_subset]
         positions = zip(star_x, star_y)
         apertures = aperture.CircularAperture(positions, r=phot_radius)
         result = aperture.aperture_photometry(clean_image, apertures)
@@ -667,8 +926,27 @@ def ProcessSingleImage(filename, metadata, options, temp_dir, starlist_json_path
     ## Field of View (nominal) - metadata
     ################################
 
-    import astrometry
-    wcs_text = astrometry.RunAstrometry(api_key = "pygiszqhoszxlyss",
+    ast = AstrometryNet()
+    if astrometry_api_key == None:
+        global ui
+        dlg = QMessageBox(ui.window)
+        dlg.setWindowTitle("No astrometry.net API Key")
+        dlg.setText("Must enter astrometry.net API Key via Menu Bar")
+        dlg.exec()
+        return
+    
+    ast.api_key = astrometry_api_key
+    # star_x and star_y were sorted by flux earlier... important here.
+    wcs_header = ast.solve_from_source_list(star_x,
+                                            star_y,
+                                            width,
+                                            height,
+                                            solve_timeout=120)
+    wcs = WCS(header=wcs_header)
+    
+    if False:
+        import astrometry
+        wcs_text = astrometry.RunAstrometry(api_key = astrometry_api_key,
                                         x=star_x,
                                         y=star_y,
                                         dec_center_deg =metadata['DEC'],
@@ -678,11 +956,9 @@ def ProcessSingleImage(filename, metadata, options, temp_dir, starlist_json_path
                                                metadata['PIXSCALE']*1.2),
                                         width=width,
                                         height=height)
-    wcs = WCStext2wcs(wcs_text.decode('utf-8'))
-    print("Image center is at ", wcs.pixel_to_world(width/2, height/2))
+        wcs = WCStext2wcs(wcs_text.decode('utf-8'))
+        print("Image center is at ", wcs.pixel_to_world(width/2, height/2))
     starlist.ApplyWCS(wcs)
-
-    starlist.WriteJSON(starlist_json_path)
 
     ################################
     ## Do PSF fitting, if requested
@@ -692,19 +968,47 @@ def ProcessSingleImage(filename, metadata, options, temp_dir, starlist_json_path
                                            star['TOT_FLUX'], reverse=True)
         psf_fitting.DoPSF(filename, starlist.starlist)
     
+    starlist.WriteJSON(starlist_json_path)
     return starlist_json_path
     
-# Process a one-shot-color image, turning it into separate images for
-# each color channel. Create a starlist for each channel. Store the
-# pathnames for those 4 starlists into "starlists".
-def ProcessRGBFile(filename, options, temp_dir, metadata, starlist_tgtname):
+def ProcessRGBFile(filename, options, temp_dir, metadata,
+                   starlist_tgtname):
+    """Process an RGB image, converting it into one or more starlists
+
+    Process a one-shot-color image using the user's selected options
+    to turn it into some number of starlists. Depending on options,
+    the image may be separated into Bayer color subchannels or treated
+    as a monochrome image. Depending on options, pixels may or may not
+    have their values adjusted. Depending on options, de-Bayered
+    images may or may not be shifted into alignment and stacked into a
+    luminance channel. Create a starlist for each resulting channel.
+
+    Parameters
+    ----------
+    filename : str
+        Pathname of the image to be processed
+    options : class OptionBox object
+        Reference to the OptionBox object that holds information on
+        the user's processing options
+    temp_dir : str
+        Pathname of a directory in which temporary files can be put
+    metadata : dict
+        Dictionary of metadata for the image
+    starlist_tgtname : str
+        Pathname to be used (possibly as a template) for the resulting starlist(s).
+
+    Returns
+    -------
+    None
+    
+    """
     de_bayer = options.DeBayer()
     if de_bayer:
         single_color_files = DeBayerFile(filename, metadata['BAYERPAT'], temp_dir)
         starlists = []
 
         if options.StackChannels():
-            stacked_image = StackImages(single_color_files, options, temp_dir, metadata)
+            stacked_image = StackImages(single_color_files, options, temp_dir)
             starlist_filename = starlist_tgtname.replace("$$","M")
             starlist_file = ProcessSingleImage(stacked_image, dict(metadata),
                                                temp_dir,
@@ -742,16 +1046,58 @@ def ProcessRGBFile(filename, options, temp_dir, metadata, starlist_tgtname):
 
 from PySide6 import QtCore, QtWidgets, QtGui
 
-from PySide6.QtWidgets import QFileDialog, QProgressBar
+from PySide6.QtWidgets import QFileDialog, QProgressBar, QDialog
+from PySide6.QtWidgets import QVBoxLayout, QLabel, QCheckBox, QDialogButtonBox
+from PySide6.QtWidgets import QLineEdit, QMessageBox
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtCore import QFile, QIODevice
 from PySide6.QtUiTools import QUiLoader
 
 class FileChooser:
+    """Select one or more files for processing
+
+    FileChooser is an API that groups a set of Qt widgets into a group
+    that provides the ability to select files to be used in
+    processing, providing both visual feedback to the operator and an
+    API to allow code to query the file(s) selected.
+
+    Attributes
+    ----------
+    text_widget : Qt widget (either QLineEdit or QPlainTextEdit)
+        Text entry widget that can hold the chosen file's
+        filename. If `multiple_files_okay` is True, this is a
+        multi-line field (QPlainTextEdit)
+    popup_button : Qt button widget
+        Button widget that is clicked to give the user a popup file
+        chooser window
+        
+    """
     def __init__(self,
                  text_entry_widget,
                  chooser_button,
                  multiple_files_okay=False):
+        """Create a file-chooser object
+        
+        Create a FileChooser object (used for dark, flat, metadata,
+        bias, and image files).
+
+        Parameters
+        ----------
+        text_entry_widget : Qt text entry widget (QLineEdit)
+            Text entry widget that can hold the chosen file's
+            filename. If `multiple_files_okay` is True, this is a
+            multi-line field (QPlainTextEdit)
+        chooser_button : Qt button widget
+            The button to be activated in order to choose the file
+        multiple_files_okay : bool, optional, default=only-one-file-allowed
+            A flag to indicate whether this FileChooser is allowed to
+            select multiple files (i.e., light image files) or just a
+            single file (e.g., a master flat image)
+
+        Returns
+        -------
+        FileChooser object
+        """
         self.text_widget = text_entry_widget
         self.popup_button = chooser_button
         self.multiple_files_okay = multiple_files_okay
@@ -763,6 +1109,23 @@ class FileChooser:
             self.file_mode = QFileDialog.ExistingFiles
             
     def chooser_popup(self, button):
+        """Create popup window to choose file(s)
+
+        Initiate the popup window to select one (or more) files. This
+        method blocks until the file selection has completed, so all
+        other buttons and widgets in the application will be
+        disabled. The selected filename will be put into the
+        FileChooser's `text_entry_widget`.
+
+        Parameters
+        ----------
+        button : QPushButton
+            The button that triggered this popup window
+
+        Returns
+        -------
+        None
+        """
         dialog = QFileDialog(self.text_widget)
         dialog.setFileMode(self.file_mode)
         if dialog.exec():
@@ -778,6 +1141,22 @@ class FileChooser:
             self.text_widget.setText("")
 
     def EnteredFilename(self):
+        """Return the filename entered via this FileChooser
+
+        Return the filename entered by this FileChooser if a filename
+        was entered. If no filename was entered, returns None. This
+        should only be used if `multiple_files_okay` was False.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None or str
+            Return the filename entered by this FileChooser if a filename
+            was entered. If no filename was entered, returns None
+        """
         if self.multiple_files_okay:
             raise Exception("Call to EnteredFilename should be EnteredFilenameList")
         raw_text = self.text_widget.text()
@@ -787,6 +1166,22 @@ class FileChooser:
             return raw_text.strip()
 
     def EnteredFilenameList(self):
+        """Return the filenames entered via this FileChooser
+
+        Return the filenames entered by this FileChooser if a filename
+        was entered. If no filename was entered, returns None. This
+        should only be used if `multiple_files_okay` was True.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        list of str
+            Return the filenames entered by this FileChooser if a filename
+            was entered (list might be empty).
+        """
         if not self.multiple_files_okay:
             raise Exception("Call to EnteredFilenameList should be EnteredFilename")
         raw_text = self.text_widget.toPlainText()
@@ -795,10 +1190,36 @@ class FileChooser:
         return text_words
 
     def ClearFilename(self):
+        """Clear the entered filename
+
+        Clear the filename entered for this FileChooser object
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
         self.text_widget.setText("")
 
 class OptionBox:
     def __init__(self):
+        """Create an OptionBox object, linked to screen buttons
+
+        Create an OptionBox object (a singleton), and associate the
+        related display button widgets with a set of available option
+        queries.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        An OptionBox instance
+        """
         self.pretend_monochrome = ui.window.MonochromeButton
         self.one_channel = ui.window.SingleChannelButton
         self.stacked_channels = ui.window.StackedButton
@@ -807,30 +1228,152 @@ class OptionBox:
         self.psf_photometry = ui.window.PSFPhotButton
         self.aperture_photometry = ui.window.AperturePhotButton
 
-    # return boolean
     def DeBayer(self):
+        """Query whether input file(s) need to be de-Bayered
+
+        Return True if the input images need to be split into separate
+        color images (de-Bayer).
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        bool
+            True if input images needed to be split
+        """
         return not self.pretend_monochrome.isChecked()
 
     # return "psf" or "app_phot"
     def GetPhot(self):
+        """Query the kind of photometry to be done
+
+        Return a string indicating whether aperture photometry or
+        PSF-fitting photometry is to be done.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        str
+            'psf' if PSF-fitting is to be done; 'app_phot' if aperture
+            photometry is to be done
+        """
         return "psf" if self.psf_photometry.isChecked() else "app_phot"
 
     def StackChannels(self):
+        """Query whether de-Bayered images are to be stacked
+
+        Query whether de-Bayered images are to be stacked into a
+        single sort-of-luminance channel image. Only makes sense to
+        query this if DeBayer() returns True. If stacking was chosen,
+        the method used for doing the stacking depends on the setting
+        of the InterpolateChannels() query.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        bool
+            True if the four de-Bayered images are to be stacked
+        """
         return (self.stacked_channels.isChecked()  or
                 self.interp_stack_channels.isChecked())
 
     def InterpolateChannels(self):
+        """Query whether de-Bayered images get shifted into pixel alignment
+
+        Query whether the four de-Bayered images are to be shifted
+        into pixel alignment. Each color gets shifted one or two
+        pixels left/right/up/down using flux-preserving bilinear
+        interpolation in order to have the pixels in each color
+        channel correspond to exactly the same Dec/RA sky location.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        bool
+            True if the de-Bayered images need to be shifted slightly
+            to bring them into sky coordinate alignment
+        """
         return self.interp_stack_channels.isChecked()
 
-    # return type: boolean
     def GetColorBalance(self):
+        """Query whether the pixel values should be adjusted for color balance
+
+        Query whether "color balancing" should be done. This is
+        performed on the original RGB image with a linear
+        transformation to adjust pixel values. Four different
+        transformations are used; one for each color channel. The
+        values for the transformation coefficients are chosen to give
+        all four channels the same background average level and the
+        same standard deviation around that common average.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        bool
+            True if color balancing is to be done
+        """
         return self.color_correx.isChecked()
 
     def UsePSFFitting(self):
+        """Query whether PSF-fitting photometry is to be done
+
+        Return a boolean indicating whether 
+        PSF-fitting photometry is to be done. This method is 100%
+        redundant with GetPhot() and should be retired.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        bool
+            True if PSF-fitting is to be done
+        """
         return self.psf_photometry.isChecked()
 
 class UI:
+    """Singleton class used to connect Qt Designer to this app
+
+    This class (and its singlton instance, "ui") are used to hold the
+    widget hierarchy that is read in from the *.ui file created by Qt
+    Designer for this app. 
+
+    Attributes
+    ----------
+    window : Qt window
+        The root of the *.ui file. 
+    """
     def __init__(self):
+        """Set up Qt widgets for this app
+
+        Read in the .ui file created with the Qt designer app. Store
+        all the resulting widgets as children of self.window. This
+        requires the .ui file to be in the same directory as the
+        Python script is located.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        UI object
+        """
         ui_filename = "image2sl.ui"
         ui_file = QFile(ui_filename)
         if not ui_file.open(QIODevice.ReadOnly):
@@ -843,15 +1386,168 @@ class UI:
             print(loader.errorString())
             sys.exit(-1)
 
+class APIEntryDialog(QDialog):
+    """The QDialog popup window used to enter the astrometry.net API key
+
+    The QDialog popup window used to enter the astrometry.net API key.
+
+    Attributes
+    ----------
+    prompt : QLabel widget
+        Holds the prompt message telling the user what to do
+    lineEdit : QLineEdit widget
+        Text entry widget that holds the value of the API key. This
+        will be initialized to any previously-entered key value.
+    save_checkbox : QCheckBox widget
+        Checkbox to indicate that the API key value should be saved
+        for use in the future as the default API key value
+    buttonBox : QDialogButtonBox widget
+        Container widget that holds the buttons for the popup
+    """
+    def __init__(self, parent=None):
+        """Create a popup dialog window
+
+        Create a popup dialog window. The "Okay" standard button will
+        have its default behavior overridden so that the entered API
+        key value gets saved.
+
+        Parameters
+        ----------
+        parent : Qt window
+            The parent widget that "owns" this popup
+
+        Returns
+        -------
+        Qt QDialog window
+        """
+        super().__init__(parent)
+
+        self.setWindowTitle("Astrometry.net API Key Entry")
+        layout = QVBoxLayout()
+        self.prompt = QLabel('Enter your astrometry.net API key:')
+        layout.addWidget(self.prompt)
+        self.lineEdit = QLineEdit()
+        if astrometry_api_key is not None:
+            self.lineEdit.setText(astrometry_api_key)
+        layout.addWidget(self.lineEdit)
+
+        self.save_checkbox = QCheckBox('Save API Key')
+        layout.addWidget(self.save_checkbox)
+
+        QBtn = (QDialogButtonBox.StandardButton.Ok |
+                QDialogButtonBox.StandardButton.Cancel)
+        self.buttonBox = QDialogButtonBox(QBtn)
+        self.buttonBox.accepted.connect(self.AcceptKey)
+        self.buttonBox.rejected.connect(self.reject)
+        layout.addWidget(self.buttonBox)
+
+        self.setLayout(layout)
+
+    def AcceptKey(self):
+        """Intercept the dialog's "Okay" button
+
+        Before executing the default "Okay" button behavior, save the
+        API key value for use here in this program (as a global
+        variable) and save in the user's STWG local storage folder.
+        """
+        global astrometry_api_key
+        astrometry_api_key = self.lineEdit.text()
+        if self.save_checkbox.isChecked():
+            SaveAstrometryKey(astrometry_api_key)
+        self.accept()           # execute default behavior (kills the popup)
+        
+def GetAstrometryKey():
+    """Lookup the saved value of the astrometry.net API key
+
+    Look for the file containing the astrometry.net API key. If the
+    file exists and contains some text, return that text as the
+    key. It is *not* an error for the file to not exist -- in which
+    case this function will silently return "None".
+
+    Returns
+    -------
+    Either a string (the stored API key) or None
+    """
+    localdir = None
+    local_system = platform.system()
+    if local_system == 'Windows':
+        localdir = Path.home() / "AppData" / "Local" / "STWG"
+    elif local_system == 'Linux':
+        localdir = Path.home() / ".stwg"
+    elif local_system == 'Darwin':
+        localdir = Path.home() / ".stwg"
+    else:
+        raise ValueException("OS Name not recognized")
+
+    localdir.mkdir(parents=True, exist_ok=True)
+    APIKeypathname = localdir / "astrometryAPIkey.txt"
+
+    try:
+        return APIKeypathname.read_text()
+    except:
+        return None
+
+def SaveAstrometryKey(key_value):
+    """Store the value of the astrometry.net API key in a local file
+
+    Store the value of the astrometry.net API key in a file in the
+    user's app data area (windows) or home directory (Linus/MacOS).
+
+    Parameters
+    ----------
+    key_value : string
+        The value of the API key
+
+    Returns
+    -------
+    None
+    """
+    localdir = None
+    local_system = platform.system()
+    if local_system == 'Windows':
+        localdir = Path.home() / "AppData" / "Local" / "STWG"
+    elif local_system == 'Linux':
+        localdir = Path.home() / ".stwg"
+    elif local_system == 'Darwin':
+        localdir = Path.home() / ".stwg"
+    else:
+        raise ValueException("OS Name not recognized")
+
+    localdir.mkdir(parents=True, exist_ok=True)
+    APIKeypathname = localdir / "astrometryAPIkey.txt"
+
+    try:
+        APIKeypathname.write_text(key_value)
+    except:
+        print("Error Trying to save API Key")
+        raise
+
 class MainWindow:
     def __init__(self):
+        """Set up main display window and key singleton objects
+
+        Create the FileChooser objects for each file chooser button in
+        the display. Create a temporary directory in which working
+        files can be stored (and destroyed when the program
+        exits). Create singleton objects for OptionBox and the
+        ProgressBar that is displayed while generation of the
+        starlists is performed.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        global ui, astrometry_api_key
+        astrometry_api_key = GetAstrometryKey(ui.window)
+        
         self.temp_dir = tempfile.TemporaryDirectory()
         self.temp_dirname = self.temp_dir.name
         print("Working in temporary directory ", self.temp_dirname)
-    
-        super().__init__()
 
-        global ui
         self.bias_file = FileChooser(ui.window.bias_entry,
                                      ui.window.BiasButton)
 
@@ -867,12 +1563,36 @@ class MainWindow:
 
         self.options = OptionBox()
         self.progressbar = ui.window.progressBar
+        ui.window.actionEnter_astrometry_net_API_key.triggered.connect(self.GetKey)
+
+    def GetKey(self):
+        global ui
+        dialog = APIEntryDialog(ui.window)
+        dialog.exec()
 
     ################################
     ## GenerateStarlist button
     ## starts here
     ################################
     def do_generate_starlist(self):
+        """Start the process of generating a starlist
+
+        The current version of this Python script is single-threaded,
+        making this method a little unnecessary, but it's still here
+        to make the transition to a two-thread structure easier. (One
+        thread would be the graphics thread, the other thread would do
+        the image-to-starlist conversion.) If threading was being
+        used, this is where the working thread would be started. This
+        is where the progress bar is made active.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
         self.progressbar.setRange(0,100) # indeterminate mode
         self.progressbar.setValue(20)
         self.progressbar.setTextVisible(True)
@@ -883,6 +1603,21 @@ class MainWindow:
         self.progressbar.hide()
     
     def GenerateStarlist(self):
+        """Actually perform the conversion of image to starlist
+
+        For each image selected by the user (in the image
+        FileChooser), perform a conversion into from 1 to 5 starlists,
+        depending on the selected options.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        bool
+            Returns False to indicate that the thread (if used) should self-terminate
+        """
         image_list = self.image_file.EnteredFilenameList()
         dark_filename = self.dark_file.EnteredFilename()
         flat_filename = self.flat_file.EnteredFilename()
@@ -900,16 +1635,17 @@ class MainWindow:
                 continue
             
             working_filename = image_filename
-            (orig_dir, orig_file) = os.path.split(image_filename)
-            (orig_file_base,not_used) = os.path.splitext(orig_file)
-            starlist_tgtname = os.path.join(orig_dir, orig_file_base+"_$$.star")
+            image_path = Path(image_filename)
+            orig_dir = image_path.parent
+            orig_file_base = image_path.stem
+            starlist_tgtname = str(Path(orig_dir, orig_file_base+"_$$.star"))
 
             hdu_working = fits.open(image_filename)
             working_image = hdu_working[0].data.astype(float)
             if (dark_filename is not None
                 or flat_filename is not None
                 or bias_filename is not None):
-                calibrated_image = os.path.join(self.temp_dirname, "light.fits")
+                calibrated_image = str(Path(self.temp_dirname, "light.fits"))
                 with fits.open(image_filename) as hdu_working:
                     working_image = hdu_working[0].data.astype(float)
                     if bias_filename is not None:
@@ -939,9 +1675,11 @@ class MainWindow:
             QGuiApplication.processEvents()
             # Now get the metadata from the standalone metadata file
             if metadata_filename is not None:
-                if os.access(metadata_filename, os.R_OK) != True:
+                meta_path = Path(metadata_filename)
+                if not (meta_path.is_file() and meta_path.exists() and
+                        meta_path.stat().st_mode & 0o400):
                     print("Cannot read metadata from file ", metadata_filename)
-                    raise Exception("Cannot read metadata file")
+                    raise ValueError("Cannot read metadata file")
                 print("Reading metadata from ", metadata_filename)
                 ReadMetaFromJSON(metadata_filename, meta)
 
