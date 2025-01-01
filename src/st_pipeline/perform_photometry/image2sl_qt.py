@@ -1542,7 +1542,7 @@ class MainWindow:
         None
         """
         global ui, astrometry_api_key
-        astrometry_api_key = GetAstrometryKey(ui.window)
+        astrometry_api_key = GetAstrometryKey()
         
         self.temp_dir = tempfile.TemporaryDirectory()
         self.temp_dirname = self.temp_dir.name
