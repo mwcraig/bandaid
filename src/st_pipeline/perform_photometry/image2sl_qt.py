@@ -641,10 +641,10 @@ class AAVSOStarlist:
             A new object of the class
         """
         self.metadata = metadata
-        self.gain = metadata['SYSTEM_GAIN']
         
         self.starlist = {} # JSON-style dictionary
-        self.filter = filter # e.g., "TG"
+        self.starlist['GAIN'] = metadata['SYSTEM_GAIN']
+        self.starlist['FILTER'] = filter # e.g., "TG"
 
         # Sort out the metadata
         self.starlist['AAVSO_VER'] = "AA_001"
@@ -879,7 +879,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         background = Background2D(image_data, (int(width/8),int(height/8)), filter_size=(3,3),
                                   sigma_clip=sigma_clip, bkg_estimator=bkg_estimator).background
         (bkgd_mean,_dummy,bkgd_std) = sigma_clipped_stats(background, sigma=3.0)
-        noise_bkgd = bkgd_std/starlist.gain
+        noise_bkgd = bkgd_std/starlist.starlist['GAIN']
         daofind = DAOStarFinder(fwhm=3.0, threshold=5.*std)
         clean_image = (image_data - background)
         (mean,median,std) = sigma_clipped_stats(clean_image, sigma=3.0)
@@ -910,7 +910,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         
         for s,flux,x,y in zip(starlist.starlist['STARLIST'],fluxes,xc,yc):
             s['TOT_FLUX'] = float(flux)
-            poiss_noise = starlist.gain*(math.sqrt(float(flux)/starlist.gain))
+            poiss_noise = starlist.starlist['GAIN']*(math.sqrt(float(flux)/starlist.starlist['GAIN']))
             tot_noise = math.sqrt(poiss_noise*poiss_noise+noise_bkgd*noise_bkgd)
             snr = float(flux)/tot_noise
             s['FLUX_ERR'] = tot_noise
