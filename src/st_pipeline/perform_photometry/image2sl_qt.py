@@ -1207,7 +1207,7 @@ class FileChooser:
         """
         self.text_widget.setText("")
 
-class OptionBox:
+class OptionsUI:
     def __init__(self):
         """Create an OptionBox object, linked to screen buttons
 
@@ -1230,6 +1230,18 @@ class OptionBox:
         self.color_correx = ui.window.ColorBalanceButton
         self.psf_photometry = ui.window.PSFPhotButton
         self.aperture_photometry = ui.window.AperturePhotButton
+        self.bias_file = FileChooser(ui.window.bias_entry,
+                                     ui.window.BiasButton)
+
+        self.dark_file = FileChooser(ui.window.dark_entry,
+                                     ui.window.DarkButton)
+        self.flat_file = FileChooser(ui.window.flat_entry,
+                                     ui.window.FlatButton)
+        self.meta_file = FileChooser(ui.window.meta_entry,
+                                     ui.window.MetaButton)
+        self.image_file = FileChooser(ui.window.image_filename_list,
+                                      ui.window.AddImageButton,
+                                      multiple_files_okay=True)
 
     @property
     def DeBayer(self):
@@ -1552,25 +1564,12 @@ class MainWindow:
         """
         global ui, astrometry_api_key
         astrometry_api_key = GetAstrometryKey()
-        
+
         self.temp_dir = tempfile.TemporaryDirectory()
         self.temp_dirname = self.temp_dir.name
         print("Working in temporary directory ", self.temp_dirname)
 
-        self.bias_file = FileChooser(ui.window.bias_entry,
-                                     ui.window.BiasButton)
-
-        self.dark_file = FileChooser(ui.window.dark_entry,
-                                     ui.window.DarkButton)
-        self.flat_file = FileChooser(ui.window.flat_entry,
-                                     ui.window.FlatButton)
-        self.meta_file = FileChooser(ui.window.meta_entry,
-                                     ui.window.MetaButton)
-        self.image_file = FileChooser(ui.window.image_filename_list,
-                                      ui.window.AddImageButton,
-                                      multiple_files_okay=True)
-
-        self.options = OptionBox()
+        self.options = OptionsUI()
         self.progressbar = ui.window.progressBar
         ui.window.actionEnter_astrometry_net_API_key.triggered.connect(self.GetKey)
 
@@ -1627,11 +1626,11 @@ class MainWindow:
         bool
             Returns False to indicate that the thread (if used) should self-terminate
         """
-        image_list = self.image_file.EnteredFilenameList()
-        dark_filename = self.dark_file.EnteredFilename()
-        flat_filename = self.flat_file.EnteredFilename()
-        bias_filename = self.bias_file.EnteredFilename()
-        metadata_filename = self.meta_file.EnteredFilename()
+        image_list = self.options.image_file.EnteredFilenameList()
+        dark_filename = self.options.dark_file.EnteredFilename()
+        flat_filename = self.options.flat_file.EnteredFilename()
+        bias_filename = self.options.bias_file.EnteredFilename()
+        metadata_filename = self.options.meta_file.EnteredFilename()
         do_bayer_balance = self.options.color_correx.isChecked()
         
         for image_filename in image_list:
