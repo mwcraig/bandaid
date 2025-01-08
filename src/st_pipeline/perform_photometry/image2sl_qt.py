@@ -964,14 +964,14 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
     ################################
     ## Do PSF fitting, if requested
     ################################
-    if options.UsePSFFitting():
+    if options.UsePSFFitting:
         starlist.starlist['STARLIST'].sort(key=lambda star:
                                            star['TOT_FLUX'], reverse=True)
         psf_fitting.DoPSF(filename, starlist.starlist)
-    
+
     starlist.WriteJSON(starlist_json_path)
     return starlist_json_path
-    
+
 def ProcessRGBFile(filename, options, temp_dir, metadata,
                    starlist_tgtname):
     """Process an RGB image, converting it into one or more starlists
@@ -1001,14 +1001,14 @@ def ProcessRGBFile(filename, options, temp_dir, metadata,
     Returns
     -------
     None
-    
+
     """
-    de_bayer = options.DeBayer()
+    de_bayer = options.DeBayer
     if de_bayer:
         single_color_files = DeBayerFile(filename, metadata['BAYERPAT'], temp_dir)
         starlists = []
 
-        if options.StackChannels():
+        if options.StackChannels:
             stacked_image = StackImages(single_color_files, options, temp_dir)
             starlist_filename = starlist_tgtname.replace("$$","M")
             starlist_file = ProcessSingleImage(stacked_image, dict(metadata),
@@ -1231,6 +1231,7 @@ class OptionBox:
         self.psf_photometry = ui.window.PSFPhotButton
         self.aperture_photometry = ui.window.AperturePhotButton
 
+    @property
     def DeBayer(self):
         """Query whether input file(s) need to be de-Bayered
 
@@ -1249,6 +1250,7 @@ class OptionBox:
         return not self.pretend_monochrome.isChecked()
 
     # return "psf" or "app_phot"
+    @property
     def GetPhot(self):
         """Query the kind of photometry to be done
 
@@ -1267,6 +1269,7 @@ class OptionBox:
         """
         return "psf" if self.psf_photometry.isChecked() else "app_phot"
 
+    @property
     def StackChannels(self):
         """Query whether de-Bayered images are to be stacked
 
@@ -1288,6 +1291,7 @@ class OptionBox:
         return (self.stacked_channels.isChecked()  or
                 self.interp_stack_channels.isChecked())
 
+    @property
     def InterpolateChannels(self):
         """Query whether de-Bayered images get shifted into pixel alignment
 
@@ -1309,6 +1313,7 @@ class OptionBox:
         """
         return self.interp_stack_channels.isChecked()
 
+    @property
     def GetColorBalance(self):
         """Query whether the pixel values should be adjusted for color balance
 
@@ -1331,6 +1336,7 @@ class OptionBox:
         """
         return self.color_correx.isChecked()
 
+    @property
     def UsePSFFitting(self):
         """Query whether PSF-fitting photometry is to be done
 
@@ -1687,8 +1693,8 @@ class MainWindow:
                 ReadMetaFromJSON(metadata_filename, meta)
 
             print("Final metadata is ", meta)
-            
-            if self.options.GetColorBalance():
+
+            if self.options.GetColorBalance:
                 working_filename = BayerBalanceFile(working_filename, self.temp_dirname)
             ProcessRGBFile(working_filename, self.options, self.temp_dirname, meta, starlist_tgtname)
         return False
