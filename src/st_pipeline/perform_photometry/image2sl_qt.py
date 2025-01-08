@@ -32,6 +32,7 @@ from astroquery.astrometry_net import AstrometryNet
 import matplotlib.pyplot as plt
 from astropy.visualization import SqrtStretch
 from astropy.visualization.mpl_normalize import ImageNormalize
+from pydantic import BaseModel, ConfigDict
 
 import threading
 from pathlib import Path
@@ -46,6 +47,8 @@ import json
 import platform
 import psf_fitting
 from collections import namedtuple
+import argparse
+from typing import List
 #import sep
 
 astrometry_api_key = None
@@ -1461,6 +1464,44 @@ class OptionsUI:
         """
         return self._image_file.EnteredFilenameList()
 
+
+class OptionsAPI(BaseModel):
+    model_config = ConfigDict(extra='forbid', validate_default=True, validate_assignment=True)
+    debayer: bool = False
+    one_channel: bool = False
+    stacked_channels: bool = False
+    interp_stack_channels: bool = False
+    color_correx: bool = False
+    psf_photometry: bool = False
+    astrometry_net_api_key: str = ""
+    bias_file: str = ""
+    dark_file: str = ""
+    flat_file: str = ""
+    meta_file: str = ""
+    image_file: List[str] = [""]
+
+    # These are accessed by the current code.
+    @property
+    def DeBayer(self):
+        return self.debayer
+
+    @property
+    def InterpolateChannels(self):
+        return self.interp_stack_channels
+
+    @property
+    def GetColorBalance(self):
+        return self.color_correx
+
+    @property
+    def StackChannels(self):
+        return (self.stacked_channels or self.interp_stack_channels)
+
+    @property
+    def UsePSFFitting(self):
+        return self.psf_photometry
+
+
 class UI:
     """Singleton class used to connect Qt Designer to this app
 
@@ -1638,7 +1679,7 @@ def SaveAstrometryKey(key_value):
         raise
 
 class MainWindow:
-    def __init__(self):
+    def __init__(self, options):
         """Set up main display window and key singleton objects
 
         Create the FileChooser objects for each file chooser button in
@@ -1650,22 +1691,33 @@ class MainWindow:
 
         Parameters
         ----------
-        None
+        options : an Options object
+            Either a UI-based or API-based object that holds the
+            options. Should be either an instance of OptionsUI or
+            OptionsAPI.
 
         Returns
         -------
         None
         """
         global ui, astrometry_api_key
-        astrometry_api_key = GetAstrometryKey()
+
 
         self.temp_dir = tempfile.TemporaryDirectory()
         self.temp_dirname = self.temp_dir.name
         print("Working in temporary directory ", self.temp_dirname)
 
-        self.options = OptionsUI()
-        self.progressbar = ui.window.progressBar
-        ui.window.actionEnter_astrometry_net_API_key.triggered.connect(self.GetKey)
+        self.options = options
+
+        # Try getting the API key from options, or return None if not there
+        astrometry_api_key = getattr(self.options, "astrometry_net_api_key", None)
+        if astrometry_api_key is None:
+            astrometry_api_key = GetAstrometryKey()
+
+        if ui:
+            self.progressbar = ui.window.progressBar
+        else:
+            self.GenerateStarlist()
 
     def GetKey(self):
         global ui
@@ -1744,21 +1796,21 @@ class MainWindow:
 
             hdu_working = fits.open(image_filename)
             working_image = hdu_working[0].data.astype(float)
-            if (dark_filename is not None
-                or flat_filename is not None
-                or bias_filename is not None):
+            if (dark_filename
+                or flat_filename
+                or bias_filename):
                 calibrated_image = str(Path(self.temp_dirname, "light.fits"))
                 with fits.open(image_filename) as hdu_working:
                     working_image = hdu_working[0].data.astype(float)
-                    if bias_filename is not None:
+                    if bias_filename:
                         with fits.open(bias_filename) as hdul:
                             bias = hdul[0].data
                             working_image -= bias
-                    if dark_filename is not None:
+                    if dark_filename:
                         with fits.open(dark_filename) as hdul:
                             dark = hdul[0].data
                             working_image -= dark
-                    if flat_filename is not None:
+                    if flat_filename:
                         with fits.open(flat_filename) as hdul:
                             flat = hdul[0].data
                             flat = flat.astype(float) / np.median(flat)
@@ -1794,14 +1846,26 @@ class MainWindow:
 
 if __name__ == "__main__":
     global ui
-    app = QtWidgets.QApplication(sys.argv)
-    ui = UI()
-    ui.window.show()
-    not_a_window = MainWindow()
 
-    ui.window.progressBar.hide()
-    ui.window.GenerateStarlistButton.clicked.connect(not_a_window.do_generate_starlist)
-    
-    sys.exit(app.exec())
+    ap = argparse.ArgumentParser(description="Convert an image into a starlist")
+    ap.add_argument("--api", help="Run tool using input json instead of GUI")
+    args = ap.parse_args()
 
+    if args.api is not None:
+        # This is the command-line version of the tool
+        # It is not yet implemented
+        p = Path(args.api)
+        options = OptionsAPI.model_validate_json(p.read_text())
+        ui = None
+        not_a_window = MainWindow(options)
+    else:
+        app = QtWidgets.QApplication(sys.argv)
+        ui = UI()
+        ui.window.show()
+        not_a_window = MainWindow(OptionsUI())
 
+        ui.window.progressBar.hide()
+        ui.window.GenerateStarlistButton.clicked.connect(not_a_window.do_generate_starlist)
+        ui.window.actionEnter_astrometry_net_API_key.triggered.connect(not_a_window.GetKey)
+
+        sys.exit(app.exec())
