@@ -45,6 +45,7 @@ import sys
 import json
 import platform
 import psf_fitting
+from collections import namedtuple
 #import sep
 
 astrometry_api_key = None
@@ -106,7 +107,7 @@ def DeBayerFile(filename, pattern, temp_dir):
             # update_header will "fix" the header to match the data
             hdu.update_header()
             fits.writeto(output_tgt, array[index], header=hdu.header, overwrite=True)
-            ImageDescriptor = namedtuple('filter','filename')
+            ImageDescriptor = namedtuple('ImageDescriptor', ['filter','filename'])
             output_filenames.append(ImageDescriptor(color,output_tgt))
         return output_filenames
 
@@ -1011,6 +1012,7 @@ def ProcessRGBFile(filename, options, temp_dir, metadata,
             stacked_image = StackImages(single_color_files, options, temp_dir)
             starlist_filename = starlist_tgtname.replace("$$","M")
             starlist_file = ProcessSingleImage(stacked_image, dict(metadata),
+                                               options,
                                                temp_dir,
                                                starlist_filename, 'M')
             print("Starlist stored in ", starlist_file)
@@ -1023,7 +1025,8 @@ def ProcessRGBFile(filename, options, temp_dir, metadata,
                     filter_file = "TG"+str(tg_num)
                     tg_num += 1
                 starlist_filename = starlist_tgtname.replace("$$",filter_file)
-                starlist_file = ProcessSingleImage(file, metadata, temp_dir, starlist_filename,filter)
+                starlist_file = ProcessSingleImage(file, dict(metadata), options,
+                                                   temp_dir, starlist_filename,filter)
                 starlists.append(starlist_file)
 
             print("Starlist(s) stored in ", starlists)
