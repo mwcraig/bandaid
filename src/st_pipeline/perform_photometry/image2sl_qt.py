@@ -1209,9 +1209,9 @@ class FileChooser:
 
 class OptionsUI:
     def __init__(self):
-        """Create an OptionBox object, linked to screen buttons
+        """Create an object for the UI options, including file names
 
-        Create an OptionBox object (a singleton), and associate the
+        Create an OptionsUI object (a singleton), and associate the
         related display button widgets with a set of available option
         queries.
 
@@ -1221,8 +1221,24 @@ class OptionsUI:
 
         Returns
         -------
-        An OptionBox instance
+        An OptionsUI instance
         """
+        # File choosers first...use the properties defined later
+        # to get the file names out.
+        self._bias_file = FileChooser(ui.window.bias_entry,
+                                      ui.window.BiasButton)
+
+        self._dark_file = FileChooser(ui.window.dark_entry,
+                                      ui.window.DarkButton)
+        self._flat_file = FileChooser(ui.window.flat_entry,
+                                      ui.window.FlatButton)
+        self._meta_file = FileChooser(ui.window.meta_entry,
+                                      ui.window.MetaButton)
+        self._image_file = FileChooser(ui.window.image_filename_list,
+                                       ui.window.AddImageButton,
+                                       multiple_files_okay=True)
+
+        # The remaining options
         self.pretend_monochrome = ui.window.MonochromeButton
         self.one_channel = ui.window.SingleChannelButton
         self.stacked_channels = ui.window.StackedButton
@@ -1230,18 +1246,6 @@ class OptionsUI:
         self.color_correx = ui.window.ColorBalanceButton
         self.psf_photometry = ui.window.PSFPhotButton
         self.aperture_photometry = ui.window.AperturePhotButton
-        self.bias_file = FileChooser(ui.window.bias_entry,
-                                     ui.window.BiasButton)
-
-        self.dark_file = FileChooser(ui.window.dark_entry,
-                                     ui.window.DarkButton)
-        self.flat_file = FileChooser(ui.window.flat_entry,
-                                     ui.window.FlatButton)
-        self.meta_file = FileChooser(ui.window.meta_entry,
-                                     ui.window.MetaButton)
-        self.image_file = FileChooser(ui.window.image_filename_list,
-                                      ui.window.AddImageButton,
-                                      multiple_files_okay=True)
 
     @property
     def DeBayer(self):
@@ -1366,6 +1370,96 @@ class OptionsUI:
             True if PSF-fitting is to be done
         """
         return self.psf_photometry.isChecked()
+
+    @property
+    def bias_file(self):
+        """Return the pathname of the bias file
+
+        Return the pathname of the bias file that was entered by the
+        operator.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        str
+            The pathname of the bias file
+        """
+        return self._bias_file.EnteredFilename()
+
+    @property
+    def dark_file(self):
+        """Return the pathname of the dark file
+
+        Return the pathname of the dark file that was entered by the
+        operator.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        str
+            The pathname of the dark file
+        """
+        return self._dark_file.EnteredFilename()
+
+    @property
+    def flat_file(self):
+        """Return the pathname of the flat file
+
+        Return the pathname of the flat file that was entered by the
+        operator.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        str
+            The pathname of the flat file
+        """
+        return self._flat_file.EnteredFilename()
+
+    @property
+    def meta_file(self):
+        """Return the pathname of the metadata file
+
+        Return the pathname of the metadata file that was entered by
+        the operator.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        str
+            The pathname of the metadata file
+        """
+        return self._meta_file.EnteredFilename()
+
+    @property
+    def image_file(self):
+        """Return the pathname of the image files
+
+        Return the pathname of the image files that were entered by
+        the operator.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        list of str
+            The pathname of the image files
+        """
+        return self._image_file.EnteredFilenameList()
 
 class UI:
     """Singleton class used to connect Qt Designer to this app
@@ -1626,13 +1720,13 @@ class MainWindow:
         bool
             Returns False to indicate that the thread (if used) should self-terminate
         """
-        image_list = self.options.image_file.EnteredFilenameList()
-        dark_filename = self.options.dark_file.EnteredFilename()
-        flat_filename = self.options.flat_file.EnteredFilename()
-        bias_filename = self.options.bias_file.EnteredFilename()
-        metadata_filename = self.options.meta_file.EnteredFilename()
-        do_bayer_balance = self.options.color_correx.isChecked()
-        
+        image_list = self.options.image_file
+        dark_filename = self.options.dark_file
+        flat_filename = self.options.flat_file
+        bias_filename = self.options.bias_file
+        metadata_filename = self.options.meta_file
+        do_bayer_balance = self.options.GetColorBalance
+
         for image_filename in image_list:
             QGuiApplication.processEvents()
             #Skip blank lines (if present)
