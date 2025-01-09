@@ -829,10 +829,10 @@ def WCStext2wcs(wcs_text):
     # Create a FITS header that contains only the WCS cards
     wcs_header = fits.Header(cards=card_list)
     return WCS(wcs_header)
-    
+
 # Process one (possibly de-Bayered) image
 def ProcessSingleImage(filename, metadata, options, temp_dir,
-                       starlist_json_path, filter):
+                       starlist_json_path, filter, wcs=None):
     """Turn an image file into a starlist
 
     In a strictly one-to-one operation, turn an image into a starlist,
@@ -854,6 +854,10 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
     filter : str
         Short string holding the AAVSO reporting name for the filter
         associated with this image
+
+    wcs : astropy WCS object
+        WCS object that maps pixel coordinates to sky coordinates. If
+        provided then astrometry.net fitting is skipped.
     Returns
     -------
     str
@@ -862,7 +866,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
     # filter == 'M' is a special case == 'CV'
     if filter == 'M':
         filter = 'CV'
-    
+
     # "G" needs to become "TG" if it hasn't already
     if len(filter) == 1:
         filter = 'T'+filter
@@ -911,7 +915,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         xc = np.array(result['xcenter'])
         yc = np.array(result['ycenter'])
         fluxes = np.array(result['aperture_sum'])
-        
+
         for s,flux,x,y in zip(starlist.starlist['STARLIST'],fluxes,xc,yc):
             s['TOT_FLUX'] = float(flux)
             poiss_noise = starlist.starlist['GAIN']*(math.sqrt(float(flux)/starlist.starlist['GAIN']))
@@ -920,34 +924,35 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
             s['FLUX_ERR'] = tot_noise
             s['X'] = float(x)
             s['Y'] = float(y)
-                                      
+
 
     ################################
-    ## Plate Solve to get WCS transformation info
+    ## Plate Solve to get WCS transformation info if needed
     ## Things you need:
     ## Dec/RA (nominal) - metadata
     ## Plate scale (nominal) - metadata
     ## Field of View (nominal) - metadata
     ################################
 
-    ast = AstrometryNet()
-    if astrometry_api_key == None:
-        global ui
-        dlg = QMessageBox(ui.window)
-        dlg.setWindowTitle("No astrometry.net API Key")
-        dlg.setText("Must enter astrometry.net API Key via Menu Bar")
-        dlg.exec()
-        return
-    
-    ast.api_key = astrometry_api_key
-    # star_x and star_y were sorted by flux earlier... important here.
-    wcs_header = ast.solve_from_source_list(star_x,
-                                            star_y,
-                                            width,
-                                            height,
-                                            solve_timeout=120)
-    wcs = WCS(header=wcs_header)
-    
+    if not wcs:
+        ast = AstrometryNet()
+        if astrometry_api_key == None:
+            global ui
+            dlg = QMessageBox(ui.window)
+            dlg.setWindowTitle("No astrometry.net API Key")
+            dlg.setText("Must enter astrometry.net API Key via Menu Bar")
+            dlg.exec()
+            return
+
+        ast.api_key = astrometry_api_key
+        # star_x and star_y were sorted by flux earlier... important here.
+        wcs_header = ast.solve_from_source_list(star_x,
+                                                star_y,
+                                                width,
+                                                height,
+                                                solve_timeout=120)
+        wcs = WCS(header=wcs_header)
+
     if False:
         import astrometry
         wcs_text = astrometry.RunAstrometry(api_key = astrometry_api_key,
@@ -976,7 +981,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
     return starlist_json_path
 
 def ProcessRGBFile(filename, options, temp_dir, metadata,
-                   starlist_tgtname):
+                   starlist_tgtname, wcs=None):
     """Process an RGB image, converting it into one or more starlists
 
     Process a one-shot-color image using the user's selected options
@@ -1000,6 +1005,9 @@ def ProcessRGBFile(filename, options, temp_dir, metadata,
         Dictionary of metadata for the image
     starlist_tgtname : str
         Pathname to be used (possibly as a template) for the resulting starlist(s).
+    wcs : astropy WCS object, optional
+        WCS object that maps pixel coordinates to sky coordinates. If
+        provided then astrometry.net fitting is skipped.
 
     Returns
     -------
@@ -1017,7 +1025,8 @@ def ProcessRGBFile(filename, options, temp_dir, metadata,
             starlist_file = ProcessSingleImage(stacked_image, dict(metadata),
                                                options,
                                                temp_dir,
-                                               starlist_filename, 'M')
+                                               starlist_filename, 'M',
+                                               wcs=wcs)
             print("Starlist stored in ", starlist_file)
         else:
             tg_num = 1
@@ -1029,7 +1038,8 @@ def ProcessRGBFile(filename, options, temp_dir, metadata,
                     tg_num += 1
                 starlist_filename = starlist_tgtname.replace("$$",filter_file)
                 starlist_file = ProcessSingleImage(file, dict(metadata), options,
-                                                   temp_dir, starlist_filename,filter)
+                                                   temp_dir, starlist_filename,filter,
+                                                   wcs=wcs)
                 starlists.append(starlist_file)
 
             print("Starlist(s) stored in ", starlists)
@@ -1042,9 +1052,9 @@ def ProcessRGBFile(filename, options, temp_dir, metadata,
         starlist_file = ProcessSingleImage(filename, adj_meta_dict,
                                            options,
                                            temp_dir,
-                                           starlist_filename, 'M')
+                                           starlist_filename, 'M', wcs=wcs)
         print("Starlist stored in ", starlist_file)
-    
+
 
 ################################################################
 ##        Display GUI Comes Next
@@ -1679,7 +1689,7 @@ def SaveAstrometryKey(key_value):
         raise
 
 class MainWindow:
-    def __init__(self, options):
+    def __init__(self, options, ui=None, wcs=None):
         """Set up main display window and key singleton objects
 
         Create the FileChooser objects for each file chooser button in
@@ -1696,32 +1706,40 @@ class MainWindow:
             options. Should be either an instance of OptionsUI or
             OptionsAPI.
 
+        ui : UI object, optional
+            The UI object that holds the Qt widgets that make up the
+            display. If None, then the program is running in API mode
+            and the starlists are generated without any user imput.
+
+        wcs : astropy WCS object, optional
+            WCS object that maps pixel coordinates to sky coordinates.
+            If provided then astrometry.net fitting is skipped.
+
         Returns
         -------
         None
         """
-        global ui, astrometry_api_key
-
+        global astrometry_api_key
 
         self.temp_dir = tempfile.TemporaryDirectory()
         self.temp_dirname = self.temp_dir.name
         print("Working in temporary directory ", self.temp_dirname)
 
         self.options = options
-
+        self.ui = ui
+        self._wcs = wcs
         # Try getting the API key from options, or return None if not there
         astrometry_api_key = getattr(self.options, "astrometry_net_api_key", None)
         if astrometry_api_key is None:
             astrometry_api_key = GetAstrometryKey()
 
-        if ui:
-            self.progressbar = ui.window.progressBar
+        if self.ui:
+            self.progressbar = self.ui.window.progressBar
         else:
             self.GenerateStarlist()
 
     def GetKey(self):
-        global ui
-        dialog = APIEntryDialog(ui.window)
+        dialog = APIEntryDialog(self.ui.window)
         dialog.exec()
 
     ################################
@@ -1841,7 +1859,7 @@ class MainWindow:
 
             if self.options.GetColorBalance:
                 working_filename = BayerBalanceFile(working_filename, self.temp_dirname)
-            ProcessRGBFile(working_filename, self.options, self.temp_dirname, meta, starlist_tgtname)
+            ProcessRGBFile(working_filename, self.options, self.temp_dirname, meta, starlist_tgtname, wcs=self._wcs)
         return False
 
 if __name__ == "__main__":
@@ -1862,7 +1880,7 @@ if __name__ == "__main__":
         app = QtWidgets.QApplication(sys.argv)
         ui = UI()
         ui.window.show()
-        not_a_window = MainWindow(OptionsUI())
+        not_a_window = MainWindow(OptionsUI(), ui=ui)
 
         ui.window.progressBar.hide()
         ui.window.GenerateStarlistButton.clicked.connect(not_a_window.do_generate_starlist)
