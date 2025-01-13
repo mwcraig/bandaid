@@ -1867,7 +1867,8 @@ class MainWindow:
             ProcessRGBFile(working_filename, self.options, self.temp_dirname, meta, starlist_tgtname, wcs=self._wcs)
         return False
 
-if __name__ == "__main__":
+
+def main():
     global ui
 
     ap = argparse.ArgumentParser(description="Convert an image into a starlist")
@@ -1892,3 +1893,7 @@ if __name__ == "__main__":
         ui.window.actionEnter_astrometry_net_API_key.triggered.connect(not_a_window.GetKey)
 
         sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
