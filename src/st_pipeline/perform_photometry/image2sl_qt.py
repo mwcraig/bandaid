@@ -34,6 +34,9 @@ from astropy.visualization import SqrtStretch
 from astropy.visualization.mpl_normalize import ImageNormalize
 from pydantic import BaseModel, ConfigDict
 
+import warnings
+warnings.filterwarnings('error', category=RuntimeWarning)
+
 import threading
 from pathlib import Path
 import statistics
@@ -170,15 +173,16 @@ def StackImages(channel_list, options, temp_dir):
     for (bayer_id,(filter,channel)) in enumerate(channel_list):
         with fits.open(channel) as hdul:
             source_hdu = hdul[0].data
-            if options.InterpolateChannels():
+            if options.InterpolateChannels:
                 new_data = np.zeros(np.shape(hdul[0].data),dtype=np.float32)
+                orig_data = source_hdu.astype(np.float32)        
                 source_hdu = new_data
                 for y in range(height-1):
                     for x in range(width-1):
-                        tgt = sum((p[2]*hdul[0].data[y+p[1],x+p[0]] for p in pattern[bayer_id]))
+                        tgt = sum((p[2]*orig_data[y+p[1],x+p[0]] for p in pattern[bayer_id]))
                         new_data[y,x] = tgt
 
-            hdu.data += source_hdu
+            hdu.data += source_hdu/16.0
     hdu.header['FILTER'] = 'CV'
     hdu.update_header()
     fits.writeto(output_tgt, hdu.data, header=hdu.header, overwrite=True)
@@ -1540,7 +1544,8 @@ class UI:
         -------
         UI object
         """
-        ui_filename = "image2sl.ui"
+        source_path = Path(__file__).resolve()
+        ui_filename = source_path.parent / "image2sl.ui"
         ui_file = QFile(ui_filename)
         if not ui_file.open(QIODevice.ReadOnly):
             print(f"Cannot open {ui_filename}: {ui_file.errorString()}")
