@@ -48,8 +48,7 @@ import math
 import sys
 import json
 import platform
-#from st_pipeline.perform_photometry import psf_fitting
-import psf_fitting
+from st_pipeline.perform_photometry import psf_fitting
 from collections import namedtuple
 import argparse
 from typing import List
