@@ -923,13 +923,15 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
 
         for s,flux,x,y in zip(starlist.starlist['STARLIST'],fluxes,xc,yc):
             s['TOT_FLUX'] = float(flux)
-            poiss_noise = starlist.starlist['GAIN']*(math.sqrt(float(flux)/starlist.starlist['GAIN']))
-            tot_noise = math.sqrt(poiss_noise*poiss_noise+noise_bkgd*noise_bkgd)
-            snr = float(flux)/tot_noise
-            s['FLUX_ERR'] = tot_noise
+            if flux >= 0.0:
+                poiss_noise = starlist.starlist['GAIN']*(math.sqrt(float(flux)/starlist.starlist['GAIN']))
+                tot_noise = math.sqrt(poiss_noise*poiss_noise+noise_bkgd*noise_bkgd)
+                snr = float(flux)/tot_noise
+                s['FLUX_ERR'] = tot_noise
+            else:
+                s['FLUX_ERR'] = 0.0
             s['X'] = float(x)
             s['Y'] = float(y)
-
 
     ################################
     ## Plate Solve to get WCS transformation info if needed
