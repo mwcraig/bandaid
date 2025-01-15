@@ -49,6 +49,7 @@ import sys
 import json
 import platform
 from st_pipeline.perform_photometry import psf_fitting
+from .. import __version__
 from collections import namedtuple
 import argparse
 from typing import List
@@ -1729,7 +1730,7 @@ class MainWindow:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.temp_dirname = self.temp_dir.name
         print("Working in temporary directory ", self.temp_dirname)
-
+        print(f"===> st-pipeline version {__version__} <===")
         self.options = options
         self.ui = ui
         self._wcs = wcs
@@ -1867,7 +1868,8 @@ class MainWindow:
             ProcessRGBFile(working_filename, self.options, self.temp_dirname, meta, starlist_tgtname, wcs=self._wcs)
         return False
 
-if __name__ == "__main__":
+
+def main():
     global ui
 
     ap = argparse.ArgumentParser(description="Convert an image into a starlist")
@@ -1885,6 +1887,7 @@ if __name__ == "__main__":
         app = QtWidgets.QApplication(sys.argv)
         ui = UI()
         ui.window.show()
+        ui.window.setWindowTitle(f"image2sl version {__version__}")
         not_a_window = MainWindow(OptionsUI(), ui=ui)
 
         ui.window.progressBar.hide()
@@ -1892,3 +1895,7 @@ if __name__ == "__main__":
         ui.window.actionEnter_astrometry_net_API_key.triggered.connect(not_a_window.GetKey)
 
         sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
