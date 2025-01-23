@@ -48,12 +48,13 @@ import math
 import sys
 import json
 import platform
-from st_pipeline.perform_photometry import psf_fitting
-from .. import __version__
 from collections import namedtuple
 import argparse
 from typing import List
 #import sep
+
+from st_pipeline.perform_photometry import psf_fitting
+from .. import __version__
 
 astrometry_api_key = None
 
@@ -65,7 +66,7 @@ def DeBayerFile(filename, pattern, temp_dir):
     """Split an RGB image into four images, one for each Bayer channel
     The four channels are extracted using a string description of the
     Bayer sequence (e.g., 'BGGR'); each extracted sub-image is stored
-    as a new FITS image file. 
+    as a new FITS image file.
     Parameters
     ----------
     filename : str
@@ -83,7 +84,7 @@ def DeBayerFile(filename, pattern, temp_dir):
         The name of the Bayer filter color (e.g., 'TG1' or 'TB')
     filename : str
         The name of the file with that channel's image
-    
+
     """
     with fits.open(filename) as hdul:
         temp1 = hdul[0].data[0::2,0::2]
@@ -96,7 +97,7 @@ def DeBayerFile(filename, pattern, temp_dir):
         for index in range(4):
             color = pattern[index]
             output_tgt = Path(temp_dir) / ("image"+str(index)+"_"+color+".fits")
-            
+
             hdu = fits.PrimaryHDU()
             # push keywords in from the original file
             for keyword in hdul[0].header:
@@ -176,7 +177,7 @@ def StackImages(channel_list, options, temp_dir):
             source_hdu = hdul[0].data
             if options.InterpolateChannels:
                 new_data = np.zeros(np.shape(hdul[0].data),dtype=np.float32)
-                orig_data = source_hdu.astype(np.float32)        
+                orig_data = source_hdu.astype(np.float32)
                 source_hdu = new_data
                 for y in range(height-1):
                     for x in range(width-1):
@@ -188,7 +189,7 @@ def StackImages(channel_list, options, temp_dir):
     hdu.update_header()
     fits.writeto(output_tgt, hdu.data, header=hdu.header, overwrite=True)
     return output_tgt
-                
+
 def DuplicateFileWithNewImage(hdul, new_data, new_filter, new_pathname):
     """ Copy a FITS file, replacing the pixel data with new pixel data
 
@@ -202,7 +203,7 @@ def DuplicateFileWithNewImage(hdul, new_data, new_filter, new_pathname):
     hdul : list of HDUs as provided by fits.open()
         The HDU list conveying the contents of the FITS file to be copied.
     new_data : numpy 2D array of pixel values
-        The new pixel values (data type will be preserved into the new file) 
+        The new pixel values (data type will be preserved into the new file)
     new_filter : str
         The name of the filter to be put into the new FITS header
     new_pathname : str
@@ -211,10 +212,10 @@ def DuplicateFileWithNewImage(hdul, new_data, new_filter, new_pathname):
     Returns
     -------
     None
-    
+
     """
     output_tgt = new_pathname
-            
+
     hdu = fits.PrimaryHDU()
     # push keywords in from the original file
     for keyword in hdul[0].header:
@@ -303,7 +304,7 @@ def BayerBalanceFile(filename, temp_dir):
                                                                       temp4x]])
         target_mean = statistics.mean(list(temp1x)+list(temp2x)+list(temp3x)+list(temp4x))
 
-        
+
         #target_stdev = statistics.stdev(hdul[0].data.flatten().astype(np.float32))
         #target_mean = statistics.mean(hdul[0].data.flatten().astype(np.float32))
         print("Overall mean is ", target_mean, ", overall stdev = ", target_stdev)
@@ -331,7 +332,7 @@ def BayerBalanceFile(filename, temp_dir):
         m = statistics.mean(temp3x.flatten())
         temp3 = temp3 - (m-target_mean)
         print("Bayer 3 factor = ", factor)
-        
+
         m = statistics.stdev(temp4x.flatten())
         factor = (target_stdev/m)
         temp4 = temp4 * factor
@@ -477,7 +478,7 @@ def ReadMetaFromJSON(filename, dict):
     file to augment or replace entries in the meta
     dictionary. Metadata keywords are validated as they are
     encountered; unrecognized keywords generate a console message.
-    
+
     Parameters
     ----------
     filename : str
@@ -510,7 +511,7 @@ def ReadMetaFromJSON(filename, dict):
                 print("Bad keyword in ", filename, ": ", keyword)
             else:
                 dict[keyword] = value
-        
+
 
 # Read metadata from a FITS header. The metadata that's found will be
 # put into the dictionary that's passed as the argument "dict".
@@ -537,7 +538,7 @@ def ReadMetaFromFITS(filename, dict):
     telescope_type = ProbeFileForType(filename)
     with fits.open(filename) as hdul:
         hdu0h = hdul[0].header
-        
+
         # Generate Metadata
         ################################
         ##          Seestar
@@ -608,7 +609,7 @@ def ReadMetaFromFITS(filename, dict):
 
         else:
             print("Telescope type ", telescope_type, " not implemented yet.")
-            
+
 
 class AAVSOStarlist:
     """Implement an AAVSO Starlist
@@ -650,7 +651,7 @@ class AAVSOStarlist:
             A new object of the class
         """
         self.metadata = metadata
-        
+
         self.starlist = {} # JSON-style dictionary
         self.starlist['GAIN'] = metadata['SYSTEM_GAIN']
         self.starlist['FILTER'] = filter # e.g., "TG"
@@ -669,14 +670,14 @@ class AAVSOStarlist:
                   'TEL_MODEL',
                   'ADC_DEPTH',
                   'DATAMAX'):
-            
+
             self.starlist[x] = metadata[x] if x in metadata else None
-            
+
         self.starlist['EPOCH'] = "J2000"
 
         # The "STARLIST' is a list of dictionaries
         self.starlist['STARLIST'] = [] # the starlist starts off empty
-        
+
     def ReadFromSourceExtractor(self, filename):
         """Create starlist entries from SourceExtractor output table
 
@@ -691,7 +692,7 @@ class AAVSOStarlist:
         Returns
         -------
         None
-        
+
         """
         # Decode() is a helper function that supports the process of reading a
         # SourceExtractor starlist and turning it into an AAVSO starlist.
@@ -749,7 +750,7 @@ class AAVSOStarlist:
         Returns
         -------
         None
-        
+
         """
         for (xc,yc,peak,flux) in sourcelist.iterrows('xcentroid','ycentroid','peak','flux'):
             star = {}
@@ -780,7 +781,7 @@ class AAVSOStarlist:
         """
         with open(filename, 'w') as fp:
             json.dump(self.starlist, fp, indent=2)
-        
+
     def ApplyWCS(self, wcs):
         """Update star Dec/RA in the starlist using a provided WCS
 
@@ -907,7 +908,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         subset_size = min(10, len(star_subset))
         fwhm = statistics.mean(psf.fit_fwhm(clean_image, xypos=[(s['X'],s['Y']) for s in star_subset[0:subset_size]],fit_shape=15))
         print("Estimate FWHM from photutils = ", fwhm)
-                            
+
         phot_radius = 1.0 * fwhm
         star_x = [s['X'] for s in star_subset]
         star_y = [s['Y'] for s in star_subset]
@@ -1093,14 +1094,14 @@ class FileChooser:
     popup_button : Qt button widget
         Button widget that is clicked to give the user a popup file
         chooser window
-        
+
     """
     def __init__(self,
                  text_entry_widget,
                  chooser_button,
                  multiple_files_okay=False):
         """Create a file-chooser object
-        
+
         Create a FileChooser object (used for dark, flat, metadata,
         bias, and image files).
 
@@ -1130,7 +1131,7 @@ class FileChooser:
             self.file_mode = QFileDialog.ExistingFile
         else: # Big entry for image filenames
             self.file_mode = QFileDialog.ExistingFiles
-            
+
     def chooser_popup(self, button):
         """Create popup window to choose file(s)
 
@@ -1376,7 +1377,7 @@ class OptionsUI:
     def UsePSFFitting(self):
         """Query whether PSF-fitting photometry is to be done
 
-        Return a boolean indicating whether 
+        Return a boolean indicating whether
         PSF-fitting photometry is to be done. This method is 100%
         redundant with GetPhot() and should be retired.
 
@@ -1524,12 +1525,12 @@ class UI:
 
     This class (and its singlton instance, "ui") are used to hold the
     widget hierarchy that is read in from the *.ui file created by Qt
-    Designer for this app. 
+    Designer for this app.
 
     Attributes
     ----------
     window : Qt window
-        The root of the *.ui file. 
+        The root of the *.ui file.
     """
     def __init__(self):
         """Set up Qt widgets for this app
@@ -1629,7 +1630,7 @@ class APIEntryDialog(QDialog):
         if self.save_checkbox.isChecked():
             SaveAstrometryKey(astrometry_api_key)
         self.accept()           # execute default behavior (kills the popup)
-        
+
 def GetAstrometryKey():
     """Lookup the saved value of the astrometry.net API key
 
@@ -1781,7 +1782,7 @@ class MainWindow:
         self.progressbar.show()
         self.GenerateStarlist()
         self.progressbar.hide()
-    
+
     def GenerateStarlist(self):
         """Actually perform the conversion of image to starlist
 
@@ -1813,7 +1814,7 @@ class MainWindow:
             image_filename = image_filename.strip()
             if image_filename == '':
                 continue
-            
+
             working_filename = image_filename
             image_path = Path(image_filename)
             orig_dir = image_path.parent
