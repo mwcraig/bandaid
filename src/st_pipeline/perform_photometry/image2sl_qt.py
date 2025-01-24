@@ -678,6 +678,14 @@ class AAVSOStarlist:
         # Add a couple of missing items
         self.starlist['refframe'] = "ICRS"
 
+        # Set proper type for tel_firmware
+        if self.starlist['tel_firmware'] is None:
+            self.starlist['tel_firmware'] = ""
+
+        # Set proper type for adc_depth
+        if self.starlist['adc_depth'] is None:
+            self.starlist['adc_depth'] = 0
+
         # The "STARLIST' is a list of dictionaries
         self.starlist['staritems'] = [] # the starlist starts off empty
 
