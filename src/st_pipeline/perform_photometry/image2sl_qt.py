@@ -111,7 +111,7 @@ def DeBayerFile(filename, pattern, temp_dir):
                         hdu.header[keyword] = card
 
             hdu.data = array[index]
-            hdu.header['FILTER'] = ('T'+color, 'Bayer color mask')
+            hdu.header['filter'] = ('T'+color, 'Bayer color mask')
             # update_header will "fix" the header to match the data
             hdu.update_header()
             fits.writeto(output_tgt, array[index], header=hdu.header, overwrite=True)
@@ -185,7 +185,7 @@ def StackImages(channel_list, options, temp_dir):
                         new_data[y,x] = tgt
 
             hdu.data += source_hdu/16.0
-    hdu.header['FILTER'] = 'CV'
+    hdu.header['filter'] = 'CV'
     hdu.update_header()
     fits.writeto(output_tgt, hdu.data, header=hdu.header, overwrite=True)
     return output_tgt
@@ -229,7 +229,7 @@ def DuplicateFileWithNewImage(hdul, new_data, new_filter, new_pathname):
                 hdu.header[keyword] = card
 
     hdu.data = new_data
-    hdu.header['FILTER'] = new_filter
+    hdu.header['filter'] = new_filter
     # update_header will "fix" the header to match the data
     hdu.update_header()
     fits.writeto(new_pathname, new_data, header=hdu.header, overwrite=True)
@@ -421,9 +421,9 @@ def ProbeFileForType(filename):
 ##
 ## Valid metadata indices that go into a starlist are:
 ##    OBS_TIME - a string, e.g., '2024-08-24T12:34:65.2' (UTC)
-##    SITELAT - a float, the observer's latitude in degrees
-##    SITELON - a float, the observer's longitude in degrees
-##    SITEELEV - a float, the observer's GPS elevation
+##    site_lat - a float, the observer's latitude in degrees
+##    site_lon - a float, the observer's longitude in degrees
+##    site_elev - a float, the observer's GPS elevation
 ##    OBSERVER - a string, the AAVSO observer code
 ##    FILTER - a 2-character string, one of TG,TB,TR
 ##    BLOCK_FILTER - a string, typically "UV+IR"
@@ -443,25 +443,25 @@ def ProbeFileForType(filename):
 ################################################################
 
 valid_meta_keys = ['AAVSO_VER',
-                   'OBS_TIME',
-                   'SITELAT',
-                   'SITELON',
-                   'SITEELEV',
-                   'OBSERVER',
-                   'FILTER',
-                   'BLOCK_FILTER',
-                   'EXPOSURE',
-                   'TEL_MANUFAC',
-                   'TEL_MODEL',
-                   'TEL_FIRMWARE',
-                   'ADC_DEPTH',
-                   'DATAMAX',
-                   'SYSTEM_GAIN',
+                   'obs_time',
+                   'site_lat',
+                   'site_lon',
+                   'site_elev',
+                   'observer',
+                   'filter',
+                   'block_filter',
+                   'exposure',
+                   'tel_manufac',
+                   'tel_model',
+                   'tel_firmware',
+                   'adc_depth',
+                   'datamax',
+                   'system_gain',
                    'BAYERPAT',
-                   'PIXSCALE',
-                   'DEC',
-                   'RA',
-                   'FOV_RAD' ]
+                   'pixscale',
+                   'dec',
+                   'ra',
+                   'fov_rad' ]
 
 #
 # The so-called JSON metadata file is a temporary band-aid for smart
@@ -545,67 +545,67 @@ def ReadMetaFromFITS(filename, dict):
         ################################
         if telescope_type == 'Seestar':
             for key,tgt in [('BAYERPAT','BAYERPAT'),
-                            ('DATE-OBS','OBS_TIME'),
-                            ('FILTER','BLOCK_FILTER')]:
+                            ('DATE-OBS','obs_time'),
+                            ('filter','block_filter')]:
                 if key in hdu0h:
                     dict[tgt] = hdu0h[key]
             ################
             ## FOV, Pixel scale
             ################
-            dict['FOV_RAD'] = 0.7 # wild guess; needs validation
+            dict['fov_rad'] = 0.7 # wild guess; needs validation
 
-            for key,tgt in [('SITELAT', 'SITELAT'),
-                            ('SITELONG', 'SITELON'),
-                            ('DEC', 'DEC'),
-                            ('RA', 'RA'),
-                            ('EXPOSURE', 'EXPOSURE')]:
+            for key,tgt in [('sitelat', 'site_lat'),
+                            ('sitelong', 'site_lon'),
+                            ('dec', 'dec'),
+                            ('ra', 'ra'),
+                            ('exposure', 'exposure')]:
                 if key in hdu0h:
                     dict[tgt] = hdu0h[key]
 
-            dict['TEL_MANUFAC'] = 'ZWO'
-            dict['TEL_MODEL'] = 'Seestar'
+            dict['tel_manufac'] = 'ZWO'
+            dict['tel_model'] = 'Seestar'
 
         ################################
         ##       Origin
         ################################
         elif telescope_type == 'Origin':
             dict['BAYERPAT'] = 'RGGB' # Is this correct?
-            dict['TEL_MANUFAC'] = 'Celestron'
-            dict['TEL_MODEL'] = 'Origin'
-            dict['ADC_DEPTH'] = 14
-            dict['PIXSCALE'] = 1.45*2 # after de-bayering
+            dict['tel_manufac'] = 'Celestron'
+            dict['tel_model'] = 'Origin'
+            dict['adc_depth'] = 14
+            dict['pixscale'] = 1.45*2 # after de-bayering
 
         ################################
         ##       Unistellar
         ################################
         elif telescope_type == 'Unistellar':
             for key,tgt in [('BAYERPAT','BAYERPAT'),
-                            ('DATE-AVG','OBS_TIME'),
-                            ('EXPTIME','EXPOSURE'),
-                            ('LATITUDE','SITELAT'),
-                            ('LONGITUD', 'SITELON'),
-                            ('ALTITUDE', 'SITEELEV'),
-                            ('FOVDEC','DEC')]:
+                            ('DATE-AVG','obs_time'),
+                            ('EXPTIME','exposure'),
+                            ('LATITUDE','site_lat'),
+                            ('LONGITUD', 'site_lon'),
+                            ('ALTITUDE', 'site_elev'),
+                            ('FOVDEC','dec')]:
                 if key in hdu0h:
                     dict[tgt] = hdu0h[key]
-            dict['TEL_MANUFAC'] = 'Unistellar'
-            dict['TEL_MODEL'] = 'eVscope'
-            dict['PIXSCALE'] = 1.5*2 # after de-bayering
+            dict['tel_manufac'] = 'Unistellar'
+            dict['tel_model'] = 'eVscope'
+            dict['pixscale'] = 1.5*2 # after de-bayering
 
         ################################
         ##        Dwarf
         ################################
         elif telescope_type == "Dwarf":
             for key,tgt in [('BAYERPAT','BAYERPAT'),
-                            ('EXPTIME','EXPOSURE'),
-                            ('DATE-OBS','OBS_TIME'),
-                            ('INSTRUME','TEL_MODEL'),
-                            ('RA','RA'),
-                            ('DEC','DEC')]:
+                            ('EXPTIME','exposure'),
+                            ('DATE-OBS','obs_time'),
+                            ('INSTRUME','tel_model'),
+                            ('ra','ra'),
+                            ('dec','dec')]:
                 if key in hdu0h:
                     dict[tgt] = hdu0h[key]
-            dict['TEL_MANUFAC'] = 'DwarfLab'
-            dict['PIXSCALE'] = 1.5*2 # after de-bayering
+            dict['tel_manufac'] = 'DwarfLab'
+            dict['pixscale'] = 1.5*2 # after de-bayering
 
         else:
             print("Telescope type ", telescope_type, " not implemented yet.")
@@ -653,27 +653,27 @@ class AAVSOStarlist:
         self.metadata = metadata
 
         self.starlist = {} # JSON-style dictionary
-        self.starlist['GAIN'] = metadata['SYSTEM_GAIN']
-        self.starlist['FILTER'] = filter # e.g., "TG"
+        self.starlist['gain'] = metadata['system_gain']
+        self.starlist['filter'] = filter # e.g., "TG"
 
         # Sort out the metadata
         self.starlist['AAVSO_VER'] = "AA_001"
-        for x in ('OBS_TIME',
-                  'SITELAT',
-                  'SITELON',
-                  'SITEELEV',
-                  'OBSERVER',
-                  'BLOCK_FILTER',
-                  'EXPOSURE',
-                  'TEL_MANUFAC',
-                  'TEL_FIRMWARE',
-                  'TEL_MODEL',
-                  'ADC_DEPTH',
-                  'DATAMAX'):
+        for x in ('obs_time',
+                  'site_lat',
+                  'site_lon',
+                  'site_elev',
+                  'observer',
+                  'block_filter',
+                  'exposure',
+                  'tel_manufac',
+                  'tel_firmware',
+                  'tel_model',
+                  'adc_depth',
+                  'datamax'):
 
             self.starlist[x] = metadata[x] if x in metadata else None
 
-        self.starlist['EPOCH'] = "J2000"
+        self.starlist['epoch'] = "J2000"
 
         # The "STARLIST' is a list of dictionaries
         self.starlist['STARLIST'] = [] # the starlist starts off empty
@@ -720,15 +720,15 @@ class AAVSOStarlist:
                     # Normal (star) line
                     words = line.split() # whitespace split
                     star = {}
-                    star['FLUX_ERR'] = Decode(column_labels, words, 'FLUXERR_AUTO')
-                    star['TOT_FLUX'] = Decode(column_labels, words, 'FLUX_AUTO')
-                    star['PEAK_FLUX'] = Decode(column_labels, words, 'FLUX_MAX')
-                    star['X'] = Decode(column_labels, words, 'X_IMAGE')
-                    star['Y'] = Decode(column_labels, words, 'Y_IMAGE')
-                    star['DEC'] = Decode(column_labels, words, 'DELTA_J2000')
-                    star['RA'] = Decode(column_labels, words, 'ALPHA_J2000')
-                    star['BKGD_FLUX'] = Decode(column_labels, words, 'BACKGROUND')
                     self.starlist['STARLIST'].append(star)
+                    star['flux_err'] = Decode(column_labels, words, 'FLUXERR_AUTO')
+                    star['tot_flux'] = Decode(column_labels, words, 'FLUX_AUTO')
+                    star['peak_flux'] = Decode(column_labels, words, 'FLUX_MAX')
+                    star['x'] = Decode(column_labels, words, 'X_IMAGE')
+                    star['y'] = Decode(column_labels, words, 'Y_IMAGE')
+                    star['dec'] = Decode(column_labels, words, 'DELTA_J2000')
+                    star['ra'] = Decode(column_labels, words, 'ALPHA_J2000')
+                    star['bkgd_flux'] = Decode(column_labels, words, 'BACKGROUND')
 
     def ReadFromPhotUtils(self, sourcelist, background, metadata):
         """Create starlist entries from photutils output table
@@ -754,15 +754,15 @@ class AAVSOStarlist:
         """
         for (xc,yc,peak,flux) in sourcelist.iterrows('xcentroid','ycentroid','peak','flux'):
             star = {}
-            star['TOT_FLUX'] = float(flux)
-            star['PEAK_FLUX'] = float(peak)
-            star['X'] = float(xc)
-            star['Y'] = float(yc)
-            star['DEC'] = None
-            star['RA'] = None
-            star['BKGD_FLUX'] = float(background[int(0.5+yc),int(0.5+xc)])
-            star['FLUX_ERR'] = None
             self.starlist['STARLIST'].append(star)
+            star['tot_flux'] = float(flux)
+            star['peak_flux'] = float(peak)
+            star['x'] = float(xc)
+            star['y'] = float(yc)
+            star['dec'] = None
+            star['ra'] = None
+            star['bkgd_flux'] = float(background[int(0.5+yc),int(0.5+xc)])
+            star['flux_err'] = None
 
     def WriteJSON(self, filename):
         """Create an AAVSO starlist file from an AAVSOStarlist object
@@ -800,12 +800,12 @@ class AAVSOStarlist:
         None
         """
         valid_stars = [star for star in self.starlist['STARLIST'] if star['X'] is not None and star['Y'] is not None]
-        x_array = [star['X'] for star in valid_stars]
-        y_array = [star['Y'] for star in valid_stars]
+        x_array = [star['x'] for star in valid_stars]
+        y_array = [star['y'] for star in valid_stars]
         (ra_array, dec_array) = wcs.pixel_to_world_values(x_array, y_array)
         for (star,ra,dec) in zip(valid_stars,ra_array,dec_array):
-            star['DEC'] = dec
-            star['RA'] = ra
+            star['dec'] = dec
+            star['ra'] = ra
 
 def WCStext2wcs(wcs_text):
     """Convert WCS FITS header text into an astropy WCS object
@@ -893,7 +893,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         background = Background2D(image_data, (int(width/8),int(height/8)), filter_size=(3,3),
                                   sigma_clip=sigma_clip, bkg_estimator=bkg_estimator).background
         (bkgd_mean,_dummy,bkgd_std) = sigma_clipped_stats(background, sigma=3.0)
-        noise_bkgd = bkgd_std/starlist.starlist['GAIN']
+        noise_bkgd = bkgd_std/starlist.starlist['gain']
         daofind = DAOStarFinder(fwhm=3.0, threshold=5.*std)
         clean_image = (image_data - background)
         (mean,median,std) = sigma_clipped_stats(clean_image, sigma=3.0)
@@ -904,14 +904,14 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
 
         ## Now estimate an FWHM for these stars
         star_subset = starlist.starlist['STARLIST']
-        star_subset.sort(key = lambda star : star['TOT_FLUX'], reverse=True)
+        star_subset.sort(key = lambda star : star['tot_flux'], reverse=True)
         subset_size = min(10, len(star_subset))
-        fwhm = statistics.mean(psf.fit_fwhm(clean_image, xypos=[(s['X'],s['Y']) for s in star_subset[0:subset_size]],fit_shape=15))
+        fwhm = statistics.mean(psf.fit_fwhm(clean_image, xypos=[(s['x'],s['y']) for s in star_subset[0:subset_size]],fit_shape=15))
         print("Estimate FWHM from photutils = ", fwhm)
 
         phot_radius = 1.0 * fwhm
-        star_x = [s['X'] for s in star_subset]
-        star_y = [s['Y'] for s in star_subset]
+        star_x = [s['x'] for s in star_subset]
+        star_y = [s['y'] for s in star_subset]
         radii = [phot_radius for s in star_subset]
         positions = zip(star_x, star_y)
         apertures = aperture.CircularAperture(positions, r=phot_radius)
@@ -923,16 +923,16 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         fluxes = np.array(result['aperture_sum'])
 
         for s,flux,x,y in zip(starlist.starlist['STARLIST'],fluxes,xc,yc):
-            s['TOT_FLUX'] = float(flux)
+            s['tot_flux'] = float(flux)
             if flux >= 0.0:
-                poiss_noise = starlist.starlist['GAIN']*(math.sqrt(float(flux)/starlist.starlist['GAIN']))
+                poiss_noise = starlist.starlist['gain']*(math.sqrt(float(flux)/starlist.starlist['gain']))
                 tot_noise = math.sqrt(poiss_noise*poiss_noise+noise_bkgd*noise_bkgd)
                 snr = float(flux)/tot_noise
-                s['FLUX_ERR'] = tot_noise
+                s['flux_err'] = tot_noise
             else:
-                s['FLUX_ERR'] = 0.0
-            s['X'] = float(x)
-            s['Y'] = float(y)
+                s['flux_err'] = 0.0
+            s['x'] = float(x)
+            s['y'] = float(y)
 
     ################################
     ## Plate Solve to get WCS transformation info if needed
@@ -966,11 +966,11 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         wcs_text = astrometry.RunAstrometry(api_key = astrometry_api_key,
                                         x=star_x,
                                         y=star_y,
-                                        dec_center_deg =metadata['DEC'],
-                                        ra_center_deg =metadata['RA'],
-                                        radius_deg = metadata['FOV_RAD'],
-                                        scale=(metadata['PIXSCALE']*0.8,
-                                               metadata['PIXSCALE']*1.2),
+                                        dec_center_deg =metadata['dec'],
+                                        ra_center_deg =metadata['ra'],
+                                        radius_deg = metadata['fov_rad'],
+                                        scale=(metadata['pixscale']*0.8,
+                                               metadata['pixscale']*1.2),
                                         width=width,
                                         height=height)
         wcs = WCStext2wcs(wcs_text.decode('utf-8'))
@@ -982,7 +982,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
     ################################
     if options.UsePSFFitting:
         starlist.starlist['STARLIST'].sort(key=lambda star:
-                                           star['TOT_FLUX'], reverse=True)
+                                           star['tot_flux'], reverse=True)
         psf_fitting.DoPSF(filename, starlist.starlist)
 
     starlist.WriteJSON(starlist_json_path)
@@ -1056,7 +1056,7 @@ def ProcessRGBFile(filename, options, temp_dir, metadata,
         starlist_filename = starlist_tgtname.replace("$$","M") # M==monochrome
         print(metadata)
         adj_meta_dict = dict(metadata)
-        adj_meta_dict['PIXSCALE'] /= 2.0 # Correct for non-de-Bayered image
+        adj_meta_dict['pixscale'] /= 2.0 # Correct for non-de-Bayered image
         starlist_file = ProcessSingleImage(filename, adj_meta_dict,
                                            options,
                                            temp_dir,
