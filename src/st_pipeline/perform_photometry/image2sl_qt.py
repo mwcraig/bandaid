@@ -442,7 +442,7 @@ def ProbeFileForType(filename):
 ##    FOV_RAD - a float, nominal field of view radius (deg)
 ################################################################
 
-valid_meta_keys = ['AAVSO_VER',
+valid_meta_keys = ['schema_version',
                    'obs_time',
                    'site_lat',
                    'site_lon',
@@ -657,7 +657,7 @@ class AAVSOStarlist:
         self.starlist['filter'] = filter # e.g., "TG"
 
         # Sort out the metadata
-        self.starlist['AAVSO_VER'] = "AA_001"
+        self.starlist['schema_version'] = "AA_001"
         for x in ('obs_time',
                   'site_lat',
                   'site_lon',
