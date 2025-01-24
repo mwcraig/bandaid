@@ -676,7 +676,7 @@ class AAVSOStarlist:
         self.starlist['epoch'] = "J2000"
 
         # The "STARLIST' is a list of dictionaries
-        self.starlist['STARLIST'] = [] # the starlist starts off empty
+        self.starlist['staritems'] = [] # the starlist starts off empty
 
     def ReadFromSourceExtractor(self, filename):
         """Create starlist entries from SourceExtractor output table
@@ -720,7 +720,6 @@ class AAVSOStarlist:
                     # Normal (star) line
                     words = line.split() # whitespace split
                     star = {}
-                    self.starlist['STARLIST'].append(star)
                     star['flux_err'] = Decode(column_labels, words, 'FLUXERR_AUTO')
                     star['tot_flux'] = Decode(column_labels, words, 'FLUX_AUTO')
                     star['peak_flux'] = Decode(column_labels, words, 'FLUX_MAX')
@@ -729,6 +728,7 @@ class AAVSOStarlist:
                     star['dec'] = Decode(column_labels, words, 'DELTA_J2000')
                     star['ra'] = Decode(column_labels, words, 'ALPHA_J2000')
                     star['bkgd_flux'] = Decode(column_labels, words, 'BACKGROUND')
+                    self.starlist['staritems'].append(star)
 
     def ReadFromPhotUtils(self, sourcelist, background, metadata):
         """Create starlist entries from photutils output table
@@ -754,7 +754,6 @@ class AAVSOStarlist:
         """
         for (xc,yc,peak,flux) in sourcelist.iterrows('xcentroid','ycentroid','peak','flux'):
             star = {}
-            self.starlist['STARLIST'].append(star)
             star['tot_flux'] = float(flux)
             star['peak_flux'] = float(peak)
             star['x'] = float(xc)
@@ -763,6 +762,7 @@ class AAVSOStarlist:
             star['ra'] = None
             star['bkgd_flux'] = float(background[int(0.5+yc),int(0.5+xc)])
             star['flux_err'] = None
+            self.starlist['staritems'].append(star)
 
     def WriteJSON(self, filename):
         """Create an AAVSO starlist file from an AAVSOStarlist object
@@ -799,7 +799,7 @@ class AAVSOStarlist:
         -------
         None
         """
-        valid_stars = [star for star in self.starlist['STARLIST'] if star['X'] is not None and star['Y'] is not None]
+        valid_stars = [star for star in self.starlist['staritems'] if star['x'] is not None and star['y'] is not None]
         x_array = [star['x'] for star in valid_stars]
         y_array = [star['y'] for star in valid_stars]
         (ra_array, dec_array) = wcs.pixel_to_world_values(x_array, y_array)
@@ -903,7 +903,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         starlist.ReadFromPhotUtils(sources,background,metadata)
 
         ## Now estimate an FWHM for these stars
-        star_subset = starlist.starlist['STARLIST']
+        star_subset = starlist.starlist['staritems']
         star_subset.sort(key = lambda star : star['tot_flux'], reverse=True)
         subset_size = min(10, len(star_subset))
         fwhm = statistics.mean(psf.fit_fwhm(clean_image, xypos=[(s['x'],s['y']) for s in star_subset[0:subset_size]],fit_shape=15))
@@ -922,7 +922,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         yc = np.array(result['ycenter'])
         fluxes = np.array(result['aperture_sum'])
 
-        for s,flux,x,y in zip(starlist.starlist['STARLIST'],fluxes,xc,yc):
+        for s,flux,x,y in zip(starlist.starlist['staritems'],fluxes,xc,yc):
             s['tot_flux'] = float(flux)
             if flux >= 0.0:
                 poiss_noise = starlist.starlist['gain']*(math.sqrt(float(flux)/starlist.starlist['gain']))
@@ -981,7 +981,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
     ## Do PSF fitting, if requested
     ################################
     if options.UsePSFFitting:
-        starlist.starlist['STARLIST'].sort(key=lambda star:
+        starlist.starlist['staritems'].sort(key=lambda star:
                                            star['tot_flux'], reverse=True)
         psf_fitting.DoPSF(filename, starlist.starlist)
 
