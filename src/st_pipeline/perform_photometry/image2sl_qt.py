@@ -432,7 +432,7 @@ def ProbeFileForType(filename):
 ##    TEL_MODEL - a string, the telescope's model name
 ##    TEL_FIRMWARE - a string, the firmware ID
 ##    ADC_DEPTH - an integer, bit depth of the camera ADC
-##    DATAMAX - an integer, the ADU level where saturation starts
+##    largest_usable_adu_value - an integer, the ADU level where saturation starts
 ##
 ## Additional metadata indices:
 ##    BAYERPAT - a 4-character string (e.g., 'BGGR')
@@ -455,7 +455,7 @@ valid_meta_keys = ['schema_version',
                    'tel_model',
                    'tel_firmware',
                    'adc_depth',
-                   'datamax',
+                   'largest_usable_adu_value',
                    'system_gain',
                    'BAYERPAT',
                    'pixscale',
@@ -669,7 +669,7 @@ class AAVSOStarlist:
                   'tel_firmware',
                   'tel_model',
                   'adc_depth',
-                  'datamax'):
+                  'largest_usable_adu_value'):
 
             self.starlist[x] = metadata[x] if x in metadata else None
 
