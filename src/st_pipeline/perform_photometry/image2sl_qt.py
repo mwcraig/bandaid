@@ -675,6 +675,9 @@ class AAVSOStarlist:
 
         self.starlist['epoch'] = "J2000"
 
+        # Add a couple of missing items
+        self.starlist['refframe'] = "ICRS"
+
         # The "STARLIST' is a list of dictionaries
         self.starlist['staritems'] = [] # the starlist starts off empty
 
