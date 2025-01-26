@@ -55,6 +55,7 @@ from typing import List
 
 from st_pipeline.perform_photometry import psf_fitting
 from .. import __version__
+from ..schema_definition import StarListSet
 
 astrometry_api_key = None
 
@@ -657,7 +658,6 @@ class AAVSOStarlist:
         self.starlist['filter'] = filter # e.g., "TG"
 
         # Sort out the metadata
-        self.starlist['schema_version'] = "AA_001"
         for x in ('obs_time',
                   'site_lat',
                   'site_lon',
@@ -776,9 +776,9 @@ class AAVSOStarlist:
             self.starlist['staritems'].append(star)
 
     def WriteJSON(self, filename):
-        """Create an AAVSO starlist file from an AAVSOStarlist object
+        """Create an AAVSO starlist set file from an AAVSOStarlist object
 
-        Create an AAVSO starlist file with the contents of the current
+        Create an AAVSO starlist set file with the contents of the current
         starlist object.
 
         Parameters
@@ -790,8 +790,12 @@ class AAVSOStarlist:
         -------
         None
         """
+        # Version will be set to default value in schema definition,
+        # no need to set it here.
+        star_list_set = StarListSet(star_lists=[self.starlist])
+
         with open(filename, 'w') as fp:
-            json.dump(self.starlist, fp, indent=2)
+            json.dump(star_list_set.model_dump(), fp, indent=2)
 
     def ApplyWCS(self, wcs):
         """Update star Dec/RA in the starlist using a provided WCS
