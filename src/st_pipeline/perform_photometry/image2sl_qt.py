@@ -905,16 +905,17 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         (mean,median,std) = sigma_clipped_stats(image_data, sigma=3.0)
         sigma_clip = SigmaClip(sigma=3.0)
         bkg_estimator = MedianBackground()
-        background = Background2D(image_data, (int(width/8),int(height/8)), filter_size=(3,3),
-                                  sigma_clip=sigma_clip, bkg_estimator=bkg_estimator).background
+        full_background = Background2D(image_data, (int(width/8),int(height/8)), filter_size=(3,3),
+                                       sigma_clip=sigma_clip, bkg_estimator=bkg_estimator)
+        background = full_background.background
         (bkgd_mean,_dummy,bkgd_std) = sigma_clipped_stats(background, sigma=3.0)
-        noise_bkgd = bkgd_std/starlist.starlist['gain']
+        print("background.median = ", full_background.background_median,
+              ", background.rms = ", full_background.background_rms_median)
+        noise_bkgd_per_pixel = full_background.background_rms_median * starlist.starlist['gain']
         daofind = DAOStarFinder(fwhm=3.0, threshold=5.*std)
         clean_image = (image_data - background)
         (mean,median,std) = sigma_clipped_stats(clean_image, sigma=3.0)
-        print("mean/median/std = ", (mean, median, std))
         sources = daofind(clean_image)
-        #print(sources)
         starlist.ReadFromPhotUtils(sources,background,metadata)
 
         ## Now estimate an FWHM for these stars
@@ -925,6 +926,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         print("Estimate FWHM from photutils = ", fwhm)
 
         phot_radius = 1.0 * fwhm
+        print(f"Aperture radius = {phot_radius:.2f} , with {math.pi*phot_radius*phot_radius:.2f} pixels total")
         star_x = [s['x'] for s in star_subset]
         star_y = [s['y'] for s in star_subset]
         radii = [phot_radius for s in star_subset]
@@ -937,13 +939,18 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         yc = np.array(result['ycenter'])
         fluxes = np.array(result['aperture_sum'])
 
+        tot_noise_bkgd = math.sqrt(phot_radius*phot_radius*math.pi)*noise_bkgd_per_pixel
+
         for s,flux,x,y in zip(starlist.starlist['staritems'],fluxes,xc,yc):
             s['tot_flux'] = float(flux)
             if flux >= 0.0:
-                poiss_noise = starlist.starlist['gain']*(math.sqrt(float(flux)/starlist.starlist['gain']))
-                tot_noise = math.sqrt(poiss_noise*poiss_noise+noise_bkgd*noise_bkgd)
+                poiss_noise = math.sqrt(starlist.starlist['gain']*float(flux))
+                tot_noise = math.sqrt(poiss_noise*poiss_noise+
+                                      tot_noise_bkgd*tot_noise_bkgd)/starlist.starlist['gain']
                 snr = float(flux)/tot_noise
                 s['flux_err'] = tot_noise
+                print("SNR:", [float(x),float(y),poiss_noise,
+                               noise_bkgd_per_pixel, tot_noise_bkgd, tot_noise,snr])
             else:
                 s['flux_err'] = 0.0
             s['x'] = float(x)
