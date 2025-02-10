@@ -503,7 +503,7 @@ def ReadMetaFromJSON(filename, dict):
     with open(filename, 'r') as fp:
         try:
             data = json.load(fp)
-        except JSONDecodeError:
+        except json.JSONDecodeError:
             print("Parse error reading ", filename)
             raise
 
@@ -1674,7 +1674,7 @@ def GetAstrometryKey():
     elif local_system == 'Darwin':
         localdir = Path.home() / ".stwg"
     else:
-        raise ValueException("OS Name not recognized")
+        raise ValueError("OS Name not recognized")
 
     localdir.mkdir(parents=True, exist_ok=True)
     APIKeypathname = localdir / "astrometryAPIkey.txt"
@@ -1708,7 +1708,7 @@ def SaveAstrometryKey(key_value):
     elif local_system == 'Darwin':
         localdir = Path.home() / ".stwg"
     else:
-        raise ValueException("OS Name not recognized")
+        raise ValueError("OS Name not recognized")
 
     localdir.mkdir(parents=True, exist_ok=True)
     APIKeypathname = localdir / "astrometryAPIkey.txt"
