@@ -853,7 +853,7 @@ def WCStext2wcs(wcs_text):
 
 # Process one (possibly de-Bayered) image
 def ProcessSingleImage(filename, metadata, options, temp_dir,
-                       starlist_json_path, filter, wcs=None):
+                       starlist_json_path, passband_filter, wcs=None):
     """Turn an image file into a starlist
 
     In a strictly one-to-one operation, turn an image into a starlist,
@@ -885,19 +885,19 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         The pathname of the starlist that was created
     """
     # filter == 'M' is a special case == 'CV'
-    if filter == 'M':
-        filter = 'CV'
+    if passband_filter == 'M':
+        passband_filter = 'CV'
 
     # "G" needs to become "TG" if it hasn't already
-    if len(filter) == 1:
-        filter = 'T'+filter
+    if len(passband_filter) == 1:
+        passband_filter = 'T'+passband_filter
 
     width = None
     height = None
 
     # This is essentially creating a placeholder for the star items to
     # go into. The star items will be filled in later.
-    starlist = AAVSOStarlist(metadata, filter)
+    starlist = AAVSOStarlist(metadata, passband_filter)
     with fits.open(filename) as hdul:
         hdu0h = hdul[0].header
         image_data = hdul[0].data.astype(np.float32)
