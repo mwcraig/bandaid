@@ -458,11 +458,13 @@ valid_meta_keys = ['schema_version',
                    'adc_depth',
                    'largest_usable_adu_value',
                    'system_gain',
+                   'epoch',
+                   'refframe',
                    'BAYERPAT',
                    'pixscale',
                    'dec',
                    'ra',
-                   'fov_rad' ]
+                   'fov_rad']
 
 #
 # The so-called JSON metadata file is a temporary band-aid for smart
@@ -565,6 +567,7 @@ def ReadMetaFromFITS(filename, dict):
 
             dict['tel_manufac'] = 'ZWO'
             dict['tel_model'] = 'Seestar'
+            dict['adc_depth'] = 0 # 12
 
         ################################
         ##       Origin
@@ -851,6 +854,29 @@ def WCStext2wcs(wcs_text):
     wcs_header = fits.Header(cards=card_list)
     return WCS(wcs_header)
 
+
+def table_to_star_items(photometry_table):
+    """
+    Convert an astropy table with photometry to a list of star items.
+
+    Parameters
+    ----------
+    photometry_table : astropy table
+        The table to convert to a list of star items. The table must
+        have as column each of the fields in the `StarItem` class.
+    """
+    star_items = []
+    for row in photometry_table:
+        missing_keys = set(StarItem.model_fields.keys()) - set(row.keys())
+        if missing_keys:
+            raise ValueError(f"Missing keys in table: {missing_keys}")
+        star_items.append(
+            StarItem(**{key: row[key] for key in StarItem.model_fields.keys()})
+        )
+
+    return star_items
+
+
 # Process one (possibly de-Bayered) image
 def ProcessSingleImage(filename, metadata, options, temp_dir,
                        starlist_json_path, passband_filter, wcs=None):
@@ -897,7 +923,12 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
 
     # This is essentially creating a placeholder for the star items to
     # go into. The star items will be filled in later.
-    starlist = AAVSOStarlist(metadata, passband_filter)
+
+    # starlist = AAVSOStarlist(metadata, passband_filter)
+    metadata['staritems'] = []
+    metadata['filter'] = passband_filter
+    metadata['gain'] = metadata['system_gain']
+    starlist = StarList.model_validate(metadata)
     with fits.open(filename) as hdul:
         hdu0h = hdul[0].header
         image_data = hdul[0].data.astype(np.float32)
@@ -916,76 +947,60 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
             bkg_estimator=bkg_estimator
         )
         background = full_background.background
+        print("background.shape = ", background.shape)
         (bkgd_mean, _dummy, bkgd_std) = sigma_clipped_stats(background, sigma=3.0)
         print("background.median = ", full_background.background_median,
               ", background.rms = ", full_background.background_rms_median)
-        noise_bkgd_per_pixel = full_background.background_rms_median * starlist.starlist['gain']
+        noise_bkgd_per_pixel = full_background.background_rms_median * starlist.gain
+        # Should this be 5 times the background RMS instead of the full image RMS?
+        # How do we know the fwhm is roughly 3? is that the same for all smart telescopes?
         daofind = DAOStarFinder(fwhm=3.0, threshold=5.*std)
         clean_image = (image_data - background)
         (mean, median, std) = sigma_clipped_stats(clean_image, sigma=3.0)
         sources = daofind(clean_image)
-        # This is a little weird because it is populating the star items
-        # with data from the daofind output table, not the aperture photometry
-        # output table.
-        starlist.ReadFromPhotUtils(sources, background, metadata)
 
-        # Now estimate an FWHM for these stars
-        # Question -- couldn't photutils do this?
-        # Ah, this is photutils, but I'm not quite sure why it is being
-        # done this way? Maybe to estimate the FWHM to get an aperture
-        # radius? Yeah, I think that is it....not sure this is the best way...
-        star_subset = starlist.starlist['staritems']
+        # Sort the table in-place by flux in reverse order
+        sources.sort('flux', reverse=True)
 
-        # Brightest stars is good, but should maybe check whether they exceed
-        # the maximum good flux.
-        star_subset.sort(key=lambda star: star['tot_flux'], reverse=True)
-        subset_size = min(10, len(star_subset))
-        fwhm = statistics.mean(
-            psf.fit_fwhm(
-                clean_image,
-                xypos=[(s['x'], s['y']) for s in star_subset[0:subset_size]],
-                fit_shape=15
-            )
-        )
+        # Grab a subset of the brightest stars to estimate the FWHM
+        subset_size = min(10, len(sources))
+        subset = sources[:subset_size]
+        fwhm = psf.fit_fwhm(
+            clean_image,
+            xypos=list(zip(subset['xcentroid'], subset['ycentroid'])),
+            fit_shape=15
+        ).mean()
+
         print("Estimate FWHM from photutils = ", fwhm)
 
         phot_radius = 1.0 * fwhm
         print(f"Aperture radius = {phot_radius:.2f} , with {math.pi * phot_radius * phot_radius:.2f} pixels total")
 
-        # Wait, doesn't this mean that only the subset is having its flux
-        # measured?
-        # No -- star_subset is not actually limited to a subset of stars, though
-        # only a subset is used for the FWHM calculation.
-        # It is also sorted, which maybe, sort of ensures that the stars will
-        # be in the same order through from frame to frame.
-        star_x = [s['x'] for s in star_subset]
-        star_y = [s['y'] for s in star_subset]
-        radii = [phot_radius for s in star_subset]
-        positions = zip(star_x, star_y)
+        # Perform the photometry
+        positions = zip(sources['xcentroid'], sources['ycentroid'])
         apertures = aperture.CircularAperture(positions, r=phot_radius)
         result = aperture.aperture_photometry(clean_image, apertures)
         print(result)
 
-        xc = np.array(result['xcenter'])
-        yc = np.array(result['ycenter'])
-        fluxes = np.array(result['aperture_sum'])
+        tot_noise_bkgd = np.sqrt(apertures.area) * noise_bkgd_per_pixel
 
-        tot_noise_bkgd = math.sqrt(phot_radius*phot_radius*math.pi) * noise_bkgd_per_pixel
+        # Make some column names match the starlist schema
+        sources['tot_flux'] = result['aperture_sum']
+        # Use .value for these next two because they are astropy Quantity
+        # objects with the unit "pixels" and we don't need the unit.
+        sources['x'] = result['xcenter'].value
+        sources['y'] = result['ycenter'].value
 
-        for s, flux, x, y in zip(starlist.starlist['staritems'], fluxes, xc, yc):
-            s['tot_flux'] = float(flux)
-            if flux >= 0.0:
-                poiss_noise = math.sqrt(starlist.starlist['gain']*float(flux))
-                tot_noise = math.sqrt(poiss_noise * poiss_noise +
-                                      tot_noise_bkgd*tot_noise_bkgd) / starlist.starlist['gain']
-                snr = float(flux)/tot_noise
-                s['flux_err'] = tot_noise
-                print("SNR:", [float(x), float(y), poiss_noise,
-                               noise_bkgd_per_pixel, tot_noise_bkgd, tot_noise, snr])
-            else:
-                s['flux_err'] = 0.0
-            s['x'] = float(x)
-            s['y'] = float(y)
+        sources.rename_column('peak', 'peak_flux')
+
+        # Calculate errors using table columns and star flux error in column
+        poiss_noise = np.sqrt(starlist.gain * sources['tot_flux'])
+        tot_noise = np.sqrt(poiss_noise**2 + tot_noise_bkgd**2) / starlist.gain
+        sources['flux_err'] = tot_noise
+        snr = sources['tot_flux'] / sources['flux_err']
+
+        # Set flux errors to zero for negative fluxes
+        sources['flux_err'][sources['tot_flux'] < 0] = 0.0
 
     ################################
     ## Plate Solve to get WCS transformation info if needed
@@ -1007,28 +1022,24 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
 
         ast.api_key = astrometry_api_key
         # star_x and star_y were sorted by flux earlier... important here.
-        wcs_header = ast.solve_from_source_list(star_x,
-                                                star_y,
+        wcs_header = ast.solve_from_source_list(sources['x'],
+                                                sources['y'],
                                                 width,
                                                 height,
                                                 solve_timeout=120)
         wcs = WCS(header=wcs_header)
 
-    if False:
-        import astrometry
-        wcs_text = astrometry.RunAstrometry(api_key = astrometry_api_key,
-                                        x=star_x,
-                                        y=star_y,
-                                        dec_center_deg =metadata['dec'],
-                                        ra_center_deg =metadata['ra'],
-                                        radius_deg = metadata['fov_rad'],
-                                        scale=(metadata['pixscale']*0.8,
-                                               metadata['pixscale']*1.2),
-                                        width=width,
-                                        height=height)
-        wcs = WCStext2wcs(wcs_text.decode('utf-8'))
-        print("Image center is at ", wcs.pixel_to_world(width/2, height/2))
-    starlist.ApplyWCS(wcs)
+    # Calculate RA and Dec
+    star_coords = wcs.pixel_to_world(sources['x'], sources['y'])
+    sources['ra'] = star_coords.ra.deg
+    sources['dec'] = star_coords.dec.deg
+
+    # Populate the background flux column. The "+0.5" is to reproduce the
+    # behavior of the original code.
+    sources['bkgd_flux'] = [
+        background[int(0.5+y), int(0.5+x)]
+        for (x, y) in zip(sources['x'], sources['y'])
+    ]
 
     ################################
     ## Do PSF fitting, if requested
@@ -1038,7 +1049,12 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
                                            star['tot_flux'], reverse=True)
         psf_fitting.DoPSF(filename, starlist.starlist)
 
-    starlist.WriteJSON(starlist_json_path)
+    print(sources.colnames)
+    print(StarItem.model_fields.keys())
+    starlist.staritems = table_to_star_items(sources)
+    sl_set = StarListSet(star_lists=[starlist])
+    Path(starlist_json_path).write_text(json.dumps(sl_set.model_dump(), indent=2))
+
     return starlist_json_path
 
 def ProcessRGBFile(filename, options, temp_dir, metadata,
