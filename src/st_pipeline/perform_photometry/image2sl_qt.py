@@ -22,7 +22,7 @@
 
 from astropy.io import fits
 from astropy.wcs import WCS
-from photutils import background, detection, aperture, psf
+from photutils import aperture, psf
 from photutils.detection import DAOStarFinder
 from photutils.background import Background2D, MedianBackground
 from astropy.stats import sigma_clipped_stats, SigmaClip
