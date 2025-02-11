@@ -55,7 +55,7 @@ from typing import List
 
 from st_pipeline.perform_photometry import psf_fitting
 from .. import __version__
-from ..schema_definition import StarListSet
+from ..schema_definition import StarListSet, StarList, StarItem
 
 astrometry_api_key = None
 
@@ -894,39 +894,70 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
 
     width = None
     height = None
+
+    # This is essentially creating a placeholder for the star items to
+    # go into. The star items will be filled in later.
     starlist = AAVSOStarlist(metadata, filter)
     with fits.open(filename) as hdul:
         hdu0h = hdul[0].header
         image_data = hdul[0].data.astype(np.float32)
-        (width,height) = np.shape(hdul[0].data)
+        (width, height) = np.shape(hdul[0].data)
         print("height = ", height, ", width = ", width)
 
         # Estimate the background
-        (mean,median,std) = sigma_clipped_stats(image_data, sigma=3.0)
+        (mean, median, std) = sigma_clipped_stats(image_data, sigma=3.0)
         sigma_clip = SigmaClip(sigma=3.0)
         bkg_estimator = MedianBackground()
-        full_background = Background2D(image_data, (int(width/8),int(height/8)), filter_size=(3,3),
-                                       sigma_clip=sigma_clip, bkg_estimator=bkg_estimator)
+        full_background = Background2D(
+            image_data,
+            (int(width/8), int(height/8)),
+            filter_size=(3, 3),
+            sigma_clip=sigma_clip,
+            bkg_estimator=bkg_estimator
+        )
         background = full_background.background
-        (bkgd_mean,_dummy,bkgd_std) = sigma_clipped_stats(background, sigma=3.0)
+        (bkgd_mean, _dummy, bkgd_std) = sigma_clipped_stats(background, sigma=3.0)
         print("background.median = ", full_background.background_median,
               ", background.rms = ", full_background.background_rms_median)
         noise_bkgd_per_pixel = full_background.background_rms_median * starlist.starlist['gain']
         daofind = DAOStarFinder(fwhm=3.0, threshold=5.*std)
         clean_image = (image_data - background)
-        (mean,median,std) = sigma_clipped_stats(clean_image, sigma=3.0)
+        (mean, median, std) = sigma_clipped_stats(clean_image, sigma=3.0)
         sources = daofind(clean_image)
-        starlist.ReadFromPhotUtils(sources,background,metadata)
+        # This is a little weird because it is populating the star items
+        # with data from the daofind output table, not the aperture photometry
+        # output table.
+        starlist.ReadFromPhotUtils(sources, background, metadata)
 
-        ## Now estimate an FWHM for these stars
+        # Now estimate an FWHM for these stars
+        # Question -- couldn't photutils do this?
+        # Ah, this is photutils, but I'm not quite sure why it is being
+        # done this way? Maybe to estimate the FWHM to get an aperture
+        # radius? Yeah, I think that is it....not sure this is the best way...
         star_subset = starlist.starlist['staritems']
-        star_subset.sort(key = lambda star : star['tot_flux'], reverse=True)
+
+        # Brightest stars is good, but should maybe check whether they exceed
+        # the maximum good flux.
+        star_subset.sort(key=lambda star: star['tot_flux'], reverse=True)
         subset_size = min(10, len(star_subset))
-        fwhm = statistics.mean(psf.fit_fwhm(clean_image, xypos=[(s['x'],s['y']) for s in star_subset[0:subset_size]],fit_shape=15))
+        fwhm = statistics.mean(
+            psf.fit_fwhm(
+                clean_image,
+                xypos=[(s['x'], s['y']) for s in star_subset[0:subset_size]],
+                fit_shape=15
+            )
+        )
         print("Estimate FWHM from photutils = ", fwhm)
 
         phot_radius = 1.0 * fwhm
-        print(f"Aperture radius = {phot_radius:.2f} , with {math.pi*phot_radius*phot_radius:.2f} pixels total")
+        print(f"Aperture radius = {phot_radius:.2f} , with {math.pi * phot_radius * phot_radius:.2f} pixels total")
+
+        # Wait, doesn't this mean that only the subset is having its flux
+        # measured?
+        # No -- star_subset is not actually limited to a subset of stars, though
+        # only a subset is used for the FWHM calculation.
+        # It is also sorted, which maybe, sort of ensures that the stars will
+        # be in the same order through from frame to frame.
         star_x = [s['x'] for s in star_subset]
         star_y = [s['y'] for s in star_subset]
         radii = [phot_radius for s in star_subset]
@@ -939,18 +970,18 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         yc = np.array(result['ycenter'])
         fluxes = np.array(result['aperture_sum'])
 
-        tot_noise_bkgd = math.sqrt(phot_radius*phot_radius*math.pi)*noise_bkgd_per_pixel
+        tot_noise_bkgd = math.sqrt(phot_radius*phot_radius*math.pi) * noise_bkgd_per_pixel
 
-        for s,flux,x,y in zip(starlist.starlist['staritems'],fluxes,xc,yc):
+        for s, flux, x, y in zip(starlist.starlist['staritems'], fluxes, xc, yc):
             s['tot_flux'] = float(flux)
             if flux >= 0.0:
                 poiss_noise = math.sqrt(starlist.starlist['gain']*float(flux))
-                tot_noise = math.sqrt(poiss_noise*poiss_noise+
-                                      tot_noise_bkgd*tot_noise_bkgd)/starlist.starlist['gain']
+                tot_noise = math.sqrt(poiss_noise * poiss_noise +
+                                      tot_noise_bkgd*tot_noise_bkgd) / starlist.starlist['gain']
                 snr = float(flux)/tot_noise
                 s['flux_err'] = tot_noise
-                print("SNR:", [float(x),float(y),poiss_noise,
-                               noise_bkgd_per_pixel, tot_noise_bkgd, tot_noise,snr])
+                print("SNR:", [float(x), float(y), poiss_noise,
+                               noise_bkgd_per_pixel, tot_noise_bkgd, tot_noise, snr])
             else:
                 s['flux_err'] = 0.0
             s['x'] = float(x)
