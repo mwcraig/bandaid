@@ -22,7 +22,7 @@
 
 from astropy.io import fits
 from astropy.wcs import WCS
-from photutils import background, detection, aperture, psf
+from photutils import aperture, psf
 from photutils.detection import DAOStarFinder
 from photutils.background import Background2D, MedianBackground
 from astropy.stats import sigma_clipped_stats, SigmaClip
@@ -55,7 +55,7 @@ from typing import List
 
 from st_pipeline.perform_photometry import psf_fitting
 from .. import __version__
-from ..schema_definition import StarListSet
+from ..schema_definition import StarListSet, StarList, StarItem
 
 astrometry_api_key = None
 
@@ -458,11 +458,13 @@ valid_meta_keys = ['schema_version',
                    'adc_depth',
                    'largest_usable_adu_value',
                    'system_gain',
+                   'epoch',
+                   'refframe',
                    'BAYERPAT',
                    'pixscale',
                    'dec',
                    'ra',
-                   'fov_rad' ]
+                   'fov_rad']
 
 #
 # The so-called JSON metadata file is a temporary band-aid for smart
@@ -565,6 +567,7 @@ def ReadMetaFromFITS(filename, dict):
 
             dict['tel_manufac'] = 'ZWO'
             dict['tel_model'] = 'Seestar'
+            dict['adc_depth'] = 0 # 12
 
         ################################
         ##       Origin
@@ -612,216 +615,6 @@ def ReadMetaFromFITS(filename, dict):
             print("Telescope type ", telescope_type, " not implemented yet.")
 
 
-class AAVSOStarlist:
-    """Implement an AAVSO Starlist
-
-    This class "is" an AAVSO Starlist. Initial condition: all metadata
-    is populated, but the starlist is otherwise empty.
-
-    Attributes
-    ----------
-    metadata : dict
-        Dictionary containing "extended" metadata
-    gain : float
-        System gain (e-/ADU) in the original (Bayered) image
-    filter : str
-        Two-letter filter name (e.g., 'TG')
-    starlist : dict
-        This dict is a literal image of the official AAVSO starlist,
-        including both  metadata and the stars of the starlist
-    """
-    def __init__(self, metadata, filter):
-        """Create a starlist and populate with metadata
-
-        Create a starlist and pull metadata from a `metadata`
-        dictionary that is put into the starlist object. (The stars
-        themselves will be populated with a later invocation of one of
-        the ReadFrom...() member functions.)
-
-        Parameters
-        ----------
-        metadata : dict
-            A dictionary of metadata. See the earlier block comment
-            for a full description
-        filter : str
-            Name of the filter for this starlist
-
-        Returns
-        -------
-        AAVSOStarlist
-            A new object of the class
-        """
-        self.metadata = metadata
-
-        self.starlist = {} # JSON-style dictionary
-        self.starlist['gain'] = metadata['system_gain']
-        self.starlist['filter'] = filter # e.g., "TG"
-
-        # Sort out the metadata
-        for x in ('obs_time',
-                  'site_lat',
-                  'site_lon',
-                  'site_elev',
-                  'observer',
-                  'block_filter',
-                  'exposure',
-                  'tel_manufac',
-                  'tel_firmware',
-                  'tel_model',
-                  'adc_depth',
-                  'largest_usable_adu_value'):
-
-            self.starlist[x] = metadata[x] if x in metadata else None
-
-        self.starlist['epoch'] = "J2000"
-
-        # Add a couple of missing items
-        self.starlist['refframe'] = "ICRS"
-
-        # Set proper type for tel_firmware
-        if self.starlist['tel_firmware'] is None:
-            self.starlist['tel_firmware'] = ""
-
-        # Set proper type for adc_depth
-        if self.starlist['adc_depth'] is None:
-            self.starlist['adc_depth'] = 0
-
-        # The "STARLIST' is a list of dictionaries
-        self.starlist['staritems'] = [] # the starlist starts off empty
-
-    def ReadFromSourceExtractor(self, filename):
-        """Create starlist entries from SourceExtractor output table
-
-        Ingest the output table from Source Extractor and create
-        self.starlist entries for each star in the output table.
-
-        Parameters
-        ----------
-        filename : str
-            The pathname to the source extractor output table
-
-        Returns
-        -------
-        None
-
-        """
-        # Decode() is a helper function that supports the process of reading a
-        # SourceExtractor starlist and turning it into an AAVSO starlist.
-        # column_labels: a list of source_extractor output table column label strings
-        # words: a list of words in the current input line (a data line)
-        # keyword: the keyword we want to fetch. "keyword" must match a column label
-        # The return value is the (float) value of the number in the column
-        # that corresponds to the keyword.
-        def Decode(column_labels, words, keyword):
-            try:
-                i = column_labels.index(keyword)
-                return float(words[i])
-            except:
-                print("Keyword ", keyword, " not in source extractor output.")
-                raise
-
-        column_labels = []      # indexed by column number
-        with open(filename, 'r') as fp:
-            for line in fp:
-                # If the line starts with a '#', then its a column label line
-                if line[0] == '#':
-                    words = line[1:].strip().split(' ')
-                    column_labels.append(words[1])
-                else:
-                    # Normal (star) line
-                    words = line.split() # whitespace split
-                    star = {}
-                    star['flux_err'] = Decode(column_labels, words, 'FLUXERR_AUTO')
-                    star['tot_flux'] = Decode(column_labels, words, 'FLUX_AUTO')
-                    star['peak_flux'] = Decode(column_labels, words, 'FLUX_MAX')
-                    star['x'] = Decode(column_labels, words, 'X_IMAGE')
-                    star['y'] = Decode(column_labels, words, 'Y_IMAGE')
-                    star['dec'] = Decode(column_labels, words, 'DELTA_J2000')
-                    star['ra'] = Decode(column_labels, words, 'ALPHA_J2000')
-                    star['bkgd_flux'] = Decode(column_labels, words, 'BACKGROUND')
-                    self.starlist['staritems'].append(star)
-
-    def ReadFromPhotUtils(self, sourcelist, background, metadata):
-        """Create starlist entries from photutils output table
-
-        Ingest the output table from photutils and create
-        self.starlist entries for each star in the output
-
-        Parameters
-        ----------
-        sourcelist : astropy table
-            The astropy table created by one of the astropy source
-            detection methods
-        background : photutils 2D image
-            A copy of the original image holding background levels in
-            each pixel
-        metadata : dict
-            The metadata dictionary for this input file
-
-        Returns
-        -------
-        None
-
-        """
-        for (xc,yc,peak,flux) in sourcelist.iterrows('xcentroid','ycentroid','peak','flux'):
-            star = {}
-            star['tot_flux'] = float(flux)
-            star['peak_flux'] = float(peak)
-            star['x'] = float(xc)
-            star['y'] = float(yc)
-            star['dec'] = None
-            star['ra'] = None
-            star['bkgd_flux'] = float(background[int(0.5+yc),int(0.5+xc)])
-            star['flux_err'] = None
-            self.starlist['staritems'].append(star)
-
-    def WriteJSON(self, filename):
-        """Create an AAVSO starlist set file from an AAVSOStarlist object
-
-        Create an AAVSO starlist set file with the contents of the current
-        starlist object.
-
-        Parameters
-        ----------
-        filename : str
-            Pathname of the JSON file to be created
-
-        Returns
-        -------
-        None
-        """
-        # Version will be set to default value in schema definition,
-        # no need to set it here.
-        star_list_set = StarListSet(star_lists=[self.starlist])
-
-        with open(filename, 'w') as fp:
-            json.dump(star_list_set.model_dump(), fp, indent=2)
-
-    def ApplyWCS(self, wcs):
-        """Update star Dec/RA in the starlist using a provided WCS
-
-        Update all star positions in the starlist, converting each
-        star's (x,y) pixel-based centroid into a corresponding Dec/RA
-        using the provided WCS. Stars that don't have a valid pixel
-        location will not receive Dec/RA values.
-
-        Parameters
-        ----------
-        wcs : astropy wcs object
-            The WCS mapping pixel coordinates to sky coordinates
-
-        Returns
-        -------
-        None
-        """
-        valid_stars = [star for star in self.starlist['staritems'] if star['x'] is not None and star['y'] is not None]
-        x_array = [star['x'] for star in valid_stars]
-        y_array = [star['y'] for star in valid_stars]
-        (ra_array, dec_array) = wcs.pixel_to_world_values(x_array, y_array)
-        for (star,ra,dec) in zip(valid_stars,ra_array,dec_array):
-            star['dec'] = dec
-            star['ra'] = ra
-
 def WCStext2wcs(wcs_text):
     """Convert WCS FITS header text into an astropy WCS object
 
@@ -851,9 +644,32 @@ def WCStext2wcs(wcs_text):
     wcs_header = fits.Header(cards=card_list)
     return WCS(wcs_header)
 
+
+def table_to_star_items(photometry_table):
+    """
+    Convert an astropy table with photometry to a list of star items.
+
+    Parameters
+    ----------
+    photometry_table : astropy table
+        The table to convert to a list of star items. The table must
+        have as column each of the fields in the `StarItem` class.
+    """
+    star_items = []
+    for row in photometry_table:
+        missing_keys = set(StarItem.model_fields.keys()) - set(row.keys())
+        if missing_keys:
+            raise ValueError(f"Missing keys in table: {missing_keys}")
+        star_items.append(
+            StarItem(**{key: row[key] for key in StarItem.model_fields.keys()})
+        )
+
+    return star_items
+
+
 # Process one (possibly de-Bayered) image
 def ProcessSingleImage(filename, metadata, options, temp_dir,
-                       starlist_json_path, filter, wcs=None):
+                       starlist_json_path, passband_filter, wcs=None):
     """Turn an image file into a starlist
 
     In a strictly one-to-one operation, turn an image into a starlist,
@@ -885,76 +701,96 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         The pathname of the starlist that was created
     """
     # filter == 'M' is a special case == 'CV'
-    if filter == 'M':
-        filter = 'CV'
+    if passband_filter == 'M':
+        passband_filter = 'CV'
 
     # "G" needs to become "TG" if it hasn't already
-    if len(filter) == 1:
-        filter = 'T'+filter
+    if len(passband_filter) == 1:
+        passband_filter = 'T'+passband_filter
 
     width = None
     height = None
-    starlist = AAVSOStarlist(metadata, filter)
+
+    # This is essentially creating a placeholder for the star items to
+    # go into. The star items will be filled in later.
+
+    # starlist = AAVSOStarlist(metadata, passband_filter)
+    metadata['staritems'] = []
+    metadata['filter'] = passband_filter
+    metadata['gain'] = metadata['system_gain']
+    starlist = StarList.model_validate(metadata)
     with fits.open(filename) as hdul:
         hdu0h = hdul[0].header
         image_data = hdul[0].data.astype(np.float32)
-        (width,height) = np.shape(hdul[0].data)
+        (width, height) = np.shape(hdul[0].data)
         print("height = ", height, ", width = ", width)
 
         # Estimate the background
-        (mean,median,std) = sigma_clipped_stats(image_data, sigma=3.0)
+        (mean, median, std) = sigma_clipped_stats(image_data, sigma=3.0)
         sigma_clip = SigmaClip(sigma=3.0)
         bkg_estimator = MedianBackground()
-        full_background = Background2D(image_data, (int(width/8),int(height/8)), filter_size=(3,3),
-                                       sigma_clip=sigma_clip, bkg_estimator=bkg_estimator)
+        full_background = Background2D(
+            image_data,
+            (int(width/8), int(height/8)),
+            filter_size=(3, 3),
+            sigma_clip=sigma_clip,
+            bkg_estimator=bkg_estimator
+        )
         background = full_background.background
-        (bkgd_mean,_dummy,bkgd_std) = sigma_clipped_stats(background, sigma=3.0)
+        print("background.shape = ", background.shape)
+        (bkgd_mean, _dummy, bkgd_std) = sigma_clipped_stats(background, sigma=3.0)
         print("background.median = ", full_background.background_median,
               ", background.rms = ", full_background.background_rms_median)
-        noise_bkgd_per_pixel = full_background.background_rms_median * starlist.starlist['gain']
+        noise_bkgd_per_pixel = full_background.background_rms_median * starlist.gain
+        # Should this be 5 times the background RMS instead of the full image RMS?
+        # How do we know the fwhm is roughly 3? is that the same for all smart telescopes?
         daofind = DAOStarFinder(fwhm=3.0, threshold=5.*std)
         clean_image = (image_data - background)
-        (mean,median,std) = sigma_clipped_stats(clean_image, sigma=3.0)
+        (mean, median, std) = sigma_clipped_stats(clean_image, sigma=3.0)
         sources = daofind(clean_image)
-        starlist.ReadFromPhotUtils(sources,background,metadata)
 
-        ## Now estimate an FWHM for these stars
-        star_subset = starlist.starlist['staritems']
-        star_subset.sort(key = lambda star : star['tot_flux'], reverse=True)
-        subset_size = min(10, len(star_subset))
-        fwhm = statistics.mean(psf.fit_fwhm(clean_image, xypos=[(s['x'],s['y']) for s in star_subset[0:subset_size]],fit_shape=15))
+        # Sort the table in-place by flux in reverse order
+        sources.sort('flux', reverse=True)
+
+        # Grab a subset of the brightest stars to estimate the FWHM
+        subset_size = min(10, len(sources))
+        subset = sources[:subset_size]
+        fwhm = psf.fit_fwhm(
+            clean_image,
+            xypos=list(zip(subset['xcentroid'], subset['ycentroid'])),
+            fit_shape=15
+        ).mean()
+
         print("Estimate FWHM from photutils = ", fwhm)
 
         phot_radius = 1.0 * fwhm
-        print(f"Aperture radius = {phot_radius:.2f} , with {math.pi*phot_radius*phot_radius:.2f} pixels total")
-        star_x = [s['x'] for s in star_subset]
-        star_y = [s['y'] for s in star_subset]
-        radii = [phot_radius for s in star_subset]
-        positions = zip(star_x, star_y)
+        print(f"Aperture radius = {phot_radius:.2f} , with {math.pi * phot_radius * phot_radius:.2f} pixels total")
+
+        # Perform the photometry
+        positions = zip(sources['xcentroid'], sources['ycentroid'])
         apertures = aperture.CircularAperture(positions, r=phot_radius)
         result = aperture.aperture_photometry(clean_image, apertures)
         print(result)
 
-        xc = np.array(result['xcenter'])
-        yc = np.array(result['ycenter'])
-        fluxes = np.array(result['aperture_sum'])
+        tot_noise_bkgd = np.sqrt(apertures.area) * noise_bkgd_per_pixel
 
-        tot_noise_bkgd = math.sqrt(phot_radius*phot_radius*math.pi)*noise_bkgd_per_pixel
+        # Make some column names match the starlist schema
+        sources['tot_flux'] = result['aperture_sum']
+        # Use .value for these next two because they are astropy Quantity
+        # objects with the unit "pixels" and we don't need the unit.
+        sources['x'] = result['xcenter'].value
+        sources['y'] = result['ycenter'].value
 
-        for s,flux,x,y in zip(starlist.starlist['staritems'],fluxes,xc,yc):
-            s['tot_flux'] = float(flux)
-            if flux >= 0.0:
-                poiss_noise = math.sqrt(starlist.starlist['gain']*float(flux))
-                tot_noise = math.sqrt(poiss_noise*poiss_noise+
-                                      tot_noise_bkgd*tot_noise_bkgd)/starlist.starlist['gain']
-                snr = float(flux)/tot_noise
-                s['flux_err'] = tot_noise
-                print("SNR:", [float(x),float(y),poiss_noise,
-                               noise_bkgd_per_pixel, tot_noise_bkgd, tot_noise,snr])
-            else:
-                s['flux_err'] = 0.0
-            s['x'] = float(x)
-            s['y'] = float(y)
+        sources.rename_column('peak', 'peak_flux')
+
+        # Calculate errors using table columns and star flux error in column
+        poiss_noise = np.sqrt(starlist.gain * sources['tot_flux'])
+        tot_noise = np.sqrt(poiss_noise**2 + tot_noise_bkgd**2) / starlist.gain
+        sources['flux_err'] = tot_noise
+        snr = sources['tot_flux'] / sources['flux_err']
+
+        # Set flux errors to zero for negative fluxes
+        sources['flux_err'][sources['tot_flux'] < 0] = 0.0
 
     ################################
     ## Plate Solve to get WCS transformation info if needed
@@ -976,28 +812,24 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
 
         ast.api_key = astrometry_api_key
         # star_x and star_y were sorted by flux earlier... important here.
-        wcs_header = ast.solve_from_source_list(star_x,
-                                                star_y,
+        wcs_header = ast.solve_from_source_list(sources['x'],
+                                                sources['y'],
                                                 width,
                                                 height,
                                                 solve_timeout=120)
         wcs = WCS(header=wcs_header)
 
-    if False:
-        import astrometry
-        wcs_text = astrometry.RunAstrometry(api_key = astrometry_api_key,
-                                        x=star_x,
-                                        y=star_y,
-                                        dec_center_deg =metadata['dec'],
-                                        ra_center_deg =metadata['ra'],
-                                        radius_deg = metadata['fov_rad'],
-                                        scale=(metadata['pixscale']*0.8,
-                                               metadata['pixscale']*1.2),
-                                        width=width,
-                                        height=height)
-        wcs = WCStext2wcs(wcs_text.decode('utf-8'))
-        print("Image center is at ", wcs.pixel_to_world(width/2, height/2))
-    starlist.ApplyWCS(wcs)
+    # Calculate RA and Dec
+    star_coords = wcs.pixel_to_world(sources['x'], sources['y'])
+    sources['ra'] = star_coords.ra.deg
+    sources['dec'] = star_coords.dec.deg
+
+    # Populate the background flux column. The "+0.5" is to reproduce the
+    # behavior of the original code.
+    sources['bkgd_flux'] = [
+        background[int(0.5+y), int(0.5+x)]
+        for (x, y) in zip(sources['x'], sources['y'])
+    ]
 
     ################################
     ## Do PSF fitting, if requested
@@ -1007,7 +839,12 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
                                            star['tot_flux'], reverse=True)
         psf_fitting.DoPSF(filename, starlist.starlist)
 
-    starlist.WriteJSON(starlist_json_path)
+    print(sources.colnames)
+    print(StarItem.model_fields.keys())
+    starlist.staritems = table_to_star_items(sources)
+    sl_set = StarListSet(star_lists=[starlist])
+    Path(starlist_json_path).write_text(json.dumps(sl_set.model_dump(), indent=2))
+
     return starlist_json_path
 
 def ProcessRGBFile(filename, options, temp_dir, metadata,
