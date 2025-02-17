@@ -634,6 +634,7 @@ def ReadMetaFromFITS(filename, dict):
 
             dict['tel_manufac'] = 'ZWO'
             dict['tel_model'] = 'Seestar'
+            dict['adc_depth'] = 14
 
         ################################
         ##       Origin
