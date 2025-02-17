@@ -22,7 +22,7 @@
 
 from astropy.io import fits
 from astropy.wcs import WCS
-from photutils import aperture, psf
+from photutils import aperture, psf, background, detection
 from photutils.detection import DAOStarFinder
 from photutils.background import Background2D, MedianBackground
 from astropy.stats import sigma_clipped_stats, SigmaClip
@@ -40,6 +40,7 @@ warnings.filterwarnings('error', category=RuntimeWarning)
 import threading
 from pathlib import Path
 import statistics
+import shutil
 import numpy as np
 import tempfile
 import getopt
@@ -357,6 +358,72 @@ def BayerBalanceFile(filename, temp_dir):
         DuplicateFileWithNewImage(hdul, new_data, "M", new_filename)
         return new_filename
 
+class OutputObject:
+    """This class represents one logical output (result) starlist
+
+    One starlist file can contain multiple logical starlists. An
+    OutputObject instance represents one of those logical
+    starlists. If the "One Starlist Per File" option is selected, each
+    instance of OutputObject will receive its own file. Otherwise,
+    multiple OutputObject instances will be combined into a single
+    file.
+
+    Attributes
+    ----------
+    starlist_dict: dict
+        Dictionary containing the representation of the starlist that
+        will be handed to the JSON serializer. This dictionary should
+        be for a full StarListSet.
+    filename: Path
+        The filename path that the file will be stored into if each
+        starlist is given its own file; otherwise, this is ignored
+    """
+
+    def __init__(self, filename, starlist_dict):
+        """Create an OutputObject
+
+        Create an OutputObject
+
+        Parameters
+        ----------
+        filename: Path
+            The filename path that the file will be stored into if
+            each starlist is given its own file; otherwise, this is
+            ignored
+        starlist_dict: dict
+            Dictionary containing the representation of the starlist
+        that will be handed to the JSON serializer
+
+        Returns
+        -------
+        OutputObject
+            A new object of the class OutputObject
+        """
+        self.filename = filename
+        self.starlist_dict = starlist_dict
+        if not isinstance(starlist_dict, dict):
+            print("Bad constructor call to OutputObject.")
+            print("starlist_dict = ", starlist_dict)
+            print("starlist_dict is a ", type(starlist_dict).__name__)
+            assert False, "Invalid OutputObject"
+                  
+
+    def Write(self):
+        """Write this logical starlist to its own file
+
+        Create a file holding this (single) logical starlist
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+        with open(self.filename, 'w') as fp:
+            json.dump(self.starlist_dict, fp, indent=2)
+
 def ProbeFileForType(filename):
     """Figure out what kind of a smart telescope created an image
 
@@ -458,10 +525,10 @@ valid_meta_keys = ['schema_version',
                    'adc_depth',
                    'largest_usable_adu_value',
                    'system_gain',
-                   'epoch',
-                   'refframe',
                    'BAYERPAT',
                    'pixscale',
+                   'epoch',
+                   'refframe',
                    'dec',
                    'ra',
                    'fov_rad']
@@ -567,7 +634,6 @@ def ReadMetaFromFITS(filename, dict):
 
             dict['tel_manufac'] = 'ZWO'
             dict['tel_model'] = 'Seestar'
-            dict['adc_depth'] = 0 # 12
 
         ################################
         ##       Origin
@@ -697,8 +763,9 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         provided then astrometry.net fitting is skipped.
     Returns
     -------
-    str
-        The pathname of the starlist that was created
+    OutputObject
+        An instance of an OutputObject containing the resulting
+        StarListSet
     """
     # filter == 'M' is a special case == 'CV'
     if passband_filter == 'M':
@@ -718,6 +785,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
     metadata['staritems'] = []
     metadata['filter'] = passband_filter
     metadata['gain'] = metadata['system_gain']
+    print("model_validate: ", metadata)
     starlist = StarList.model_validate(metadata)
     with fits.open(filename) as hdul:
         hdu0h = hdul[0].header
@@ -731,20 +799,22 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         bkg_estimator = MedianBackground()
         full_background = Background2D(
             image_data,
-            (int(width/8), int(height/8)),
-            filter_size=(3, 3),
-            sigma_clip=sigma_clip,
-            bkg_estimator=bkg_estimator
-        )
+            (int(width/8),int(height/8)),
+            filter_size=(3,3),
+            sigma_clip=sigma_clip, bkg_estimator=bkg_estimator)
         background = full_background.background
-        print("background.shape = ", background.shape)
         (bkgd_mean, _dummy, bkgd_std) = sigma_clipped_stats(background, sigma=3.0)
         print("background.median = ", full_background.background_median,
               ", background.rms = ", full_background.background_rms_median)
         noise_bkgd_per_pixel = full_background.background_rms_median * starlist.gain
         # Should this be 5 times the background RMS instead of the full image RMS?
         # How do we know the fwhm is roughly 3? is that the same for all smart telescopes?
-        daofind = DAOStarFinder(fwhm=3.0, threshold=5.*std)
+
+        # What we *really* want is RMS of the original image after
+        # masking all the stars. The RMS of "background" is way off,
+        # because Background2D smooths the background, which destroys
+        # the original background RMS.
+        daofind = DAOStarFinder(fwhm=3.0, threshold=4.*std)
         clean_image = (image_data - background)
         (mean, median, std) = sigma_clipped_stats(clean_image, sigma=3.0)
         sources = daofind(clean_image)
@@ -763,27 +833,54 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
 
         print("Estimate FWHM from photutils = ", fwhm)
 
+        # Now that we know the *real* FWHM, re-find the stars
+        daofind = DAOStarFinder(fwhm=fwhm, threshold=4.0*std)
+        sources = daofind(clean_image)
+        sources.sort('flux', reverse=True)
+
         phot_radius = 1.0 * fwhm
         print(f"Aperture radius = {phot_radius:.2f} , with {math.pi * phot_radius * phot_radius:.2f} pixels total")
 
         # Perform the photometry
-        positions = zip(sources['xcentroid'], sources['ycentroid'])
+        positions = list(zip(sources['xcentroid'],
+                             sources['ycentroid']))
         apertures = aperture.CircularAperture(positions, r=phot_radius)
-        result = aperture.aperture_photometry(clean_image, apertures)
-        print(result)
+
+        if options.UseAnnulus:
+            annuli = aperture.CircularAnnulus(positions, annulus_inner, annulus_outer)
+            annulus_sigma_clip = SigmaClip(sigma=2.0)
+            annulus_data = aperture.ApertureStats(clean_image,
+                                                  annuli,
+                                                  sigma_clip=annulus_sigma_clip,
+                                                  sum_method='center')
+
+            central_sum = aperture.ApertureStats(clean_image,
+                                                 apertures,
+                                                 sum_method='exact',
+                                                 local_bkg=annulus_data.mean)
+            centroids = central_sum.centroid
+            sources['x'] = centroids[:, 0]
+            sources['y'] = centroids[:, 1]
+            sources['tot_flux'] = centroids
+        else: # not using an annulus
+            result = aperture.aperture_photometry(clean_image, apertures)
+            print(result)
+
+            # Make some column names match the starlist schema
+            sources['tot_flux'] = result['aperture_sum']
+            # Use .value for these next two because they are astropy Quantity
+            # objects with the unit "pixels" and we don't need the unit.
+            sources['x'] = result['xcenter'].value
+            sources['y'] = result['ycenter'].value
 
         tot_noise_bkgd = np.sqrt(apertures.area) * noise_bkgd_per_pixel
 
-        # Make some column names match the starlist schema
-        sources['tot_flux'] = result['aperture_sum']
-        # Use .value for these next two because they are astropy Quantity
-        # objects with the unit "pixels" and we don't need the unit.
-        sources['x'] = result['xcenter'].value
-        sources['y'] = result['ycenter'].value
 
         sources.rename_column('peak', 'peak_flux')
 
         # Calculate errors using table columns and star flux error in column
+        # Negative fluxes are not allowed
+        sources['tot_flux'][sources['tot_flux'] < 0] = 0.0
         poiss_noise = np.sqrt(starlist.gain * sources['tot_flux'])
         tot_noise = np.sqrt(poiss_noise**2 + tot_noise_bkgd**2) / starlist.gain
         sources['flux_err'] = tot_noise
@@ -793,31 +890,91 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         sources['flux_err'][sources['tot_flux'] < 0] = 0.0
 
     ################################
-    ## Plate Solve to get WCS transformation info if needed
-    ## Things you need:
-    ## Dec/RA (nominal) - metadata
-    ## Plate scale (nominal) - metadata
-    ## Field of View (nominal) - metadata
+    ## WCS handling overall sequence
+    ## 1. If wcs is passed in as parameter, use it. Do not
+    ## plate-solve.
+    ## 2. If the "solve-field" program is installed, use it to
+    ## plate-solve. (Only tested on Linux so far.)
+    ## 3. Otherwise, go out to astrometry.net and use the online
+    ## plate-solver.
     ################################
 
     if not wcs:
-        ast = AstrometryNet()
-        if astrometry_api_key == None:
-            global ui
-            dlg = QMessageBox(ui.window)
-            dlg.setWindowTitle("No astrometry.net API Key")
-            dlg.setText("Must enter astrometry.net API Key via Menu Bar")
-            dlg.exec()
-            return
+        if shutil.which('solve-field') is not None:
+            import os # maybe os.system to be replaced with subprocess.run?
+            ################################
+            ## Plate-solve the image
+            ################################
+            temp_dir = tempfile.TemporaryDirectory()
+            print("WCS using temp_dir = ", temp_dir.name)
+            temp_dirname = temp_dir.name
+            plate_solve_dir = temp_dirname
 
-        ast.api_key = astrometry_api_key
-        # star_x and star_y were sorted by flux earlier... important here.
-        wcs_header = ast.solve_from_source_list(sources['x'],
-                                                sources['y'],
-                                                width,
-                                                height,
-                                                solve_timeout=120)
-        wcs = WCS(header=wcs_header)
+            trial_dir = plate_solve_dir
+            command = "solve-field "
+            command += (" -D " + plate_solve_dir)
+            #command += (" --config + config_file)
+            if 'PIXSCALE' in metadata and metadata['PIXSCALE'] is not None:
+                pixelscale = metadata['PIXSCALE']
+            elif 'pixscale' in metadata and metadata['pixscale'] is not None:
+                pixelscale = metadata['pixscale']
+            else:
+                raise ValueError("Pixelscale not defined.")
+            pixel_low = pixelscale * 0.9
+            pixel_hi = pixelscale * 1.1
+            command += (" -L " + str(pixel_low)
+                        + " -H " + str(pixel_hi)
+                        + " -u arcsecperpix ")
+
+            if ('DEC' in metadata and 'RA' in metadata and
+                metadata['DEC'] is not None and metadata['RA'] is not None):
+                command += (" -3 " + str(metadata['RA'])
+                            + " -4 " + str(metadata['DEC']))
+            elif ('dec' in metadata and 'ra' in metadata and
+                metadata['dec'] is not None and metadata['ra'] is not None):
+                command += (" -3 " + str(metadata['ra'])
+                            + " -4 " + str(metadata['dec']))
+            else:
+                raise ValueError("Dec/RA not defined")
+
+            if 'FOV_RAD' in metadata and metadata['FOV_RAD'] is not None:
+                command += (" -5 " + str(metadata['FOV_RAD']))
+            elif 'fov_rad' in metadata and metadata['fov_rad'] is not None:
+                command += (" -5 " + str(metadata['fov_rad']))
+            else:
+                raise Exception("Image FOV not defined")
+
+            command += (" '" + str(filename) + "'")
+            print("Executing: ", command)
+
+            if os.system(command) != 0:
+                raise ValueError("Abnormal termination of solve-field")
+
+            wcs_basename = Path(filename).with_suffix(".new").name
+            print("wcs_basename = ", wcs_basename)
+            wcs_pathname = Path(temp_dir.name) / wcs_basename
+            print("Looking for WCS info in ", str(wcs_pathname))
+            with fits.open(str(wcs_pathname)) as hdul:
+                header = hdul[0].header
+                wcs = WCS(header)
+        else:
+            ast = AstrometryNet()
+            if astrometry_api_key == None:
+                global ui
+                dlg = QMessageBox(ui.window)
+                dlg.setWindowTitle("No astrometry.net API Key")
+                dlg.setText("Must enter astrometry.net API Key via Menu Bar")
+                dlg.exec()
+                return
+
+            ast.api_key = astrometry_api_key
+            # star_x and star_y were sorted by flux earlier... important here.
+            wcs_header = ast.solve_from_source_list(sources['x'],
+                                                    sources['y'],
+                                                    width,
+                                                    height,
+                                                    solve_timeout=120)
+            wcs = WCS(header=wcs_header)
 
     # Calculate RA and Dec
     star_coords = wcs.pixel_to_world(sources['x'], sources['y'])
@@ -843,9 +1000,10 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
     print(StarItem.model_fields.keys())
     starlist.staritems = table_to_star_items(sources)
     sl_set = StarListSet(star_lists=[starlist])
-    Path(starlist_json_path).write_text(json.dumps(sl_set.model_dump(), indent=2))
+    #Path(starlist_json_path).write_text(json.dumps(sl_set.model_dump(), indent=2))
 
-    return starlist_json_path
+    return OutputObject(starlist_json_path,
+                        sl_set.model_dump())
 
 def ProcessRGBFile(filename, options, temp_dir, metadata,
                    starlist_tgtname, wcs=None):
@@ -878,23 +1036,24 @@ def ProcessRGBFile(filename, options, temp_dir, metadata,
 
     Returns
     -------
-    None
+    list of OutputObjects
+        These are the logical starlists that result.
 
     """
     de_bayer = options.DeBayer
+    output_objects = []
     if de_bayer:
         single_color_files = DeBayerFile(filename, metadata['BAYERPAT'], temp_dir)
-        starlists = []
 
         if options.StackChannels:
             stacked_image = StackImages(single_color_files, options, temp_dir)
             starlist_filename = starlist_tgtname.replace("$$","M")
-            starlist_file = ProcessSingleImage(stacked_image, dict(metadata),
-                                               options,
-                                               temp_dir,
-                                               starlist_filename, 'M',
-                                               wcs=wcs)
-            print("Starlist stored in ", starlist_file)
+            output_objects.append(ProcessSingleImage(stacked_image,
+                                                     dict(metadata),
+                                                     options,
+                                                     temp_dir,
+                                                     starlist_filename, 'M',
+                                                     wcs=wcs))
         else:
             tg_num = 1
             for (filter,file) in single_color_files:
@@ -904,9 +1063,13 @@ def ProcessRGBFile(filename, options, temp_dir, metadata,
                     filter_file = "TG"+str(tg_num)
                     tg_num += 1
                 starlist_filename = starlist_tgtname.replace("$$",filter_file)
-                starlist_file = ProcessSingleImage(file, dict(metadata), options,
-                                                   temp_dir, starlist_filename,filter,
-                                                   wcs=wcs)
+                output_objects.append(ProcessSingleImage(file,
+                                                         dict(metadata),
+                                                         options,
+                                                         temp_dir,
+                                                         starlist_filename,
+                                                         filter,
+                                                         wcs=wcs))
                 starlists.append(starlist_file)
 
             print("Starlist(s) stored in ", starlists)
@@ -916,12 +1079,14 @@ def ProcessRGBFile(filename, options, temp_dir, metadata,
         print(metadata)
         adj_meta_dict = dict(metadata)
         adj_meta_dict['pixscale'] /= 2.0 # Correct for non-de-Bayered image
-        starlist_file = ProcessSingleImage(filename, adj_meta_dict,
-                                           options,
-                                           temp_dir,
-                                           starlist_filename, 'M', wcs=wcs)
-        print("Starlist stored in ", starlist_file)
-
+        output_objects.append(ProcessSingleImage(filename,
+                                                 adj_meta_dict,
+                                                 options,
+                                                 temp_dir,
+                                                 starlist_filename,
+                                                 'M',
+                                                 wcs=wcs))
+    return output_objects
 
 ################################################################
 ##        Display GUI Comes Next
@@ -1126,6 +1291,98 @@ class OptionsUI:
         self.color_correx = ui.window.ColorBalanceButton
         self.psf_photometry = ui.window.PSFPhotButton
         self.aperture_photometry = ui.window.AperturePhotButton
+
+        self.multiple_starlists = ui.window.OneSLPerFile
+        self.add_WCS_to_image = ui.window.UpdateWCSButton
+        self.aperture_size = ui.window.ApertureSize
+        self.subtract_annulus = ui.window.AnnulusSubtractionCheckbox
+
+    @property
+    def AddWCS(self):
+        """Query whether WCS keywords need to be added to the image
+
+        Return True if the input FITS file needs to have the WCS
+        information added to it
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        bool
+            True if WCS is to be added
+        """
+        return self.add_WCS_to_image.isChecked()
+
+    @property
+    def OneSLPerFile(self):
+        """Query whether starlists should be aggregated into one file
+
+        Return True if the output starlist(s) should be combined into
+        a single starlist file. The alternative is one logical
+        starlist per file.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        bool
+            True if each starlist is to go into a separate file
+        """
+        return self.multiple_starlists.isChecked()
+
+    @property
+    def ApertureSizeFWHM(self):
+        """Query the aperture size factor
+
+        The aperture size factor is multiplied by the image's average
+        FWHM to establish the photometry aperture radius. This query
+        returns that multiplicative factor.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        float
+            The factor that should be used. A value of 1.0 is returned
+            if nothing is entered or if an entry is invalid.
+        """
+        entry_str = self.aperture_size.text()
+        try:
+            entry_float = float(entry_str)
+        except ValueError:
+            ErrorPopup("Invalid Aperture Size entry: " + entry_str)
+            return 1.0
+        if entry_float < 0.1 or entry_float > 10.0:
+            ErrorPopup("Aperture size entry out of bounds (0.1 .. 10.0)")
+            return 1.0
+        return entry_float
+
+    @property
+    def UseAnnulus(self):
+        """Query whether an annulus aperture helps estimate background
+
+        Return True if the sky background found in an annulus around
+        the star centroid should be used during background
+        subtraction. The alternative is to use only a slowly-varying
+        background level across the entire image to estimate
+        background.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        bool
+            True if an annulus is to be used
+        """
+        return self.subtract_annulus.isChecked()
 
     @property
     def DeBayer(self):
@@ -1419,6 +1676,7 @@ class UI:
         if not self.window:
             print(loader.errorString())
             sys.exit(-1)
+        self.window.ApertureSize.setText("1.0")
 
 class APIEntryDialog(QDialog):
     """The QDialog popup window used to enter the astrometry.net API key
@@ -1727,9 +1985,80 @@ class MainWindow:
 
             if self.options.GetColorBalance:
                 working_filename = BayerBalanceFile(working_filename, self.temp_dirname)
-            ProcessRGBFile(working_filename, self.options, self.temp_dirname, meta, starlist_tgtname, wcs=self._wcs)
+            output_objs = ProcessRGBFile(working_filename,
+                                         self.options,
+                                         self.temp_dirname,
+                                         meta,
+                                         starlist_tgtname,
+                                         wcs=self._wcs)
+            if self.options.OneSLPerFile:
+                for output in output_objs:
+                    with open(output.filename, 'w') as fp:
+                        json.dump([output.starlist_dict], fp, indent=2)
+            else:
+                filename = str(Path(orig_dir, orig_file_base+".star"))
+                with open(filename, 'w') as fp:
+                    json.dump(CombineStarlists([x.starlist_dict for x in output_objs]),
+                              fp, indent=2)
+
         return False
 
+def CombineStarlists(list_of_starlist_dicts):
+    """Combine multiple starlist dictionaries into one extended StarListSet dictionary
+
+    Combine a set of starlist dictionaries into the structure of a
+    StarListSet (that is, a single dictionary that contains a list of
+    starlist dictionaries as a value within that top-level
+    dictionary).
+
+    Parameters
+    ----------
+    list_of_starlist_dicts: list of dict
+        A list of Python dictionaries (possibly generated with
+        Starlist.ToDict) that will be combined
+
+    Returns
+    -------
+    dict
+        A single dictionary that represents the JSON encoding of a
+    StarListSet.
+    """
+
+    assert len(list_of_starlist_dicts) > 0
+    print("list_of_starlist_dicts = ", list_of_starlist_dicts)
+    assert all((isinstance(x, dict) for x in list_of_starlist_dicts))
+    # At the top level, there is a "schema_version" and a "star_lists"
+    final = {}
+    final['schema_version'] = list_of_starlist_dicts[0]['schema_version']
+    star_lists = []
+    for sl in list_of_starlist_dicts:
+        star_lists.extend(sl['star_lists'])
+    final['star_lists'] = star_lists
+    return final
+
+class ErrorPopup:
+    """An error popup window
+
+    Pop up a new window with an error message in it and wait for the
+    user to acknowledge the error; then resume control with the next
+    statement in the program flow.
+    """
+    def __init__(self, msg):
+        """Create an error popup window
+
+        Parameters
+        ----------
+        msg: str
+            The error message to be displayed
+
+        Returns
+        -------
+        None
+        """
+        dlg = QMessageBox(cal_common.window)
+        dlg.setWindowTitle("Error")
+        dlg.setText(msg)
+        dlg.exec()
 
 def main():
     global ui
