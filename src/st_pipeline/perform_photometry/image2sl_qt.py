@@ -406,7 +406,7 @@ class OutputObject:
             print("starlist_dict = ", starlist_dict)
             print("starlist_dict is a ", type(starlist_dict).__name__)
             assert False, "Invalid OutputObject"
-                  
+
 
     def Write(self):
         """Write this logical starlist to its own file
@@ -1318,11 +1318,11 @@ class OptionsUI:
 
     @property
     def OneSLPerFile(self):
-        """Query whether starlists should be aggregated into one file
+        """Query whether to save just one logical starlist per file
 
-        Return True if the output starlist(s) should be combined into
-        a single starlist file. The alternative is one logical
-        starlist per file.
+        Return True if the output starlist(s) should be split into
+        multiple starlist files. The alternative is to pack multiple logical
+        starlists into each starlist file.
 
         Parameters
         ----------
@@ -1608,6 +1608,10 @@ class OptionsAPI(BaseModel):
     interp_stack_channels: bool = False
     color_correx: bool = False
     psf_photometry: bool = False
+    subtract_annulus: bool = False
+    multiple_starlists: bool = False
+    add_WCS_to_image: bool = False
+    aperture_size: float = 1.0
     astrometry_net_api_key: str = ""
     bias_file: str = ""
     dark_file: str = ""
@@ -1636,6 +1640,21 @@ class OptionsAPI(BaseModel):
     def UsePSFFitting(self):
         return self.psf_photometry
 
+    @property
+    def AddWCS(self):
+        return self.add_WCS_to_image
+
+    @property
+    def OneSLPerFile(self):
+        return self.multiple_starlists
+
+    @property
+    def ApertureSizeFWHM(self):
+        return self.aperture_size
+
+    @property
+    def UseAnnulus(self):
+        return self.subtract_annulus
 
 class UI:
     """Singleton class used to connect Qt Designer to this app
