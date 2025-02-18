@@ -840,6 +840,8 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         sources.sort('flux', reverse=True)
 
         phot_radius = 1.0 * fwhm
+        annulus_inner = max(3*phot_radius, 4*fwhm)
+        annulus_outer = math.sqrt(100*phot_radius**2 + annulus_innter**2)
         print(f"Aperture radius = {phot_radius:.2f} , with {math.pi * phot_radius * phot_radius:.2f} pixels total")
 
         # Perform the photometry
