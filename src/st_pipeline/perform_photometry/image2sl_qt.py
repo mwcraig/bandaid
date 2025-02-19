@@ -839,7 +839,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         sources = daofind(clean_image)
         sources.sort('flux', reverse=True)
 
-        phot_radius = 1.0 * fwhm
+        phot_radius = options.ApertureSizeFWHM * fwhm
         annulus_inner = max(3*phot_radius, 4*fwhm)
         annulus_outer = math.sqrt(100*phot_radius**2 + annulus_inner**2)
         print(f"Aperture radius = {phot_radius:.2f} , with {math.pi * phot_radius * phot_radius:.2f} pixels total")
@@ -1363,6 +1363,7 @@ class OptionsUI:
             return 1.0
         if entry_float < 0.1 or entry_float > 10.0:
             ErrorPopup("Aperture size entry out of bounds (0.1 .. 10.0)")
+            self.aperture_size.setText("1.0")
             return 1.0
         return entry_float
 
@@ -2047,7 +2048,6 @@ def CombineStarlists(list_of_starlist_dicts):
     """
 
     assert len(list_of_starlist_dicts) > 0
-    print("list_of_starlist_dicts = ", list_of_starlist_dicts)
     assert all((isinstance(x, dict) for x in list_of_starlist_dicts))
     # At the top level, there is a "schema_version" and a "star_lists"
     final = {}
@@ -2077,7 +2077,7 @@ class ErrorPopup:
         -------
         None
         """
-        dlg = QMessageBox(cal_common.window)
+        dlg = QMessageBox(None)
         dlg.setWindowTitle("Error")
         dlg.setText(msg)
         dlg.exec()
