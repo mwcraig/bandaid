@@ -22,7 +22,7 @@
 
 from astropy.io import fits
 from astropy.wcs import WCS
-from photutils import aperture, psf, background, detection
+from photutils import aperture, psf
 from photutils.detection import DAOStarFinder
 from photutils.background import Background2D, MedianBackground
 from astropy.stats import sigma_clipped_stats, SigmaClip
@@ -839,7 +839,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         sources = daofind(clean_image)
         sources.sort('flux', reverse=True)
 
-        phot_radius = options.ApertureSizeFWHM * fwhm
+        phot_radius = options.aperture_size_fwhm * fwhm
         annulus_inner = max(3*phot_radius, 4*fwhm)
         annulus_outer = math.sqrt(100*phot_radius**2 + annulus_inner**2)
         print(f"Aperture radius = {phot_radius:.2f} , with {math.pi * phot_radius * phot_radius:.2f} pixels total")
@@ -849,7 +849,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
                              sources['ycentroid']))
         apertures = aperture.CircularAperture(positions, r=phot_radius)
 
-        if options.UseAnnulus:
+        if options.use_annulus:
             annuli = aperture.CircularAnnulus(positions, annulus_inner, annulus_outer)
             annulus_sigma_clip = SigmaClip(sigma=2.0)
             annulus_data = aperture.ApertureStats(clean_image,
@@ -879,8 +879,8 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         # Clean up the sources table
         bad_rows = []
         for row,content in enumerate(sources):
-            if (content['x'] <= 0.0
-                or content['y'] <= 0.0
+            if (content['x'] <= 3.0
+                or content['y'] <= 3.0
                 or content['x'] >= (width-3)
                 or content['y'] >= (height-3)
                 or content['tot_flux'] <= 0.0):
@@ -1300,7 +1300,7 @@ class OptionsUI:
         self.psf_photometry = ui.window.PSFPhotButton
         self.aperture_photometry = ui.window.AperturePhotButton
 
-        self.multiple_starlists = ui.window.OneSLPerFile
+        self.multiple_starlists = ui.window.one_sl_per_file
         self.add_WCS_to_image = ui.window.UpdateWCSButton
         self.aperture_size = ui.window.ApertureSize
         self.subtract_annulus = ui.window.AnnulusSubtractionCheckbox
@@ -1324,7 +1324,7 @@ class OptionsUI:
         return self.add_WCS_to_image.isChecked()
 
     @property
-    def OneSLPerFile(self):
+    def one_sl_per_file(self):
         """Query whether to save just one logical starlist per file
 
         Return True if the output starlist(s) should be split into
@@ -1343,7 +1343,7 @@ class OptionsUI:
         return self.multiple_starlists.isChecked()
 
     @property
-    def ApertureSizeFWHM(self):
+    def aperture_size_fwhm(self):
         """Query the aperture size factor
 
         The aperture size factor is multiplied by the image's average
@@ -1373,7 +1373,7 @@ class OptionsUI:
         return entry_float
 
     @property
-    def UseAnnulus(self):
+    def use_annulus(self):
         """Query whether an annulus aperture helps estimate background
 
         Return True if the sky background found in an annulus around
@@ -1653,15 +1653,15 @@ class OptionsAPI(BaseModel):
         return self.add_WCS_to_image
 
     @property
-    def OneSLPerFile(self):
+    def one_sl_per_file(self):
         return self.multiple_starlists
 
     @property
-    def ApertureSizeFWHM(self):
+    def aperture_size_fwhm(self):
         return self.aperture_size
 
     @property
-    def UseAnnulus(self):
+    def use_annulus(self):
         return self.subtract_annulus
 
 class UI:
@@ -2019,7 +2019,7 @@ class MainWindow:
                                          meta,
                                          starlist_tgtname,
                                          wcs=self._wcs)
-            if self.options.OneSLPerFile:
+            if self.options.one_sl_per_file:
                 for output in output_objs:
                     with open(output.filename, 'w') as fp:
                         json.dump([output.starlist_dict], fp, indent=2)
