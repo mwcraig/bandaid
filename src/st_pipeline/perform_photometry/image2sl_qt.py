@@ -876,14 +876,22 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
             sources['x'] = result['xcenter'].value
             sources['y'] = result['ycenter'].value
 
-        tot_noise_bkgd = np.sqrt(apertures.area) * noise_bkgd_per_pixel
+        # Clean up the sources table
+        bad_rows = []
+        for row,content in enumerate(sources):
+            if (content['x'] <= 0.0
+                or content['y'] <= 0.0
+                or content['x'] >= (width-3)
+                or content['y'] >= (height-3)
+                or content['tot_flux'] <= 0.0):
+                bad_rows.append(row)
+        sources.remove_rows(bad_rows)
 
+        tot_noise_bkgd = np.sqrt(apertures.area) * noise_bkgd_per_pixel
 
         sources.rename_column('peak', 'peak_flux')
 
         # Calculate errors using table columns and star flux error in column
-        # Negative fluxes are not allowed
-        sources['tot_flux'][sources['tot_flux'] < 0] = 0.0
         poiss_noise = np.sqrt(starlist.gain * sources['tot_flux'])
         tot_noise = np.sqrt(poiss_noise**2 + tot_noise_bkgd**2) / starlist.gain
         sources['flux_err'] = tot_noise
@@ -1073,9 +1081,6 @@ def ProcessRGBFile(filename, options, temp_dir, metadata,
                                                          starlist_filename,
                                                          filter,
                                                          wcs=wcs))
-                starlists.append(starlist_file)
-
-            print("Starlist(s) stored in ", starlists)
     else:
         # Not de-Bayered; treat as single monochrome image
         starlist_filename = starlist_tgtname.replace("$$","M") # M==monochrome
