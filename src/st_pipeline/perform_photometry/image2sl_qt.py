@@ -909,66 +909,93 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
     ## 3. Otherwise, go out to astrometry.net and use the online
     ## plate-solver.
     ################################
+    def BuildLocalCommand(temp_dir):
+        print("WCS using temp_dir = ", temp_dir.name)
+        temp_dirname = temp_dir.name
+        plate_solve_dir = temp_dirname
+
+        trial_dir = plate_solve_dir
+        command = "solve-field "
+        temp_dir_arg = " -D " + str(plate_solve_dir).replace('\\', '/')
+        command += temp_dir_arg
+        print("plate_solve_dir = ", plate_solve_dir)
+        print("temp_dir_arg = ", temp_dir_arg)
+        #command += (" --config + config_file)
+        if 'PIXSCALE' in metadata and metadata['PIXSCALE'] is not None:
+            pixelscale = metadata['PIXSCALE']
+        elif 'pixscale' in metadata and metadata['pixscale'] is not None:
+            pixelscale = metadata['pixscale']
+        else:
+            raise ValueError("Pixelscale not defined.")
+        pixel_low = pixelscale * 0.9
+        pixel_hi = pixelscale * 1.1
+        command += (" -L " + str(pixel_low)
+                    + " -H " + str(pixel_hi)
+                    + " -u arcsecperpix ")
+
+        if ('DEC' in metadata and 'RA' in metadata and
+            metadata['DEC'] is not None and metadata['RA'] is not None):
+            command += (" -3 " + str(metadata['RA'])
+                        + " -4 " + str(metadata['DEC']))
+        elif ('dec' in metadata and 'ra' in metadata and
+              metadata['dec'] is not None and metadata['ra'] is not None):
+            command += (" -3 " + str(metadata['ra'])
+                        + " -4 " + str(metadata['dec']))
+        else:
+            raise ValueError("Dec/RA not defined")
+
+        if 'FOV_RAD' in metadata and metadata['FOV_RAD'] is not None:
+            command += (" -5 " + str(metadata['FOV_RAD']))
+        elif 'fov_rad' in metadata and metadata['fov_rad'] is not None:
+            command += (" -5 " + str(metadata['fov_rad']))
+        else:
+            raise Exception("Image FOV not defined")
+
+        command += (" '" + str(filename) + "'")
+
+        return command
 
     if not wcs:
-        if shutil.which('solve-field') is not None:
-            import os # maybe os.system to be replaced with subprocess.run?
-            ################################
-            ## Plate-solve the image
-            ################################
-            temp_dir = tempfile.TemporaryDirectory()
-            print("WCS using temp_dir = ", temp_dir.name)
-            temp_dirname = temp_dir.name
-            plate_solve_dir = temp_dirname
-
-            trial_dir = plate_solve_dir
-            command = "solve-field "
-            command += (" -D " + plate_solve_dir)
-            #command += (" --config + config_file)
-            if 'PIXSCALE' in metadata and metadata['PIXSCALE'] is not None:
-                pixelscale = metadata['PIXSCALE']
-            elif 'pixscale' in metadata and metadata['pixscale'] is not None:
-                pixelscale = metadata['pixscale']
+        ################################
+        ## Plate-solve the image
+        ################################
+        import os # maybe os.system to be replaced with subprocess.run?
+        temp_dir = tempfile.TemporaryDirectory()
+        local_system = platform.system()
+        if local_system == 'Windows':
+            p = Path(os.path.expandvars('%LOCALAPPDATA%'))
+            q = p / 'cygwin_ansvr' / 'bin' / 'solve-field'
+            if q.exists():
+                cmd = BuildLocalCommand(temp_dir)
+                full_cmd = f"%LOCALAPPDATA%\\cygwin_ansvr\\bin\\bash.exe --login -c '{cmd}'"
+                print("Executing: ", full_cmd)
+                return_code= os.system(full_cmd)
+                print("solve-field returned ", return_code)
+                if return_code:
+                    raise ValueError("Abnormal termination of solve-field")
             else:
-                raise ValueError("Pixelscale not defined.")
-            pixel_low = pixelscale * 0.9
-            pixel_hi = pixelscale * 1.1
-            command += (" -L " + str(pixel_low)
-                        + " -H " + str(pixel_hi)
-                        + " -u arcsecperpix ")
-
-            if ('DEC' in metadata and 'RA' in metadata and
-                metadata['DEC'] is not None and metadata['RA'] is not None):
-                command += (" -3 " + str(metadata['RA'])
-                            + " -4 " + str(metadata['DEC']))
-            elif ('dec' in metadata and 'ra' in metadata and
-                metadata['dec'] is not None and metadata['ra'] is not None):
-                command += (" -3 " + str(metadata['ra'])
-                            + " -4 " + str(metadata['dec']))
-            else:
-                raise ValueError("Dec/RA not defined")
-
-            if 'FOV_RAD' in metadata and metadata['FOV_RAD'] is not None:
-                command += (" -5 " + str(metadata['FOV_RAD']))
-            elif 'fov_rad' in metadata and metadata['fov_rad'] is not None:
-                command += (" -5 " + str(metadata['fov_rad']))
-            else:
-                raise Exception("Image FOV not defined")
-
-            command += (" '" + str(filename) + "'")
-            print("Executing: ", command)
-
-            if os.system(command) != 0:
-                raise ValueError("Abnormal termination of solve-field")
-
-            wcs_basename = Path(filename).with_suffix(".new").name
-            print("wcs_basename = ", wcs_basename)
-            wcs_pathname = Path(temp_dir.name) / wcs_basename
-            print("Looking for WCS info in ", str(wcs_pathname))
-            with fits.open(str(wcs_pathname)) as hdul:
-                header = hdul[0].header
-                wcs = WCS(header)
+                cmd = None
         else:
+            localdir = Path.home() / "AppData" / "Local" / "STWG"
+            if shutil.which('solve-field') is not None:
+                cmd = BuildLocalCommand(temp_dir)
+                print("Executing: ", cmd)
+
+                if os.system(cmd) != 0:
+                    raise ValueError("Abnormal termination of solve-field")
+            else:
+                cmd = None
+
+        if cmd is not None:
+                wcs_basename = Path(filename).with_suffix(".new").name
+                print("wcs_basename = ", wcs_basename)
+                wcs_pathname = Path(temp_dir.name) / wcs_basename
+                print("Looking for WCS info in ", str(wcs_pathname))
+                with fits.open(str(wcs_pathname)) as hdul:
+                    header = hdul[0].header
+                    wcs = WCS(header)
+
+        if wcs is None:
             ast = AstrometryNet()
             if astrometry_api_key == None:
                 global ui
@@ -1300,7 +1327,7 @@ class OptionsUI:
         self.psf_photometry = ui.window.PSFPhotButton
         self.aperture_photometry = ui.window.AperturePhotButton
 
-        self.multiple_starlists = ui.window.one_sl_per_file
+        self.multiple_starlists = ui.window.OneSLPerFile
         self.add_WCS_to_image = ui.window.UpdateWCSButton
         self.aperture_size = ui.window.ApertureSize
         self.subtract_annulus = ui.window.AnnulusSubtractionCheckbox
