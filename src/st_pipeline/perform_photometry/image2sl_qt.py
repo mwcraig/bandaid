@@ -1325,7 +1325,7 @@ class OptionsUI:
         self.subtract_annulus = ui.window.AnnulusSubtractionCheckbox
 
     @property
-    def AddWCS(self):
+    def add_wcs(self):
         """Query whether WCS keywords need to be added to the image
 
         Return True if the input FITS file needs to have the WCS
@@ -1668,7 +1668,7 @@ class OptionsAPI(BaseModel):
         return self.psf_photometry
 
     @property
-    def AddWCS(self):
+    def add_wcs(self):
         return self.add_WCS_to_image
 
     @property
