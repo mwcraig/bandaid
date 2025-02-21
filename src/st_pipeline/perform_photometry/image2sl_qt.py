@@ -976,7 +976,6 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
             else:
                 cmd = None
         else:
-            localdir = Path.home() / "AppData" / "Local" / "STWG"
             if shutil.which('solve-field') is not None:
                 cmd = BuildLocalCommand(temp_dir)
                 print("Executing: ", cmd)
