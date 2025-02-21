@@ -370,16 +370,14 @@ class OutputObject:
 
     Attributes
     ----------
-    starlist_dict: dict
-        Dictionary containing the representation of the starlist that
-        will be handed to the JSON serializer. This dictionary should
-        be for a full StarListSet.
+    logical_starlist: list of schema_definition.Starlist
+        The logical starlist that will be handed to the JSON serializer.
     filename: Path
         The filename path that the file will be stored into if each
         starlist is given its own file; otherwise, this is ignored
     """
 
-    def __init__(self, filename, starlist_dict):
+    def __init__(self, filename, logical_starlist):
         """Create an OutputObject
 
         Create an OutputObject
@@ -390,9 +388,8 @@ class OutputObject:
             The filename path that the file will be stored into if
             each starlist is given its own file; otherwise, this is
             ignored
-        starlist_dict: dict
-            Dictionary containing the representation of the starlist
-        that will be handed to the JSON serializer
+        logical_starlist: laist of schema_definition.Starlist
+            The starlist that will be handed to the JSON serializer
 
         Returns
         -------
@@ -400,13 +397,12 @@ class OutputObject:
             A new object of the class OutputObject
         """
         self.filename = filename
-        self.starlist_dict = starlist_dict
-        if not isinstance(starlist_dict, dict):
+        self.logical_starlist = logical_starlist
+        if not isinstance(logical_starlist, list):
             print("Bad constructor call to OutputObject.")
-            print("starlist_dict = ", starlist_dict)
-            print("starlist_dict is a ", type(starlist_dict).__name__)
+            print("logical_starlist = ", logical_starlist)
+            print("logical_starlist is a ", type(logical_starlist).__name__)
             assert False, "Invalid OutputObject"
-
 
     def Write(self):
         """Write this logical starlist to its own file
@@ -422,7 +418,8 @@ class OutputObject:
         None
         """
         with open(self.filename, 'w') as fp:
-            json.dump(self.starlist_dict, fp, indent=2)
+            json.dump(StarListSet(star_lists=self.logical_starlist).model_dump(),
+                      fp, indent=2)
 
 def ProbeFileForType(filename):
     """Figure out what kind of a smart telescope created an image
@@ -914,7 +911,6 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         temp_dirname = temp_dir.name
         plate_solve_dir = temp_dirname
 
-        trial_dir = plate_solve_dir
         command = "solve-field "
         temp_dir_arg = " -D " + str(plate_solve_dir).replace('\\', '/')
         command += temp_dir_arg
@@ -976,7 +972,6 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
             else:
                 cmd = None
         else:
-            localdir = Path.home() / "AppData" / "Local" / "STWG"
             if shutil.which('solve-field') is not None:
                 cmd = BuildLocalCommand(temp_dir)
                 print("Executing: ", cmd)
@@ -1037,11 +1032,8 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
     print(sources.colnames)
     print(StarItem.model_fields.keys())
     starlist.staritems = table_to_star_items(sources)
-    sl_set = StarListSet(star_lists=[starlist])
-    #Path(starlist_json_path).write_text(json.dumps(sl_set.model_dump(), indent=2))
 
-    return OutputObject(starlist_json_path,
-                        sl_set.model_dump())
+    return OutputObject(starlist_json_path, [starlist])
 
 def ProcessRGBFile(filename, options, temp_dir, metadata,
                    starlist_tgtname, wcs=None):
@@ -2048,47 +2040,15 @@ class MainWindow:
                                          wcs=self._wcs)
             if self.options.one_sl_per_file:
                 for output in output_objs:
-                    with open(output.filename, 'w') as fp:
-                        json.dump([output.starlist_dict], fp, indent=2)
+                    output.Write()
             else:
                 filename = str(Path(orig_dir, orig_file_base+".star"))
+                logical_starlists = [x for out in output_objs for x in out.logical_starlist]
+                print("Writing total of ", len(logical_starlists), " logical starlists.")
+                sl_set = StarListSet(star_lists=logical_starlists)
                 with open(filename, 'w') as fp:
-                    json.dump(CombineStarlists([x.starlist_dict for x in output_objs]),
-                              fp, indent=2)
-
+                    json.dump(sl_set.model_dump(), fp, indent=2)
         return False
-
-def CombineStarlists(list_of_starlist_dicts):
-    """Combine multiple starlist dictionaries into one extended StarListSet dictionary
-
-    Combine a set of starlist dictionaries into the structure of a
-    StarListSet (that is, a single dictionary that contains a list of
-    starlist dictionaries as a value within that top-level
-    dictionary).
-
-    Parameters
-    ----------
-    list_of_starlist_dicts: list of dict
-        A list of Python dictionaries (possibly generated with
-        Starlist.ToDict) that will be combined
-
-    Returns
-    -------
-    dict
-        A single dictionary that represents the JSON encoding of a
-    StarListSet.
-    """
-
-    assert len(list_of_starlist_dicts) > 0
-    assert all((isinstance(x, dict) for x in list_of_starlist_dicts))
-    # At the top level, there is a "schema_version" and a "star_lists"
-    final = {}
-    final['schema_version'] = list_of_starlist_dicts[0]['schema_version']
-    star_lists = []
-    for sl in list_of_starlist_dicts:
-        star_lists.extend(sl['star_lists'])
-    final['star_lists'] = star_lists
-    return final
 
 class ErrorPopup:
     """An error popup window
