@@ -914,7 +914,6 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         temp_dirname = temp_dir.name
         plate_solve_dir = temp_dirname
 
-        trial_dir = plate_solve_dir
         command = "solve-field "
         temp_dir_arg = " -D " + str(plate_solve_dir).replace('\\', '/')
         command += temp_dir_arg
