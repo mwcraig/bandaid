@@ -788,7 +788,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
     with fits.open(filename) as hdul:
         hdu0h = hdul[0].header
         image_data = hdul[0].data.astype(np.float32)
-        (width, height) = np.shape(hdul[0].data)
+        (height, width) = np.shape(hdul[0].data)
         print("height = ", height, ", width = ", width)
 
         # Estimate the background
@@ -816,6 +816,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         clean_image = (image_data - background)
         (mean, median, std) = sigma_clipped_stats(clean_image, sigma=3.0)
         sources = daofind(clean_image)
+        print("Initial quicklook found ", len(sources), " stars.")
 
         # Sort the table in-place by flux in reverse order
         sources.sort('flux', reverse=True)
@@ -834,6 +835,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         # Now that we know the *real* FWHM, re-find the stars
         daofind = DAOStarFinder(fwhm=fwhm, threshold=4.0*std)
         sources = daofind(clean_image)
+        print("Official source extraction found ", len(sources), " stars.")
         sources.sort('flux', reverse=True)
 
         phot_radius = options.aperture_size_fwhm * fwhm
@@ -874,6 +876,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
             sources['y'] = result['ycenter'].value
 
         # Clean up the sources table
+        print("Sources cleanup starts with ", len(sources), " stars.")
         bad_rows = []
         for row,content in enumerate(sources):
             if (content['x'] <= 3.0
@@ -882,7 +885,12 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
                 or content['y'] >= (height-3)
                 or content['tot_flux'] <= 0.0):
                 bad_rows.append(row)
+                print("Removing ", content['x'], content['y'], content['tot_flux'])
+        print("Removing ", bad_rows)
+        print("... removing ", len(bad_rows), " stars.")
         sources.remove_rows(bad_rows)
+        print("... now have ", len(sources), " stars.")
+        print("width = ", width, ", and height = ", height)
 
         tot_noise_bkgd = np.sqrt(apertures.area) * noise_bkgd_per_pixel
 
@@ -1031,6 +1039,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
 
     print(sources.colnames)
     print(StarItem.model_fields.keys())
+    print("Creating starlist with ", len(sources), " stars.")
     starlist.staritems = table_to_star_items(sources)
 
     return OutputObject(starlist_json_path, [starlist])
