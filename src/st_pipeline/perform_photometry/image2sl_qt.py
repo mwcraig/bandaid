@@ -885,8 +885,6 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
                 or content['y'] >= (height-3)
                 or content['tot_flux'] <= 0.0):
                 bad_rows.append(row)
-                print("Removing ", content['x'], content['y'], content['tot_flux'])
-        print("Removing ", bad_rows)
         print("... removing ", len(bad_rows), " stars.")
         sources.remove_rows(bad_rows)
         print("... now have ", len(sources), " stars.")
@@ -895,6 +893,8 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         tot_noise_bkgd = np.sqrt(apertures.area) * noise_bkgd_per_pixel
 
         sources.rename_column('peak', 'peak_flux')
+        # Sort so that order is well-defined and tests will pass
+        sources.sort(keys='tot_flux', reverse=True)
 
         # Calculate errors using table columns and star flux error in column
         poiss_noise = np.sqrt(starlist.gain * sources['tot_flux'])
