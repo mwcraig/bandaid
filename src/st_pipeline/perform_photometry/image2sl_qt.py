@@ -847,6 +847,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         positions = list(zip(sources['xcentroid'],
                              sources['ycentroid']))
         apertures = aperture.CircularAperture(positions, r=phot_radius)
+        tot_noise_bkgd = np.sqrt(apertures.area) * noise_bkgd_per_pixel
 
         if options.use_annulus:
             annuli = aperture.CircularAnnulus(positions, annulus_inner, annulus_outer)
@@ -877,20 +878,18 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
 
         # Clean up the sources table
         print("Sources cleanup starts with ", len(sources), " stars.")
+
         bad_rows = []
         for row,content in enumerate(sources):
             if (content['x'] <= 3.0
                 or content['y'] <= 3.0
                 or content['x'] >= (width-3)
                 or content['y'] >= (height-3)
-                or content['tot_flux'] <= 0.0):
+                or content['tot_flux'] <= tot_noise_bkgd):
                 bad_rows.append(row)
         print("... removing ", len(bad_rows), " stars.")
         sources.remove_rows(bad_rows)
         print("... now have ", len(sources), " stars.")
-        print("width = ", width, ", and height = ", height)
-
-        tot_noise_bkgd = np.sqrt(apertures.area) * noise_bkgd_per_pixel
 
         sources.rename_column('peak', 'peak_flux')
         # Sort so that order is well-defined and tests will pass
