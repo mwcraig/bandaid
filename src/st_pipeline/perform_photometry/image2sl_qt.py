@@ -530,6 +530,129 @@ valid_meta_keys = ['schema_version',
                    'ra',
                    'fov_rad']
 
+class MetaValidator:
+    """Class that tests metadata to see what's missing
+
+    Tool for testing metadata to see what's missing and print
+    intelligent error messages to the console
+
+    Attributes
+    ----------
+    option: list of str
+        List of keywords that are not required in the input
+    final: dict of {str, value}
+        Metadata dictionary after all metadata has settled down; this
+        is the metadata set that will be validated.
+    json: dict of {str, value}
+        The metadata that was pulled from the metadata.JSON file
+    fits: dict of {str, value}
+        The metadata that was pulled from the FITS file. (They keyword
+        value will be the *metadata* form of the keyword, *not* the
+        FITS form of the keyword. (A conversion is done for some smart
+        telescope models.)
+    """
+    def __init__(self):
+        """Create an instance of a MetaValidator
+        """
+        self.Clear()
+        self.optional = ['schema_version', 'filter', 'tel_firmware']
+
+    def Clear(self):
+        """Clear state of the validator in preparation for another cycle
+        """
+        self.final = {}
+        self.json = {}
+        self.fits = {}
+
+    def AddJSONItem(self, key, value):
+        """Add a piece of metadata pulled from the JSON file
+
+        Parameters
+        ----------
+        key: str
+            The metadata keyword that was read
+        value: any value
+            The value that was read
+        """
+        self.json[key] = value
+
+    def AddFITSItem(self, key, value):
+        """Add a piece of metadata pulled from the FITS file
+
+        Parameters
+        ----------
+        key: str
+            The metadata keyword that was read
+        value: any value
+            The value that was read
+        """
+        self.fits[key] = value
+
+    def Validate(self, final):
+        """Check the metadata and generate error messages if wrong
+
+        Parameters
+        ----------
+        final: dict {str, any value}
+            The final metadata dictionary to be checked
+        """
+        self.final = final
+        missing = []
+
+        for key in valid_meta_keys:
+            if key not in self.final and key not in self.optional:
+                missing.append(key)
+
+        if len(missing) > 0:
+            self.DumpToConsole(missing)
+            return False
+        return True
+
+    def ConsoleDump1Line(self, key, reqd, found_json, found_fits, final):
+        """Print one metadata summary line on the console
+
+        Parameters
+        ----------
+        key: str
+            The metadata key
+        reqd: str in ['Opt', 'Req']
+            'Opt' if this metadata is optional, else 'Req'
+        found_json: str
+            The str(value) of the metadata pulled from the JSON file
+        found_fits: str
+            The str(value) of the metadata pulled from the FITS file
+        final: str
+            The str(value) of the final metadata used to generate the starlist
+        """
+        print(f'{key:<25} {reqd:4} {found_json:<15} {found_fits:<15} {final:<15}')
+
+    def DumpToConsole(self, missing):
+        """Dump status of the validation to the console
+
+        Parameters
+        ----------
+        missing: list of str
+            List of the metadata keywords that don't have values, but
+            are required keywords.
+        """
+        print("The following metadata key(s) are missing:")
+        print(missing)
+
+        print("\n Validation Table")
+        self.ConsoleDump1Line('Key', 'Reqd', 'Found JSON', 'Found FITS', 'Final')
+        for key in valid_meta_keys:
+            json_value = '' if key not in self.json else str(self.json[key])
+            fits_value = '' if key not in self.fits else str(self.fits[key])
+            final_value = '' if key not in self.final else str(self.final[key])
+            self.ConsoleDump1Line(key,
+                                  'Opt' if key in self.optional else 'Req',
+                                  json_value,
+                                  fits_value,
+                                  final_value)
+        print('\n')
+
+meta_validator = MetaValidator()
+
 #
 # The so-called JSON metadata file is a temporary band-aid for smart
 # telescopes that are currently missing important FITS header
@@ -577,6 +700,7 @@ def ReadMetaFromJSON(filename, dict):
             if keyword not in valid_meta_keys:
                 print("Bad keyword in ", filename, ": ", keyword)
             else:
+                meta_validator.AddJSONItem(keyword, value)
                 dict[keyword] = value
 
 
@@ -615,6 +739,7 @@ def ReadMetaFromFITS(filename, dict):
                             ('DATE-OBS','obs_time'),
                             ('filter','block_filter')]:
                 if key in hdu0h:
+                    meta_validator.AddFITSItem(tgt, hdu0h[key])
                     dict[tgt] = hdu0h[key]
             ################
             ## FOV, Pixel scale
@@ -627,6 +752,7 @@ def ReadMetaFromFITS(filename, dict):
                             ('ra', 'ra'),
                             ('exposure', 'exposure')]:
                 if key in hdu0h:
+                    meta_validator.AddFITSItem(tgt, hdu0h[key])
                     dict[tgt] = hdu0h[key]
 
             dict['tel_manufac'] = 'ZWO'
@@ -655,6 +781,7 @@ def ReadMetaFromFITS(filename, dict):
                             ('ALTITUDE', 'site_elev'),
                             ('FOVDEC','dec')]:
                 if key in hdu0h:
+                    meta_validator.AddFITSItem(tgt, hdu0h[key])
                     dict[tgt] = hdu0h[key]
             dict['tel_manufac'] = 'Unistellar'
             dict['tel_model'] = 'eVscope'
@@ -671,6 +798,7 @@ def ReadMetaFromFITS(filename, dict):
                             ('ra','ra'),
                             ('dec','dec')]:
                 if key in hdu0h:
+                    meta_validator.AddFITSItem(tgt, hdu0h[key])
                     dict[tgt] = hdu0h[key]
             dict['tel_manufac'] = 'DwarfLab'
             dict['pixscale'] = 1.5*2 # after de-bayering
@@ -1971,6 +2099,7 @@ class MainWindow:
         bool
             Returns False to indicate that the thread (if used) should self-terminate
         """
+        meta_validator.Clear()
         image_list = self.options.image_file
         dark_filename = self.options.dark_file
         flat_filename = self.options.flat_file
@@ -2038,24 +2167,25 @@ class MainWindow:
 
             print("Final metadata is ", meta)
 
-            if self.options.GetColorBalance:
-                working_filename = BayerBalanceFile(working_filename, self.temp_dirname)
-            output_objs = ProcessRGBFile(working_filename,
-                                         self.options,
-                                         self.temp_dirname,
-                                         meta,
-                                         starlist_tgtname,
-                                         wcs=self._wcs)
-            if self.options.one_sl_per_file:
-                for output in output_objs:
-                    output.Write()
-            else:
-                filename = str(Path(orig_dir, orig_file_base+".star"))
-                logical_starlists = [x for out in output_objs for x in out.logical_starlist]
-                print("Writing total of ", len(logical_starlists), " logical starlists.")
-                sl_set = StarListSet(star_lists=logical_starlists)
-                with open(filename, 'w') as fp:
-                    json.dump(sl_set.model_dump(), fp, indent=2)
+            if meta_validator.Validate(meta):
+                if self.options.GetColorBalance:
+                    working_filename = BayerBalanceFile(working_filename, self.temp_dirname)
+                output_objs = ProcessRGBFile(working_filename,
+                                             self.options,
+                                             self.temp_dirname,
+                                             meta,
+                                             starlist_tgtname,
+                                             wcs=self._wcs)
+                if self.options.one_sl_per_file:
+                    for output in output_objs:
+                        output.Write()
+                else:
+                    filename = str(Path(orig_dir, orig_file_base+".star"))
+                    logical_starlists = [x for out in output_objs for x in out.logical_starlist]
+                    print("Writing total of ", len(logical_starlists), " logical starlists.")
+                    sl_set = StarListSet(star_lists=logical_starlists)
+                    with open(filename, 'w') as fp:
+                        json.dump(sl_set.model_dump(), fp, indent=2)
         return False
 
 class ErrorPopup:
