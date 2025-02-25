@@ -239,7 +239,7 @@ def DuplicateFileWithNewImage(hdul, new_data, new_filter, new_pathname):
     hdu.update_header()
     fits.writeto(new_pathname, new_data, header=hdu.header, overwrite=True)
 
-def BayerBalanceFile(filename, temp_dir):
+def BayerBalanceFile(filename):
     """Duplicate an image file while adjusting pixel values per the Bayer pattern
 
     Duplicate an existing FITS file, performing a linear adjustment to
@@ -255,8 +255,6 @@ def BayerBalanceFile(filename, temp_dir):
     ----------
     filename : str
         Pathname to the file to be duplicated
-    temp_dir : str
-        Pathname of the directory where the new file will be placed
 
     Returns
     -------
@@ -1312,7 +1310,7 @@ class FileChooser:
         else: # Big entry for image filenames
             self.file_mode = QFileDialog.ExistingFiles
 
-    def chooser_popup(self, button):
+    def chooser_popup(self, _):
         """Create popup window to choose file(s)
 
         Initiate the popup window to select one (or more) files. This
@@ -1320,11 +1318,6 @@ class FileChooser:
         other buttons and widgets in the application will be
         disabled. The selected filename will be put into the
         FileChooser's `text_entry_widget`.
-
-        Parameters
-        ----------
-        button : QPushButton
-            The button that triggered this popup window
 
         Returns
         -------
@@ -2163,7 +2156,7 @@ class MainWindow:
 
             if meta_validator.Validate(meta):
                 if self.options.GetColorBalance:
-                    working_filename = BayerBalanceFile(working_filename, self.temp_dirname)
+                    working_filename = BayerBalanceFile(working_filename)
                 output_objs = ProcessRGBFile(working_filename,
                                              self.options,
                                              self.temp_dirname,
