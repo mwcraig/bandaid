@@ -20,23 +20,6 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-import warnings
-
-import matplotlib.pyplot as plt
-from astropy.io import fits
-from astropy.stats import SigmaClip, sigma_clipped_stats
-from astropy.table import Table
-from astropy.visualization import SqrtStretch
-from astropy.visualization.mpl_normalize import ImageNormalize
-from astropy.wcs import WCS
-from astroquery.astrometry_net import AstrometryNet
-from photutils import aperture, psf
-from photutils.background import Background2D, MedianBackground
-from photutils.detection import DAOStarFinder
-from pydantic import BaseModel, ConfigDict
-
-warnings.filterwarnings('error', category=RuntimeWarning)
-
 import argparse
 import datetime
 import getopt
@@ -48,17 +31,45 @@ import statistics
 import sys
 import tempfile
 import threading
+import warnings
 from collections import namedtuple
 from pathlib import Path
 from typing import List
 
+import matplotlib.pyplot as plt
 import numpy as np
-
-#import sep
-from st_pipeline.perform_photometry import psf_fitting
+from astropy.io import fits
+from astropy.stats import SigmaClip, sigma_clipped_stats
+from astropy.table import Table
+from astropy.visualization import SqrtStretch
+from astropy.visualization.mpl_normalize import ImageNormalize
+from astropy.wcs import WCS
+from astroquery.astrometry_net import AstrometryNet
+from photutils import aperture, psf
+from photutils.background import Background2D, MedianBackground
+from photutils.detection import DAOStarFinder
+from pydantic import BaseModel, ConfigDict
+from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6.QtCore import QFile, QIODevice
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtUiTools import QUiLoader
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QProgressBar,
+    QVBoxLayout,
+)
 
 from .. import __version__
 from ..schema_definition import StarItem, StarList, StarListSet
+from .perform_photometry import psf_fitting
+
+warnings.filterwarnings('error', category=RuntimeWarning)
 
 astrometry_api_key = None
 
@@ -1256,22 +1267,6 @@ def ProcessRGBFile(filename, options, temp_dir, metadata,
 ################################################################
 ##        Display GUI Comes Next
 ################################################################
-
-from PySide6 import QtCore, QtGui, QtWidgets
-from PySide6.QtCore import QFile, QIODevice
-from PySide6.QtGui import QGuiApplication
-from PySide6.QtUiTools import QUiLoader
-from PySide6.QtWidgets import (
-    QCheckBox,
-    QDialog,
-    QDialogButtonBox,
-    QFileDialog,
-    QLabel,
-    QLineEdit,
-    QMessageBox,
-    QProgressBar,
-    QVBoxLayout,
-)
 
 
 class FileChooser:
