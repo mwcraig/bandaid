@@ -472,7 +472,7 @@ def ProbeFileForType(filename):
         ################################
         ## Unrecognized
         ################################
-        print("Unable to figure out Smart Telescope Type for file ", filename);
+        print("Unable to figure out Smart Telescope Type for file ", filename)
         raise ValueError("Unable to establish telescope type")
 
 ################################################################
