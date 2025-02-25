@@ -1128,7 +1128,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
 
         if wcs is None:
             ast = AstrometryNet()
-            if astrometry_api_key == None:
+            if astrometry_api_key is None:
                 global ui
                 dlg = QMessageBox(ui.window)
                 dlg.setWindowTitle("No astrometry.net API Key")
@@ -1951,7 +1951,10 @@ def GetAstrometryKey():
 
     try:
         return APIKeypathname.read_text()
-    except:
+    # It is much better to catch the specific exception(s) that are
+    # expected to happen, rather than catching all exceptions. Catching them
+    # all can hide bugs in the code.
+    except FileNotFoundError:
         return None
 
 def SaveAstrometryKey(key_value):
