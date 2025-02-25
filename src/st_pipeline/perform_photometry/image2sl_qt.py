@@ -31,7 +31,6 @@ import tempfile
 import warnings
 from collections import namedtuple
 from pathlib import Path
-from typing import List
 
 import numpy as np
 from astropy.io import fits
@@ -1765,7 +1764,7 @@ class OptionsAPI(BaseModel):
     dark_file: str = ""
     flat_file: str = ""
     meta_file: str = ""
-    image_file: List[str] = [""]
+    image_file: list[str] = [""]
 
     # These are accessed by the current code.
     @property
