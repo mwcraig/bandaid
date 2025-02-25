@@ -178,7 +178,7 @@ def StackImages(channel_list, options, temp_dir):
                 for card in comment:
                     hdu.header[keyword] = card
     hdu.data = np.zeros((height,width),dtype=np.float32)
-    for (bayer_id,(filter,channel)) in enumerate(channel_list):
+    for (bayer_id,(_, channel)) in enumerate(channel_list):
         with fits.open(channel) as hdul:
             source_hdu = hdul[0].data
             if options.InterpolateChannels:
