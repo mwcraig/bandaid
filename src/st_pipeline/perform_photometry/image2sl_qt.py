@@ -1988,7 +1988,7 @@ def SaveAstrometryKey(key_value):
 
     try:
         APIKeypathname.write_text(key_value)
-    except:
+    except (FileNotFoundError, json.JSONDecodeError):
         print("Error Trying to save API Key")
         raise
 
