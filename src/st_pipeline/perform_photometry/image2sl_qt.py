@@ -21,8 +21,6 @@
 # SOFTWARE.
 
 import argparse
-import datetime
-import getopt
 import json
 import math
 import platform
@@ -30,26 +28,21 @@ import shutil
 import statistics
 import sys
 import tempfile
-import threading
 import warnings
 from collections import namedtuple
 from pathlib import Path
 from typing import List
 
-import matplotlib.pyplot as plt
 import numpy as np
 from astropy.io import fits
 from astropy.stats import SigmaClip, sigma_clipped_stats
-from astropy.table import Table
-from astropy.visualization import SqrtStretch
-from astropy.visualization.mpl_normalize import ImageNormalize
 from astropy.wcs import WCS
 from astroquery.astrometry_net import AstrometryNet
 from photutils import aperture, psf
 from photutils.background import Background2D, MedianBackground
 from photutils.detection import DAOStarFinder
 from pydantic import BaseModel, ConfigDict
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtWidgets
 from PySide6.QtCore import QFile, QIODevice
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtUiTools import QUiLoader
@@ -61,7 +54,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
-    QProgressBar,
     QVBoxLayout,
 )
 
