@@ -67,7 +67,7 @@ from PySide6.QtWidgets import (
 
 from .. import __version__
 from ..schema_definition import StarItem, StarList, StarListSet
-from .perform_photometry import psf_fitting
+from . import psf_fitting
 
 warnings.filterwarnings('error', category=RuntimeWarning)
 
