@@ -221,8 +221,6 @@ def DuplicateFileWithNewImage(hdul, new_data, new_filter, new_pathname):
     None
 
     """
-    output_tgt = new_pathname
-
     hdu = fits.PrimaryHDU()
     # push keywords in from the original file
     for keyword in hdul[0].header:
@@ -919,7 +917,6 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
     print("model_validate: ", metadata)
     starlist = StarList.model_validate(metadata)
     with fits.open(filename) as hdul:
-        hdu0h = hdul[0].header
         image_data = hdul[0].data.astype(np.float32)
         (height, width) = np.shape(hdul[0].data)
         print("height = ", height, ", width = ", width)
@@ -1032,7 +1029,6 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         poiss_noise = np.sqrt(starlist.gain * sources['tot_flux'])
         tot_noise = np.sqrt(poiss_noise**2 + tot_noise_bkgd**2) / starlist.gain
         sources['flux_err'] = tot_noise
-        snr = sources['tot_flux'] / sources['flux_err']
 
         # Set flux errors to zero for negative fluxes
         sources['flux_err'][sources['tot_flux'] < 0] = 0.0
@@ -1338,7 +1334,6 @@ class FileChooser:
         dialog.setFileMode(self.file_mode)
         if dialog.exec():
             if self.multiple_files_okay:
-                filename_list = dialog.selectedFiles()
                 # Now append to the filelist
                 entry_list = dialog.selectedFiles()
                 for entry in entry_list:
@@ -2102,7 +2097,6 @@ class MainWindow:
         flat_filename = self.options.flat_file
         bias_filename = self.options.bias_file
         metadata_filename = self.options.meta_file
-        do_bayer_balance = self.options.GetColorBalance
 
         for image_filename in image_list:
             QGuiApplication.processEvents()
