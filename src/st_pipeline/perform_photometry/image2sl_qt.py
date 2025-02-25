@@ -953,7 +953,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         subset = sources[:subset_size]
         fwhm = psf.fit_fwhm(
             clean_image,
-            xypos=list(zip(subset['xcentroid'], subset['ycentroid'])),
+            xypos=list(zip(subset['xcentroid'], subset['ycentroid'], strict=False)),
             fit_shape=15
         ).mean()
 
@@ -972,7 +972,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
 
         # Perform the photometry
         positions = list(zip(sources['xcentroid'],
-                             sources['ycentroid']))
+                             sources['ycentroid'], strict=False))
         apertures = aperture.CircularAperture(positions, r=phot_radius)
         tot_noise_bkgd = np.sqrt(apertures.area) * noise_bkgd_per_pixel
 
@@ -1151,7 +1151,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
     # behavior of the original code.
     sources['bkgd_flux'] = [
         background[int(0.5+y), int(0.5+x)]
-        for (x, y) in zip(sources['x'], sources['y'])
+        for (x, y) in zip(sources['x'], sources['y'], strict=False)
     ]
 
     ################################
