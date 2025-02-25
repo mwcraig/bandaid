@@ -187,7 +187,7 @@ def StackImages(channel_list, options, temp_dir):
                 source_hdu = new_data
                 for y in range(height-1):
                     for x in range(width-1):
-                        tgt = sum((p[2]*orig_data[y+p[1],x+p[0]] for p in pattern[bayer_id]))
+                        tgt = sum(p[2]*orig_data[y+p[1],x+p[0]] for p in pattern[bayer_id])
                         new_data[y,x] = tgt
 
             hdu.data += source_hdu/16.0
@@ -689,7 +689,7 @@ def ReadMetaFromJSON(filename, dict):
         print("ERROR: Refusing to read JSON metadata file that exceeds 10K bytes.")
         raise ValueError
 
-    with open(filename, 'r') as fp:
+    with open(filename) as fp:
         try:
             data = json.load(fp)
         except json.JSONDecodeError:
