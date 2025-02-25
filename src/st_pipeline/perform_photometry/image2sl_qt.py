@@ -20,43 +20,45 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from astropy.io import fits
-from astropy.wcs import WCS
-from photutils import aperture, psf
-from photutils.detection import DAOStarFinder
-from photutils.background import Background2D, MedianBackground
-from astropy.stats import sigma_clipped_stats, SigmaClip
-from astropy.table import Table
-from astroquery.astrometry_net import AstrometryNet
+import warnings
 
 import matplotlib.pyplot as plt
+from astropy.io import fits
+from astropy.stats import SigmaClip, sigma_clipped_stats
+from astropy.table import Table
 from astropy.visualization import SqrtStretch
 from astropy.visualization.mpl_normalize import ImageNormalize
+from astropy.wcs import WCS
+from astroquery.astrometry_net import AstrometryNet
+from photutils import aperture, psf
+from photutils.background import Background2D, MedianBackground
+from photutils.detection import DAOStarFinder
 from pydantic import BaseModel, ConfigDict
 
-import warnings
 warnings.filterwarnings('error', category=RuntimeWarning)
 
-import threading
-from pathlib import Path
-import statistics
-import shutil
-import numpy as np
-import tempfile
-import getopt
-import datetime
-import math
-import sys
-import json
-import platform
-from collections import namedtuple
 import argparse
+import datetime
+import getopt
+import json
+import math
+import platform
+import shutil
+import statistics
+import sys
+import tempfile
+import threading
+from collections import namedtuple
+from pathlib import Path
 from typing import List
-#import sep
 
+import numpy as np
+
+#import sep
 from st_pipeline.perform_photometry import psf_fitting
+
 from .. import __version__
-from ..schema_definition import StarListSet, StarList, StarItem
+from ..schema_definition import StarItem, StarList, StarListSet
 
 astrometry_api_key = None
 
@@ -1090,7 +1092,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         ################################
         ## Plate-solve the image
         ################################
-        import os # maybe os.system to be replaced with subprocess.run?
+        import os  # maybe os.system to be replaced with subprocess.run?
         temp_dir = tempfile.TemporaryDirectory()
         local_system = platform.system()
         if local_system == 'Windows':
@@ -1255,14 +1257,22 @@ def ProcessRGBFile(filename, options, temp_dir, metadata,
 ##        Display GUI Comes Next
 ################################################################
 
-from PySide6 import QtCore, QtWidgets, QtGui
-
-from PySide6.QtWidgets import QFileDialog, QProgressBar, QDialog
-from PySide6.QtWidgets import QVBoxLayout, QLabel, QCheckBox, QDialogButtonBox
-from PySide6.QtWidgets import QLineEdit, QMessageBox
-from PySide6.QtGui import QGuiApplication
+from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import QFile, QIODevice
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtUiTools import QUiLoader
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QProgressBar,
+    QVBoxLayout,
+)
+
 
 class FileChooser:
     """Select one or more files for processing
