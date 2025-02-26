@@ -94,8 +94,8 @@ def DeBayerFile(filename, pattern, temp_dir):
     """
     with fits.open(filename) as hdul:
         temp1 = hdul[0].data[0::2,0::2]
-        temp2 = hdul[0].data[1::2,0::2]
-        temp3 = hdul[0].data[0::2,1::2]
+        temp2 = hdul[0].data[0::2,1::2]
+        temp3 = hdul[0].data[1::2,0::2]
         temp4 = hdul[0].data[1::2,1::2]
         array = [temp1, temp2, temp3, temp4]
         output_filenames = [] # each entry in this list is a tuple: (filter, filename)
@@ -103,7 +103,7 @@ def DeBayerFile(filename, pattern, temp_dir):
         for index in range(4):
             color = pattern[index]
             output_tgt = Path(temp_dir) / ("image"+str(index)+"_"+color+".fits")
-
+        
             hdu = fits.PrimaryHDU()
             # push keywords in from the original file
             for keyword in hdul[0].header:
@@ -118,9 +118,11 @@ def DeBayerFile(filename, pattern, temp_dir):
 
             hdu.data = array[index]
             hdu.header['filter'] = ('T'+color, 'Bayer color mask')
+            hdu.header['BAYERPAT'] = ('NA', 'No longer a Bayered image')
             # update_header will "fix" the header to match the data
             hdu.update_header()
             fits.writeto(output_tgt, array[index], header=hdu.header, overwrite=True)
+            print("write debayered image: ", output_tgt) # so you can look at the image files
             ImageDescriptor = namedtuple('ImageDescriptor', ['filter','filename'])
             output_filenames.append(ImageDescriptor(color,output_tgt))
         return output_filenames
@@ -1045,7 +1047,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         plate_solve_dir = temp_dirname
 
         command = "solve-field "
-        temp_dir_arg = " -D " + str(plate_solve_dir).replace('\\', '/')
+        temp_dir_arg = " -D " + str(plate_solve_dir) #.replace('\\', '/')
         command += temp_dir_arg
         print("plate_solve_dir = ", plate_solve_dir)
         print("temp_dir_arg = ", temp_dir_arg)
@@ -1091,7 +1093,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         import os  # maybe os.system to be replaced with subprocess.run?
         temp_dir = tempfile.TemporaryDirectory()
         local_system = platform.system()
-        if local_system == 'Windows':
+        if local_system == 'xWindows':
             p = Path(os.path.expandvars('%LOCALAPPDATA%'))
             q = p / 'cygwin_ansvr' / 'bin' / 'solve-field'
             if q.exists():
