@@ -20,43 +20,47 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from astropy.io import fits
-from astropy.wcs import WCS
-from photutils import aperture, psf
-from photutils.detection import DAOStarFinder
-from photutils.background import Background2D, MedianBackground
-from astropy.stats import sigma_clipped_stats, SigmaClip
-from astropy.table import Table
-from astroquery.astrometry_net import AstrometryNet
-
-import matplotlib.pyplot as plt
-from astropy.visualization import SqrtStretch
-from astropy.visualization.mpl_normalize import ImageNormalize
-from pydantic import BaseModel, ConfigDict
-
-import warnings
-warnings.filterwarnings('error', category=RuntimeWarning)
-
-import threading
-from pathlib import Path
-import statistics
-import shutil
-import numpy as np
-import tempfile
-import getopt
-import datetime
-import math
-import sys
-import json
-import platform
-from collections import namedtuple
 import argparse
-from typing import List
-#import sep
+import json
+import math
+import platform
+import shutil
+import statistics
+import sys
+import tempfile
+import warnings
+from collections import namedtuple
+from pathlib import Path
 
-from st_pipeline.perform_photometry import psf_fitting
+import numpy as np
+from astropy.io import fits
+from astropy.stats import SigmaClip, sigma_clipped_stats
+from astropy.wcs import WCS
+from astroquery.astrometry_net import AstrometryNet
+from photutils import aperture, psf
+from photutils.background import Background2D, MedianBackground
+from photutils.detection import DAOStarFinder
+from pydantic import BaseModel, ConfigDict
+from PySide6 import QtCore, QtWidgets
+from PySide6.QtCore import QFile, QIODevice
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtUiTools import QUiLoader
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QVBoxLayout,
+)
+
 from .. import __version__
-from ..schema_definition import StarListSet, StarList, StarItem
+from ..schema_definition import StarItem, StarList, StarListSet
+from . import psf_fitting
+
+warnings.filterwarnings('error', category=RuntimeWarning)
 
 astrometry_api_key = None
 
@@ -174,7 +178,7 @@ def StackImages(channel_list, options, temp_dir):
                 for card in comment:
                     hdu.header[keyword] = card
     hdu.data = np.zeros((height,width),dtype=np.float32)
-    for (bayer_id,(filter,channel)) in enumerate(channel_list):
+    for (bayer_id,(_, channel)) in enumerate(channel_list):
         with fits.open(channel) as hdul:
             source_hdu = hdul[0].data
             if options.InterpolateChannels:
@@ -183,7 +187,7 @@ def StackImages(channel_list, options, temp_dir):
                 source_hdu = new_data
                 for y in range(height-1):
                     for x in range(width-1):
-                        tgt = sum((p[2]*orig_data[y+p[1],x+p[0]] for p in pattern[bayer_id]))
+                        tgt = sum(p[2]*orig_data[y+p[1],x+p[0]] for p in pattern[bayer_id])
                         new_data[y,x] = tgt
 
             hdu.data += source_hdu/16.0
@@ -216,8 +220,6 @@ def DuplicateFileWithNewImage(hdul, new_data, new_filter, new_pathname):
     None
 
     """
-    output_tgt = new_pathname
-
     hdu = fits.PrimaryHDU()
     # push keywords in from the original file
     for keyword in hdul[0].header:
@@ -236,7 +238,7 @@ def DuplicateFileWithNewImage(hdul, new_data, new_filter, new_pathname):
     hdu.update_header()
     fits.writeto(new_pathname, new_data, header=hdu.header, overwrite=True)
 
-def BayerBalanceFile(filename, temp_dir):
+def BayerBalanceFile(filename):
     """Duplicate an image file while adjusting pixel values per the Bayer pattern
 
     Duplicate an existing FITS file, performing a linear adjustment to
@@ -252,8 +254,6 @@ def BayerBalanceFile(filename, temp_dir):
     ----------
     filename : str
         Pathname to the file to be duplicated
-    temp_dir : str
-        Pathname of the directory where the new file will be placed
 
     Returns
     -------
@@ -447,7 +447,7 @@ def ProbeFileForType(filename):
         ################################
         ## Unrecognized
         ################################
-        print("Unable to figure out Smart Telescope Type for file ", filename);
+        print("Unable to figure out Smart Telescope Type for file ", filename)
         raise ValueError("Unable to establish telescope type")
 
 ################################################################
@@ -664,7 +664,7 @@ def ReadMetaFromJSON(filename, dict):
         print("ERROR: Refusing to read JSON metadata file that exceeds 10K bytes.")
         raise ValueError
 
-    with open(filename, 'r') as fp:
+    with open(filename) as fp:
         try:
             data = json.load(fp)
         except json.JSONDecodeError:
@@ -889,7 +889,6 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
     print("model_validate: ", metadata)
     starlist = StarList.model_validate(metadata)
     with fits.open(filename) as hdul:
-        hdu0h = hdul[0].header
         image_data = hdul[0].data.astype(np.float32)
         (height, width) = np.shape(hdul[0].data)
         print("height = ", height, ", width = ", width)
@@ -929,7 +928,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         subset = sources[:subset_size]
         fwhm = psf.fit_fwhm(
             clean_image,
-            xypos=list(zip(subset['xcentroid'], subset['ycentroid'])),
+            xypos=list(zip(subset['xcentroid'], subset['ycentroid'], strict=False)),
             fit_shape=15
         ).mean()
 
@@ -948,7 +947,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
 
         # Perform the photometry
         positions = list(zip(sources['xcentroid'],
-                             sources['ycentroid']))
+                             sources['ycentroid'], strict=False))
         apertures = aperture.CircularAperture(positions, r=phot_radius)
         tot_noise_bkgd = np.sqrt(apertures.area) * noise_bkgd_per_pixel
 
@@ -1002,7 +1001,6 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         poiss_noise = np.sqrt(starlist.gain * sources['tot_flux'])
         tot_noise = np.sqrt(poiss_noise**2 + tot_noise_bkgd**2) / starlist.gain
         sources['flux_err'] = tot_noise
-        snr = sources['tot_flux'] / sources['flux_err']
 
         # Set flux errors to zero for negative fluxes
         sources['flux_err'][sources['tot_flux'] < 0] = 0.0
@@ -1065,7 +1063,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         ################################
         ## Plate-solve the image
         ################################
-        import os # maybe os.system to be replaced with subprocess.run?
+        import os  # maybe os.system to be replaced with subprocess.run?
         temp_dir = tempfile.TemporaryDirectory()
         local_system = platform.system()
         if local_system == 'Windows':
@@ -1102,7 +1100,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
 
         if wcs is None:
             ast = AstrometryNet()
-            if astrometry_api_key == None:
+            if astrometry_api_key is None:
                 global ui
                 dlg = QMessageBox(ui.window)
                 dlg.setWindowTitle("No astrometry.net API Key")
@@ -1128,7 +1126,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
     # behavior of the original code.
     sources['bkgd_flux'] = [
         background[int(0.5+y), int(0.5+x)]
-        for (x, y) in zip(sources['x'], sources['y'])
+        for (x, y) in zip(sources['x'], sources['y'], strict=False)
     ]
 
     ################################
@@ -1233,14 +1231,6 @@ def ProcessRGBFile(filename, options, temp_dir, metadata,
 ##        Display GUI Comes Next
 ################################################################
 
-from PySide6 import QtCore, QtWidgets, QtGui
-
-from PySide6.QtWidgets import QFileDialog, QProgressBar, QDialog
-from PySide6.QtWidgets import QVBoxLayout, QLabel, QCheckBox, QDialogButtonBox
-from PySide6.QtWidgets import QLineEdit, QMessageBox
-from PySide6.QtGui import QGuiApplication
-from PySide6.QtCore import QFile, QIODevice
-from PySide6.QtUiTools import QUiLoader
 
 class FileChooser:
     """Select one or more files for processing
@@ -1297,7 +1287,7 @@ class FileChooser:
         else: # Big entry for image filenames
             self.file_mode = QFileDialog.ExistingFiles
 
-    def chooser_popup(self, button):
+    def chooser_popup(self, _):
         """Create popup window to choose file(s)
 
         Initiate the popup window to select one (or more) files. This
@@ -1305,11 +1295,6 @@ class FileChooser:
         other buttons and widgets in the application will be
         disabled. The selected filename will be put into the
         FileChooser's `text_entry_widget`.
-
-        Parameters
-        ----------
-        button : QPushButton
-            The button that triggered this popup window
 
         Returns
         -------
@@ -1319,7 +1304,6 @@ class FileChooser:
         dialog.setFileMode(self.file_mode)
         if dialog.exec():
             if self.multiple_files_okay:
-                filename_list = dialog.selectedFiles()
                 # Now append to the filelist
                 entry_list = dialog.selectedFiles()
                 for entry in entry_list:
@@ -1758,7 +1742,7 @@ class OptionsAPI(BaseModel):
     dark_file: str = ""
     flat_file: str = ""
     meta_file: str = ""
-    image_file: List[str] = [""]
+    image_file: list[str] = [""]
 
     # These are accessed by the current code.
     @property
@@ -1937,7 +1921,10 @@ def GetAstrometryKey():
 
     try:
         return APIKeypathname.read_text()
-    except:
+    # It is much better to catch the specific exception(s) that are
+    # expected to happen, rather than catching all exceptions. Catching them
+    # all can hide bugs in the code.
+    except FileNotFoundError:
         return None
 
 def SaveAstrometryKey(key_value):
@@ -1971,7 +1958,7 @@ def SaveAstrometryKey(key_value):
 
     try:
         APIKeypathname.write_text(key_value)
-    except:
+    except (FileNotFoundError, json.JSONDecodeError):
         print("Error Trying to save API Key")
         raise
 
@@ -2083,7 +2070,6 @@ class MainWindow:
         flat_filename = self.options.flat_file
         bias_filename = self.options.bias_file
         metadata_filename = self.options.meta_file
-        do_bayer_balance = self.options.GetColorBalance
 
         for image_filename in image_list:
             QGuiApplication.processEvents()
@@ -2147,7 +2133,7 @@ class MainWindow:
 
             if meta_validator.Validate(meta):
                 if self.options.GetColorBalance:
-                    working_filename = BayerBalanceFile(working_filename, self.temp_dirname)
+                    working_filename = BayerBalanceFile(working_filename)
                 output_objs = ProcessRGBFile(working_filename,
                                              self.options,
                                              self.temp_dirname,
