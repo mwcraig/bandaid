@@ -358,7 +358,7 @@ def BayerBalanceFile(filename, temp_dir):
         DuplicateFileWithNewImage(hdul, new_data, "M", new_filename)
         return new_filename
 
-class OutputObject:
+class OutputObject(BaseModel):
     """This class represents one logical output (result) starlist
 
     One starlist file can contain multiple logical starlists. An
@@ -376,33 +376,8 @@ class OutputObject:
         The filename path that the file will be stored into if each
         starlist is given its own file; otherwise, this is ignored
     """
-
-    def __init__(self, filename, logical_starlist):
-        """Create an OutputObject
-
-        Create an OutputObject
-
-        Parameters
-        ----------
-        filename: Path
-            The filename path that the file will be stored into if
-            each starlist is given its own file; otherwise, this is
-            ignored
-        logical_starlist: laist of schema_definition.Starlist
-            The starlist that will be handed to the JSON serializer
-
-        Returns
-        -------
-        OutputObject
-            A new object of the class OutputObject
-        """
-        self.filename = filename
-        self.logical_starlist = logical_starlist
-        if not isinstance(logical_starlist, list):
-            print("Bad constructor call to OutputObject.")
-            print("logical_starlist = ", logical_starlist)
-            print("logical_starlist is a ", type(logical_starlist).__name__)
-            assert False, "Invalid OutputObject"
+    filename: Path
+    logical_starlist: StarListSet
 
     def Write(self):
         """Write this logical starlist to its own file
@@ -418,7 +393,7 @@ class OutputObject:
         None
         """
         with open(self.filename, 'w') as fp:
-            json.dump(StarListSet(star_lists=self.logical_starlist).model_dump(),
+            json.dump(self.logical_starlist.model_dump(),
                       fp, indent=2)
 
 def ProbeFileForType(filename):
@@ -1169,7 +1144,10 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
     print("Creating starlist with ", len(sources), " stars.")
     starlist.staritems = table_to_star_items(sources)
 
-    return OutputObject(starlist_json_path, [starlist])
+    return OutputObject(
+        filename=starlist_json_path,
+        logical_starlist=StarListSet(star_lists=[starlist])
+    )
 
 def ProcessRGBFile(filename, options, temp_dir, metadata,
                    starlist_tgtname, wcs=None):
@@ -2178,14 +2156,16 @@ class MainWindow:
                                              wcs=self._wcs)
                 if self.options.one_sl_per_file:
                     for output in output_objs:
-                        output.Write()
+                        Path(output.filename).write_text(output.logical_starlist.model_dump_json(indent=2))
                 else:
-                    filename = str(Path(orig_dir, orig_file_base+".star"))
-                    logical_starlists = [x for out in output_objs for x in out.logical_starlist]
-                    print("Writing total of ", len(logical_starlists), " logical starlists.")
-                    sl_set = StarListSet(star_lists=logical_starlists)
-                    with open(filename, 'w') as fp:
-                        json.dump(sl_set.model_dump(), fp, indent=2)
+                    filename = Path(orig_dir, orig_file_base+".star")
+                    sl_set = output_objs[0].logical_starlist
+                    for output in output_objs[1:]:
+                        sl_set.star_lists.extend(output.logical_starlist.star_lists)
+                    print("Writing total of ", len(sl_set.star_lists), " logical starlists.")
+
+                    filename.write_text(sl_set.model_dump_json(indent=2))
+
         return False
 
 class ErrorPopup:
