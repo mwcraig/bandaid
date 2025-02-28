@@ -20,39 +20,40 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from astropy.io import fits
-from astropy.wcs import WCS
-from photutils import aperture, psf
-from photutils.detection import DAOStarFinder
-from photutils.background import Background2D, MedianBackground
-from astropy.stats import sigma_clipped_stats, SigmaClip
-from astropy.table import Table
-from astroquery.astrometry_net import AstrometryNet
-
-import matplotlib.pyplot as plt
-from astropy.visualization import SqrtStretch
-from astropy.visualization.mpl_normalize import ImageNormalize
-from pydantic import BaseModel, ConfigDict
-
-import warnings
-warnings.filterwarnings('error', category=RuntimeWarning)
-
-import threading
 from pathlib import Path
 import statistics
 import shutil
-import numpy as np
 import tempfile
-import getopt
-import datetime
 import math
+import os        # maybe os.system to be replaced with subprocess.run?
 import sys
 import json
 import platform
 from collections import namedtuple
 import argparse
 from typing import List
-#import sep
+
+import warnings
+warnings.filterwarnings('error', category=RuntimeWarning)
+
+import numpy as np
+from astropy.io import fits
+from astropy.wcs import WCS
+from astropy.stats import sigma_clipped_stats, SigmaClip
+from photutils import aperture, psf
+from photutils.detection import DAOStarFinder
+from photutils.background import Background2D, MedianBackground
+from astroquery.astrometry_net import AstrometryNet
+
+from pydantic import BaseModel, ConfigDict
+
+from PySide6 import QtCore, QtWidgets
+from PySide6.QtWidgets import QFileDialog, QDialog, QButtonGroup
+from PySide6.QtWidgets import QVBoxLayout, QLabel, QCheckBox, QDialogButtonBox
+from PySide6.QtWidgets import QLineEdit, QMessageBox, QRadioButton
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import QFile, QIODevice
+from PySide6.QtUiTools import QUiLoader
 
 from st_pipeline.perform_photometry import psf_fitting
 from .. import __version__
@@ -103,7 +104,7 @@ def DeBayerFile(filename, pattern, temp_dir):
             hdu = fits.PrimaryHDU()
             # push keywords in from the original file
             for keyword in hdul[0].header:
-                if keyword != 'COMMENT' and keyword != 'HISTORY':
+                if keyword not in ('COMMENT', 'HISTORY'):
                     value = hdul[0].header[keyword]
                     comment = hdul[0].header.comments[keyword]
                     hdu.header[keyword] = (value,comment)
@@ -122,7 +123,7 @@ def DeBayerFile(filename, pattern, temp_dir):
         return output_filenames
 
 # pattern triplet: (x_offset, y_offset, weight)
-pattern = [
+interp_pattern = [
     [ (0,0,9), (0,1,3),  (1,0,3),  (1,1,1)   ], # color 0
     [ (0,0,9), (-1,0,3), (0,1,3),  (-1,1,1)  ], # color 1
     [ (0,0,9), (1,0,3),  (0,-1,3), (1,-1,1)  ], # color 2
@@ -165,7 +166,7 @@ def StackImages(channel_list, options, temp_dir):
     with fits.open(filename) as hdul:
         (height,width) = np.shape(hdul[0].data)
         for keyword in hdul[0].header:
-            if keyword != 'COMMENT' and keyword != 'HISTORY':
+            if keyword not in ('COMMENT', 'HISTORY'):
                 value = hdul[0].header[keyword]
                 comment = hdul[0].header.comments[keyword]
                 hdu.header[keyword] = (value,comment)
@@ -183,7 +184,8 @@ def StackImages(channel_list, options, temp_dir):
                 source_hdu = new_data
                 for y in range(height-1):
                     for x in range(width-1):
-                        tgt = sum((p[2]*orig_data[y+p[1],x+p[0]] for p in pattern[bayer_id]))
+                        tgt = sum((p[2]*orig_data[y+p[1],x+p[0]]
+                                   for p in interp_pattern[bayer_id]))
                         new_data[y,x] = tgt
 
             hdu.data += source_hdu/16.0
@@ -221,7 +223,7 @@ def DuplicateFileWithNewImage(hdul, new_data, new_filter, new_pathname):
     hdu = fits.PrimaryHDU()
     # push keywords in from the original file
     for keyword in hdul[0].header:
-        if keyword != 'COMMENT' and keyword != 'HISTORY':
+        if keyword not in ('COMMENT', 'HISTORY'):
             value = hdul[0].header[keyword]
             comment = hdul[0].header.comments[keyword]
             hdu.header[keyword] = (value,comment)
@@ -288,10 +290,10 @@ def BayerBalanceFile(filename, temp_dir):
         raw_stdev = statistics.stdev(raw_pixels)
         cutoff = raw_avg + 5*raw_stdev
 
-        temp1x = np.array([x for x in temp1.flatten() if x >= 0 and x < cutoff])
-        temp2x = np.array([x for x in temp2.flatten() if x >= 0 and x < cutoff])
-        temp3x = np.array([x for x in temp3.flatten() if x >= 0 and x < cutoff])
-        temp4x = np.array([x for x in temp4.flatten() if x >= 0 and x < cutoff])
+        temp1x = np.array([x for x in temp1.flatten() if 0 <= x < cutoff])
+        temp2x = np.array([x for x in temp2.flatten() if 0 <= x < cutoff])
+        temp3x = np.array([x for x in temp3.flatten() if 0 <= x < cutoff])
+        temp4x = np.array([x for x in temp4.flatten() if 0 <= x < cutoff])
 
         #print_img_stats(temp1x.flatten())
         #print_img_stats(temp2x.flatten())
@@ -417,7 +419,7 @@ class OutputObject:
         -------
         None
         """
-        with open(self.filename, 'w') as fp:
+        with open(self.filename, 'w', encoding='utf-8') as fp:
             json.dump(StarListSet(star_lists=self.logical_starlist).model_dump(),
                       fp, indent=2)
 
@@ -425,7 +427,18 @@ def ProbeFileForType(filename):
     """Figure out what kind of a smart telescope created an image
 
     Examine the FITS header keywords to determine what kind of smart
-    telescope created the image.
+    telescope created the image and what format the image is in.
+    The format strings have the following meanings:
+        "bayered" - The image matches the sensor with a superimposed
+    Bayer color filter array. Pixels alternate color.
+        "mono" - The image is a true monochrome image. If filtered,
+    the filter applies equally to all pixels
+        "3Dstacked" - The FITS image has NAXIS=3, with the first axis
+    holding 3 distinct images, one in R, G, and B. We can't determine
+    order of the three colors here, so you have to rely on some other
+    source to know the color order.
+        "3Hstacked" - The FITS file contains 3 HDUs, one each for an
+    R, G,  and B image. This is currently unimplemented.
 
     Parameters
     ----------
@@ -434,8 +447,11 @@ def ProbeFileForType(filename):
 
     Returns
     -------
-    str
-        One of the following: "Unistellar", "Seestar", "Origin", "Dwarf"
+    Tuple: (str, str)
+        First str is one of the following: "Unistellar", "Seestar",
+        "Origin", "Dwarf", "other"
+        Second str is one of the following: "bayered", "mono",
+        "3Dstacked", "3Hstacked"
 
     Raises
     ------
@@ -449,31 +465,32 @@ def ProbeFileForType(filename):
         ## Unistellar test
         ################################
         if 'ORIGIN' in hdu0h and 'Unistellar' in hdu0h['ORIGIN']:
-            return "Unistellar"
+            return ("Unistellar", "bayered")
 
         ################################
         ## Seestar test
         ################################
         if 'CREATOR' in hdu0h and 'Seestar' in hdu0h['CREATOR']:
-            return "Seestar"
+            if hdu0h['NAXIS'] == 3:
+                return ("Seestar", "3Dstacked")
+            return ("Seestar", "bayered")
 
         ################################
         ## Celestron Origin test
         ################################
         if 'CREATOR' in hdu0h and 'Origin' in hdu0h['CREATOR']:
-            return "Origin"
+            return ("Origin", "bayered")
 
         ################################
         ## DWARF
         ################################
         if 'ORIGIN' in hdu0h and 'DWARFLAB' in hdu0h['ORIGIN']:
-            return "Dwarf"
+            return ("Dwarf", "bayered")
 
         ################################
         ## Unrecognized
         ################################
-        print("Unable to figure out Smart Telescope Type for file ", filename);
-        raise ValueError("Unable to establish telescope type")
+        return ("other", "unknown")
 
 ################################################################
 ##                METADATA
@@ -538,7 +555,7 @@ class MetaValidator:
 
     Attributes
     ----------
-    option: list of str
+    optional: list of str
         List of keywords that are not required in the input
     final: dict of {str, value}
         Metadata dictionary after all metadata has settled down; this
@@ -556,6 +573,9 @@ class MetaValidator:
         """
         self.Clear()
         self.optional = ['schema_version', 'filter', 'tel_firmware']
+        self.final = {}         # These are here to make lint quiet
+        self.json = {}
+        self.fits = {}
 
     def Clear(self):
         """Clear state of the validator in preparation for another cycle
@@ -661,7 +681,7 @@ meta_validator = MetaValidator()
 # providing a way to deal with missing/incorrect FITS header info.
 #
 
-def ReadMetaFromJSON(filename, dict):
+def ReadMetaFromJSON(filename, meta_dict):
     """Pull metadata from a JSON metadata file
 
     Update a meta dictionary using the contents of the JSON metadata
@@ -673,7 +693,7 @@ def ReadMetaFromJSON(filename, dict):
     ----------
     filename : str
         Pathname of the JSON metadata file
-    dict : dictionary
+    meta_dict : dictionary
         Metadata dictionary to be modified/augmented
 
     Returns
@@ -689,7 +709,7 @@ def ReadMetaFromJSON(filename, dict):
         print("ERROR: Refusing to read JSON metadata file that exceeds 10K bytes.")
         raise ValueError
 
-    with open(filename, 'r') as fp:
+    with open(filename, 'r', encoding='utf-8') as fp:
         try:
             data = json.load(fp)
         except json.JSONDecodeError:
@@ -701,12 +721,12 @@ def ReadMetaFromJSON(filename, dict):
                 print("Bad keyword in ", filename, ": ", keyword)
             else:
                 meta_validator.AddJSONItem(keyword, value)
-                dict[keyword] = value
+                meta_dict[keyword] = value
 
 
 # Read metadata from a FITS header. The metadata that's found will be
 # put into the dictionary that's passed as the argument "dict".
-def ReadMetaFromFITS(filename, dict):
+def ReadMetaFromFITS(filename, meta_dict):
     """Pull metadata from a FITS image
 
     Update a meta dictionary using the keywords found in a FITS image
@@ -719,14 +739,14 @@ def ReadMetaFromFITS(filename, dict):
     ----------
     filename: str
         Pathname of the FITS file from the smart telescope
-    dict : dictionary
+    meta_dict : dictionary
         Metadata dictionary to be modified/augmented
 
     Returns
     -------
     None
     """
-    telescope_type = ProbeFileForType(filename)
+    telescope_type, fits_format = ProbeFileForType(filename)
     with fits.open(filename) as hdul:
         hdu0h = hdul[0].header
 
@@ -740,11 +760,11 @@ def ReadMetaFromFITS(filename, dict):
                             ('filter','block_filter')]:
                 if key in hdu0h:
                     meta_validator.AddFITSItem(tgt, hdu0h[key])
-                    dict[tgt] = hdu0h[key]
+                    meta_dict[tgt] = hdu0h[key]
             ################
             ## FOV, Pixel scale
             ################
-            dict['fov_rad'] = 0.7 # wild guess; needs validation
+            meta_dict['fov_rad'] = 0.7 # wild guess; needs validation
 
             for key,tgt in [('sitelat', 'site_lat'),
                             ('sitelong', 'site_lon'),
@@ -753,21 +773,22 @@ def ReadMetaFromFITS(filename, dict):
                             ('exposure', 'exposure')]:
                 if key in hdu0h:
                     meta_validator.AddFITSItem(tgt, hdu0h[key])
-                    dict[tgt] = hdu0h[key]
+                    meta_dict[tgt] = hdu0h[key]
 
-            dict['tel_manufac'] = 'ZWO'
-            dict['tel_model'] = 'Seestar'
-            dict['adc_depth'] = 14
+            meta_dict['tel_manufac'] = 'ZWO'
+            meta_dict['tel_model'] = 'Seestar'
+            meta_dict['adc_depth'] = 14
+            meta_dict['fits_format'] = fits_format
 
         ################################
         ##       Origin
         ################################
         elif telescope_type == 'Origin':
-            dict['BAYERPAT'] = 'RGGB' # Is this correct?
-            dict['tel_manufac'] = 'Celestron'
-            dict['tel_model'] = 'Origin'
-            dict['adc_depth'] = 14
-            dict['pixscale'] = 1.45*2 # after de-bayering
+            meta_dict['BAYERPAT'] = 'RGGB' # Is this correct?
+            meta_dict['tel_manufac'] = 'Celestron'
+            meta_dict['tel_model'] = 'Origin'
+            meta_dict['adc_depth'] = 14
+            meta_dict['pixscale'] = 1.45*2 # after de-bayering
 
         ################################
         ##       Unistellar
@@ -782,10 +803,10 @@ def ReadMetaFromFITS(filename, dict):
                             ('FOVDEC','dec')]:
                 if key in hdu0h:
                     meta_validator.AddFITSItem(tgt, hdu0h[key])
-                    dict[tgt] = hdu0h[key]
-            dict['tel_manufac'] = 'Unistellar'
-            dict['tel_model'] = 'eVscope'
-            dict['pixscale'] = 1.5*2 # after de-bayering
+                    meta_dict[tgt] = hdu0h[key]
+            meta_dict['tel_manufac'] = 'Unistellar'
+            meta_dict['tel_model'] = 'eVscope'
+            meta_dict['pixscale'] = 1.5*2 # after de-bayering
 
         ################################
         ##        Dwarf
@@ -799,9 +820,9 @@ def ReadMetaFromFITS(filename, dict):
                             ('dec','dec')]:
                 if key in hdu0h:
                     meta_validator.AddFITSItem(tgt, hdu0h[key])
-                    dict[tgt] = hdu0h[key]
-            dict['tel_manufac'] = 'DwarfLab'
-            dict['pixscale'] = 1.5*2 # after de-bayering
+                    meta_dict[tgt] = hdu0h[key]
+            meta_dict['tel_manufac'] = 'DwarfLab'
+            meta_dict['pixscale'] = 1.5*2 # after de-bayering
 
         else:
             print("Telescope type ", telescope_type, " not implemented yet.")
@@ -1080,7 +1101,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         elif 'fov_rad' in metadata and metadata['fov_rad'] is not None:
             command += (" -5 " + str(metadata['fov_rad']))
         else:
-            raise Exception("Image FOV not defined")
+            assert False, "Image FOV not defined"
 
         command += (" '" + str(filename) + "'")
 
@@ -1090,7 +1111,6 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         ################################
         ## Plate-solve the image
         ################################
-        import os # maybe os.system to be replaced with subprocess.run?
         temp_dir = tempfile.TemporaryDirectory()
         local_system = platform.system()
         if local_system == 'Windows':
@@ -1127,13 +1147,13 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
 
         if wcs is None:
             ast = AstrometryNet()
-            if astrometry_api_key == None:
+            if astrometry_api_key is None:
                 global ui
                 dlg = QMessageBox(ui.window)
                 dlg.setWindowTitle("No astrometry.net API Key")
                 dlg.setText("Must enter astrometry.net API Key via Menu Bar")
                 dlg.exec()
-                return
+                return None
 
             ast.api_key = astrometry_api_key
             # star_x and star_y were sorted by flux earlier... important here.
@@ -1171,6 +1191,61 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
 
     return OutputObject(starlist_json_path, [starlist])
 
+def Process3DFile(filename, temp_dir):
+    """Process an RGB image, converting it into one or more starlists
+
+    Process a stacked, one-shot-color image using the user's selected options
+    to turn it into some number of starlists. Depending on options,
+    the image may be separated into color subchannels or treated
+    as a monochrome image. Create a starlist for each resulting channel.
+
+    Parameters
+    ----------
+    filename : str
+        Pathname of the image to be processed
+    temp_dir : str
+        Pathname of a directory in which temporary files can be put
+
+    Returns
+    -------
+    list of ImageDescriptors (tuples: (filename, filtername))
+        These are the three files that this 3D file was converted into
+
+    """
+    output_filenames = [] # each entry in this list is a tuple: (filter, filename)
+    with fits.open(filename) as hdul:
+        image1 = hdul[0].data[0,0:,0:]
+        image2 = hdul[0].data[1,0:,0:]
+        image3 = hdul[0].data[2,0:,0:]
+
+        image_list = [(image1, 'TR'),
+                      (image2, 'TG'),
+                      (image3, 'TB')]
+
+        for (data, color) in image_list:
+            output_tgt = Path(temp_dir) / ("image_"+color+".fits")
+
+            hdu = fits.PrimaryHDU()
+            # push keywords in from the original file
+            for keyword in hdul[0].header:
+                if keyword not in ('COMMENT', 'HISTORY'):
+                    value = hdul[0].header[keyword]
+                    comment = hdul[0].header.comments[keyword]
+                    hdu.header[keyword] = (value,comment)
+                else: # Yes, this is a comment/history
+                    comment = hdul[0].header[keyword]
+                    for card in comment:
+                        hdu.header[keyword] = card
+
+            hdu.data = data
+            hdu.header['filter'] = (color, 'Bayer color mask')
+            # update_header will "fix" the header to match the data
+            hdu.update_header()
+            fits.writeto(output_tgt, data, header=hdu.header, overwrite=True)
+            ImageDescriptor = namedtuple('ImageDescriptor', ['filter','filename'])
+            output_filenames.append(ImageDescriptor(color,output_tgt))
+    return output_filenames
+
 def ProcessRGBFile(filename, options, temp_dir, metadata,
                    starlist_tgtname, wcs=None):
     """Process an RGB image, converting it into one or more starlists
@@ -1206,42 +1281,71 @@ def ProcessRGBFile(filename, options, temp_dir, metadata,
         These are the logical starlists that result.
 
     """
+    if not meta_validator.Validate(metadata):
+        return []
     de_bayer = options.DeBayer
+    fits_format = (metadata['fits_format']
+                   if 'fits_format' in metadata else "bayered")
     output_objects = []
-    if de_bayer:
-        single_color_files = DeBayerFile(filename, metadata['BAYERPAT'], temp_dir)
+    single_color_files = []
+    do_stacking = False
+    # Copy the original metadata so that whatever changes we make here
+    # don't haunt us later.
+    adj_meta_dict = dict(metadata)
+    if fits_format == "3Dstacked":
+        # Need the user to choose between combining the R, G, and B
+        # images into a single luminance channel vs. generating three
+        # starlists, one for each of the three channels. Choice will
+        # go straight into options.split_stacked_image.
+        popup = Option3DPopup(options)
+        ret_val = popup.exec()
+        # if the popup returned 0, then the user selected the Cancel
+        # button.
+        if ret_val == 0:
+            return []
 
-        if options.StackChannels:
-            stacked_image = StackImages(single_color_files, options, temp_dir)
-            starlist_filename = starlist_tgtname.replace("$$","M")
-            output_objects.append(ProcessSingleImage(stacked_image,
-                                                     dict(metadata),
+        single_color_files = Process3DFile(filename, temp_dir)
+        do_stacking = not options.split_stacked_image
+        adj_meta_dict['pixscale'] /= 2.0 # Correct for non-de-Bayered image
+    elif de_bayer:
+        single_color_files = DeBayerFile(filename, metadata['BAYERPAT'], temp_dir)
+        do_stacking = options.StackChannels
+    else:
+        adj_meta_dict['pixscale'] /= 2.0 # Correct for non-de-Bayered image
+
+    if do_stacking:
+        print("Stacking images")
+        stacked_image = StackImages(single_color_files, options, temp_dir)
+        starlist_filename = starlist_tgtname.replace("$$","M")
+        output_objects.append(ProcessSingleImage(stacked_image,
+                                                 adj_meta_dict,
+                                                 options,
+                                                 temp_dir,
+                                                 starlist_filename, 'M',
+                                                 wcs=wcs))
+    elif len(single_color_files) > 1:
+        print("Processing separate channels")
+        tg_num = 1
+        for (photfilter,file) in single_color_files:
+            filter_file = photfilter
+            # Hangle "TG" and "G" filters the same
+            if photfilter in ['TG', 'G']:
+                filter_file = "TG"+str(tg_num)
+                tg_num += 1
+            starlist_filename = starlist_tgtname.replace("$$",filter_file)
+            output_objects.append(ProcessSingleImage(file,
+                                                     adj_meta_dict,
                                                      options,
                                                      temp_dir,
-                                                     starlist_filename, 'M',
+                                                     starlist_filename,
+                                                     photfilter,
                                                      wcs=wcs))
-        else:
-            tg_num = 1
-            for (filter,file) in single_color_files:
-                filter_file = filter
-                # Hangle "TG" and "G" filters the same
-                if filter in ['TG', 'G']:
-                    filter_file = "TG"+str(tg_num)
-                    tg_num += 1
-                starlist_filename = starlist_tgtname.replace("$$",filter_file)
-                output_objects.append(ProcessSingleImage(file,
-                                                         dict(metadata),
-                                                         options,
-                                                         temp_dir,
-                                                         starlist_filename,
-                                                         filter,
-                                                         wcs=wcs))
     else:
         # Not de-Bayered; treat as single monochrome image
+        print("Processing single monochrome image")
         starlist_filename = starlist_tgtname.replace("$$","M") # M==monochrome
         print(metadata)
         adj_meta_dict = dict(metadata)
-        adj_meta_dict['pixscale'] /= 2.0 # Correct for non-de-Bayered image
         output_objects.append(ProcessSingleImage(filename,
                                                  adj_meta_dict,
                                                  options,
@@ -1249,20 +1353,12 @@ def ProcessRGBFile(filename, options, temp_dir, metadata,
                                                  starlist_filename,
                                                  'M',
                                                  wcs=wcs))
+    print(f"ProcessRGB: returning {len(output_objects)} output_objects.")
     return output_objects
 
 ################################################################
 ##        Display GUI Comes Next
 ################################################################
-
-from PySide6 import QtCore, QtWidgets, QtGui
-
-from PySide6.QtWidgets import QFileDialog, QProgressBar, QDialog
-from PySide6.QtWidgets import QVBoxLayout, QLabel, QCheckBox, QDialogButtonBox
-from PySide6.QtWidgets import QLineEdit, QMessageBox
-from PySide6.QtGui import QGuiApplication
-from PySide6.QtCore import QFile, QIODevice
-from PySide6.QtUiTools import QUiLoader
 
 class FileChooser:
     """Select one or more files for processing
@@ -1341,7 +1437,6 @@ class FileChooser:
         dialog.setFileMode(self.file_mode)
         if dialog.exec():
             if self.multiple_files_okay:
-                filename_list = dialog.selectedFiles()
                 # Now append to the filelist
                 entry_list = dialog.selectedFiles()
                 for entry in entry_list:
@@ -1368,13 +1463,12 @@ class FileChooser:
             Return the filename entered by this FileChooser if a filename
             was entered. If no filename was entered, returns None
         """
-        if self.multiple_files_okay:
-            raise Exception("Call to EnteredFilename should be EnteredFilenameList")
+        assert not self.multiple_files_okay, \
+                "Call to EnteredFilename should be EnteredFilenameList"
         raw_text = self.text_widget.text()
         if raw_text is None or len(raw_text.strip()) == 0:
             return None
-        else:
-            return raw_text.strip()
+        return raw_text.strip()
 
     def EnteredFilenameList(self):
         """Return the filenames entered via this FileChooser
@@ -1393,8 +1487,8 @@ class FileChooser:
             Return the filenames entered by this FileChooser if a filename
             was entered (list might be empty).
         """
-        if not self.multiple_files_okay:
-            raise Exception("Call to EnteredFilenameList should be EnteredFilename")
+        assert self.multiple_files_okay, \
+                "Call to EnteredFilenameList should be EnteredFilename"
         raw_text = self.text_widget.toPlainText()
         text_words = raw_text.split('\n')
         print("Files to process = ", text_words)
@@ -1459,6 +1553,8 @@ class OptionsUI:
         self.add_WCS_to_image = ui.window.UpdateWCSButton
         self.aperture_size = ui.window.ApertureSize
         self.subtract_annulus = ui.window.AnnulusSubtractionCheckbox
+
+        self.split_stacked_image = True
 
     @property
     def add_wcs(self):
@@ -1766,6 +1862,7 @@ class OptionsUI:
 class OptionsAPI(BaseModel):
     model_config = ConfigDict(extra='forbid', validate_default=True, validate_assignment=True)
     debayer: bool = False
+    split_stacked_image: bool = True
     one_channel: bool = False
     stacked_channels: bool = False
     interp_stack_channels: bool = False
@@ -1959,7 +2056,7 @@ def GetAstrometryKey():
 
     try:
         return APIKeypathname.read_text()
-    except:
+    except (PermissionError, FileNotFoundError):
         return None
 
 def SaveAstrometryKey(key_value):
@@ -2030,7 +2127,8 @@ class MainWindow:
         """
         global astrometry_api_key
 
-        self.temp_dir = tempfile.TemporaryDirectory()
+        temp_dir = tempfile.TemporaryDirectory()
+        self.temp_dir = temp_dir
         self.temp_dirname = self.temp_dir.name
         print("Working in temporary directory ", self.temp_dirname)
         print(f"===> st-pipeline version {__version__} <===")
@@ -2105,7 +2203,6 @@ class MainWindow:
         flat_filename = self.options.flat_file
         bias_filename = self.options.bias_file
         metadata_filename = self.options.meta_file
-        do_bayer_balance = self.options.GetColorBalance
 
         for image_filename in image_list:
             QGuiApplication.processEvents()
@@ -2166,26 +2263,25 @@ class MainWindow:
                 ReadMetaFromJSON(metadata_filename, meta)
 
             print("Final metadata is ", meta)
-
-            if meta_validator.Validate(meta):
-                if self.options.GetColorBalance:
-                    working_filename = BayerBalanceFile(working_filename, self.temp_dirname)
-                output_objs = ProcessRGBFile(working_filename,
-                                             self.options,
-                                             self.temp_dirname,
-                                             meta,
-                                             starlist_tgtname,
-                                             wcs=self._wcs)
-                if self.options.one_sl_per_file:
-                    for output in output_objs:
-                        output.Write()
-                else:
-                    filename = str(Path(orig_dir, orig_file_base+".star"))
-                    logical_starlists = [x for out in output_objs for x in out.logical_starlist]
-                    print("Writing total of ", len(logical_starlists), " logical starlists.")
-                    sl_set = StarListSet(star_lists=logical_starlists)
-                    with open(filename, 'w') as fp:
-                        json.dump(sl_set.model_dump(), fp, indent=2)
+            if self.options.GetColorBalance:
+                working_filename = BayerBalanceFile(working_filename,
+                                                    self.temp_dirname)
+            output_objs = ProcessRGBFile(working_filename,
+                                         self.options,
+                                         self.temp_dirname,
+                                         meta,
+                                         starlist_tgtname,
+                                         wcs=self._wcs)
+            if self.options.one_sl_per_file:
+                for output in output_objs:
+                    output.Write()
+            else:
+                filename = str(Path(orig_dir, orig_file_base+".star"))
+                logical_starlists = [x for out in output_objs for x in out.logical_starlist]
+                print("Writing total of ", len(logical_starlists), " logical starlists.")
+                sl_set = StarListSet(star_lists=logical_starlists)
+                with open(filename, 'w', encoding='utf-8') as fp:
+                    json.dump(sl_set.model_dump(), fp, indent=2)
         return False
 
 class ErrorPopup:
@@ -2211,6 +2307,70 @@ class ErrorPopup:
         dlg.setWindowTitle("Error")
         dlg.setText(msg)
         dlg.exec()
+
+class Option3DPopup(QDialog):
+    """A popup window that appears if the FITS file contains 3 images
+
+    If the FITS file has 3 images in it, then we need to ask the user
+    what to do with the three images: stack them into a single
+    luminance channel or process them into three distinct logical
+    starlists.
+
+    Attributes
+    ----------
+    options: OptionsUI reference
+        A reference to the OptionsUI instance that holds all option
+        info. The two buttons of this popup map into the
+        split_stacked_image bool option.
+    radio_stack: QRadioButton
+        One of the two buttons. If checked, user is asking for
+        stacking.
+    radio_split: QRadioButton
+        One of the two buttons. If checked, user is asking for three
+        distinct logical starlists.
+    """
+    def __init__(self, options, parent=None):
+        """Create a Option3DPopup window
+
+        This window is a subclass of the QDialog popup.
+
+        Parameters
+        ----------
+        options: OptionsUI reference
+            A reference to the OptionsUI instance that holds all
+            option info.
+        parent: QWidget
+            The parent to this window. The popup should be centered in
+            the parent window, if one is specified.
+        """
+        super().__init__(parent)
+        self.options = options
+
+        self.setWindowTitle("image2sl: Stacked Image Options")
+        QBtn = QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        buttonBox = QDialogButtonBox(QBtn)
+        buttonBox.accepted.connect(self.accept)
+        buttonBox.rejected.connect(self.reject)
+
+        layout = QVBoxLayout()
+        message = QLabel("Choose stacked image processing option")
+        layout.addWidget(message)
+        button_group = QButtonGroup()
+        self.radio_stack = QRadioButton("Combine RGB into one monochrome image")
+        self.radio_split = QRadioButton("Separate into R, G, B images")
+        button_group.addButton(self.radio_stack)
+        button_group.addButton(self.radio_split)
+        self.radio_stack.toggled.connect(self.ButtonChange)
+        self.radio_split.toggled.connect(self.ButtonChange)
+        layout.addWidget(self.radio_stack)
+        layout.addWidget(self.radio_split)
+        layout.addWidget(buttonBox)
+        self.setLayout(layout)
+        self.show()
+
+    def ButtonChange(self):
+        """Callback when either of the two radio buttons changes state """
+        self.options.split_stacked_image = self.radio_split.isChecked()
 
 def main():
     global ui
