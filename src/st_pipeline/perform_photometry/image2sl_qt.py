@@ -20,44 +20,48 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from pathlib import Path
-import statistics
-import shutil
-import tempfile
-import math
-import os        # maybe os.system to be replaced with subprocess.run?
-import sys
-import json
-import platform
-from collections import namedtuple
 import argparse
-from typing import List
-
+import json
+import math
+import os
+import platform
+import shutil
+import statistics
+import sys
+import tempfile
 import warnings
-warnings.filterwarnings('error', category=RuntimeWarning)
+from collections import namedtuple
+from pathlib import Path
 
 import numpy as np
 from astropy.io import fits
+from astropy.stats import SigmaClip, sigma_clipped_stats
 from astropy.wcs import WCS
-from astropy.stats import sigma_clipped_stats, SigmaClip
-from photutils import aperture, psf
-from photutils.detection import DAOStarFinder
-from photutils.background import Background2D, MedianBackground
 from astroquery.astrometry_net import AstrometryNet
-
+from photutils import aperture, psf
+from photutils.background import Background2D, MedianBackground
+from photutils.detection import DAOStarFinder
 from pydantic import BaseModel, ConfigDict
-
 from PySide6 import QtCore, QtWidgets
-from PySide6.QtWidgets import QFileDialog, QDialog, QButtonGroup
-from PySide6.QtWidgets import QVBoxLayout, QLabel, QCheckBox, QDialogButtonBox
-from PySide6.QtWidgets import QLineEdit, QMessageBox, QRadioButton
-from PySide6.QtGui import QGuiApplication
 from PySide6.QtCore import QFile, QIODevice
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtUiTools import QUiLoader
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QVBoxLayout,
+)
 
-from st_pipeline.perform_photometry import psf_fitting
 from .. import __version__
-from ..schema_definition import StarListSet, StarList, StarItem
+from ..schema_definition import StarItem, StarList, StarListSet
+from . import psf_fitting
+
+warnings.filterwarnings('error', category=RuntimeWarning)
 
 astrometry_api_key = None
 
@@ -91,8 +95,8 @@ def DeBayerFile(filename, pattern, temp_dir):
     """
     with fits.open(filename) as hdul:
         temp1 = hdul[0].data[0::2,0::2]
-        temp2 = hdul[0].data[1::2,0::2]
-        temp3 = hdul[0].data[0::2,1::2]
+        temp2 = hdul[0].data[0::2,1::2]
+        temp3 = hdul[0].data[1::2,0::2]
         temp4 = hdul[0].data[1::2,1::2]
         array = [temp1, temp2, temp3, temp4]
         output_filenames = [] # each entry in this list is a tuple: (filter, filename)
@@ -100,7 +104,7 @@ def DeBayerFile(filename, pattern, temp_dir):
         for index in range(4):
             color = pattern[index]
             output_tgt = Path(temp_dir) / ("image"+str(index)+"_"+color+".fits")
-
+        
             hdu = fits.PrimaryHDU()
             # push keywords in from the original file
             for keyword in hdul[0].header:
@@ -115,9 +119,11 @@ def DeBayerFile(filename, pattern, temp_dir):
 
             hdu.data = array[index]
             hdu.header['filter'] = ('T'+color, 'Bayer color mask')
+            hdu.header['BAYERPAT'] = ('NA', 'No longer a Bayered image')
             # update_header will "fix" the header to match the data
             hdu.update_header()
             fits.writeto(output_tgt, array[index], header=hdu.header, overwrite=True)
+            print("write debayered image: ", output_tgt) # so you can look at the image files
             ImageDescriptor = namedtuple('ImageDescriptor', ['filter','filename'])
             output_filenames.append(ImageDescriptor(color,output_tgt))
         return output_filenames
@@ -175,7 +181,7 @@ def StackImages(channel_list, options, temp_dir):
                 for card in comment:
                     hdu.header[keyword] = card
     hdu.data = np.zeros((height,width),dtype=np.float32)
-    for (bayer_id,(filter,channel)) in enumerate(channel_list):
+    for (bayer_id,(_, channel)) in enumerate(channel_list):
         with fits.open(channel) as hdul:
             source_hdu = hdul[0].data
             if options.InterpolateChannels:
@@ -218,8 +224,6 @@ def DuplicateFileWithNewImage(hdul, new_data, new_filter, new_pathname):
     None
 
     """
-    output_tgt = new_pathname
-
     hdu = fits.PrimaryHDU()
     # push keywords in from the original file
     for keyword in hdul[0].header:
@@ -238,7 +242,7 @@ def DuplicateFileWithNewImage(hdul, new_data, new_filter, new_pathname):
     hdu.update_header()
     fits.writeto(new_pathname, new_data, header=hdu.header, overwrite=True)
 
-def BayerBalanceFile(filename, temp_dir):
+def BayerBalanceFile(filename):
     """Duplicate an image file while adjusting pixel values per the Bayer pattern
 
     Duplicate an existing FITS file, performing a linear adjustment to
@@ -254,8 +258,6 @@ def BayerBalanceFile(filename, temp_dir):
     ----------
     filename : str
         Pathname to the file to be duplicated
-    temp_dir : str
-        Pathname of the directory where the new file will be placed
 
     Returns
     -------
@@ -360,7 +362,7 @@ def BayerBalanceFile(filename, temp_dir):
         DuplicateFileWithNewImage(hdul, new_data, "M", new_filename)
         return new_filename
 
-class OutputObject:
+class OutputObject(BaseModel):
     """This class represents one logical output (result) starlist
 
     One starlist file can contain multiple logical starlists. An
@@ -378,33 +380,8 @@ class OutputObject:
         The filename path that the file will be stored into if each
         starlist is given its own file; otherwise, this is ignored
     """
-
-    def __init__(self, filename, logical_starlist):
-        """Create an OutputObject
-
-        Create an OutputObject
-
-        Parameters
-        ----------
-        filename: Path
-            The filename path that the file will be stored into if
-            each starlist is given its own file; otherwise, this is
-            ignored
-        logical_starlist: laist of schema_definition.Starlist
-            The starlist that will be handed to the JSON serializer
-
-        Returns
-        -------
-        OutputObject
-            A new object of the class OutputObject
-        """
-        self.filename = filename
-        self.logical_starlist = logical_starlist
-        if not isinstance(logical_starlist, list):
-            print("Bad constructor call to OutputObject.")
-            print("logical_starlist = ", logical_starlist)
-            print("logical_starlist is a ", type(logical_starlist).__name__)
-            assert False, "Invalid OutputObject"
+    filename: Path
+    logical_starlist: StarListSet
 
     def Write(self):
         """Write this logical starlist to its own file
@@ -419,8 +396,9 @@ class OutputObject:
         -------
         None
         """
+
         with open(self.filename, 'w', encoding='utf-8') as fp:
-            json.dump(StarListSet(star_lists=self.logical_starlist).model_dump(),
+            json.dump(self.logical_starlist.model_dump(),
                       fp, indent=2)
 
 def ProbeFileForType(filename):
@@ -935,7 +913,6 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
     print("model_validate: ", metadata)
     starlist = StarList.model_validate(metadata)
     with fits.open(filename) as hdul:
-        hdu0h = hdul[0].header
         image_data = hdul[0].data.astype(np.float32)
         (height, width) = np.shape(hdul[0].data)
         print("height = ", height, ", width = ", width)
@@ -975,7 +952,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         subset = sources[:subset_size]
         fwhm = psf.fit_fwhm(
             clean_image,
-            xypos=list(zip(subset['xcentroid'], subset['ycentroid'])),
+            xypos=list(zip(subset['xcentroid'], subset['ycentroid'], strict=False)),
             fit_shape=15
         ).mean()
 
@@ -994,7 +971,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
 
         # Perform the photometry
         positions = list(zip(sources['xcentroid'],
-                             sources['ycentroid']))
+                             sources['ycentroid'], strict=False))
         apertures = aperture.CircularAperture(positions, r=phot_radius)
         tot_noise_bkgd = np.sqrt(apertures.area) * noise_bkgd_per_pixel
 
@@ -1048,7 +1025,6 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         poiss_noise = np.sqrt(starlist.gain * sources['tot_flux'])
         tot_noise = np.sqrt(poiss_noise**2 + tot_noise_bkgd**2) / starlist.gain
         sources['flux_err'] = tot_noise
-        snr = sources['tot_flux'] / sources['flux_err']
 
         # Set flux errors to zero for negative fluxes
         sources['flux_err'][sources['tot_flux'] < 0] = 0.0
@@ -1068,7 +1044,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         plate_solve_dir = temp_dirname
 
         command = "solve-field "
-        temp_dir_arg = " -D " + str(plate_solve_dir).replace('\\', '/')
+        temp_dir_arg = " -D " + str(plate_solve_dir) #.replace('\\', '/')
         command += temp_dir_arg
         print("plate_solve_dir = ", plate_solve_dir)
         print("temp_dir_arg = ", temp_dir_arg)
@@ -1113,7 +1089,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         ################################
         temp_dir = tempfile.TemporaryDirectory()
         local_system = platform.system()
-        if local_system == 'Windows':
+        if local_system == 'xWindows':
             p = Path(os.path.expandvars('%LOCALAPPDATA%'))
             q = p / 'cygwin_ansvr' / 'bin' / 'solve-field'
             if q.exists():
@@ -1173,7 +1149,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
     # behavior of the original code.
     sources['bkgd_flux'] = [
         background[int(0.5+y), int(0.5+x)]
-        for (x, y) in zip(sources['x'], sources['y'])
+        for (x, y) in zip(sources['x'], sources['y'], strict=False)
     ]
 
     ################################
@@ -1189,7 +1165,10 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
     print("Creating starlist with ", len(sources), " stars.")
     starlist.staritems = table_to_star_items(sources)
 
-    return OutputObject(starlist_json_path, [starlist])
+    return OutputObject(
+        filename=starlist_json_path,
+        logical_starlist=StarListSet(star_lists=[starlist])
+    )
 
 def Process3DFile(filename, temp_dir):
     """Process an RGB image, converting it into one or more starlists
@@ -1415,7 +1394,7 @@ class FileChooser:
         else: # Big entry for image filenames
             self.file_mode = QFileDialog.ExistingFiles
 
-    def chooser_popup(self, button):
+    def chooser_popup(self, _):
         """Create popup window to choose file(s)
 
         Initiate the popup window to select one (or more) files. This
@@ -1423,11 +1402,6 @@ class FileChooser:
         other buttons and widgets in the application will be
         disabled. The selected filename will be put into the
         FileChooser's `text_entry_widget`.
-
-        Parameters
-        ----------
-        button : QPushButton
-            The button that triggered this popup window
 
         Returns
         -------
@@ -1877,7 +1851,7 @@ class OptionsAPI(BaseModel):
     dark_file: str = ""
     flat_file: str = ""
     meta_file: str = ""
-    image_file: List[str] = [""]
+    image_file: list[str] = [""]
 
     # These are accessed by the current code.
     @property
@@ -2090,7 +2064,7 @@ def SaveAstrometryKey(key_value):
 
     try:
         APIKeypathname.write_text(key_value)
-    except:
+    except (FileNotFoundError, json.JSONDecodeError):
         print("Error Trying to save API Key")
         raise
 
@@ -2263,25 +2237,26 @@ class MainWindow:
                 ReadMetaFromJSON(metadata_filename, meta)
 
             print("Final metadata is ", meta)
-            if self.options.GetColorBalance:
-                working_filename = BayerBalanceFile(working_filename,
-                                                    self.temp_dirname)
-            output_objs = ProcessRGBFile(working_filename,
-                                         self.options,
-                                         self.temp_dirname,
-                                         meta,
-                                         starlist_tgtname,
-                                         wcs=self._wcs)
-            if self.options.one_sl_per_file:
-                for output in output_objs:
-                    output.Write()
-            else:
-                filename = str(Path(orig_dir, orig_file_base+".star"))
-                logical_starlists = [x for out in output_objs for x in out.logical_starlist]
-                print("Writing total of ", len(logical_starlists), " logical starlists.")
-                sl_set = StarListSet(star_lists=logical_starlists)
-                with open(filename, 'w', encoding='utf-8') as fp:
-                    json.dump(sl_set.model_dump(), fp, indent=2)
+            if meta_validator.Validate(meta):
+                if self.options.GetColorBalance:
+                    working_filename = BayerBalanceFile(working_filename)
+                output_objs = ProcessRGBFile(working_filename,
+                                             self.options,
+                                             self.temp_dirname,
+                                             meta,
+                                             starlist_tgtname,
+                                             wcs=self._wcs)
+                if self.options.one_sl_per_file:
+                    for output in output_objs:
+                        output.Write()
+                else:
+                    filename = str(Path(orig_dir, orig_file_base+".star"))
+                    logical_starlists = [x for out in output_objs for x in out.logical_starlist]
+                    print("Writing total of ", len(logical_starlists), " logical starlists.")
+                    sl_set = StarListSet(star_lists=logical_starlists)
+                    with open(filename, 'w', encoding='utf-8') as fp:
+                        json.dump(sl_set.model_dump(), fp, indent=2)
+
         return False
 
 class ErrorPopup:
