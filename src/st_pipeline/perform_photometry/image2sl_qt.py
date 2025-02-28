@@ -1542,7 +1542,7 @@ class OptionsUI:
         self.aperture_photometry = ui.window.AperturePhotButton
 
         self.multiple_starlists = ui.window.OneSLPerFile
-        self.add_WCS_to_image = ui.window.UpdateWCSButton
+        self.add_wcs_to_image = ui.window.UpdateWCSButton
         self.aperture_size = ui.window.ApertureSize
         self.subtract_annulus = ui.window.AnnulusSubtractionCheckbox
 
@@ -1564,7 +1564,7 @@ class OptionsUI:
         bool
             True if WCS is to be added
         """
-        return self.add_WCS_to_image.isChecked()
+        return self.add_wcs_to_image.isChecked()
 
     @property
     def one_sl_per_file(self):
@@ -1862,7 +1862,7 @@ class OptionsAPI(BaseModel):
     psf_photometry: bool = False
     subtract_annulus: bool = False
     multiple_starlists: bool = False
-    add_WCS_to_image: bool = False
+    add_wcs_to_image: bool = False
     aperture_size: float = 1.0
     astrometry_net_api_key: str = ""
     bias_file: str = ""
@@ -1998,9 +1998,9 @@ class APIEntryDialog(QDialog):
         self.save_checkbox = QCheckBox('Save API Key')
         layout.addWidget(self.save_checkbox)
 
-        QBtn = (QDialogButtonBox.StandardButton.Ok |
+        q_btn = (QDialogButtonBox.StandardButton.Ok |
                 QDialogButtonBox.StandardButton.Cancel)
-        self.buttonBox = QDialogButtonBox(QBtn)
+        self.buttonBox = QDialogButtonBox(q_btn)
         self.buttonBox.accepted.connect(self.accept_key)
         self.buttonBox.rejected.connect(self.reject)
         layout.addWidget(self.buttonBox)
@@ -2044,10 +2044,10 @@ def get_astrometry_key():
         raise ValueError("OS Name not recognized")
 
     localdir.mkdir(parents=True, exist_ok=True)
-    APIKeypathname = localdir / "astrometryAPIkey.txt"
+    api_key_pathname = localdir / "astrometryAPIkey.txt"
 
     try:
-        return APIKeypathname.read_text()
+        return api_key_pathname.read_text()
     except (PermissionError, FileNotFoundError):
         return None
 
@@ -2078,10 +2078,10 @@ def save_astrometry_key(key_value):
         raise ValueError("OS Name not recognized")
 
     localdir.mkdir(parents=True, exist_ok=True)
-    APIKeypathname = localdir / "astrometryAPIkey.txt"
+    api_key_pathname = localdir / "astrometryAPIkey.txt"
 
     try:
-        APIKeypathname.write_text(key_value)
+        api_key_pathname.write_text(key_value)
     except (FileNotFoundError, json.JSONDecodeError):
         print("Error Trying to save API Key")
         raise
