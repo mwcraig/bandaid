@@ -47,6 +47,7 @@ from PySide6.QtCore import QFile, QIODevice
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtUiTools import QUiLoader
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
@@ -54,6 +55,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QRadioButton,
     QVBoxLayout,
 )
 
@@ -104,7 +106,7 @@ def DeBayerFile(filename, pattern, temp_dir):
         for index in range(4):
             color = pattern[index]
             output_tgt = Path(temp_dir) / ("image"+str(index)+"_"+color+".fits")
-        
+
             hdu = fits.PrimaryHDU()
             # push keywords in from the original file
             for keyword in hdul[0].header:
@@ -374,8 +376,8 @@ class OutputObject(BaseModel):
 
     Attributes
     ----------
-    logical_starlist: list of schema_definition.Starlist
-        The logical starlist that will be handed to the JSON serializer.
+    logical_starlist: a single StarListSet
+        A StarListSet that results from processing of an image
     filename: Path
         The filename path that the file will be stored into if each
         starlist is given its own file; otherwise, this is ignored
@@ -1165,6 +1167,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
     print("Creating starlist with ", len(sources), " stars.")
     starlist.staritems = table_to_star_items(sources)
 
+    print("starlist is ", type(starlist))
     return OutputObject(
         filename=starlist_json_path,
         logical_starlist=StarListSet(star_lists=[starlist])
@@ -1324,7 +1327,6 @@ def ProcessRGBFile(filename, options, temp_dir, metadata,
         print("Processing single monochrome image")
         starlist_filename = starlist_tgtname.replace("$$","M") # M==monochrome
         print(metadata)
-        adj_meta_dict = dict(metadata)
         output_objects.append(ProcessSingleImage(filename,
                                                  adj_meta_dict,
                                                  options,
@@ -2250,13 +2252,13 @@ class MainWindow:
                     for output in output_objs:
                         output.Write()
                 else:
-                    filename = str(Path(orig_dir, orig_file_base+".star"))
-                    logical_starlists = [x for out in output_objs for x in out.logical_starlist]
-                    print("Writing total of ", len(logical_starlists), " logical starlists.")
-                    sl_set = StarListSet(star_lists=logical_starlists)
-                    with open(filename, 'w', encoding='utf-8') as fp:
-                        json.dump(sl_set.model_dump(), fp, indent=2)
+                    filename = Path(orig_dir, orig_file_base+".star")
+                    sl_set = output_objs[0].logical_starlist
+                    for output in output_objs[1:]:
+                        sl_set.star_lists.extend(output.logical_starlist.star_lists)
+                    print("Writing total of ", len(sl_set.star_lists), " logical starlists.")
 
+                    filename.write_text(sl_set.model_dump_json(indent=2))
         return False
 
 class ErrorPopup:
