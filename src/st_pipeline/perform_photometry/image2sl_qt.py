@@ -100,7 +100,11 @@ def DeBayerFile(filename, pattern, temp_dir):
         temp2 = hdul[0].data[0::2,1::2]
         temp3 = hdul[0].data[1::2,0::2]
         temp4 = hdul[0].data[1::2,1::2]
-        array = [temp1, temp2, temp3, temp4]
+        array = [temp1, temp2, temp3, temp4] # ROWORDER= top-down, YBAYROFF=0
+        # this should be generalized to handle any Bayer pattern with ROWORDER and YBAYROFF
+        if 'DWARF' in hdul[0].header['ORIGIN']:
+            array = [temp2, temp1, temp4, temp3] # YBAYROFF = 1
+            
         output_filenames = [] # each entry in this list is a tuple: (filter, filename)
 
         for index in range(4):
