@@ -268,8 +268,8 @@ def BayerBalanceFile(filename):
     """
     with fits.open(filename) as hdul:
         temp1 = hdul[0].data[0::2,0::2].astype(np.float32)
-        temp2 = hdul[0].data[1::2,0::2].astype(np.float32)
-        temp3 = hdul[0].data[0::2,1::2].astype(np.float32)
+        temp2 = hdul[0].data[0::2,1::2].astype(np.float32)
+        temp3 = hdul[0].data[1::2,0::2].astype(np.float32)
         temp4 = hdul[0].data[1::2,1::2].astype(np.float32)
 
         def flatten_slice(slice, target):
@@ -356,8 +356,8 @@ def BayerBalanceFile(filename):
 
         new_data = hdul[0].data.astype(np.float32)
         new_data[0::2,0::2] = temp1
-        new_data[1::2,0::2] = temp2
-        new_data[0::2,1::2] = temp3
+        new_data[0::2,1::2] = temp2
+        new_data[1::2,0::2] = temp3
         new_data[1::2,1::2] = temp4
 
         new_filename = filename.replace(".fit","_M.fit")
