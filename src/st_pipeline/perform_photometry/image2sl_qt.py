@@ -661,7 +661,7 @@ meta_validator = MetaValidator()
 # providing a way to deal with missing/incorrect FITS header info.
 #
 
-def read_meta_from_json(filename, dict):
+def read_meta_from_json(filename, meta_dict):
     """Pull metadata from a JSON metadata file
 
     Update a meta dictionary using the contents of the JSON metadata
@@ -689,7 +689,7 @@ def read_meta_from_json(filename, dict):
         print("ERROR: Refusing to read JSON metadata file that exceeds 10K bytes.")
         raise ValueError
 
-    with open(filename, 'r', encoding='utf-8') as fp:
+    with open(filename, encoding='utf-8') as fp:
         try:
             data = json.load(fp)
         except json.JSONDecodeError:
@@ -1173,7 +1173,7 @@ def process_single_image(filename, metadata, options, temp_dir,
         logical_starlist=StarListSet(star_lists=[starlist])
     )
 
-def Process3DFile(filename, temp_dir):
+def process_3d_file(filename, temp_dir):
     """Process an RGB image, converting it into one or more starlists
 
     Process a stacked, one-shot-color image using the user's selected options
@@ -1286,20 +1286,20 @@ def process_rgb_file(filename, options, temp_dir, metadata,
         if ret_val == 0:
             return []
 
-        single_color_files = Process3DFile(filename, temp_dir)
+        single_color_files = process_3d_file(filename, temp_dir)
         do_stacking = not options.split_stacked_image
         adj_meta_dict['pixscale'] /= 2.0 # Correct for non-de-Bayered image
     elif de_bayer:
-        single_color_files = DeBayerFile(filename, metadata['BAYERPAT'], temp_dir)
+        single_color_files = de_bayer_file(filename, metadata['BAYERPAT'], temp_dir)
         do_stacking = options.StackChannels
     else:
         adj_meta_dict['pixscale'] /= 2.0 # Correct for non-de-Bayered image
 
     if do_stacking:
         print("Stacking images")
-        stacked_image = StackImages(single_color_files, options, temp_dir)
+        stacked_image = stack_images(single_color_files, options, temp_dir)
         starlist_filename = starlist_tgtname.replace("$$","M")
-        output_objects.append(ProcessSingleImage(stacked_image,
+        output_objects.append(process_single_image(stacked_image,
                                                  adj_meta_dict,
                                                  options,
                                                  temp_dir,
@@ -1315,7 +1315,7 @@ def process_rgb_file(filename, options, temp_dir, metadata,
                 filter_file = "TG"+str(tg_num)
                 tg_num += 1
             starlist_filename = starlist_tgtname.replace("$$",filter_file)
-            output_objects.append(ProcessSingleImage(file,
+            output_objects.append(process_single_image(file,
                                                      adj_meta_dict,
                                                      options,
                                                      temp_dir,
@@ -2341,10 +2341,10 @@ class Option3DPopup(QDialog):
         self.options = options
 
         self.setWindowTitle("image2sl: Stacked Image Options")
-        QBtn = QDialogButtonBox.Ok | QDialogButtonBox.Cancel
-        buttonBox = QDialogButtonBox(QBtn)
-        buttonBox.accepted.connect(self.accept)
-        buttonBox.rejected.connect(self.reject)
+        q_btn = QDialogButtonBox.Ok | QDialogButtonBox.Cancel
+        button_box = QDialogButtonBox(q_btn)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
 
         layout = QVBoxLayout()
         message = QLabel("Choose stacked image processing option")
@@ -2354,15 +2354,15 @@ class Option3DPopup(QDialog):
         self.radio_split = QRadioButton("Separate into R, G, B images")
         button_group.addButton(self.radio_stack)
         button_group.addButton(self.radio_split)
-        self.radio_stack.toggled.connect(self.ButtonChange)
-        self.radio_split.toggled.connect(self.ButtonChange)
+        self.radio_stack.toggled.connect(self.button_change)
+        self.radio_split.toggled.connect(self.button_change)
         layout.addWidget(self.radio_stack)
         layout.addWidget(self.radio_split)
-        layout.addWidget(buttonBox)
+        layout.addWidget(button_box)
         self.setLayout(layout)
         self.show()
 
-    def ButtonChange(self):
+    def button_change(self):
         """Callback when either of the two radio buttons changes state """
         self.options.split_stacked_image = self.radio_split.isChecked()
 
