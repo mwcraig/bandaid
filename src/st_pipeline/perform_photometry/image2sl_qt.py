@@ -193,7 +193,7 @@ def StackImages(channel_list, options, temp_dir):
                 for y in range(height-1):
                     for x in range(width-1):
                         tgt = sum((p[2]*orig_data[y+p[1],x+p[0]]
-                                   for p in interp_pattern[bayer_id]))
+                                   for p in interp_pattern[bayer_id])
                         new_data[y,x] = tgt
 
             hdu.data += source_hdu/16.0
