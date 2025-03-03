@@ -1263,9 +1263,9 @@ def process_rgb_file(filename, options, temp_dir, metadata,
         These are the logical starlists that result.
 
     """
-    if not meta_validator.Validate(metadata):
+    if not meta_validator.validate(metadata):
         return []
-    de_bayer = options.DeBayer
+    de_bayer = options.de_bayer
     fits_format = (metadata['fits_format']
                    if 'fits_format' in metadata else "bayered")
     output_objects = []
