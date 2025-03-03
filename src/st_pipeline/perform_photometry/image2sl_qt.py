@@ -1079,7 +1079,7 @@ def ProcessSingleImage(filename, metadata, options, temp_dir,
         elif 'fov_rad' in metadata and metadata['fov_rad'] is not None:
             command += (" -5 " + str(metadata['fov_rad']))
         else:
-            assert False, "Image FOV not defined"
+            raise AssertionError("Image FOV not defined")
 
         command += (" '" + str(filename) + "'")
 
