@@ -294,7 +294,7 @@ def BayerBalanceFile(filename):
         raw_stdev = statistics.stdev(raw_pixels)
         cutoff = raw_avg + 5*raw_stdev
 
-        temp1x = np.array([x for x in temp1.flatten() if 0 <= x < cutoff])
+        temp1x = temp1[(0 <= temp1) &  (temp1 < cutoff)].flatten()
         temp2x = np.array([x for x in temp2.flatten() if 0 <= x < cutoff])
         temp3x = np.array([x for x in temp3.flatten() if 0 <= x < cutoff])
         temp4x = np.array([x for x in temp4.flatten() if 0 <= x < cutoff])
