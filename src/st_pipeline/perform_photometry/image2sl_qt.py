@@ -2388,7 +2388,7 @@ def main():
         not_a_window = MainWindow(OptionsUI(), ui=ui)
 
         ui.window.progressBar.hide()
-        ui.window.generate_starlistButton.clicked.connect(not_a_window.do_generate_starlist)
+        ui.window.GenerateStarlistButton.clicked.connect(not_a_window.do_generate_starlist)
         ui.window.actionEnter_astrometry_net_API_key.triggered.connect(not_a_window.get_key)
 
         sys.exit(app.exec())
