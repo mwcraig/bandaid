@@ -808,7 +808,7 @@ def read_meta_from_fits(filename, meta_dict):
             print("Telescope type ", telescope_type, " not implemented yet.")
 
 
-def wc_stext_2wcs(wcs_text):
+def wcs_text_2wcs(wcs_text):
     """Convert WCS FITS header text into an astropy WCS object
 
     Convert a set of FITS header keyword/value pairs describing a WCS
