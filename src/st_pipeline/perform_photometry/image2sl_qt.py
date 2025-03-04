@@ -71,7 +71,7 @@ astrometry_api_key = None
 ##        Algorithmic Stuff Comes First
 ################################################################
 
-def DeBayerFile(filename, pattern, temp_dir):
+def DeBayerFile(filename, metadata, temp_dir):
     """Split an RGB image into four images, one for each Bayer channel
     The four channels are extracted using a string description of the
     Bayer sequence (e.g., 'BGGR'); each extracted sub-image is stored
@@ -102,13 +102,13 @@ def DeBayerFile(filename, pattern, temp_dir):
         temp4 = hdul[0].data[1::2,1::2]
         array = [temp1, temp2, temp3, temp4] # ROWORDER= top-down, YBAYROFF=0
         # this should be generalized to handle any Bayer pattern with ROWORDER and YBAYROFF
-        if 'DWARF' in hdul[0].header['ORIGIN']:
+        if 'Dwarf2' == metadata['telescope_probe']:
             array = [temp2, temp1, temp4, temp3] # YBAYROFF = 1
             
         output_filenames = [] # each entry in this list is a tuple: (filter, filename)
 
         for index in range(4):
-            color = pattern[index]
+            color = metadata['BAYERPAT'][index]
             output_tgt = Path(temp_dir) / ("image"+str(index)+"_"+color+".fits")
 
             hdu = fits.PrimaryHDU()
@@ -468,8 +468,10 @@ def ProbeFileForType(filename):
         ################################
         ## DWARF
         ################################
-        if 'ORIGIN' in hdu0h and 'DWARFLAB' in hdu0h['ORIGIN']:
-            return ("Dwarf", "bayered")
+        if 'TELESCOP' in hdu0h and 'DWARFIII' in hdu0h['TELESCOP']:
+            return ("Dwarf3", "bayered")
+        if 'TELESCOP' in hdu0h and 'DWARFII' in hdu0h['TELESCOP']:
+            return ("Dwarf2", "bayered")
 
         ################################
         ## Unrecognized
@@ -733,6 +735,7 @@ def ReadMetaFromFITS(filename, meta_dict):
     telescope_type, fits_format = ProbeFileForType(filename)
     with fits.open(filename) as hdul:
         hdu0h = hdul[0].header
+        meta_dict['telescope_probe'] = telescope_type
 
         # Generate Metadata
         ################################
@@ -795,7 +798,7 @@ def ReadMetaFromFITS(filename, meta_dict):
         ################################
         ##        Dwarf
         ################################
-        elif telescope_type == "Dwarf":
+        elif telescope_type in ['Dwarf2', 'Dwarf3']:
             for key,tgt in [('BAYERPAT','BAYERPAT'),
                             ('EXPTIME','exposure'),
                             ('DATE-OBS','obs_time'),
