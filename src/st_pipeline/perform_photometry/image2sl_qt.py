@@ -105,7 +105,7 @@ def de_bayer_file(filename, metadata, temp_dir):
         # this should be generalized to handle any Bayer pattern with ROWORDER and YBAYROFF
         if 'Dwarf' in metadata['telescope_probe']:
             array = [temp2, temp1, temp4, temp3] # YBAYROFF = 1
-            
+
         output_filenames = [] # each entry in this list is a tuple: (filter, filename)
 
         for index in range(4):
@@ -1164,18 +1164,18 @@ def process_single_image(filename, metadata, options, temp_dir,
         for (x, y) in zip(sources['x'], sources['y'], strict=False)
     ]
 
-    ################################
-    ## Do PSF fitting, if requested
-    ################################
-    if options.use_psf_fitting:
-        starlist.starlist['staritems'].sort(key=lambda star:
-                                           star['tot_flux'], reverse=True)
-        psf_fitting.DoPSF(filename, starlist.starlist)
-
     print(sources.colnames)
     print(StarItem.model_fields.keys())
     print("Creating starlist with ", len(sources), " stars.")
     starlist.staritems = table_to_star_items(sources)
+
+    ################################
+    ## Do PSF fitting, if requested
+    ################################
+    if options.use_psf_fitting:
+        starlist.staritems.sort(key=lambda star:
+                                star.tot_flux, reverse=True)
+        psf_fitting.do_psf(filename, starlist.staritems)
 
     print("starlist is ", type(starlist))
     return OutputObject(
