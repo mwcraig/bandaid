@@ -47,6 +47,7 @@ from PySide6.QtCore import QFile, QIODevice
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtUiTools import QUiLoader
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QCheckBox,
     QDialog,
@@ -71,7 +72,6 @@ astrometry_api_key = None
 ##        Algorithmic Stuff Comes First
 ################################################################
 
-
 def de_bayer_file(filename, metadata, temp_dir):
     """Split an RGB image into four images, one for each Bayer channel
     The four channels are extracted using a string description of the
@@ -81,8 +81,8 @@ def de_bayer_file(filename, metadata, temp_dir):
     ----------
     filename : str
         pathname to the original image to be de-Bayered
-    pattern : str exactly 4 chars long
-        The Bayer pattern (e.g., 'BGGR')
+    metadata: dict
+        The metadata for this image file
     temp_dir : str
         pathname to the temporary directory where the new images go
 
@@ -103,7 +103,7 @@ def de_bayer_file(filename, metadata, temp_dir):
         temp4 = hdul[0].data[1::2,1::2]
         array = [temp1, temp2, temp3, temp4] # ROWORDER= top-down, YBAYROFF=0
         # this should be generalized to handle any Bayer pattern with ROWORDER and YBAYROFF
-        if 'Dwarf2' == metadata['telescope_probe']:
+        if 'Dwarf' in metadata['telescope_probe']:
             array = [temp2, temp1, temp4, temp3] # YBAYROFF = 1
             
         output_filenames = [] # each entry in this list is a tuple: (filter, filename)
@@ -509,6 +509,7 @@ def probe_file_for_type(filename):
 ##    DEC - a float, nominal declination of image center (deg)
 ##    RA - a float, nominal RA of image center (deg)
 ##    FOV_RAD - a float, nominal field of view radius (deg)
+##    telescope_probe - a str, value returned by probe_file_for_type()
 ################################################################
 
 valid_meta_keys = ['schema_version',
@@ -532,7 +533,8 @@ valid_meta_keys = ['schema_version',
                    'refframe',
                    'dec',
                    'ra',
-                   'fov_rad']
+                   'fov_rad',
+                   'telescope_probe']
 
 class MetaValidator:
     """Class that tests metadata to see what's missing
@@ -1298,8 +1300,8 @@ def process_rgb_file(filename, options, temp_dir, metadata,
         do_stacking = not options.split_stacked_image
         adj_meta_dict['pixscale'] /= 2.0 # Correct for non-de-Bayered image
     elif de_bayer:
-        single_color_files = de_bayer_file(filename, metadata['BAYERPAT'], temp_dir)
-        do_stacking = options.StackChannels
+        single_color_files = de_bayer_file(filename, metadata, temp_dir)
+        do_stacking = options.stack_channels
     else:
         adj_meta_dict['pixscale'] /= 2.0 # Correct for non-de-Bayered image
 
@@ -1330,22 +1332,6 @@ def process_rgb_file(filename, options, temp_dir, metadata,
                                                      starlist_filename,
                                                      photfilter,
                                                      wcs=wcs))
-        else:
-            tg_num = 1
-            for (filter,file) in single_color_files:
-                filter_file = filter
-                # Hangle "TG" and "G" filters the same
-                if filter in ['TG', 'G']:
-                    filter_file = "TG"+str(tg_num)
-                    tg_num += 1
-                starlist_filename = starlist_tgtname.replace("$$",filter_file)
-                output_objects.append(process_single_image(file,
-                                                         dict(metadata),
-                                                         options,
-                                                         temp_dir,
-                                                         starlist_filename,
-                                                         filter,
-                                                         wcs=wcs))
     else:
         # Not de-Bayered; treat as single monochrome image
         print("Processing single monochrome image")
@@ -1957,6 +1943,7 @@ class UI:
             print(loader.errorString())
             sys.exit(-1)
         self.window.ApertureSize.setText("1.0")
+        self.window.actionQuit.triggered.connect(QApplication.quit)
 
 class APIEntryDialog(QDialog):
     """The QDialog popup window used to enter the astrometry.net API key
