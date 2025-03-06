@@ -537,7 +537,7 @@ valid_meta_keys = ['schema_version',
                    'fov_rad', # a float, nominal field of view radius (deg)
                    'telescope_probe', # a str, value returned by probe_file_for_type()
                    'roworder', # a string, BAYERPAT modifier. "top-down" or "bottom-up"
-                   'ybayroff' # an integer, BAYERPAT modifier. Column shift left, right or not: -1, 0, 1]
+                   'ybayroff' # an integer, BAYERPAT modifier. Column shift horizontally, 0 or 1
         ]
 class MetaValidator:
     """Class that tests metadata to see what's missing
