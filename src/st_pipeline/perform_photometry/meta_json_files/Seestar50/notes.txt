@@ -1,0 +1,124 @@
+SeestarS50
+
+raw header:
+SIMPLE  	= T / file does conform to FITS standard             
+BITPIX  	= 16 / number of bits per data pixel                  
+NAXIS   	= 2 / number of data axes                            
+NAXIS1  	= 1080 / length of data axis 1                          
+NAXIS2  	= 1920 / length of data axis 2                          
+EXTEND  	= T / FITS dataset may contain extensions            
+COMMENT	   FITS (Flexible Image Transport System) format is defined in 'Astronomy
+COMMENT	   and Astrophysics', volume 376, page 359; bibcode: 2001A&A...376..359H 
+BZERO   	= 32768 / offset data range to that of unsigned short    
+BSCALE  	= 1 / default scaling factor                         
+CREATOR 	= 'ZWO SeestarS50'     / Capture software                               
+XORGSUBF	= 0 / Subframe X position in binned pixels           
+YORGSUBF	= 0 / Subframe Y position in binned pixels           
+FOCALLEN	= 250 / Focal length of telescope in mm                
+XBINNING	= 1 / Camera X Bin                                   
+YBINNING	= 1 / Camera Y Bin                                   
+CCDXBIN 	= 1 / Camera X Bin                                   
+CCDYBIN 	= 1 / Camera Y Bin                                   
+XPIXSZ  	= 2.90000009536743 / pixel size in microns (with binning)           
+YPIXSZ  	= 2.90000009536743 / pixel size in microns (with binning)           
+IMAGETYP	= 'Light   '           / Type of image                                  
+EXPOSURE	= 10. / Exposure time in seconds                       
+EXPTIME 	= 10. / Exposure time in seconds                       
+CCD-TEMP	= 18.4375 / sensor temperature in C                        
+RA      	= 214.41666 / Object Right Ascension in degrees              
+DEC     	= 19.323333 / Object Declination in degrees                  
+SITELONG	= -71.1539 / longitude of the imaging site in degrees       
+SITELAT 	= 42.4194 / latitude of the imaging site in degrees        
+DATE-OBS	= '2024-03-18T03:15:46.622491' / Image created time                     
+FILTER  	= 'IRCUT   '           / Filter used when taking image                  
+INSTRUME	= 'Seestar S50'        / Camera model                                   
+BAYERPAT	= 'GRBG    '           / Bayer pattern                                  
+GAIN    	= 80 / Gain Value                                     
+FOCUSPOS	= 1625 / Focuser position in steps                      
+TELESCOP	= 'Seestar S50'        / Telescope name                                 
+OBJECT  	= 'Arcturus'           / name or catalog number of object being imaged  
+INPUTFMT	= 'FITS    ' /          Format of file from which image was read        
+
+No json sidecar file
+
+stacked header
+SIMPLE  	= T / file does conform to FITS standard             
+BITPIX  	= 16 / number of bits per data pixel                  
+NAXIS   	= 3 / number of data axes                            
+NAXIS1  	= 1080 / length of data axis 1                          
+NAXIS2  	= 1920 / length of data axis 2                          
+NAXIS3  	= 3 / length of data axis 3                          
+EXTEND  	= T / FITS dataset may contain extensions            
+COMMENT	   FITS (Flexible Image Transport System) format is defined in 'Astronomy
+COMMENT	   and Astrophysics', volume 376, page 359; bibcode: 2001A&A...376..359H 
+BZERO   	= 32768 / offset data range to that of unsigned short    
+BSCALE  	= 1.0000000000000000 / default scaling factor                         
+CREATOR 	= 'ZWO SeestarS50'     / Capture software                               
+XORGSUBF	= 0 / Subframe X position in binned pixels           
+YORGSUBF	= 0 / Subframe Y position in binned pixels           
+FOCALLEN	= 250 / Focal length of telescope in mm                
+XBINNING	= 1 / Camera X Bin                                   
+YBINNING	= 1 / Camera Y Bin                                   
+CCDXBIN 	= 1 / Camera X Bin                                   
+CCDYBIN 	= 1 / Camera Y Bin                                   
+XPIXSZ  	= 2.90000009536743 / pixel size in microns (with binning)           
+YPIXSZ  	= 2.90000009536743 / pixel size in microns (with binning)           
+IMAGETYP	= 'Light   '           / Type of image                                  
+STACKCNT	= 7 / Stack frames                                   
+EXPOSURE	= 10. / Exposure time in seconds                       
+EXPTIME 	= 10. / Exposure time in seconds                       
+CCD-TEMP	= 18.5 / sensor temperature in C                        
+RA      	= 214.42083 / Object Right Ascension in degrees              
+DEC     	= 19.3325 / Object Declination in degrees                  
+SITELONG	= -71.1539 / longitude of the imaging site in degrees       
+SITELAT 	= 42.4194 / latitude of the imaging site in degrees        
+DATE-OBS	= '2024-03-18T03:16:50.729518' / Image created time                     
+FILTER  	= 'IRCUT   '           / Filter used when taking image                  
+INSTRUME	= 'Seestar S50'        / Camera model                                   
+BAYERPAT	= 'GRBG    '           / Bayer pattern                                  
+GAIN    	= 80 / Gain Value                                     
+FOCUSPOS	= 1625 / Focuser position in steps                      
+TELESCOP	= 'Seestar S50'        / Telescope name                                 
+OBJECT  	= 'Arcturus'           / name or catalog number of object being imaged  
+CTYPE1  	= 'RA---TAN-SIP'       / TAN (gnomic) projection + SIP distortions      
+CTYPE2  	= 'DEC--TAN-SIP'       / TAN (gnomic) projection + SIP distortions      
+CRVAL1  	= 214.012264191 / RA  of reference point                         
+CRVAL2  	= 19.5794817666 / DEC of reference point                         
+CRPIX1  	= 502.554153442 / X reference pixel                              
+CRPIX2  	= 689.075820923 / Y reference pixel                              
+CD1_1   	= -0.000429396640797 / Transformation matrix                          
+CD1_2   	= 0.000501576125785 / no comment                                     
+CD2_1   	= -0.000501375573371 / no comment                                     
+CD2_2   	= -0.00042933333907 / no comment                                     
+A_ORDER 	= 2 / Polynomial order, axis 1                       
+B_ORDER 	= 2 / Polynomial order, axis 2                       
+AP_ORDER	= 2 / Inv polynomial order, axis 1                   
+BP_ORDER	= 2 / Inv polynomial order, axis 2                   
+A_0_0   	= 0 / no comment                                     
+A_0_1   	= 0 / no comment                                     
+A_0_2   	= -3.64742218336E-07 / no comment                                     
+A_1_0   	= 0 / no comment                                     
+A_1_1   	= -1.05758144103E-06 / no comment                                     
+A_2_0   	= -1.48417414404E-06 / no comment                                     
+B_0_0   	= 0 / no comment                                     
+B_0_1   	= 0 / no comment                                     
+B_0_2   	= -4.93442439586E-07 / no comment                                     
+B_1_0   	= 0 / no comment                                     
+B_1_1   	= 2.61428416096E-07 / no comment                                     
+B_2_0   	= 5.55654329523E-07 / no comment                                     
+AP_0_0  	= -0.000266478571087 / no comment                                     
+AP_0_1  	= 6.38203159475E-07 / no comment                                     
+AP_0_2  	= 3.65444177868E-07 / no comment                                     
+AP_1_0  	= 1.26310218088E-06 / no comment                                     
+AP_1_1  	= 1.05925483712E-06 / no comment                                     
+AP_2_0  	= 1.48568942771E-06 / no comment                                     
+BP_0_0  	= 2.23759518648E-05 / no comment                                     
+BP_0_1  	= -4.29946321745E-08 / no comment                                     
+BP_0_2  	= 4.93720396731E-07 / no comment                                     
+BP_1_0  	= -5.06668248631E-07 / no comment                                     
+BP_1_1  	= -2.62160896656E-07 / no comment                                     
+BP_2_0  	= -5.56375069433E-07 / no comment                                     
+IMAGEW  	= 1080 / Image width,  in pixels.                       
+IMAGEH  	= 1920 / Image height, in pixels.                       
+INPUTFMT	= 'FITS    ' /          Format of file from which image was read        
+SWOWNER 	= 'George Silvis' /     Licensed owner of software                      

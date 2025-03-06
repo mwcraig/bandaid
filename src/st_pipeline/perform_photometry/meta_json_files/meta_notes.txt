@@ -1,4 +1,16 @@
-Working with the meta files
+Working with the meta data
+
+It is collected in this order:
+- FITS header
+- JSON sidecar file, if it exists
+- probe for the image type using header keywords
+- fetch adjustment json from meta_json_files/<type>/<subtype>.json
+   These jsons use indirection to sort out aliases and other issues
+- fetch from meta_json_files/personal.json for personal adjustments
+- do programmatic adjustments, like local time to UTC
+
 
 - Distinguish raw files from stacked by NAXIS count: 2 for raw, 3 for stacked
+    assuming we don't get multiple hdu fits files...
 - ignore BAYERPAT for stacked files 
+
