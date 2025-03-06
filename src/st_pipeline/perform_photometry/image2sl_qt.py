@@ -110,7 +110,7 @@ def de_bayer_file(filename, metadata, temp_dir):
         output_filenames = [] # each entry in this list is a tuple: (filter, filename)
 
         for index in range(4):
-            color = metadata['BAYERPAT'][index]
+            color = metadata['bayerpat'][index]
             output_tgt = Path(temp_dir) / ("image"+str(index)+"_"+color+".fits")
 
             hdu = fits.PrimaryHDU()
@@ -127,7 +127,7 @@ def de_bayer_file(filename, metadata, temp_dir):
 
             hdu.data = array[index]
             hdu.header['filter'] = ('T'+color, 'Bayer color mask')
-            hdu.header['BAYERPAT'] = ('NA', 'No longer a Bayered image')
+            hdu.header['bayerpat'] = ('NA', 'No longer a Bayered image')
             # update_header will "fix" the header to match the data
             hdu.update_header()
             fits.writeto(output_tgt, array[index], header=hdu.header, overwrite=True)
@@ -528,7 +528,7 @@ valid_meta_keys = ['schema_version',
                    'adc_depth', # an integer, bit depth of the camera ADC (e.g. 12)
                    'largest_usable_adu_value', # an integer, the ADU level where saturation starts
                    'system_gain', # a float, the gain of the camera system, e-/ADU
-                   'BAYERPAT', # a 4-character string (e.g., 'BGGR')
+                   'bayerpat', # a 4-character string (e.g., 'BGGR')
                    'pixscale', # a float, pixel scale *after* debayering, arcsec/pix
                    'epoch', # a string, (e.g., "J2000")
                    'refframe', # a string, (e.g., "ICRS")
@@ -536,8 +536,8 @@ valid_meta_keys = ['schema_version',
                    'ra', # a float, nominal RA of image center (deg)
                    'fov_rad', # a float, nominal field of view radius (deg)
                    'telescope_probe', # a str, value returned by probe_file_for_type()
-                   'roworder', # a string, BAYERPAT modifier. "top-down" or "bottom-up"
-                   'ybayroff' # an integer, BAYERPAT modifier. Column shift horizontally, 0 or 1
+                   'roworder', # a string, bayerpat modifier. "top-down" or "bottom-up"
+                   'ybayroff' # an integer, bayerpat modifier. Column shift horizontally, 0 or 1
         ]
 class MetaValidator:
     """Class that tests metadata to see what's missing
@@ -585,6 +585,8 @@ class MetaValidator:
             The metadata keyword that was read
         value: any value
             The value that was read
+        return: the value that belongs to this key, resolving any references,
+            or None if the key is a comment
         """
         if key.startswith('_'): # json comment
             return
@@ -943,6 +945,8 @@ def process_single_image(filename, metadata, options, temp_dir,
     metadata['filter'] = passband_filter
     metadata['gain'] = metadata['system_gain']
     print("model_validate: ", metadata)
+
+
     starlist = StarList.model_validate(metadata)
     with fits.open(filename) as hdul:
         image_data = hdul[0].data.astype(np.float32)
