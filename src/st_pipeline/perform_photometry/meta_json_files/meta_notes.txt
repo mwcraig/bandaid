@@ -1,6 +1,9 @@
 Working with the meta data
 
-It is collected in this order:
+The meta data required is defined in the code:
+   valid_meta_keys=  about line 515
+
+We build to that from what is collected in this order:
 - FITS header
 - JSON sidecar file, if it exists
 - probe for the image type using header keywords
