@@ -101,10 +101,11 @@ def de_bayer_file(filename, metadata, temp_dir):
         temp2 = hdul[0].data[0::2,1::2]
         temp3 = hdul[0].data[1::2,0::2]
         temp4 = hdul[0].data[1::2,1::2]
-        array = [temp1, temp2, temp3, temp4] # ROWORDER= top-down, YBAYROFF=0
-        # this should be generalized to handle any Bayer pattern with ROWORDER and YBAYROFF
-        if 'Dwarf' in metadata['telescope_probe']:
-            array = [temp2, temp1, temp4, temp3] # YBAYROFF = 1
+        array = [temp1, temp2, temp3, temp4] # roworder= top-down, ybayroff= 0
+        if metadata['roworder'] == 'bottom-up':
+            array = [array[i] for i in [3,4,1,2]]
+        if metadata['ybayroff'] != 0: # left or right shift the same
+            array = [array[i] for i in [2,1,4,3]]
 
         output_filenames = [] # each entry in this list is a tuple: (filter, filename)
 
@@ -434,9 +435,9 @@ def probe_file_for_type(filename):
     -------
     Tuple: (str, str)
         First str is one of the following: "Unistellar", "Seestar",
-        "Origin", "Dwarf", "other"
+        "Origin", "Dwarf2", "Dwarf3", "other"
         Second str is one of the following: "bayered", "mono",
-        "3Dstacked", "3Hstacked"
+        "3Dstacked", "3Hstacked", "unknown"
 
     Raises
     ------
@@ -470,9 +471,9 @@ def probe_file_for_type(filename):
         ## DWARF
         ################################
         if 'TELESCOP' in hdu0h and 'DWARFIII' in hdu0h['TELESCOP']:
-            return ("Dwarf3", "bayered")
+            return ("Dwarf3", ["bayered", "3Dstacked"][hdu0h['NAXIS'] == 3])
         if 'TELESCOP' in hdu0h and 'DWARFII' in hdu0h['TELESCOP']:
-            return ("Dwarf2", "bayered")
+            return ("Dwarf2", ["bayered", "3Dstacked"][hdu0h['NAXIS'] == 3])
 
         ################################
         ## Unrecognized
@@ -513,29 +514,31 @@ def probe_file_for_type(filename):
 ################################################################
 
 valid_meta_keys = ['schema_version',
-                   'obs_time',
-                   'site_lat',
-                   'site_lon',
-                   'site_elev',
-                   'observer',
-                   'filter',
-                   'block_filter',
-                   'exposure',
-                   'tel_manufac',
-                   'tel_model',
-                   'tel_firmware',
-                   'adc_depth',
-                   'largest_usable_adu_value',
-                   'system_gain',
-                   'BAYERPAT',
-                   'pixscale',
-                   'epoch',
-                   'refframe',
-                   'dec',
-                   'ra',
-                   'fov_rad',
-                   'telescope_probe']
-
+                   'obs_time', # a string, e.g., '2024-08-24T12:34:65.2' (UTC)
+                   'site_lat', # a float, the observer's latitude in degrees
+                   'site_lon', # a float, the observer's longitude in degrees
+                   'site_elev', # a float, the observer's GPS elevation in meters
+                   'observer', # a string, the AAVSO observer code
+                   'filter', # a 2-character string, one of TG,TB,TR
+                   'block_filter', # a string, typically "UV+IR" or "IRCUT" or other
+                   'exposure', # a float, total exposure time in secs
+                   'tel_manufac', # a string, name of the telescope manufacturer (e.g. "ZWO")
+                   'tel_model', #a string, the telescope's model name (e.g. "DwarfIII")
+                   'tel_firmware', # a string, the firmware ID (e.g. "v1.2.3")
+                   'adc_depth', # an integer, bit depth of the camera ADC (e.g. 12)
+                   'largest_usable_adu_value', # an integer, the ADU level where saturation starts
+                   'system_gain', # a float, the gain of the camera system, e-/ADU
+                   'BAYERPAT', # a 4-character string (e.g., 'BGGR')
+                   'pixscale', # a float, pixel scale *after* debayering, arcsec/pix
+                   'epoch', # a string, (e.g., "J2000")
+                   'refframe', # a string, (e.g., "ICRS")
+                   'dec', # a float, nominal declination of image center (deg)
+                   'ra', # a float, nominal RA of image center (deg)
+                   'fov_rad', # a float, nominal field of view radius (deg)
+                   'telescope_probe', # a str, value returned by probe_file_for_type()
+                   'roworder', # a string, BAYERPAT modifier. "top-down" or "bottom-up"
+                   'ybayroff' # an integer, BAYERPAT modifier. Column shift left, right or not: -1, 0, 1]
+        ]
 class MetaValidator:
     """Class that tests metadata to see what's missing
 
@@ -583,7 +586,15 @@ class MetaValidator:
         value: any value
             The value that was read
         """
+        if key.startswith('_'): # json comment
+            return
+        if isinstance(value, str) and value.startswith('@'):
+            # This is a reference to another key in the existing meta dir file
+            self.json[key] = value # show we will get the value from the header
+            self.fits[key]= self.fits[value[1:]] # show that the fits had the value
+            return self.fits[key]
         self.json[key] = value
+        return value
 
     def add_fits_item(self, key, value):
         """Add a piece of metadata pulled from the FITS file
@@ -612,9 +623,9 @@ class MetaValidator:
             if key not in self.final and key not in self.optional:
                 missing.append(key)
 
+        self.dump_to_console(missing) # always print the results to the console
         if len(missing) > 0:
-            self.dump_to_console(missing)
-            return False
+            return False # return False if there are missing required keys
         return True
 
     def console_dump_1_line(self, key, reqd, found_json, found_fits, final):
@@ -709,8 +720,9 @@ def read_meta_from_json(filename, meta_dict):
             if keyword not in valid_meta_keys:
                 print("Bad keyword in ", filename, ": ", keyword)
             else:
-                meta_validator.add_json_item(keyword, value)
-                meta_dict[keyword] = value
+                val= meta_validator.add_json_item(keyword, value)
+                if val is not None:
+                    meta_dict[keyword] = val
 
 
 # Read metadata from a FITS header. The metadata that's found will be
@@ -740,6 +752,14 @@ def read_meta_from_fits(filename, meta_dict):
         hdu0h = hdul[0].header
         meta_dict['telescope_probe'] = telescope_type
 
+        # read in the whole header
+        for key in hdu0h:
+            meta_validator.add_fits_item(key, hdu0h[key])
+            meta_dict[key] = hdu0h[key] # copy the value into the meta_dict
+
+
+        '''
+    
         # Generate Metadata
         ################################
         ##          Seestar
@@ -816,7 +836,7 @@ def read_meta_from_fits(filename, meta_dict):
 
         else:
             print("Telescope type ", telescope_type, " not implemented yet.")
-
+        '''
 
 def wcs_text_2wcs(wcs_text):
     """Convert WCS FITS header text into an astropy WCS object
