@@ -1,0 +1,4 @@
+Working with the meta files
+
+- Distinguish raw files from stacked by NAXIS count: 2 for raw, 3 for stacked
+- ignore BAYERPAT for stacked files 
