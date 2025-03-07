@@ -4,13 +4,17 @@ The meta data required is defined in the code:
    valid_meta_keys=  about line 515
 
 We build to that from what is collected in this order:
+- probe for the image type using header keywords
 - FITS header
 - JSON sidecar file, if it exists
-- probe for the image type using header keywords
-- fetch adjustment json from meta_json_files/<type>/<subtype>.json
+- fetch adjustment json from meta_json_files/<type>/basic.json
+- look for a json in meta_json_files/<type>/<subtype>.json
    These jsons use indirection to sort out aliases and other issues
+   eg   "tel_manufac": "@ORIGIN"   means look for ORIGIN already in the meta dict
 - fetch from meta_json_files/personal.json for personal adjustments
 - do programmatic adjustments, like local time to UTC
+   eg  "obs_time": "!DATE-OBS Local2UTC"  means look for DATE-OBS and apply the Local2UTC function
+
 
 
 - Distinguish raw files from stacked by NAXIS count: 2 for raw, 3 for stacked

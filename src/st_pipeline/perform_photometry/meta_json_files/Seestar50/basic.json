@@ -1,0 +1,29 @@
+{
+    "_note": "This is a adj json file for the Seestar50, raw and stacked",
+    "obs_time": "@DATE-OBS",
+    "_site_lat": "personal.json @SITELAT",
+    "_site_lon": "personal.json @SITELONG",
+    "_site_elev": "personal.json",
+    "_observer": "personal.json",
+    "_filter": "not for unprocessed files",
+    "block_filter" : "@FILTER",  
+    "exposure": "@EXPTIME",
+    "tel_manufac": "ZWO",
+    "tel_model": "@TELESCOP",
+    "tel_firmware" : "",
+    "adc_depth" : 12,
+    "largest_usable_adu_value" : 64000,
+    "system_gain" : 0.3116,
+    "bayerpat": "@BAYERPAT", 
+    "pixscale" : 2.4,
+    "epoch" : "J2000",
+    "refframe" : "ICRS",
+    "dec": "@DEC",
+    "ra": "@RA",
+    "fov_rad" : 0.74,
+    "_telescope_probe" : "form fits",
+    "roworder": "top-down",
+    "ybayroff": 0
+}
+
+    
