@@ -32,6 +32,9 @@ import tempfile
 import warnings
 from collections import namedtuple
 from pathlib import Path
+from datetime import datetime
+import pytz
+from timezonefinder import TimezoneFinder
 
 import numpy as np
 from astropy.io import fits
@@ -459,8 +462,8 @@ def probe_file_for_type(filename):
         ################################
         if 'CREATOR' in hdu0h and 'Seestar' in hdu0h['CREATOR']:
             if hdu0h['NAXIS'] == 3:
-                return ("Seestar", "3Dstacked")
-            return ("Seestar", "bayered")
+                return ("Seestar50", "3Dstacked")
+            return ("Seestar50", "bayered")
 
         ################################
         ## Celestron Origin test
@@ -536,7 +539,7 @@ valid_meta_keys = ['schema_version',
                    'dec', # a float, nominal declination of image center (deg)
                    'ra', # a float, nominal RA of image center (deg)
                    'fov_rad', # a float, nominal field of view radius (deg)
-                   'telescope_probe', # a str, value returned by probe_file_for_type()
+                   'telescope_probe', # a tuple, with type and format of the image
                    'roworder', # a string, bayerpat modifier. "top-down" or "bottom-up"
                    'ybayroff' # an integer, bayerpat modifier. Column shift horizontally, 0 or 1
         ]
@@ -577,7 +580,7 @@ class MetaValidator:
         self.json = {}
         self.fits = {}
 
-    def add_json_item(self, key, value):
+    def add_json_item(self, key, value, meta_dict):
         """Add a piece of metadata pulled from the JSON file
 
         Parameters
@@ -594,8 +597,8 @@ class MetaValidator:
         if isinstance(value, str) and value.startswith('@'):
             # This is a reference to another key in the existing meta dir file
             self.json[key] = value # show we will get the value from the header
-            self.fits[key]= self.fits[value[1:]] # show that the fits had the value
-            return self.fits[key]
+            meta_dict[key]= meta_dict[value[1:]] # show that the fits had the value
+            return meta_dict[key]
         self.json[key] = value
         return value
 
@@ -720,12 +723,9 @@ def read_meta_from_json(filename, meta_dict):
             raise
 
         for (keyword,value) in data.items():
-            if keyword not in valid_meta_keys:
-                print("Bad keyword in ", filename, ": ", keyword)
-            else:
-                val= meta_validator.add_json_item(keyword, value)
-                if val is not None:
-                    meta_dict[keyword] = val
+            val= meta_validator.add_json_item(keyword, value, meta_dict)
+            if val is not None:
+                meta_dict[keyword] = val
 
 
 # Read metadata from a FITS header. The metadata that's found will be
@@ -750,7 +750,7 @@ def read_meta_from_fits(filename, meta_dict):
     -------
     None
     """
-    telescope_type, fits_format = probe_file_for_type(filename)
+    telescope_type= probe_file_for_type(filename)
     with fits.open(filename) as hdul:
         hdu0h = hdul[0].header
         meta_dict['telescope_probe'] = telescope_type
@@ -2264,7 +2264,7 @@ class MainWindow:
             read_meta_from_fits(image_filename, meta)
 
             QGuiApplication.processEvents()
-            # Now get the metadata from the standalone metadata file
+            # Now get the metadata from the standalone metadata file (sidecar)
             if metadata_filename is not None:
                 meta_path = Path(metadata_filename)
                 if not (meta_path.is_file() and meta_path.exists() and
@@ -2273,6 +2273,49 @@ class MainWindow:
                     raise ValueError("Cannot read metadata file")
                 print("Reading metadata from ", metadata_filename)
                 read_meta_from_json(metadata_filename, meta)
+
+            # read adjustment meta json
+            mp= Path(os.getcwd(), "src/st_pipeline/perform_photometry/meta_json_files")
+            # apply basic.json
+            mpp= Path(mp, meta["telescope_probe"][0], "basic.json")    
+            read_meta_from_json(mpp, meta)
+            # look for and apply type specific json
+            mpp= Path(mp, meta["telescope_probe"][0], meta["telescope_probe"][1]+".json")    
+            if (mpp.is_file() and mpp.exists() and mpp.stat().st_mode & 0o400):
+                read_meta_from_json(mpp, meta)
+
+            # read personal.json
+            mpp= Path(mp, "personal.json")    
+            if (mpp.is_file() and mpp.exists() and mpp.stat().st_mode & 0o400):
+                read_meta_from_json(mpp, meta)
+
+            def Local2UTC(lat, long, local_time_str):
+                # courtesy of GPT-4o
+                # Parse the local time string into a datetime object
+                local_time = datetime.strptime(local_time_str, '%Y-%m-%dT%H:%M:%S.%f')
+                # Find the timezone
+                tf = TimezoneFinder()
+                timezone_str = tf.timezone_at(lng=long, lat=lat)
+                if timezone_str is None:
+                    raise ValueError("Could not find timezone for the given coordinates.")
+                # Get the timezone object
+                local_tz = pytz.timezone(timezone_str)
+                # Localize the datetime to the found timezone
+                local_dt = local_tz.localize(local_time)
+                # Convert to UTC
+                utc_dt = local_dt.astimezone(pytz.utc)
+                return utc_dt.strftime('%Y-%m-%dT%H:%M:%S')
+
+            # look for special processing keys
+            for key, value in meta.items():   
+                # eg "ra": "!RA hr2deg"
+                if isinstance(value, str) and value.startswith('!'):
+                    tt= value[1:].split()                    
+                    if tt[1] == "hr2deg": # convert decimal hours to degrees
+                        meta[key]= meta[tt[0]] * 15.
+                    elif tt[1] == "Local2UTC": # convert local time to UTC
+                        # eg  "obs_time": "!DATE-OBS Local2UTC"
+                        meta[key]= Local2UTC(meta["site_lat"], meta["site_lon"], meta[tt[0]])  
 
             print("Final metadata is ", meta)
 
