@@ -543,6 +543,15 @@ valid_meta_keys = ['schema_version',
                    'roworder', # a string, bayerpat modifier. "top-down" or "bottom-up"
                    'ybayroff' # an integer, bayerpat modifier. Column shift horizontally, 0 or 1
         ]
+
+def get_json_value(data, keys):
+    # keys can be a string with '.' separators
+    value = data
+    for key in keys.split('.'):
+        value = value[key]
+    return value
+
+
 class MetaValidator:
     """Class that tests metadata to see what's missing
 
