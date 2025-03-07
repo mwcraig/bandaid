@@ -605,8 +605,9 @@ class MetaValidator:
             return
         if isinstance(value, str) and value.startswith('@'):
             # This is a reference to another key in the existing meta dir file
-            self.json[key] = value # show we will get the value from the header
-            meta_dict[key]= meta_dict[value[1:]] # show that the fits had the value
+            self.json[key] = value # show we will get the value from the prior meta
+            #meta_dict[key]= meta_dict[value[1:]] # show that the fits had the value
+            meta_dict[key]= get_json_value(meta_dict, value[1:]) # show that the fits had the value
             return meta_dict[key]
         self.json[key] = value
         return value
@@ -1137,7 +1138,7 @@ def process_single_image(filename, metadata, options, temp_dir,
         local_system = platform.system()
         if local_system == 'xWindows':
             p = Path(os.path.expandvars('%LOCALAPPDATA%'))
-            q = p / 'cygwin_ansvr' / 'bin' / 'solve-field'
+            q = p / 'cygwin_ansvr' / 'usr' / 'bin' / 'solve-field'
             if q.exists():
                 cmd = build_local_command(temp_dir)
                 full_cmd = f"%LOCALAPPDATA%\\cygwin_ansvr\\bin\\bash.exe --login -c '{cmd}'"
@@ -1168,6 +1169,7 @@ def process_single_image(filename, metadata, options, temp_dir,
                     wcs = WCS(header)
 
         if wcs is None:
+            print("Trying astrometry.net.")
             ast = AstrometryNet()
             if astrometry_api_key is None:
                 global ui
@@ -1183,7 +1185,12 @@ def process_single_image(filename, metadata, options, temp_dir,
                                                     sources['y'],
                                                     width,
                                                     height,
-                                                    solve_timeout=120)
+                                                    solve_timeout=120,
+                                                    center_dec=metadata['dec'],
+                                                    center_ra=metadata['ra'],
+                                                    scale_lower=0.9*metadata['pixscale'],
+                                                    scale_upper=1.1*metadata['pixscale']
+                                                    )
             wcs = WCS(header=wcs_header)
 
     # Calculate RA and Dec
@@ -2282,19 +2289,23 @@ class MainWindow:
                     raise ValueError("Cannot read metadata file")
                 print("Reading metadata from ", metadata_filename)
                 read_meta_from_json(metadata_filename, meta)
+            # path to meta jsons
+            mp= Path(os.getcwd(), "src/st_pipeline/perform_photometry/meta_json_files")
+
+            # read personal.json
+            mpp= Path(mp, "personal.json")    
+            if (mpp.is_file() and mpp.exists() and mpp.stat().st_mode & 0o400):
+                with open(mpp, 'r') as f:
+                    meta['personal']= json.load(f)
+            else:
+                print("No personal.json file found")
 
             # read adjustment meta json
-            mp= Path(os.getcwd(), "src/st_pipeline/perform_photometry/meta_json_files")
             # apply basic.json
             mpp= Path(mp, meta["telescope_probe"][0], "basic.json")    
             read_meta_from_json(mpp, meta)
             # look for and apply type specific json
             mpp= Path(mp, meta["telescope_probe"][0], meta["telescope_probe"][1]+".json")    
-            if (mpp.is_file() and mpp.exists() and mpp.stat().st_mode & 0o400):
-                read_meta_from_json(mpp, meta)
-
-            # read personal.json
-            mpp= Path(mp, "personal.json")    
             if (mpp.is_file() and mpp.exists() and mpp.stat().st_mode & 0o400):
                 read_meta_from_json(mpp, meta)
 
@@ -2321,10 +2332,18 @@ class MainWindow:
                 if isinstance(value, str) and value.startswith('!'):
                     tt= value[1:].split()                    
                     if tt[1] == "hr2deg": # convert decimal hours to degrees
-                        meta[key]= meta[tt[0]] * 15.
+                        meta[key]= get_json_value(meta, tt[0]) * 15.
                     elif tt[1] == "Local2UTC": # convert local time to UTC
                         # eg  "obs_time": "!DATE-OBS Local2UTC"
-                        meta[key]= Local2UTC(meta["site_lat"], meta["site_lon"], meta[tt[0]])  
+                        meta[key]= Local2UTC(meta["site_lat"], meta["site_lon"], get_json_value(meta, tt[0])) 
+                    elif tt[1] == "refmtDate": 
+                        # "obs_time": "!StackedInfo.dateTime refmtDate %m-%d-%yB%H_%M_%S"
+                        #   B is a blank space
+                        d= datetime.strptime(get_json_value(meta, tt[0]), tt[2].replace('B', ' '))
+                        meta[key]= d.strftime("%Y-%m-%dT%H:%M:%S")
+                    elif tt[1] == "index": 
+                        # eg "tel_firmware" : "!CREATOR index 1"
+                        meta[key]= get_json_value(meta, tt[0]).split()[int(tt[2])]
 
             print("Final metadata is ", meta)
 
