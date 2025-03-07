@@ -103,9 +103,10 @@ def de_bayer_file(filename, metadata, temp_dir):
         temp4 = hdul[0].data[1::2,1::2]
         array = [temp1, temp2, temp3, temp4] # roworder= top-down, ybayroff= 0
         if metadata['roworder'] == 'bottom-up':
-            array = [array[i] for i in [3,4,1,2]]
+            array = [array[i-1] for i in [3,4,1,2]]
         if metadata['ybayroff'] != 0: # left or right shift the same
-            array = [array[i] for i in [2,1,4,3]]
+            array = [array[i-1] for i in [2,1,4,3]]
+
 
         output_filenames = [] # each entry in this list is a tuple: (filter, filename)
 
