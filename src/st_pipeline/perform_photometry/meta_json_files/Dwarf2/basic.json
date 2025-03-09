@@ -1,5 +1,5 @@
 {
-    "_note": "This is the basic adj json file for the DwarfIII",
+    "_note": "This is the basic adj json file for the DwarfII",
     "obs_time": "!DATE-OBS Local2UTC",
     "site_lat": "@personal.SITELAT",
     "site_lon": "@personal.SITELONG",
@@ -15,12 +15,12 @@
     "largest_usable_adu_value" : 64000,
     "system_gain" : 0.3116,
     "bayerpat": "@BAYERPAT", 
-    "pixscale" : 2.8,
+    "pixscale" : 3.0,
     "epoch" : "J2000",
     "refframe" : "ICRS",
     "dec": "@DEC",
     "ra": "!RA hr2deg",
-    "fov_rad" : 1.7,
+    "fov_rad" : 1.8,
     "_telescope_probe" : "from fits",
     "roworder": "top-down",
     "ybayroff": 1
