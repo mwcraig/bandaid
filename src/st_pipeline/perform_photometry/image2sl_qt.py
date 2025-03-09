@@ -2297,6 +2297,7 @@ class MainWindow:
             if (mpp.is_file() and mpp.exists() and mpp.stat().st_mode & 0o400):
                 with open(mpp, 'r') as f:
                     meta['personal']= json.load(f)
+                    # from here the adjustment jsons can access personal info
             else:
                 print("No personal.json file found")
 
@@ -2346,6 +2347,21 @@ class MainWindow:
                         meta[key]= get_json_value(meta, tt[0]).split()[int(tt[2])]
 
             print("Final metadata is ", meta)
+
+            # is the file fits header missing necessary info?
+            with fits.open(image_filename, mode='update') as hdul:
+                hdu0h = hdul[0].header
+                if 'RA' not in hdu0h:  hdu0h['RA'] = meta['ra']
+                if 'DEC' not in hdu0h: hdu0h['DEC'] = meta['dec']
+                if 'DATE-OBS' not in hdu0h: hdu0h['DATE-OBS'] = meta['obs_time']
+                if 'EXPTIME' not in hdu0h: hdu0h['EXPTIME'] = meta['exposure']
+                if 'BAYERPAT' not in hdu0h: hdu0h['BAYERPAT'] = meta['bayerpat']
+                if 'ROWORDER' not in hdu0h: hdu0h['ROWORDER'] = meta['roworder']
+                if 'YBAYROFF' not in hdu0h: hdu0h['YBAYROFF'] = meta['ybayroff']
+                hdul[0].header = hdu0h
+                hdul.flush()
+
+            # if the WCS is not provided, then we need to get it now        
 
             if meta_validator.validate(meta):
                 if self.options.get_color_balance:
