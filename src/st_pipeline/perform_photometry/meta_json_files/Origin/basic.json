@@ -23,5 +23,7 @@
     "fov_rad" : 0.75,
     "_telescope_probe" : "from fits",
     "roworder": "top-down",
-    "ybayroff": 0
+    "ybayroff": 0,
+
+     "object": "@StackedInfo.objectName"
 }

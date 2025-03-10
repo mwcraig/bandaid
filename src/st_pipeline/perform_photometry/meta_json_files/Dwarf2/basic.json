@@ -23,5 +23,7 @@
     "fov_rad" : 1.8,
     "_telescope_probe" : "from fits",
     "roworder": "top-down",
-    "ybayroff": 1
+    "ybayroff": 1,
+
+     "object": "@OBJECT"
 }
