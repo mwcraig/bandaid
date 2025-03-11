@@ -1004,6 +1004,10 @@ def process_single_image(filename, metadata, options, temp_dir,
         # Set flux errors to zero for negative fluxes
         sources['flux_err'][sources['tot_flux'] < 0] = 0.0
 
+        # Check if WCS is already present in the FITS header
+        wcs = WCS(hdul[0].header) # This looks for the WCSAXES keyword
+
+
     ################################
     ## WCS handling overall sequence
     ## 1. If wcs is passed in as parameter, use it. Do not
