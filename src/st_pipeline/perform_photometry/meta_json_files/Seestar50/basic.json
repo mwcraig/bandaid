@@ -12,7 +12,7 @@
     "tel_model": "@TELESCOP",
     "tel_firmware" : "",
     "adc_depth" : 12,
-    "largest_usable_adu_value" : 64000,
+    "largest_usable_adu_value" : 50000,
     "system_gain" : 0.3116,
     "bayerpat": "@BAYERPAT", 
     "pixscale" : 2.4,
