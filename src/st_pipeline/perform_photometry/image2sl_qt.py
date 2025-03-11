@@ -130,14 +130,22 @@ def de_bayer_file(filename, metadata, temp_dir):
                         hdu.header[keyword] = card
 
             hdu.data = array[index]
-            hdu.header['filter'] = ('T'+color, 'Bayer color mask')
-            hdu.header['bayerpat'] = ('NA', 'No longer a Bayered image')
+            # fix up header to match the data
+            hdu.header['FILTER'] = ('T'+color, 'Bayer color mask')
+            hdu.header['BAYERPAT'] = ('NA', 'No longer a Bayered image')
+            hdu.header['PIXSCALE'] = (metadata['pixscale'] * 2.0, 'arcsec/pix')
             # update_header will "fix" the header to match the data
             hdu.update_header()
             fits.writeto(output_tgt, array[index], header=hdu.header, overwrite=True)
             print("write debayered image: ", output_tgt) # so you can look at the image files
             ImageDescriptor = namedtuple('ImageDescriptor', ['filter','filename'])
             output_filenames.append(ImageDescriptor(color,output_tgt))
+        
+        # change the metadata to reflect the new state of the image
+        metadata['pixscale'] = metadata['pixscale'] * 2.0
+        metadata['bayerpat'] = 'NA'
+        metadata['telescope_probe']= (metadata['telescope_probe'][0], 'mono')
+
         return output_filenames
 
 # pattern triplet: (x_offset, y_offset, weight)
@@ -538,7 +546,7 @@ valid_meta_keys = ['schema_version',
                    'refframe', # a string, (e.g., "ICRS")
                    'dec', # a float, nominal declination of image center (deg)
                    'ra', # a float, nominal RA of image center (deg)
-                   'fov_rad', # a float, nominal field of view radius (deg)
+                   'fov_rad', # a float, nominal field of view radius (deg) (half the diagonal)
                    'telescope_probe', # a tuple, with type and format of the image
                    'roworder', # a string, bayerpat modifier. "top-down" or "bottom-up"
                    'ybayroff' # an integer, bayerpat modifier. Column shift horizontally, 0 or 1
@@ -771,86 +779,6 @@ def read_meta_from_fits(filename, meta_dict):
             meta_dict[key] = hdu0h[key] # copy the value into the meta_dict
 
 
-        '''
-    
-        # Generate Metadata
-        ################################
-        ##          Seestar
-        ################################
-        if telescope_type == 'Seestar':
-            for key,tgt in [('BAYERPAT','BAYERPAT'),
-                            ('DATE-OBS','obs_time'),
-                            ('filter','block_filter')]:
-                if key in hdu0h:
-                    meta_validator.add_fits_item(tgt, hdu0h[key])
-                    meta_dict[tgt] = hdu0h[key]
-            ################
-            ## FOV, Pixel scale
-            ################
-            meta_dict['fov_rad'] = 0.7 # wild guess; needs validation
-
-            for key,tgt in [('sitelat', 'site_lat'),
-                            ('sitelong', 'site_lon'),
-                            ('dec', 'dec'),
-                            ('ra', 'ra'),
-                            ('exposure', 'exposure')]:
-                if key in hdu0h:
-                    meta_validator.add_fits_item(tgt, hdu0h[key])
-                    meta_dict[tgt] = hdu0h[key]
-
-            meta_dict['tel_manufac'] = 'ZWO'
-            meta_dict['tel_model'] = 'Seestar'
-            meta_dict['adc_depth'] = 14
-            meta_dict['fits_format'] = fits_format
-
-        ################################
-        ##       Origin
-        ################################
-        elif telescope_type == 'Origin':
-            meta_dict['BAYERPAT'] = 'RGGB' # Is this correct?
-            meta_dict['tel_manufac'] = 'Celestron'
-            meta_dict['tel_model'] = 'Origin'
-            meta_dict['adc_depth'] = 14
-            meta_dict['pixscale'] = 1.45*2 # after de-bayering
-
-        ################################
-        ##       Unistellar
-        ################################
-        elif telescope_type == 'Unistellar':
-            for key,tgt in [('BAYERPAT','BAYERPAT'),
-                            ('DATE-AVG','obs_time'),
-                            ('EXPTIME','exposure'),
-                            ('LATITUDE','site_lat'),
-                            ('LONGITUD', 'site_lon'),
-                            ('ALTITUDE', 'site_elev'),
-                            ('FOVDEC','dec')]:
-                if key in hdu0h:
-                    meta_validator.add_fits_item(tgt, hdu0h[key])
-                    meta_dict[tgt] = hdu0h[key]
-            meta_dict['tel_manufac'] = 'Unistellar'
-            meta_dict['tel_model'] = 'eVscope'
-            meta_dict['pixscale'] = 1.5*2 # after de-bayering
-
-        ################################
-        ##        Dwarf
-        ################################
-        elif telescope_type in ['Dwarf2', 'Dwarf3']:
-            for key,tgt in [('BAYERPAT','BAYERPAT'),
-                            ('EXPTIME','exposure'),
-                            ('DATE-OBS','obs_time'),
-                            ('INSTRUME','tel_model'),
-                            ('ra','ra'),
-                            ('dec','dec')]:
-                if key in hdu0h:
-                    meta_validator.add_fits_item(tgt, hdu0h[key])
-                    meta_dict[tgt] = hdu0h[key]
-            meta_dict['tel_manufac'] = 'DwarfLab'
-            meta_dict['pixscale'] = 1.5*2 # after de-bayering
-
-        else:
-            print("Telescope type ", telescope_type, " not implemented yet.")
-        '''
-
 def wcs_text_2wcs(wcs_text):
     """Convert WCS FITS header text into an astropy WCS object
 
@@ -955,7 +883,7 @@ def process_single_image(filename, metadata, options, temp_dir,
     metadata['staritems'] = []
     metadata['filter'] = passband_filter
     metadata['gain'] = metadata['system_gain']
-    print("model_validate: ", metadata)
+    #print("model_validate: ", metadata)
 
 
     starlist = StarList.model_validate(metadata)
@@ -1090,8 +1018,8 @@ def process_single_image(filename, metadata, options, temp_dir,
         temp_dirname = temp_dir.name
         plate_solve_dir = temp_dirname
 
-        command = "solve-field "
-        temp_dir_arg = " -D " + str(plate_solve_dir) #.replace('\\', '/')
+        command = " " #"solve-field  will be added later" 
+        temp_dir_arg = " --dir " + str(plate_solve_dir) #.replace('\\', '/') # output dir
         command += temp_dir_arg
         print("plate_solve_dir = ", plate_solve_dir)
         print("temp_dir_arg = ", temp_dir_arg)
@@ -1104,25 +1032,19 @@ def process_single_image(filename, metadata, options, temp_dir,
             raise ValueError("Pixelscale not defined.")
         pixel_low = pixelscale * 0.9
         pixel_hi = pixelscale * 1.1
-        command += (" -L " + str(pixel_low)
-                    + " -H " + str(pixel_hi)
-                    + " -u arcsecperpix ")
+        command += (" --scale-low " + str(pixel_low)
+                    + " --scale-high " + str(pixel_hi)
+                    + " --scale-units arcsecperpix ")
 
-        if ('DEC' in metadata and 'RA' in metadata and
-            metadata['DEC'] is not None and metadata['RA'] is not None):
-            command += (" -3 " + str(metadata['RA'])
-                        + " -4 " + str(metadata['DEC']))
-        elif ('dec' in metadata and 'ra' in metadata and
+        if ('dec' in metadata and 'ra' in metadata and
               metadata['dec'] is not None and metadata['ra'] is not None):
-            command += (" -3 " + str(metadata['ra'])
-                        + " -4 " + str(metadata['dec']))
+            command += (" --ra " + str(metadata['ra'])
+                        + " --dec " + str(metadata['dec']))
         else:
             raise ValueError("Dec/RA not defined")
 
-        if 'FOV_RAD' in metadata and metadata['FOV_RAD'] is not None:
-            command += (" -5 " + str(metadata['FOV_RAD']))
-        elif 'fov_rad' in metadata and metadata['fov_rad'] is not None:
-            command += (" -5 " + str(metadata['fov_rad']))
+        if 'fov_rad' in metadata and metadata['fov_rad'] is not None:
+            command += (" --radius " + str(metadata['fov_rad'])) # in degrees
         else:
             raise AssertionError("Image FOV not defined")
 
@@ -1136,12 +1058,13 @@ def process_single_image(filename, metadata, options, temp_dir,
         ################################
         temp_dir = tempfile.TemporaryDirectory()
         local_system = platform.system()
-        if local_system == 'xWindows':
+        if local_system == 'Windows':
             p = Path(os.path.expandvars('%LOCALAPPDATA%'))
-            q = p / 'cygwin_ansvr' / 'usr' / 'bin' / 'solve-field'
+            q = p  / 'cygwin_ansvr' / 'bin' / 'solve-field'
             if q.exists():
                 cmd = build_local_command(temp_dir)
-                full_cmd = f"%LOCALAPPDATA%\\cygwin_ansvr\\bin\\bash.exe --login -c '{cmd}'"
+                cmd2= (str(q)+cmd).replace('\\', '/')
+                full_cmd = f"%LOCALAPPDATA%\\cygwin_ansvr\\bin\\bash.exe --login -c '{cmd2}'"
                 print("Executing: ", full_cmd)
                 return_code= os.system(full_cmd)
                 print("solve-field returned ", return_code)
@@ -1185,11 +1108,13 @@ def process_single_image(filename, metadata, options, temp_dir,
                                                     sources['y'],
                                                     width,
                                                     height,
-                                                    solve_timeout=120,
-                                                    center_dec=metadata['dec'],
-                                                    center_ra=metadata['ra'],
-                                                    scale_lower=0.9*metadata['pixscale'],
-                                                    scale_upper=1.1*metadata['pixscale']
+                                                    solve_timeout= 120
+                                                    #,
+                                                    #verbose= True,
+                                                    #center_dec=metadata['dec'],
+                                                    #center_ra=metadata['ra'],
+                                                    #scale_lower=0.9*metadata['pixscale'],
+                                                    #scale_upper=1.1*metadata['pixscale']
                                                     )
             wcs = WCS(header=wcs_header)
 
@@ -1317,8 +1242,8 @@ def process_rgb_file(filename, options, temp_dir, metadata,
     if not meta_validator.validate(metadata):
         return []
     de_bayer = options.de_bayer
-    fits_format = (metadata['fits_format']
-                   if 'fits_format' in metadata else "bayered")
+    fits_format = metadata['telescope_probe'][1] # fits_format
+    # can't get here without a telescope_probe   if 'fits_format' in metadata else "bayered")
     output_objects = []
     single_color_files = []
     do_stacking = False
@@ -1339,12 +1264,10 @@ def process_rgb_file(filename, options, temp_dir, metadata,
 
         single_color_files = process_3d_file(filename, temp_dir)
         do_stacking = not options.split_stacked_image
-        adj_meta_dict['pixscale'] /= 2.0 # Correct for non-de-Bayered image
+        #adj_meta_dict['pixscale'] /= 2.0 # Correct for non-de-Bayered image
     elif de_bayer:
-        single_color_files = de_bayer_file(filename, metadata, temp_dir)
+        single_color_files = de_bayer_file(filename, adj_meta_dict, temp_dir)
         do_stacking = options.stack_channels
-    else:
-        adj_meta_dict['pixscale'] /= 2.0 # Correct for non-de-Bayered image
 
     if do_stacking:
         print("Stacking images")
@@ -2289,6 +2212,10 @@ class MainWindow:
                     raise ValueError("Cannot read metadata file")
                 print("Reading metadata from ", metadata_filename)
                 read_meta_from_json(metadata_filename, meta)
+
+            # save the filename in the metadata
+            meta["filename"] = image_filename.split("/")[-1]
+
             # path to meta jsons
             mp= Path(os.getcwd(), "src/st_pipeline/perform_photometry/meta_json_files")
 
@@ -2348,10 +2275,14 @@ class MainWindow:
 
             print("Final metadata is ", meta)
 
+            # Copy the file to the temporary directory (ie, don't touch input file)
+            temp_image_filename = os.path.join(self.temp_dirname, os.path.basename(image_filename))
+            shutil.copy(image_filename, temp_image_filename)
             # is the file fits header missing necessary info?
-            with fits.open(image_filename, mode='update') as hdul:
+            #   Should be complete enough so you can load into VPhot
+            with fits.open(temp_image_filename, mode='update') as hdul:
                 hdu0h = hdul[0].header
-                if 'RA' not in hdu0h:  hdu0h['RA'] = meta['ra']
+                if 'RA' not in hdu0h:  hdu0h['RA'] = meta['ra'] / 15.0 # FITS wants hours
                 if 'DEC' not in hdu0h: hdu0h['DEC'] = meta['dec']
                 if 'DATE-OBS' not in hdu0h: hdu0h['DATE-OBS'] = meta['obs_time']
                 if 'EXPTIME' not in hdu0h: hdu0h['EXPTIME'] = meta['exposure']
@@ -2361,7 +2292,7 @@ class MainWindow:
                 hdul[0].header = hdu0h
                 hdul.flush()
 
-            # if the WCS is not provided, then we need to get it now        
+            # if the WCS is not provided, then we should get it now        
 
             if meta_validator.validate(meta):
                 if self.options.get_color_balance:
