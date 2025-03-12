@@ -1005,7 +1005,8 @@ def process_single_image(filename, metadata, options, temp_dir,
         sources['flux_err'][sources['tot_flux'] < 0] = 0.0
 
         # Check if WCS is already present in the FITS header
-        wcs = WCS(hdul[0].header) # This looks for the WCSAXES keyword
+        if wcs is None:
+            wcs = WCS(hdul[0].header) # This looks for the WCSAXES keyword
 
 
     ################################
