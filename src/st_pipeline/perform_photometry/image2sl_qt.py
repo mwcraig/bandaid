@@ -2239,6 +2239,7 @@ class MainWindow:
             # read adjustment meta json
             # apply basic.json
             mpp= Path(mp, meta["telescope_probe"][0], "basic.json")
+            print("Reading basic.json from ", mpp)
             read_meta_from_json(mpp, meta)
             # look for and apply type specific json
             mpp= Path(mp, meta["telescope_probe"][0], meta["telescope_probe"][1]+".json")
