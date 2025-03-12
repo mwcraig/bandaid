@@ -39,6 +39,7 @@ from timezonefinder import TimezoneFinder
 import numpy as np
 from astropy.io import fits
 from astropy.stats import SigmaClip, sigma_clipped_stats
+from astropy.utils.data import get_pkg_data_filename
 from astropy.wcs import WCS
 from astroquery.astrometry_net import AstrometryNet
 from photutils import aperture, psf
@@ -2221,24 +2222,26 @@ class MainWindow:
             # save the filename in the metadata
             meta["filename"] = image_filename.split("/")[-1]
 
-            # path to meta jsons
-            mp= Path(os.getcwd(), "src/st_pipeline/perform_photometry/meta_json_files")
-
+            # # path to meta jsons
+            #  mp= Path(os.getcwd(), "src/st_pipeline/perform_photometry/meta_json_files")
+            # print(type(get_pkg_data_filename("meta_json_files/Seestar50/basic.json")))
+            mp = Path(get_pkg_data_filename("meta_json_files/Seestar50/basic.json")).parent.parent
             # read personal.json
-            mpp= Path(mp, "personal.json")    
-            if (mpp.is_file() and mpp.exists() and mpp.stat().st_mode & 0o400):
-                with open(mpp, 'r') as f:
+            # mpp= Path(mp, "personal.json")
+            # if (mpp.is_file() and mpp.exists() and mpp.stat().st_mode & 0o400):
+            try:
+                with Path(self.options.meta_file).open() as f:
                     meta['personal']= json.load(f)
                     # from here the adjustment jsons can access personal info
-            else:
+            except OSError:
                 print("No personal.json file found")
 
             # read adjustment meta json
             # apply basic.json
-            mpp= Path(mp, meta["telescope_probe"][0], "basic.json")    
+            mpp= Path(mp, meta["telescope_probe"][0], "basic.json")
             read_meta_from_json(mpp, meta)
             # look for and apply type specific json
-            mpp= Path(mp, meta["telescope_probe"][0], meta["telescope_probe"][1]+".json")    
+            mpp= Path(mp, meta["telescope_probe"][0], meta["telescope_probe"][1]+".json")
             if (mpp.is_file() and mpp.exists() and mpp.stat().st_mode & 0o400):
                 read_meta_from_json(mpp, meta)
 
