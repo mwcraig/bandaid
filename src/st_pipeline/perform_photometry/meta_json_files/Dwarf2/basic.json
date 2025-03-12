@@ -1,9 +1,9 @@
 {
     "_note": "This is the basic adj json file for the DwarfII",
-    "obs_time": "!DATE-OBS Local2UTC",
     "site_lat": "@personal.SITELAT",
     "site_lon": "@personal.SITELONG",
     "site_elev": "@personal.SITEELEV",
+    "obs_time": "!DATE-OBS Local2UTC",
     "observer": "@personal.obscode",
     "_filter": "not for unprocessed files",
     "block_filter" : "@ir",  
