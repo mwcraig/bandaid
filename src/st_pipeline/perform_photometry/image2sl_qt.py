@@ -31,13 +31,13 @@ import sys
 import tempfile
 import warnings
 from collections import namedtuple
-from pathlib import Path
 from datetime import datetime
-import pytz
-from timezonefinder import TimezoneFinder
+from pathlib import Path
 
 import numpy as np
+import pytz
 from astropy.io import fits
+from astropy.nddata import CCDData
 from astropy.stats import SigmaClip, sigma_clipped_stats
 from astropy.utils.data import get_pkg_data_filename
 from astropy.wcs import WCS
@@ -63,6 +63,7 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QVBoxLayout,
 )
+from timezonefinder import TimezoneFinder
 
 from .. import __version__
 from ..schema_definition import StarItem, StarList, StarListSet
@@ -141,7 +142,7 @@ def de_bayer_file(filename, metadata, temp_dir):
             print("write debayered image: ", output_tgt) # so you can look at the image files
             ImageDescriptor = namedtuple('ImageDescriptor', ['filter','filename'])
             output_filenames.append(ImageDescriptor(color,output_tgt))
-        
+
         # change the metadata to reflect the new state of the image
         metadata['pixscale'] = metadata['pixscale'] * 2.0
         metadata['bayerpat'] = 'NA'
@@ -888,9 +889,13 @@ def process_single_image(filename, metadata, options, temp_dir,
 
 
     starlist = StarList.model_validate(metadata)
-    with fits.open(filename) as hdul:
-        image_data = hdul[0].data.astype(np.float32)
-        (height, width) = np.shape(hdul[0].data)
+    ccd_image = CCDData.read(filename, unit='adu')
+
+    # This next if statement is totally silly...but it eliminates
+    # the need to outdent the code.
+    if True:
+        image_data = ccd_image.data.astype(np.float32)
+        (height, width) = np.shape(image_data)
         print("height = ", height, ", width = ", width)
 
         # Estimate the background
@@ -1007,7 +1012,7 @@ def process_single_image(filename, metadata, options, temp_dir,
 
         # Check if WCS is already present in the FITS header
         if wcs is None:
-            wcs = WCS(hdul[0].header) # This looks for the WCSAXES keyword
+            wcs = ccd_image.wcs # This looks for the WCSAXES keyword
 
 
     ################################
@@ -1024,7 +1029,7 @@ def process_single_image(filename, metadata, options, temp_dir,
         temp_dirname = temp_dir.name
         plate_solve_dir = temp_dirname
 
-        command = " " #"solve-field  will be added later" 
+        command = " " #"solve-field  will be added later"
         temp_dir_arg = " --dir " + str(plate_solve_dir) #.replace('\\', '/') # output dir
         command += temp_dir_arg
         print("plate_solve_dir = ", plate_solve_dir)
@@ -2264,21 +2269,21 @@ class MainWindow:
                 return utc_dt.strftime('%Y-%m-%dT%H:%M:%S')
 
             # look for special processing keys
-            for key, value in meta.items():   
+            for key, value in meta.items():
                 # eg "ra": "!RA hr2deg"
                 if isinstance(value, str) and value.startswith('!'):
-                    tt= value[1:].split()                    
+                    tt= value[1:].split()
                     if tt[1] == "hr2deg": # convert decimal hours to degrees
                         meta[key]= get_json_value(meta, tt[0]) * 15.
                     elif tt[1] == "Local2UTC": # convert local time to UTC
                         # eg  "obs_time": "!DATE-OBS Local2UTC"
-                        meta[key]= Local2UTC(meta["site_lat"], meta["site_lon"], get_json_value(meta, tt[0])) 
-                    elif tt[1] == "refmtDate": 
+                        meta[key]= Local2UTC(meta["site_lat"], meta["site_lon"], get_json_value(meta, tt[0]))
+                    elif tt[1] == "refmtDate":
                         # "obs_time": "!StackedInfo.dateTime refmtDate %m-%d-%yB%H_%M_%S"
                         #   B is a blank space
                         d= datetime.strptime(get_json_value(meta, tt[0]), tt[2].replace('B', ' '))
                         meta[key]= d.strftime("%Y-%m-%dT%H:%M:%S")
-                    elif tt[1] == "index": 
+                    elif tt[1] == "index":
                         # eg "tel_firmware" : "!CREATOR index 1"
                         meta[key]= get_json_value(meta, tt[0]).split()[int(tt[2])]
 
@@ -2301,7 +2306,7 @@ class MainWindow:
                 hdul[0].header = hdu0h
                 hdul.flush()
 
-            # if the WCS is not provided, then we should get it now        
+            # if the WCS is not provided, then we should get it now
 
             if meta_validator.validate(meta):
                 if self.options.get_color_balance:
