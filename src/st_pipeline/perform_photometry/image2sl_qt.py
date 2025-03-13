@@ -106,12 +106,12 @@ def de_bayer_file(filename, metadata, temp_dir):
         temp2 = hdul[0].data[0::2,1::2]
         temp3 = hdul[0].data[1::2,0::2]
         temp4 = hdul[0].data[1::2,1::2]
+
         array = [temp1, temp2, temp3, temp4] # roworder= top-down, ybayroff= 0
         if metadata['roworder'] == 'bottom-up':
             array = [array[i-1] for i in [3,4,1,2]]
         if metadata['ybayroff'] != 0: # left or right shift the same
             array = [array[i-1] for i in [2,1,4,3]]
-
 
         output_filenames = [] # each entry in this list is a tuple: (filter, filename)
 
@@ -403,6 +403,7 @@ class OutputObject(BaseModel):
         starlist is given its own file; otherwise, this is ignored
     """
     filename: Path
+    orig_image_path: Path
     logical_starlist: StarListSet
 
     def write(self):
@@ -560,7 +561,6 @@ def get_json_value(data, keys):
     for key in keys.split('.'):
         value = value[key]
     return value
-
 
 class MetaValidator:
     """Class that tests metadata to see what's missing
@@ -780,7 +780,6 @@ def read_meta_from_fits(filename, meta_dict):
             meta_validator.add_fits_item(key, hdu0h[key])
             meta_dict[key] = hdu0h[key] # copy the value into the meta_dict
 
-
 def wcs_text_2wcs(wcs_text):
     """Convert WCS FITS header text into an astropy WCS object
 
@@ -810,7 +809,6 @@ def wcs_text_2wcs(wcs_text):
     wcs_header = fits.Header(cards=card_list)
     return WCS(wcs_header)
 
-
 def table_to_star_items(photometry_table):
     """
     Convert an astropy table with photometry to a list of star items.
@@ -832,10 +830,10 @@ def table_to_star_items(photometry_table):
 
     return star_items
 
-
 # Process one (possibly de-Bayered) image
 def process_single_image(filename, metadata, options, temp_dir,
-                       starlist_json_path, passband_filter, wcs=None):
+                         starlist_json_path, passband_filter,
+                         psf_builder, wcs=None):
     """Turn an image file into a starlist
 
     In a strictly one-to-one operation, turn an image into a starlist,
@@ -857,7 +855,9 @@ def process_single_image(filename, metadata, options, temp_dir,
     filter : str
         Short string holding the AAVSO reporting name for the filter
         associated with this image
-
+    psf_builder: psf_fitting.PSFBuilder reference
+        Reference to the PSFBuilder() that is only used when
+        psf_fitting is enabled.
     wcs : astropy WCS object
         WCS object that maps pixel coordinates to sky coordinates. If
         provided then astrometry.net fitting is skipped.
@@ -938,6 +938,7 @@ def process_single_image(filename, metadata, options, temp_dir,
         ).mean()
 
         print("Estimate FWHM from photutils = ", fwhm)
+        metadata['fwhm'] = fwhm
 
         # Now that we know the *real* FWHM, re-find the stars
         daofind = DAOStarFinder(fwhm=fwhm, threshold=4.0*std)
@@ -1152,11 +1153,17 @@ def process_single_image(filename, metadata, options, temp_dir,
     if options.use_psf_fitting:
         starlist.staritems.sort(key=lambda star:
                                 star.tot_flux, reverse=True)
-        psf_fitting.do_psf(filename, starlist.staritems)
+        psf_builder.add_image(clean_image,
+                              metadata,
+                              noise_bkgd_per_pixel,
+                              starlist)
 
     print("starlist is ", type(starlist))
+    print('creating OutputObject w/filename = ',
+          metadata['orig_filename'])
     return OutputObject(
         filename=starlist_json_path,
+        orig_image_path=metadata['orig_filename'],
         logical_starlist=StarListSet(star_lists=[starlist])
     )
 
@@ -1216,7 +1223,7 @@ def process_3d_file(filename, temp_dir):
     return output_filenames
 
 def process_rgb_file(filename, options, temp_dir, metadata,
-                   starlist_tgtname, wcs=None):
+                     starlist_tgtname, psf_builder, wcs=None):
     """Process an RGB image, converting it into one or more starlists
 
     Process a one-shot-color image using the user's selected options
@@ -1243,6 +1250,9 @@ def process_rgb_file(filename, options, temp_dir, metadata,
     wcs : astropy WCS object, optional
         WCS object that maps pixel coordinates to sky coordinates. If
         provided then astrometry.net fitting is skipped.
+    psf_builder: psf_fitting.PSFBuilder
+        This option is always present (even when PSF fitting isn't
+        being done). It's a reference to the PSF processing class.
 
     Returns
     -------
@@ -1285,11 +1295,13 @@ def process_rgb_file(filename, options, temp_dir, metadata,
         stacked_image = stack_images(single_color_files, options, temp_dir)
         starlist_filename = starlist_tgtname.replace("$$","M")
         output_objects.append(process_single_image(stacked_image,
-                                                 adj_meta_dict,
-                                                 options,
-                                                 temp_dir,
-                                                 starlist_filename, 'M',
-                                                 wcs=wcs))
+                                                   adj_meta_dict,
+                                                   options,
+                                                   temp_dir,
+                                                   starlist_filename,
+                                                   'M',
+                                                   psf_builder,
+                                                   wcs=wcs))
     elif len(single_color_files) > 1:
         print("Processing separate channels")
         tg_num = 1
@@ -1301,24 +1313,26 @@ def process_rgb_file(filename, options, temp_dir, metadata,
                 tg_num += 1
             starlist_filename = starlist_tgtname.replace("$$",filter_file)
             output_objects.append(process_single_image(file,
-                                                     adj_meta_dict,
-                                                     options,
-                                                     temp_dir,
-                                                     starlist_filename,
-                                                     photfilter,
-                                                     wcs=wcs))
+                                                       adj_meta_dict,
+                                                       options,
+                                                       temp_dir,
+                                                       starlist_filename,
+                                                       photfilter,
+                                                       psf_builder,
+                                                       wcs=wcs))
     else:
         # Not de-Bayered; treat as single monochrome image
         print("Processing single monochrome image")
         starlist_filename = starlist_tgtname.replace("$$","M") # M==monochrome
         print(metadata)
         output_objects.append(process_single_image(filename,
-                                                 adj_meta_dict,
-                                                 options,
-                                                 temp_dir,
-                                                 starlist_filename,
-                                                 'M',
-                                                 wcs=wcs))
+                                                   adj_meta_dict,
+                                                   options,
+                                                   temp_dir,
+                                                   starlist_filename,
+                                                   'M',
+                                                   psf_builder,
+                                                   wcs=wcs))
     print(f"ProcessRGB: returning {len(output_objects)} output_objects.")
     return output_objects
 
@@ -2166,6 +2180,9 @@ class MainWindow:
         bias_filename = self.options.bias_file
         metadata_filename = self.options.meta_file
 
+        psf_builder = psf_fitting.PSFBuilder()
+        all_output = [] #  this is a list of lists of OutputObjects
+
         for image_filename in image_list:
             QGuiApplication.processEvents()
             #Skip blank lines (if present)
@@ -2309,25 +2326,42 @@ class MainWindow:
             # if the WCS is not provided, then we should get it now
 
             if meta_validator.validate(meta):
+                meta['orig_filename'] = image_filename
                 if self.options.get_color_balance:
                     working_filename = bayer_balance_file(working_filename)
                 output_objs = process_rgb_file(working_filename,
-                                             self.options,
-                                             self.temp_dirname,
-                                             meta,
-                                             starlist_tgtname,
-                                             wcs=self._wcs)
-                if self.options.one_sl_per_file:
-                    for output in output_objs:
-                        output.Write()
-                else:
-                    filename = Path(orig_dir, orig_file_base+".star")
-                    sl_set = output_objs[0].logical_starlist
-                    for output in output_objs[1:]:
-                        sl_set.star_lists.extend(output.logical_starlist.star_lists)
-                    print("Writing total of ", len(sl_set.star_lists), " logical starlists.")
+                                               self.options,
+                                               self.temp_dirname,
+                                               meta,
+                                               starlist_tgtname,
+                                               psf_builder,
+                                               wcs=self._wcs)
+                all_output.append(output_objs)
+        # Now that all images have been processed, let the psf_fitter
+        # perform PSF photometry. If the option was not turned on,
+        # this will return quietly without doing anything.
+        psf_builder.build_psf()
 
-                    filename.write_text(sl_set.model_dump_json(indent=2))
+        # Write the starlist files
+        if self.options.one_sl_per_file:
+            for obj in all_output:
+                for output in obj:
+                    output.Write()
+        else:
+            for output_objs in all_output:
+                if len(output_objs) == 0:
+                    continue
+                path1 = output_objs[0].orig_image_path
+                filename = path1.with_suffix('.star')
+                sl_set = output_objs[0].logical_starlist
+                for output in output_objs[1:]:
+                    sl_set.star_lists.extend(output.logical_starlist.star_lists)
+                print("Writing total of ",
+                      len(sl_set.star_lists),
+                      " logical starlists to ",
+                      filename)
+
+                filename.write_text(sl_set.model_dump_json(indent=2))
         return False
 
 class ErrorPopup:
