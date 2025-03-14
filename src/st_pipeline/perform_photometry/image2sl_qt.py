@@ -1,6 +1,6 @@
 # MIT License
 #
-# Copyright (c) 2024 Mark J Munkacsy
+# Copyright (c) 2025 AAVSO
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -891,130 +891,137 @@ def process_single_image(filename, metadata, options, temp_dir,
     starlist = StarList.model_validate(metadata)
     ccd_image = CCDData.read(filename, unit='adu')
 
-    # This next if statement is totally silly...but it eliminates
-    # the need to outdent the code.
-    if True:
-        image_data = ccd_image.data.astype(np.float32)
-        (height, width) = np.shape(image_data)
-        print("height = ", height, ", width = ", width)
+    image_data = ccd_image.data.astype(np.float32)
+    (height, width) = np.shape(image_data)
+    print("height = ", height, ", width = ", width)
 
-        # Estimate the background
-        (mean, median, std) = sigma_clipped_stats(image_data, sigma=3.0)
-        sigma_clip = SigmaClip(sigma=3.0)
-        bkg_estimator = MedianBackground()
-        full_background = Background2D(
-            image_data,
-            (int(width/8),int(height/8)),
-            filter_size=(3,3),
-            sigma_clip=sigma_clip, bkg_estimator=bkg_estimator)
-        background = full_background.background
-        (bkgd_mean, _dummy, bkgd_std) = sigma_clipped_stats(background, sigma=3.0)
-        print("background.median = ", full_background.background_median,
-              ", background.rms = ", full_background.background_rms_median)
-        noise_bkgd_per_pixel = full_background.background_rms_median * starlist.gain
-        # Should this be 5 times the background RMS instead of the full image RMS?
-        # How do we know the fwhm is roughly 3? is that the same for all smart telescopes?
+    # Estimate the background
+    (mean, median, std) = sigma_clipped_stats(image_data, sigma=3.0)
+    sigma_clip = SigmaClip(sigma=3.0)
+    bkg_estimator = MedianBackground()
+    full_background = Background2D(
+        image_data,
+        (int(width/8),int(height/8)),
+        filter_size=(3,3),
+        sigma_clip=sigma_clip, bkg_estimator=bkg_estimator)
+    background = full_background.background
+    (bkgd_mean, _dummy, bkgd_std) = sigma_clipped_stats(background, sigma=3.0)
+    print("background.median = ", full_background.background_median,
+          ", background.rms = ", full_background.background_rms_median)
+    noise_bkgd_per_pixel = full_background.background_rms_median * starlist.gain
+    # Should this be 5 times the background RMS instead of the full image RMS?
+    # How do we know the fwhm is roughly 3? is that the same for all smart telescopes?
 
-        # What we *really* want is RMS of the original image after
-        # masking all the stars. The RMS of "background" is way off,
-        # because Background2D smooths the background, which destroys
-        # the original background RMS.
-        daofind = DAOStarFinder(fwhm=3.0, threshold=4.*std)
-        clean_image = (image_data - background)
-        (mean, median, std) = sigma_clipped_stats(clean_image, sigma=3.0)
-        sources = daofind(clean_image)
-        print("Initial quicklook found ", len(sources), " stars.")
+    # What we *really* want is RMS of the original image after
+    # masking all the stars. The RMS of "background" is way off,
+    # because Background2D smooths the background, which destroys
+    # the original background RMS.
+    daofind = DAOStarFinder(fwhm=3.0, threshold=4.*std)
+    clean_image = (image_data - background)
+    (mean, median, std) = sigma_clipped_stats(clean_image, sigma=3.0)
+    sources = daofind(clean_image)
+    print("Initial quicklook found ", len(sources), " stars.")
 
-        # Sort the table in-place by flux in reverse order
-        sources.sort('flux', reverse=True)
+    # Sort the table in-place by flux in reverse order
+    sources.sort('flux', reverse=True)
 
-        # Grab a subset of the brightest stars to estimate the FWHM
-        subset_size = min(10, len(sources))
-        subset = sources[:subset_size]
-        fwhm = psf.fit_fwhm(
-            clean_image,
-            xypos=list(zip(subset['xcentroid'], subset['ycentroid'], strict=False)),
-            fit_shape=15
-        ).mean()
+    # Grab a subset of the brightest stars to estimate the FWHM
+    subset_size = min(10, len(sources))
+    subset = sources[:subset_size]
+    fwhm = psf.fit_fwhm(
+        clean_image,
+        xypos=list(zip(subset['xcentroid'], subset['ycentroid'], strict=False)),
+        fit_shape=15
+    ).mean()
 
-        print("Estimate FWHM from photutils = ", fwhm)
-        metadata['fwhm'] = fwhm
+    print("Estimate FWHM from photutils = ", fwhm)
 
-        # Now that we know the *real* FWHM, re-find the stars
-        daofind = DAOStarFinder(fwhm=fwhm, threshold=4.0*std)
-        sources = daofind(clean_image)
-        print("Official source extraction found ", len(sources), " stars.")
-        sources.sort('flux', reverse=True)
+    # Now that we know the *real* FWHM, re-find the stars
+    daofind = DAOStarFinder(fwhm=fwhm, threshold=4.0*std,
+                            sharplo=0.05, sharphi=3.0,
+                            roundlo=-4.0, roundhi=4.0)
+    sources = daofind(clean_image)
+    print("Sources found before edge-culling: ", len(sources), " stars.")
 
-        phot_radius = options.aperture_size_fwhm * fwhm
-        annulus_inner = max(3*phot_radius, 4*fwhm)
-        annulus_outer = math.sqrt(100*phot_radius**2 + annulus_inner**2)
-        print(f"Aperture radius = {phot_radius:.2f} , with {math.pi * phot_radius * phot_radius:.2f} pixels total")
+    # eliminate stars too close to the edges
+    EDGELIMIT = 15
+    mask = np.array([row['xcentroid'] < EDGELIMIT
+                     or row['xcentroid'] > width-EDGELIMIT
+                     or row['ycentroid'] < EDGELIMIT
+                     or row['ycentroid'] > height-EDGELIMIT
+                     for row in sources])
+    sources = sources[~mask]
+    print("Official source extraction found ", len(sources), " stars.")
+    sources.sort('flux', reverse=True)
 
-        # Perform the photometry
-        positions = list(zip(sources['xcentroid'],
-                             sources['ycentroid'], strict=False))
-        apertures = aperture.CircularAperture(positions, r=phot_radius)
-        tot_noise_bkgd = np.sqrt(apertures.area) * noise_bkgd_per_pixel
+    phot_radius = options.aperture_size_fwhm * fwhm
+    annulus_inner = max(3*phot_radius, 4*fwhm)
+    annulus_outer = math.sqrt(100*phot_radius**2 + annulus_inner**2)
+    print(f"Aperture radius = {phot_radius:.2f} , with {math.pi * phot_radius * phot_radius:.2f} pixels total")
 
-        if options.use_annulus:
-            annuli = aperture.CircularAnnulus(positions, annulus_inner, annulus_outer)
-            annulus_sigma_clip = SigmaClip(sigma=2.0)
-            annulus_data = aperture.ApertureStats(clean_image,
-                                                  annuli,
-                                                  sigma_clip=annulus_sigma_clip,
-                                                  sum_method='center')
+    # Perform the photometry
+    positions = list(zip(sources['xcentroid'],
+                         sources['ycentroid'], strict=False))
+    apertures = aperture.CircularAperture(positions, r=phot_radius)
+    tot_noise_bkgd = np.sqrt(apertures.area) * noise_bkgd_per_pixel
 
-            central_sum = aperture.ApertureStats(clean_image,
-                                                 apertures,
-                                                 sum_method='exact',
-                                                 local_bkg=annulus_data.mean)
-            centroids = central_sum.centroid
-            sources['x'] = centroids[:, 0]
-            sources['y'] = centroids[:, 1]
-            sources['tot_flux'] = centroids
-        else: # not using an annulus
-            result = aperture.aperture_photometry(clean_image, apertures)
-            print(result)
+    if options.use_annulus:
+        annuli = aperture.CircularAnnulus(positions, annulus_inner, annulus_outer)
+        annulus_sigma_clip = SigmaClip(sigma=2.0)
+        annulus_data = aperture.ApertureStats(clean_image,
+                                              annuli,
+                                              sigma_clip=annulus_sigma_clip,
+                                              sum_method='center')
 
-            # Make some column names match the starlist schema
-            sources['tot_flux'] = result['aperture_sum']
-            # Use .value for these next two because they are astropy Quantity
-            # objects with the unit "pixels" and we don't need the unit.
-            sources['x'] = result['xcenter'].value
-            sources['y'] = result['ycenter'].value
+        central_sum = aperture.ApertureStats(clean_image,
+                                             apertures,
+                                             sum_method='exact',
+                                             local_bkg=annulus_data.mean)
+        centroids = central_sum.centroid
+        sources['x'] = centroids[:, 0]
+        sources['y'] = centroids[:, 1]
+        sources['tot_flux'] = centroids
+    else: # not using an annulus
+        result = aperture.aperture_photometry(clean_image, apertures)
+        print(result)
 
-        # Clean up the sources table
-        print("Sources cleanup starts with ", len(sources), " stars.")
+        # Make some column names match the starlist schema
+        sources['tot_flux'] = result['aperture_sum']
+        # Use .value for these next two because they are astropy Quantity
+        # objects with the unit "pixels" and we don't need the unit.
+        sources['x'] = result['xcenter'].value
+        sources['y'] = result['ycenter'].value
 
-        bad_rows = []
-        for row,content in enumerate(sources):
-            if (content['x'] <= 3.0
-                or content['y'] <= 3.0
-                or content['x'] >= (width-3)
-                or content['y'] >= (height-3)
-                or content['tot_flux'] <= tot_noise_bkgd):
-                bad_rows.append(row)
-        print("... removing ", len(bad_rows), " stars.")
-        sources.remove_rows(bad_rows)
-        print("... now have ", len(sources), " stars.")
+    # Clean up the sources table
+    print("Sources cleanup starts with ", len(sources), " stars.")
 
-        sources.rename_column('peak', 'peak_flux')
-        # Sort so that order is well-defined and tests will pass
-        sources.sort(keys='tot_flux', reverse=True)
+    bad_rows = []
+    for row,content in enumerate(sources):
+        if (content['x'] <= 3.0
+            or content['y'] <= 3.0
+            or content['x'] >= (width-3)
+            or content['y'] >= (height-3)
+            or content['tot_flux'] <= tot_noise_bkgd):
+            bad_rows.append(row)
+    print("... removing ", len(bad_rows), " stars.")
+    sources.remove_rows(bad_rows)
+    print("... now have ", len(sources), " stars.")
 
-        # Calculate errors using table columns and star flux error in column
-        poiss_noise = np.sqrt(starlist.gain * sources['tot_flux'])
-        tot_noise = np.sqrt(poiss_noise**2 + tot_noise_bkgd**2) / starlist.gain
-        sources['flux_err'] = tot_noise
+    sources.rename_column('peak', 'peak_flux')
+    # Sort so that order is well-defined and tests will pass
+    sources.sort(keys='tot_flux', reverse=True)
 
-        # Set flux errors to zero for negative fluxes
-        sources['flux_err'][sources['tot_flux'] < 0] = 0.0
+    # Calculate errors using table columns and star flux error in column
+    poiss_noise = np.sqrt(starlist.gain * sources['tot_flux'])
+    tot_noise = np.sqrt(poiss_noise**2 + tot_noise_bkgd**2) / starlist.gain
+    sources['flux_err'] = tot_noise
 
-        # Check if WCS is already present in the FITS header
-        if wcs is None:
-            wcs = ccd_image.wcs # This looks for the WCSAXES keyword
+    # Set flux errors to zero for negative fluxes
+    sources['flux_err'][sources['tot_flux'] < 0] = 0.0
 
+    # Check if WCS is already present in the FITS header
+    if wcs is None:
+        wcs = ccd_image.wcs # This looks for the WCSAXES keyword
 
     ################################
     ## WCS handling overall sequence
@@ -1086,7 +1093,7 @@ def process_single_image(filename, metadata, options, temp_dir,
                 cmd = None
         else:
             if shutil.which('solve-field') is not None:
-                cmd = build_local_command(temp_dir)
+                cmd = 'solve-field ' + build_local_command(temp_dir)
                 print("Executing: ", cmd)
 
                 if os.system(cmd) != 0:
