@@ -996,12 +996,14 @@ def process_single_image(filename, metadata, options, temp_dir,
     print("Sources cleanup starts with ", len(sources), " stars.")
 
     bad_rows = []
+    min_adu = max(tot_noise_bkgd, 0.0)
     for row,content in enumerate(sources):
         if (content['x'] <= 3.0
             or content['y'] <= 3.0
             or content['x'] >= (width-3)
             or content['y'] >= (height-3)
-            or content['tot_flux'] <= tot_noise_bkgd):
+            or content['peak'] <= min_adu
+            or content['tot_flux'] <= min_adu):
             bad_rows.append(row)
     print("... removing ", len(bad_rows), " stars.")
     sources.remove_rows(bad_rows)
