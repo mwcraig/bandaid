@@ -2246,9 +2246,9 @@ class MainWindow:
             image_filename = image_filename.strip()
             if image_filename == '':
                 continue
-            if ' ' in image_filename:
-                print("No spaces allowed in image filenames") # ErrorPopup
-                continue
+            #if ' ' in image_filename:
+            #    print("No spaces allowed in image filenames") # ErrorPopup
+            #    continue
 
             working_filename = image_filename
             image_path = Path(image_filename)
