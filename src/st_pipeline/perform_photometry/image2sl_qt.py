@@ -2366,6 +2366,18 @@ class MainWindow:
                 hdul.flush()
 
             # if the WCS is not provided, then we should get it now
+            if self._wcs is None:
+                wcs= CCDData.read(temp_image_filename, unit='adu', format='fits').wcs
+                if wcs is None:
+                    wcs= plate_solve_image(temp_image_filename, meta, self.temp_dirname, wcs, None, None, None)
+                    # Save the filename with its WCS
+                    if wcs is not None:
+                        wcs_header = wcs.to_header()
+                        with fits.open(temp_image_filename, mode='update') as hdul:
+                            hdul[0].header.extend(wcs_header, useblanks=False, update=True)
+                            hdul.flush()
+            else:
+                wcs= self._wcs.copy()
 
             if meta_validator.validate(meta):
                 meta['orig_filename'] = image_filename
