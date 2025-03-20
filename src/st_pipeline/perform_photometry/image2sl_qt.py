@@ -136,6 +136,18 @@ def de_bayer_file(filename, metadata, temp_dir):
             hdu.header['FILTER'] = ('T'+color, 'Bayer color mask')
             hdu.header['BAYERPAT'] = ('NA', 'No longer a Bayered image')
             hdu.header['PIXSCALE'] = (metadata['pixscale'] * 2.0, 'arcsec/pix')
+            hdu.header['NAXIS1'] = int(hdu.header['NAXIS1'] / 2)
+            hdu.header['NAXIS2'] = int(hdu.header['NAXIS2'] / 2)
+
+            # modify the wcs to reflect the new pixel scale
+            if 'CD1_1' in hdu.header: hdu.header['CD1_1'] *= 2.0
+            if 'CD1_2' in hdu.header: hdu.header['CD1_2'] *= 2.0
+            if 'CD2_1' in hdu.header: hdu.header['CD2_1'] *= 2.0
+            if 'CD2_2' in hdu.header: hdu.header['CD2_2'] *= 2.0
+            if 'CRPIX_1' in hdu.header: hdu.header['CRPIX_1'] /= 2.0
+            if 'CRPIX_2' in hdu.header: hdu.header['CRPIX_2'] /= 2.0
+            if 'CDELT_1' in hdu.header: hdu.header['CDELT_1'] *= 2.0
+            if 'CDELT_2' in hdu.header: hdu.header['CDELT_2'] *= 2.0
             # update_header will "fix" the header to match the data
             hdu.update_header()
             fits.writeto(output_tgt, array[index], header=hdu.header, overwrite=True)
@@ -906,6 +918,7 @@ def plate_solve_image(filename, metadata, temp_dir, wcs, sources, height, width)
         return command
 
     if not wcs:
+        print("No WCS provided. Will plate-solve.")
         ################################
         ## Plate-solve the image
         ################################
@@ -2233,6 +2246,9 @@ class MainWindow:
             image_filename = image_filename.strip()
             if image_filename == '':
                 continue
+            if ' ' in image_filename:
+                print("No spaces allowed in image filenames") # ErrorPopup
+                continue
 
             working_filename = image_filename
             image_path = Path(image_filename)
@@ -2291,15 +2307,23 @@ class MainWindow:
             # print(type(get_pkg_data_filename("meta_json_files/Seestar50/basic.json")))
             mp = Path(get_pkg_data_filename("meta_json_files/Seestar50/basic.json")).parent.parent
             # read personal.json
-            # mpp= Path(mp, "personal.json")
-            # if (mpp.is_file() and mpp.exists() and mpp.stat().st_mode & 0o400):
+            '''
+            mpp= Path(mp, "personal.json")
+            if (mpp.is_file() and mpp.exists() and mpp.stat().st_mode & 0o400):
+                try:
+                    with mpp.open() as f:
+                        meta['personal'] = json.load(f)
+                        # from here the adjustment jsons can access personal info
+                except OSError:
+                    print("No personal.json file found")
+            '''
             try:
                 with Path(self.options.meta_file).open() as f:
                     meta['personal']= json.load(f)
                     # from here the adjustment jsons can access personal info
             except OSError:
                 print("No personal.json file found")
-
+            
             # read adjustment meta json
             # apply basic.json
             mpp= Path(mp, meta["telescope_probe"][0], "basic.json")
@@ -2351,8 +2375,9 @@ class MainWindow:
             # Copy the file to the temporary directory (ie, don't touch input file)
             temp_image_filename = os.path.join(self.temp_dirname, os.path.basename(image_filename))
             shutil.copy(image_filename, temp_image_filename)
+            print("modified input file is ", temp_image_filename)
             # is the file fits header missing necessary info?
-            #   Should be complete enough so you can load into VPhot
+            #   Should be complete enough so you can load into VPhot and be plate solved
             with fits.open(temp_image_filename, mode='update') as hdul:
                 hdu0h = hdul[0].header
                 if 'RA' not in hdu0h:  hdu0h['RA'] = meta['ra'] / 15.0 # FITS wants hours
