@@ -830,7 +830,7 @@ def table_to_star_items(photometry_table):
     return star_items
 
 
-def plate_solve_image(filename, metadata, temp_dir, sources, wcs):
+def plate_solve_image(filename, metadata, temp_dir, wcs, sources, height, width)    :
     """Plate solve an image
 
     Plate solve an image using astrometry.net or other means. The image will be
@@ -848,10 +848,10 @@ def plate_solve_image(filename, metadata, temp_dir, sources, wcs):
         An object holding all of the operator's conversion options
     temp_dir : str
         Pathname of a directory in which temporary files can be put
-    sources : dict
-        Dictionary of sources found in the image
     wcs : WCS object
         WCS object to be used if it is already known
+    sources, height, width : if you are going to use astrometry.net, you need these
+
     Returns
     -------
     wcs WCS Object
@@ -944,7 +944,7 @@ def plate_solve_image(filename, metadata, temp_dir, sources, wcs):
                     header = hdul[0].header
                     wcs = WCS(header)
 
-        if wcs is None:
+        if wcs is None and sources is not None:
             print("Trying astrometry.net.")
             ast = AstrometryNet()
             if astrometry_api_key is None:
@@ -1170,119 +1170,7 @@ def process_single_image(filename, metadata, options, temp_dir,
     if wcs is None:
         wcs = ccd_image.wcs # This looks for the WCSAXES keyword
 
-    ################################
-    ## WCS handling overall sequence
-    ## 1. If wcs is passed in as parameter, use it. Do not
-    ## plate-solve.
-    ## 2. If the "solve-field" program is installed, use it to
-    ## plate-solve. (Only tested on Linux so far.)
-    ## 3. Otherwise, go out to astrometry.net and use the online
-    ## plate-solver.
-    ################################
-    def build_local_command(temp_dir):
-        print("WCS using temp_dir = ", temp_dir.name)
-        temp_dirname = temp_dir.name
-        plate_solve_dir = temp_dirname
-
-        command = " " #"solve-field  will be added later"
-        temp_dir_arg = " --dir " + str(plate_solve_dir) #.replace('\\', '/') # output dir
-        command += temp_dir_arg
-        print("plate_solve_dir = ", plate_solve_dir)
-        print("temp_dir_arg = ", temp_dir_arg)
-        #command += (" --config + config_file)
-        if 'PIXSCALE' in metadata and metadata['PIXSCALE'] is not None:
-            pixelscale = metadata['PIXSCALE']
-        elif 'pixscale' in metadata and metadata['pixscale'] is not None:
-            pixelscale = metadata['pixscale']
-        else:
-            raise ValueError("Pixelscale not defined.")
-        pixel_low = pixelscale * 0.9
-        pixel_hi = pixelscale * 1.1
-        command += (" --scale-low " + str(pixel_low)
-                    + " --scale-high " + str(pixel_hi)
-                    + " --scale-units arcsecperpix ")
-
-        if ('dec' in metadata and 'ra' in metadata and
-              metadata['dec'] is not None and metadata['ra'] is not None):
-            command += (" --ra " + str(metadata['ra'])
-                        + " --dec " + str(metadata['dec']))
-        else:
-            raise ValueError("Dec/RA not defined")
-
-        if 'fov_rad' in metadata and metadata['fov_rad'] is not None:
-            command += (" --radius " + str(metadata['fov_rad'])) # in degrees
-        else:
-            raise AssertionError("Image FOV not defined")
-
-        command += (" '" + str(filename) + "'")
-
-        return command
-
-    if not wcs:
-        ################################
-        ## Plate-solve the image
-        ################################
-        temp_dir = tempfile.TemporaryDirectory()
-        local_system = platform.system()
-        if local_system == 'Windows':
-            p = Path(os.path.expandvars('%LOCALAPPDATA%'))
-            q = p  / 'cygwin_ansvr' / 'bin' / 'solve-field'
-            if q.exists():
-                cmd = build_local_command(temp_dir)
-                cmd2= (str(q)+cmd).replace('\\', '/')
-                full_cmd = f"%LOCALAPPDATA%\\cygwin_ansvr\\bin\\bash.exe --login -c '{cmd2}'"
-                print("Executing: ", full_cmd)
-                return_code= os.system(full_cmd)
-                print("solve-field returned ", return_code)
-                if return_code:
-                    raise ValueError("Abnormal termination of solve-field")
-            else:
-                cmd = None
-        else:
-            if shutil.which('solve-field') is not None:
-                cmd = 'solve-field ' + build_local_command(temp_dir)
-                print("Executing: ", cmd)
-
-                if os.system(cmd) != 0:
-                    raise ValueError("Abnormal termination of solve-field")
-            else:
-                cmd = None
-
-        if cmd is not None:
-                wcs_basename = Path(filename).with_suffix(".new").name
-                print("wcs_basename = ", wcs_basename)
-                wcs_pathname = Path(temp_dir.name) / wcs_basename
-                print("Looking for WCS info in ", str(wcs_pathname))
-                with fits.open(str(wcs_pathname)) as hdul:
-                    header = hdul[0].header
-                    wcs = WCS(header)
-
-        if wcs is None:
-            print("Trying astrometry.net.")
-            ast = AstrometryNet()
-            if astrometry_api_key is None:
-                global ui
-                dlg = QMessageBox(ui.window)
-                dlg.setWindowTitle("No astrometry.net API Key")
-                dlg.setText("Must enter astrometry.net API Key via Menu Bar")
-                dlg.exec()
-                return None
-
-            ast.api_key = astrometry_api_key
-            # star_x and star_y were sorted by flux earlier... important here.
-            wcs_header = ast.solve_from_source_list(sources['x'],
-                                                    sources['y'],
-                                                    width,
-                                                    height,
-                                                    solve_timeout= 120
-                                                    #,
-                                                    #verbose= True,
-                                                    #center_dec=metadata['dec'],
-                                                    #center_ra=metadata['ra'],
-                                                    #scale_lower=0.9*metadata['pixscale'],
-                                                    #scale_upper=1.1*metadata['pixscale']
-                                                    )
-            wcs = WCS(header=wcs_header)
+    wcs = plate_solve_image(filename, metadata, temp_dir, wcs, sources, height, width)
 
     # Calculate RA and Dec
     star_coords = wcs.pixel_to_world(sources['x'], sources['y'])
