@@ -148,6 +148,8 @@ def de_bayer_file(filename, metadata, temp_dir):
             if 'CRPIX_2' in hdu.header: hdu.header['CRPIX_2'] /= 2.0
             if 'CDELT_1' in hdu.header: hdu.header['CDELT_1'] *= 2.0
             if 'CDELT_2' in hdu.header: hdu.header['CDELT_2'] *= 2.0
+            hdu.header['CTYPE1'] = 'RA---TAN' 
+            hdu.header['CTYPE2'] = 'DEC--TAN'
             # update_header will "fix" the header to match the data
             hdu.update_header()
             fits.writeto(output_tgt, array[index], header=hdu.header, overwrite=True)
@@ -913,8 +915,7 @@ def plate_solve_image(filename, metadata, temp_dir, wcs, sources, height, width)
         else:
             raise AssertionError("Image FOV not defined")
 
-        command += (" '" + str(filename) + "'")
-
+        command += ' "' + str(filename) + '"'
         return command
 
     if not wcs:
@@ -929,7 +930,7 @@ def plate_solve_image(filename, metadata, temp_dir, wcs, sources, height, width)
             q = p  / 'cygwin_ansvr' / 'bin' / 'solve-field'
             if q.exists():
                 cmd = build_local_command(temp_dir)
-                cmd2= (str(q)+cmd).replace('\\', '/')
+                cmd2= (str(q) + cmd ).replace('\\', '/')
                 full_cmd = f"%LOCALAPPDATA%\\cygwin_ansvr\\bin\\bash.exe --login -c '{cmd2}'"
                 print("Executing: ", full_cmd)
                 return_code= os.system(full_cmd)
@@ -2246,9 +2247,6 @@ class MainWindow:
             image_filename = image_filename.strip()
             if image_filename == '':
                 continue
-            #if ' ' in image_filename:
-            #    print("No spaces allowed in image filenames") # ErrorPopup
-            #    continue
 
             working_filename = image_filename
             image_path = Path(image_filename)
@@ -2297,17 +2295,15 @@ class MainWindow:
                     print("Cannot read metadata from file ", metadata_filename)
                     raise ValueError("Cannot read metadata file")
                 print("Reading metadata from ", metadata_filename)
-                read_meta_from_json(metadata_filename, meta)
+                read_meta_from_json(metadata_filename, meta)        
 
             # save the filename in the metadata
             meta["filename"] = image_filename.split("/")[-1]
 
-            # # path to meta jsons
-            #  mp= Path(os.getcwd(), "src/st_pipeline/perform_photometry/meta_json_files")
-            # print(type(get_pkg_data_filename("meta_json_files/Seestar50/basic.json")))
+            # path to the meta_json_files directory
             mp = Path(get_pkg_data_filename("meta_json_files/Seestar50/basic.json")).parent.parent
+
             # read personal.json
-            '''
             mpp= Path(mp, "personal.json")
             if (mpp.is_file() and mpp.exists() and mpp.stat().st_mode & 0o400):
                 try:
@@ -2316,24 +2312,20 @@ class MainWindow:
                         # from here the adjustment jsons can access personal info
                 except OSError:
                     print("No personal.json file found")
-            '''
-            try:
-                with Path(self.options.meta_file).open() as f:
-                    meta['personal']= json.load(f)
-                    # from here the adjustment jsons can access personal info
-            except OSError:
-                print("No personal.json file found")
-            
-            # read adjustment meta json
-            # apply basic.json
+
+            # read meta adjustment jsons
+            #   apply basic.json
             mpp= Path(mp, meta["telescope_probe"][0], "basic.json")
             print("Reading basic.json from ", mpp)
             read_meta_from_json(mpp, meta)
-            # look for and apply type specific json
+
+            #   look for and apply type specific json
             mpp= Path(mp, meta["telescope_probe"][0], meta["telescope_probe"][1]+".json")
             if (mpp.is_file() and mpp.exists() and mpp.stat().st_mode & 0o400):
                 read_meta_from_json(mpp, meta)
 
+            # post processing of '!' keys in the metadata
+            # utility to convert local time to UTC
             def Local2UTC(lat, long, local_time_str):
                 # courtesy of GPT-4o
                 # Parse the local time string into a datetime object
@@ -2392,9 +2384,9 @@ class MainWindow:
 
             # if the WCS is not provided, then we should get it now
             if self._wcs is None:
-                wcs= CCDData.read(temp_image_filename, unit='adu', format='fits').wcs
+                wcs = CCDData.read(temp_image_filename, unit='adu', format='fits').wcs
                 if wcs is None:
-                    wcs= plate_solve_image(temp_image_filename, meta, self.temp_dirname, wcs, None, None, None)
+                    wcs = plate_solve_image(temp_image_filename, meta, self.temp_dirname, wcs, None, None, None)
                     # Save the filename with its WCS
                     if wcs is not None:
                         wcs_header = wcs.to_header()
