@@ -1095,6 +1095,7 @@ def process_single_image(filename, metadata, options, temp_dir,
     ).mean()
 
     print("Estimate FWHM from photutils = ", fwhm)
+    metadata['fwhm'] = fwhm
 
     # Now that we know the *real* FWHM, re-find the stars
     daofind = DAOStarFinder(fwhm=fwhm, threshold=4.0*std,
