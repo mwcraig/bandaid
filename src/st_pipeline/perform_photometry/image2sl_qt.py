@@ -149,7 +149,7 @@ def de_bayer_file(filename, metadata, temp_dir):
             if 'CDELT_1' in hdu.header: hdu.header['CDELT_1'] *= 2.0
             if 'CDELT_2' in hdu.header: hdu.header['CDELT_2'] *= 2.0
             hdu.header['CTYPE1'] = 'RA---TAN' 
-            hdu.header['CTYPE2'] = 'DEC--TAN'
+            hdu.header['CTYPE2'] = hdu.header['CTYPE2'].replace('-SIP', '')
             # update_header will "fix" the header to match the data
             hdu.update_header()
             fits.writeto(output_tgt, array[index], header=hdu.header, overwrite=True)
