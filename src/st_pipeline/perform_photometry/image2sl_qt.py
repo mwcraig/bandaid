@@ -2302,17 +2302,7 @@ class MainWindow:
 
             # path to the meta_json_files directory
             mp = Path(get_pkg_data_filename("meta_json_files/Seestar50/basic.json")).parent.parent
-
-            # read personal.json
-            mpp= Path(mp, "personal.json")
-            if (mpp.is_file() and mpp.exists() and mpp.stat().st_mode & 0o400):
-                try:
-                    with mpp.open() as f:
-                        meta['personal'] = json.load(f)
-                        # from here the adjustment jsons can access personal info
-                except OSError:
-                    print("No personal.json file found")
-
+       
             # read meta adjustment jsons
             #   apply basic.json
             mpp= Path(mp, meta["telescope_probe"][0], "basic.json")
