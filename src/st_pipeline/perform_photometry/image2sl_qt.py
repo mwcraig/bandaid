@@ -1151,7 +1151,7 @@ def process_single_image(filename, metadata, options, temp_dir,
         centroids = central_sum.centroid
         sources['x'] = centroids[:, 0]
         sources['y'] = centroids[:, 1]
-        sources['tot_flux'] = centroids
+        sources['tot_flux'] = central_sum.sum - annulus_data.sum * apertures.area / annuli.area
     else: # not using an annulus
         result = aperture.aperture_photometry(clean_image, apertures)
         print(result)
