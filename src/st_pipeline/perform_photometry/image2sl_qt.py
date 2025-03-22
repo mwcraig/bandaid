@@ -634,6 +634,8 @@ class MetaValidator:
             #meta_dict[key]= meta_dict[value[1:]] # show that the fits had the value
             meta_dict[key]= get_json_value(meta_dict, value[1:]) # show that the fits had the value
             return meta_dict[key]
+        if key in self.json:
+            print(f"Replacing existing meta key '{key}' value '{self.json[key]}' with new value '{value}'")
         self.json[key] = value
         return value
 
@@ -757,9 +759,10 @@ def read_meta_from_json(filename, meta_dict):
             print("Parse error reading ", filename)
             raise
 
-        for (keyword,value) in data.items():
+        for (keyword, value) in data.items():
             val= meta_validator.add_json_item(keyword, value, meta_dict)
             if val is not None:
+                #if keyword in valid_meta_keys:
                 meta_dict[keyword] = val
 
 
@@ -1568,7 +1571,8 @@ class OptionsUI:
         self._flat_file = FileChooser(ui.window.flat_entry,
                                       ui.window.FlatButton)
         self._meta_file = FileChooser(ui.window.meta_entry,
-                                      ui.window.MetaButton)
+                                      ui.window.MetaButton,
+                                      multiple_files_okay=True)
         self._image_file = FileChooser(ui.window.image_filename_list,
                                        ui.window.AddImageButton,
                                        multiple_files_okay=True)
@@ -1871,7 +1875,7 @@ class OptionsUI:
         str
             The pathname of the metadata file
         """
-        return self._meta_file.entered_filename()
+        return self._meta_file.entered_filename_list()
 
     @property
     def image_file(self):
@@ -2236,7 +2240,7 @@ class MainWindow:
         dark_filename = self.options.dark_file
         flat_filename = self.options.flat_file
         bias_filename = self.options.bias_file
-        metadata_filename = self.options.meta_file
+        metadata_list = self.options.meta_file
 
         psf_builder = psf_fitting.PSFBuilder()
         all_output = [] #  this is a list of lists of OutputObjects
@@ -2290,14 +2294,15 @@ class MainWindow:
 
             QGuiApplication.processEvents()
             # Now get the metadata from the standalone metadata file (sidecar)
-            if metadata_filename is not None:
-                meta_path = Path(metadata_filename)
-                if not (meta_path.is_file() and meta_path.exists() and
-                        meta_path.stat().st_mode & 0o400):
-                    print("Cannot read metadata from file ", metadata_filename)
-                    raise ValueError("Cannot read metadata file")
-                print("Reading metadata from ", metadata_filename)
-                read_meta_from_json(metadata_filename, meta)        
+            for metadata_filename in metadata_list:
+                if metadata_filename is not None and metadata_filename != '':
+                    meta_path = Path(metadata_filename)
+                    if not (meta_path.is_file() and meta_path.exists() and
+                            meta_path.stat().st_mode & 0o400):
+                        print("Cannot read metadata from file ", metadata_filename)
+                        raise ValueError("Cannot read metadata file")
+                    print("Reading metadata from ", metadata_filename)
+                    read_meta_from_json(metadata_filename, meta)        
 
             # save the filename in the metadata
             meta["filename"] = image_filename.split("/")[-1]
