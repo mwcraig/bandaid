@@ -2202,7 +2202,9 @@ class MainWindow:
         if astrometry_api_key is None:
             astrometry_api_key = get_astrometry_key()
 
+        self.have_ui = False
         if self.ui:
+            self.have_ui = True
             self.progressbar = self.ui.window.progressBar
         else:
             self.generate_starlist()
@@ -2266,7 +2268,7 @@ class MainWindow:
         bias_filename = self.options.bias_file
         metadata_list = self.options.meta_file
 
-        psf_builder = psf_fitting.PSFBuilder()
+        psf_builder = psf_fitting.PSFBuilder(display_graphs=self.have_ui)
         all_output = [] #  this is a list of lists of OutputObjects
 
         for image_filename in image_list:
