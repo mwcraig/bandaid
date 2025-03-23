@@ -37,7 +37,11 @@ GAIN    	= 80 / Gain Value
 FOCUSPOS	= 1625 / Focuser position in steps                      
 TELESCOP	= 'Seestar S50'        / Telescope name                                 
 OBJECT  	= 'Arcturus'           / name or catalog number of object being imaged  
-INPUTFMT	= 'FITS    ' /          Format of file from which image was read        
+INPUTFMT	= 'FITS    ' /          Format of file from which image was read       
+new with version 4.27
+PRODUCER	= 'ZWO     '           / Powered by ZWO                                 
+APERTURE	= 5. / Name of field of view aperture      (cm)           
+PROGRAM 	= '4.27    '           / The name of the software task that created the 
 
 No json sidecar file
 
@@ -122,3 +126,8 @@ IMAGEW  	= 1080 / Image width,  in pixels.
 IMAGEH  	= 1920 / Image height, in pixels.                       
 INPUTFMT	= 'FITS    ' /          Format of file from which image was read        
 SWOWNER 	= 'George Silvis' /     Licensed owner of software                      
+new with version 4.27
+PRODUCER	= 'ZWO     '           / Powered by ZWO                                 
+APERTURE	= 5. / Name of field of view aperture      (cm)           
+PROGRAM 	= '4.27    '           / The name of the software task that created the 
+TOTALEXP    = 70. / Total exposure time in seconds  stkcnt * exptime

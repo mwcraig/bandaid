@@ -10,7 +10,7 @@
     "exposure": "@EXPTIME",
     "tel_manufac": "!CREATOR index 0",
     "tel_model": "@INSTRUME",
-    "tel_firmware" : "",
+    "tel_firmware" : "@PROGRAM",
     "adc_depth" : 12,
     "largest_usable_adu_value" : 50000,
     "system_gain" : 0.3116,
