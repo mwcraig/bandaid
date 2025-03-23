@@ -5,27 +5,27 @@ The meta data required is defined in the code:
 
 We build to that from what is collected in this order:
 - probe for the image type using header keywords
+    probe_file_for_type() identifies the mfg and the options selected
 - FITS header
 - JSON sidecar file, if it exists
-- read personal.json in as meta['personal']
-   This makes it available for the adjustment jsons 
+- A "personal.json" that might provide things missing in the above. eg. Obscode
 - fetch adjustment json from meta_json_files/<type>/basic.json
 - look for a json in meta_json_files/<type>/<subtype>.json for tweaks
    There are special flags available for the values in these jsons
-   - prefix with a @ to indicate a value to be looked up in the meta dict
+   - prefix the key with a _ to indicate a comment, line to be ignored
+   - prefix the value with a @ to indicate a value to be looked up in the meta dict
       eg   "exposure": "@StackedInfo.captureParams.exposure"
-   - prefix with a ! to indicate a function to be called
+   - prefix the value with a ! to indicate a function to be called to adjust the value
       eg   "obs_time": "!DATE-OBS Local2UTC"
       eg  "obs_time": "!StackedInfo.dateTime refmtDate %m-%d-%yB%H_%M_%S"
            change from the existing format to the std  "%Y-%m-%dT%H:%M:%S"
       eg   "tel_firmware" : "!@CREATOR index 1"
            get the second field from  CREATOR 	= 'Origin 1.1.4233 '    
       eg   "ra": "!RA hr2deg"
-           convert from decimal hours to degrees        
-   These jsons use indirection to sort out aliases and other issues
-   eg   "tel_manufac": "@ORIGIN"   means look for ORIGIN already in the meta dict
-- fetch from meta_json_files/personal.json for personal adjustments
-- do programmatic adjustments called for by the ! signal
+           convert from decimal hours to degrees   
+   - prefix the key with a # to indicate that this value should not replace an existing value,
+      only provide the data if its not there yet.
+      eg  #SITEELEV  don't overwrite the value if the FITS provided it
    
 
 
