@@ -571,10 +571,13 @@ valid_meta_keys = ['schema_version',
         ]
 
 def get_json_value(data, keys):
+    # data is a dictionary that was read from the JSON file
     # keys can be a string with '.' separators
-    value = data
+    value = None
     for key in keys.split('.'):
-        value = value[key]
+        value = data[key]
+    if value is None:
+        print(f"WARNING: JSON key '{keys}' not found in metadata")    
     return value
 
 class MetaValidator:
@@ -627,16 +630,21 @@ class MetaValidator:
             or None if the key is a comment
         """
         if key.startswith('_'): # json comment
-            return
+            return None # skip
         if isinstance(value, str) and value.startswith('@'):
             # This is a reference to another key in the existing meta dir file
             self.json[key] = value # show we will get the value from the prior meta
-            #meta_dict[key]= meta_dict[value[1:]] # show that the fits had the value
             meta_dict[key]= get_json_value(meta_dict, value[1:]) # show that the fits had the value
             return meta_dict[key]
-        if key in self.json:
-            print(f"Replacing existing meta key '{key}' value '{self.json[key]}' with new value '{value}'")
-        self.json[key] = value
+        if key.startswith('#'):
+            # do not replace an existing key
+            key= key[1:]
+            if key in meta_dict:
+                print(f"WARNING: {key} | {meta_dict[key]} not replaced with {value}")
+                return None 
+        if key in meta_dict:
+            print(f"Replacing existing meta key '{key}' value '{meta_dict}' with new value '{value}'")
+        meta_dict[key] = value
         return value
 
     def add_fits_item(self, key, value):
@@ -760,9 +768,7 @@ def read_meta_from_json(filename, meta_dict):
             raise
 
         for (keyword, value) in data.items():
-            val= meta_validator.add_json_item(keyword, value, meta_dict)
-            if val is not None:
-                #if keyword in valid_meta_keys:
+            if val := meta_validator.add_json_item(keyword, value, meta_dict):
                 meta_dict[keyword] = val
 
 
@@ -1913,7 +1919,7 @@ class OptionsAPI(BaseModel):
     bias_file: str = ""
     dark_file: str = ""
     flat_file: str = ""
-    meta_file: str = ""
+    meta_file: list[str] = [""]
     image_file: list[str] = [""]
 
     # These are accessed by the current code.
@@ -2346,7 +2352,8 @@ class MainWindow:
                 if isinstance(value, str) and value.startswith('!'):
                     tt= value[1:].split()
                     if tt[1] == "hr2deg": # convert decimal hours to degrees
-                        meta[key]= get_json_value(meta, tt[0]) * 15.
+                        if val := get_json_value(meta, tt[0]):
+                            meta[key]= float(val) * 15.0
                     elif tt[1] == "Local2UTC": # convert local time to UTC
                         # eg  "obs_time": "!DATE-OBS Local2UTC"
                         meta[key]= Local2UTC(meta["site_lat"], meta["site_lon"], get_json_value(meta, tt[0]))
