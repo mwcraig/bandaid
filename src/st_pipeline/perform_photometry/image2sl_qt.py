@@ -2410,7 +2410,7 @@ class MainWindow:
                                                meta,
                                                starlist_tgtname,
                                                psf_builder,
-                                               wcs=self._wcs)
+                                               wcs=wcs)
                 all_output.append(output_objs)
         # Now that all images have been processed, let the psf_fitter
         # perform PSF photometry. If the option was not turned on,
