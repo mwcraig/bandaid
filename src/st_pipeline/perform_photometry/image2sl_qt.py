@@ -32,6 +32,7 @@ import tempfile
 import warnings
 from collections import namedtuple
 from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
 
 import numpy as np
@@ -148,7 +149,7 @@ def de_bayer_file(filename, metadata, temp_dir):
             if 'CRPIX_2' in hdu.header: hdu.header['CRPIX_2'] /= 2.0
             if 'CDELT_1' in hdu.header: hdu.header['CDELT_1'] *= 2.0
             if 'CDELT_2' in hdu.header: hdu.header['CDELT_2'] *= 2.0
-            hdu.header['CTYPE1'] = 'RA---TAN' 
+            hdu.header['CTYPE1'] = 'RA---TAN'
             hdu.header['CTYPE2'] = 'DEC--TAN'
             hdu.header['CTYPE2'] = hdu.header['CTYPE2'].replace('-SIP', '')
             # update_header will "fix" the header to match the data
@@ -1150,7 +1151,7 @@ def process_single_image(filename, metadata, options, temp_dir,
         centroids = central_sum.centroid
         sources['x'] = centroids[:, 0]
         sources['y'] = centroids[:, 1]
-        sources['tot_flux'] = centroids
+        sources['tot_flux'] = central_sum.sum - annulus_data.sum * apertures.area / annuli.area
     else: # not using an annulus
         result = aperture.aperture_photometry(clean_image, apertures)
         print(result)
@@ -1902,19 +1903,33 @@ class OptionsUI:
         return self._image_file.entered_filename_list()
 
 
+class BayerHandlingOptions(StrEnum):
+    """Enumeration of Bayer handling options"""
+    # See the python documentation for Enums work. Behind the scenes pythopn
+    # creates a class whose attributes have the names listed below.
+    PRETEND_MONOCHROME = "pretend_monochrome"
+    STACKED_CHANNELS = "stacked_channels"
+    INTERP_STACK_CHANNELS = "interp_stack_channels"
+    SPLIT_STACKED_IMAGE = "split_stacked_image"
+
+
+class PhotometryMethods(StrEnum):
+    """Enumeration of photometry methods"""
+    # See the python documentation for Enums work. Behind the scenes pythopn
+    # creates a class whose attributes have the names listed below.
+    APERTURE = "aperture"
+    PSF = "psf"
+
+
 class OptionsAPI(BaseModel):
     model_config = ConfigDict(extra='forbid', validate_default=True, validate_assignment=True)
-    debayer: bool = False
-    split_stacked_image: bool = True
-    one_channel: bool = False
-    stacked_channels: bool = False
-    interp_stack_channels: bool = False
+    bayer_handling: BayerHandlingOptions = BayerHandlingOptions.PRETEND_MONOCHROME
     color_correx: bool = False
-    psf_photometry: bool = False
     subtract_annulus: bool = False
     multiple_starlists: bool = False
     add_wcs_to_image: bool = False
     aperture_size: float = 1.0
+    photometry_method: PhotometryMethods = PhotometryMethods.APERTURE
     astrometry_net_api_key: str = ""
     bias_file: str = ""
     dark_file: str = ""
@@ -1925,11 +1940,11 @@ class OptionsAPI(BaseModel):
     # These are accessed by the current code.
     @property
     def de_bayer(self):
-        return self.debayer
+        return self.bayer_handling != BayerHandlingOptions.PRETEND_MONOCHROME
 
     @property
     def interpolate_channels(self):
-        return self.interp_stack_channels
+        return self.bayer_handling == BayerHandlingOptions.INTERP_STACK_CHANNELS
 
     @property
     def get_color_balance(self):
@@ -1937,11 +1952,14 @@ class OptionsAPI(BaseModel):
 
     @property
     def stack_channels(self):
-        return (self.stacked_channels or self.interp_stack_channels)
+        return (
+            self.bayer_handling == BayerHandlingOptions.STACKED_CHANNELS
+            or self.bayer_handling == BayerHandlingOptions.INTERP_STACK_CHANNELS
+        )
 
     @property
     def use_psf_fitting(self):
-        return self.psf_photometry
+        return self.photometry_method == PhotometryMethods.PSF
 
     @property
     def add_wcs(self):
@@ -2184,7 +2202,9 @@ class MainWindow:
         if astrometry_api_key is None:
             astrometry_api_key = get_astrometry_key()
 
+        self.have_ui = False
         if self.ui:
+            self.have_ui = True
             self.progressbar = self.ui.window.progressBar
         else:
             self.generate_starlist()
@@ -2248,7 +2268,7 @@ class MainWindow:
         bias_filename = self.options.bias_file
         metadata_list = self.options.meta_file
 
-        psf_builder = psf_fitting.PSFBuilder()
+        psf_builder = psf_fitting.PSFBuilder(display_graphs=self.have_ui)
         all_output = [] #  this is a list of lists of OutputObjects
 
         for image_filename in image_list:
@@ -2315,7 +2335,7 @@ class MainWindow:
 
             # path to the meta_json_files directory
             mp = Path(get_pkg_data_filename("meta_json_files/Seestar50/basic.json")).parent.parent
-       
+
             # read meta adjustment jsons
             #   apply basic.json
             mpp= Path(mp, meta["telescope_probe"][0], "basic.json")
