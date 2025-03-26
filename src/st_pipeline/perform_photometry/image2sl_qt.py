@@ -280,7 +280,7 @@ def duplicate_file_with_new_image(hdul, new_data, new_filter, new_pathname):
     hdu.update_header()
     fits.writeto(new_pathname, new_data, header=hdu.header, overwrite=True)
 
-def bayer_balance_file(filename):
+def bayer_balance_file(filename, temp_dir):
     """Duplicate an image file while adjusting pixel values per the Bayer pattern
 
     Duplicate an existing FITS file, performing a linear adjustment to
@@ -296,10 +296,12 @@ def bayer_balance_file(filename):
     ----------
     filename : str
         Pathname to the file to be duplicated
+    temp_dir : str
+        Pathname to the temp directory
 
     Returns
     -------
-    str
+    Path
         The full pathname of the new file.
     """
     with fits.open(filename) as hdul:
@@ -397,8 +399,9 @@ def bayer_balance_file(filename):
         new_data[1::2,1::2] = temp4
 
         new_filename = filename.replace(".fit","_M.fit")
-        duplicate_file_with_new_image(hdul, new_data, "M", new_filename)
-        return new_filename
+        new_path = Path(temp_dir) / Path(new_filename).name
+        duplicate_file_with_new_image(hdul, new_data, "M", new_path)
+        return new_path
 
 class OutputObject(BaseModel):
     """This class represents one logical output (result) starlist
@@ -967,7 +970,7 @@ def plate_solve_image(filename, metadata, temp_dir, wcs, sources, height, width)
                 print("Looking for WCS info in ", str(wcs_pathname))
                 with fits.open(str(wcs_pathname)) as hdul:
                     header = hdul[0].header
-                    wcs = WCS(header)
+                    wcs = WCS(header, naxis=2)
 
         if wcs is None and sources is not None:
             print("Trying astrometry.net.")
@@ -1487,7 +1490,7 @@ class FileChooser:
             else:
                 self.text_widget.setText(dialog.selectedFiles()[0])
         else:
-            self.text_widget.setText("")
+            self.text_widget.clear()
 
     def entered_filename(self):
         """Return the filename entered via this FileChooser
@@ -1593,7 +1596,6 @@ class OptionsUI:
         self.psf_photometry = ui.window.PSFPhotButton
         self.aperture_photometry = ui.window.AperturePhotButton
 
-        self.multiple_starlists = ui.window.OneSLPerFile
         self.add_wcs_to_image = ui.window.UpdateWCSButton
         self.aperture_size = ui.window.ApertureSize
         self.subtract_annulus = ui.window.AnnulusSubtractionCheckbox
@@ -1617,25 +1619,6 @@ class OptionsUI:
             True if WCS is to be added
         """
         return self.add_wcs_to_image.isChecked()
-
-    @property
-    def one_sl_per_file(self):
-        """Query whether to save just one logical starlist per file
-
-        Return True if the output starlist(s) should be split into
-        multiple starlist files. The alternative is to pack multiple logical
-        starlists into each starlist file.
-
-        Parameters
-        ----------
-        None
-
-        Returns
-        -------
-        bool
-            True if each starlist is to go into a separate file
-        """
-        return self.multiple_starlists.isChecked()
 
     @property
     def aperture_size_fwhm(self):
@@ -1964,10 +1947,6 @@ class OptionsAPI(BaseModel):
     @property
     def add_wcs(self):
         return self.add_WCS_to_image
-
-    @property
-    def one_sl_per_file(self):
-        return self.multiple_starlists
 
     @property
     def aperture_size_fwhm(self):
@@ -2423,7 +2402,8 @@ class MainWindow:
             if meta_validator.validate(meta):
                 meta['orig_filename'] = image_filename
                 if self.options.get_color_balance:
-                    working_filename = bayer_balance_file(working_filename)
+                    working_filename = bayer_balance_file(working_filename,
+                                                          self.temp_dirname)
                 output_objs = process_rgb_file(working_filename,
                                                self.options,
                                                self.temp_dirname,
@@ -2438,25 +2418,20 @@ class MainWindow:
         psf_builder.build_psf()
 
         # Write the starlist files
-        if self.options.one_sl_per_file:
-            for obj in all_output:
-                for output in obj:
-                    output.Write()
-        else:
-            for output_objs in all_output:
-                if len(output_objs) == 0:
-                    continue
-                path1 = output_objs[0].orig_image_path
-                filename = path1.with_suffix('.star')
-                sl_set = output_objs[0].logical_starlist
-                for output in output_objs[1:]:
-                    sl_set.star_lists.extend(output.logical_starlist.star_lists)
-                print("Writing total of ",
-                      len(sl_set.star_lists),
-                      " logical starlists to ",
-                      filename)
+        for output_objs in all_output:
+            if len(output_objs) == 0:
+                continue
+            path1 = output_objs[0].orig_image_path
+            filename = path1.with_suffix('.star')
+            sl_set = output_objs[0].logical_starlist
+            for output in output_objs[1:]:
+                sl_set.star_lists.extend(output.logical_starlist.star_lists)
+            print("Writing total of ",
+                  len(sl_set.star_lists),
+                  " logical starlists to ",
+                  filename)
 
-                filename.write_text(sl_set.model_dump_json(indent=2))
+            filename.write_text(sl_set.model_dump_json(indent=2))
         return False
 
 class ErrorPopup:
