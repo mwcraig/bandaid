@@ -48,7 +48,7 @@ from photutils.background import Background2D, MedianBackground
 from photutils.detection import DAOStarFinder
 from pydantic import BaseModel, ConfigDict
 from PySide6 import QtCore, QtWidgets
-from PySide6.QtCore import QFile, QIODevice
+from PySide6.QtCore import QFile, QIODevice, QSettings
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtUiTools import QUiLoader
 from PySide6.QtWidgets import (
@@ -2572,7 +2572,22 @@ def main():
         ui.window.GenerateStarlistButton.clicked.connect(not_a_window.do_generate_starlist)
         ui.window.actionEnter_astrometry_net_API_key.triggered.connect(not_a_window.get_key)
 
-        sys.exit(app.exec())
+        settings = QSettings("AAVSO_STWG", "image2sl")
+        ui.window.bias_entry.setText(settings.value("bias", ""))
+        ui.window.dark_entry.setText(settings.value("dark", ""))
+        ui.window.flat_entry.setText(settings.value("flat", ""))
+        ui.window.meta_entry.setPlainText(settings.value("metas", ""))
+        ui.window.image_filename_list.setPlainText(settings.value("images", ""))
+
+        appx= app.exec()
+        
+        settings.setValue("bias", ui.window.bias_entry.text())
+        settings.setValue("dark", ui.window.dark_entry.text())
+        settings.setValue("flat", ui.window.flat_entry.text())
+        settings.setValue("metas", ui.window.meta_entry.toPlainText())
+        settings.setValue("images", ui.window.image_filename_list.toPlainText())
+
+        sys.exit(appx)
 
 
 if __name__ == "__main__":
