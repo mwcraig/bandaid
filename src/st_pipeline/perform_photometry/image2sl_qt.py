@@ -580,7 +580,7 @@ def get_json_value(data, keys):
     for key in keys.split('.'):
         value = data[key]
     if value is None:
-        print(f"WARNING: JSON key '{keys}' not found in metadata")    
+        print(f"WARNING: JSON key '{keys}' not found in metadata")
     return value
 
 class MetaValidator:
@@ -644,7 +644,7 @@ class MetaValidator:
             key= key[1:]
             if key in meta_dict:
                 print(f"WARNING: {key} | {meta_dict[key]} not replaced with {value}")
-                return None 
+                return None
         if key in meta_dict:
             print(f"Replacing existing meta key '{key}' value '{meta_dict}' with new value '{value}'")
         meta_dict[key] = value
@@ -1293,7 +1293,7 @@ def process_3d_file(filename, temp_dir):
     return output_filenames
 
 def process_rgb_file(filename, options, temp_dir, metadata,
-                     starlist_tgtname, psf_builder, wcs=None):
+                     starlist_tgtname, psf_builder, wcs=None, interactive=True):
     """Process an RGB image, converting it into one or more starlists
 
     Process a one-shot-color image using the user's selected options
@@ -1323,6 +1323,10 @@ def process_rgb_file(filename, options, temp_dir, metadata,
     psf_builder: psf_fitting.PSFBuilder
         This option is always present (even when PSF fitting isn't
         being done). It's a reference to the PSF processing class.
+    interactive : bool, optional
+        If True, the user will be prompted to select the
+        processing options. If False, the options will be taken from
+        the `options` parameter.
 
     Returns
     -------
@@ -1346,12 +1350,13 @@ def process_rgb_file(filename, options, temp_dir, metadata,
         # images into a single luminance channel vs. generating three
         # starlists, one for each of the three channels. Choice will
         # go straight into options.split_stacked_image.
-        popup = Option3DPopup(options)
-        ret_val = popup.exec()
-        # if the popup returned 0, then the user selected the Cancel
-        # button.
-        if ret_val == 0:
-            return []
+        if interactive:
+            popup = Option3DPopup(options)
+            ret_val = popup.exec()
+            # if the popup returned 0, then the user selected the Cancel
+            # button.
+            if ret_val == 0:
+                return []
 
         single_color_files = process_3d_file(filename, temp_dir)
         do_stacking = not options.split_stacked_image
@@ -1917,6 +1922,8 @@ class OptionsAPI(BaseModel):
     flat_file: str = ""
     meta_file: list[str] = [""]
     image_file: list[str] = [""]
+    # This options is set by a popup when running interactively
+    split_stacked_image: bool = False
 
     # These are accessed by the current code.
     @property
@@ -2305,7 +2312,7 @@ class MainWindow:
                         print("Cannot read metadata from file ", metadata_filename)
                         raise ValueError("Cannot read metadata file")
                     print("Reading metadata from ", metadata_filename)
-                    read_meta_from_json(metadata_filename, meta)        
+                    read_meta_from_json(metadata_filename, meta)
 
             # save the filename in the metadata
             meta["filename"] = image_filename.split("/")[-1]
@@ -2408,7 +2415,8 @@ class MainWindow:
                                                meta,
                                                starlist_tgtname,
                                                psf_builder,
-                                               wcs=wcs)
+                                               wcs=wcs,
+                                               interactive=self.have_ui)
                 all_output.append(output_objs)
         # Now that all images have been processed, let the psf_fitter
         # perform PSF photometry. If the option was not turned on,
