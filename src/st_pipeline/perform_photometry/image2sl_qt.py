@@ -1922,6 +1922,8 @@ class OptionsAPI(BaseModel):
     flat_file: str = ""
     meta_file: list[str] = [""]
     image_file: list[str] = [""]
+    # This options is set by a popup when running interactively
+    split_stacked_image: bool = False
 
     # These are accessed by the current code.
     @property
