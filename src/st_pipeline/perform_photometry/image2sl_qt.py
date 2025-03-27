@@ -225,14 +225,13 @@ def stack_images(channel_list, options, temp_dir):
             if options.interpolate_channels:
                 new_data = np.zeros(np.shape(hdul[0].data),dtype=np.float32)
                 orig_data = source_hdu.astype(np.float32)
-                source_hdu = new_data
                 for y in range(height-1):
                     for x in range(width-1):
                         tgt = sum(p[2]*orig_data[y+p[1],x+p[0]]
                                    for p in interp_pattern[bayer_id])
                         new_data[y,x] = tgt
-
-            hdu.data += source_hdu/16.0
+                source_hdu = new_data/16.0
+            hdu.data += source_hdu/4.0
     hdu.header['filter'] = 'CV'
     hdu.update_header()
     fits.writeto(output_tgt, hdu.data, header=hdu.header, overwrite=True)
@@ -1909,7 +1908,6 @@ class OptionsAPI(BaseModel):
     bayer_handling: BayerHandlingOptions = BayerHandlingOptions.PRETEND_MONOCHROME
     color_correx: bool = False
     subtract_annulus: bool = False
-    multiple_starlists: bool = False
     add_wcs_to_image: bool = False
     aperture_size: float = 1.0
     photometry_method: PhotometryMethods = PhotometryMethods.APERTURE
