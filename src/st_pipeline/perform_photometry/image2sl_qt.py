@@ -1080,14 +1080,14 @@ def process_single_image(filename, metadata, options, temp_dir,
     (bkgd_mean, _dummy, bkgd_std) = sigma_clipped_stats(background, sigma=3.0)
     print("background.median = ", full_background.background_median,
           ", background.rms = ", full_background.background_rms_median)
+    # Notice! noise_bkgd_per_pixel is in units of electrons, not ADU
     noise_bkgd_per_pixel = full_background.background_rms_median * starlist.gain
-    # Should this be 5 times the background RMS instead of the full image RMS?
-    # How do we know the fwhm is roughly 3? is that the same for all smart telescopes?
 
-    # What we *really* want is RMS of the original image after
-    # masking all the stars. The RMS of "background" is way off,
-    # because Background2D smooths the background, which destroys
-    # the original background RMS.
+    # We find stars twice. First time (here) is sloppy and will
+    # probably miss lots of stars because of combination of incorrect
+    # FWHM and using default star shape thresholds. Doing this first
+    # find anyway just to get better handle on FWHM and to extract
+    # image statistics in the process.
     daofind = DAOStarFinder(fwhm=3.0, threshold=4.*std)
     clean_image = (image_data - background)
     (mean, median, std) = sigma_clipped_stats(clean_image, sigma=3.0)
@@ -1102,7 +1102,7 @@ def process_single_image(filename, metadata, options, temp_dir,
     subset = sources[:subset_size]
     fwhm = psf.fit_fwhm(
         clean_image,
-        xypos=list(zip(subset['xcentroid'], subset['ycentroid'], strict=False)),
+        xypos=list(zip(subset['xcentroid'], subset['ycentroid'], strict=True)),
         fit_shape=15
     ).mean()
 
@@ -1136,6 +1136,7 @@ def process_single_image(filename, metadata, options, temp_dir,
     positions = list(zip(sources['xcentroid'],
                          sources['ycentroid'], strict=False))
     apertures = aperture.CircularAperture(positions, r=phot_radius)
+    # Notice! tot_noise_bkgd is in units of electrons
     tot_noise_bkgd = np.sqrt(apertures.area) * noise_bkgd_per_pixel
 
     if options.use_annulus:
@@ -1153,7 +1154,7 @@ def process_single_image(filename, metadata, options, temp_dir,
         centroids = central_sum.centroid
         sources['x'] = centroids[:, 0]
         sources['y'] = centroids[:, 1]
-        sources['tot_flux'] = central_sum.sum - annulus_data.sum * apertures.area / annuli.area
+        sources['tot_flux'] = central_sum.sum
     else: # not using an annulus
         result = aperture.aperture_photometry(clean_image, apertures)
         print(result)
@@ -1165,11 +1166,20 @@ def process_single_image(filename, metadata, options, temp_dir,
         sources['x'] = result['xcenter'].value
         sources['y'] = result['ycenter'].value
 
+    # Populate the background flux column. The "+0.5" is to reproduce the
+    # behavior of the original code.
+    sources['bkgd_flux'] = [
+        background[min(int(0.5+y), height-1), min(int(0.5+x), width-1)]
+        for (x, y) in zip(sources['x'], sources['y'], strict=True)
+    ]
+    if options.use_annulus:
+        sources['bkgd_flux'] += annulus_data.mean
+
     # Clean up the sources table
     print("Sources cleanup starts with ", len(sources), " stars.")
 
     bad_rows = []
-    min_adu = max(tot_noise_bkgd, 0.0)
+    min_adu = 0.0
     for row,content in enumerate(sources):
         if (content['x'] <= 3.0
             or content['y'] <= 3.0
@@ -1204,13 +1214,6 @@ def process_single_image(filename, metadata, options, temp_dir,
     star_coords = wcs.pixel_to_world(sources['x'], sources['y'])
     sources['ra'] = star_coords.ra.deg
     sources['dec'] = star_coords.dec.deg
-
-    # Populate the background flux column. The "+0.5" is to reproduce the
-    # behavior of the original code.
-    sources['bkgd_flux'] = [
-        background[int(0.5+y), int(0.5+x)]
-        for (x, y) in zip(sources['x'], sources['y'], strict=False)
-    ]
 
     print(sources.colnames)
     print(StarItem.model_fields.keys())
