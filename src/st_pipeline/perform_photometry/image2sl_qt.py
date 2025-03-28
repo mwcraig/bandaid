@@ -1155,6 +1155,7 @@ def process_single_image(filename, metadata, options, temp_dir,
         sources['x'] = centroids[:, 0]
         sources['y'] = centroids[:, 1]
         sources['tot_flux'] = central_sum.sum
+        sources.add_column(annulus_data.mean, name='mean_annulus')
     else: # not using an annulus
         result = aperture.aperture_photometry(clean_image, apertures)
         print(result)
@@ -1165,15 +1166,6 @@ def process_single_image(filename, metadata, options, temp_dir,
         # objects with the unit "pixels" and we don't need the unit.
         sources['x'] = result['xcenter'].value
         sources['y'] = result['ycenter'].value
-
-    # Populate the background flux column. The "+0.5" is to reproduce the
-    # behavior of the original code.
-    sources['bkgd_flux'] = [
-        background[min(int(0.5+y), height-1), min(int(0.5+x), width-1)]
-        for (x, y) in zip(sources['x'], sources['y'], strict=True)
-    ]
-    if options.use_annulus:
-        sources['bkgd_flux'] += annulus_data.mean
 
     bad_rows = []
     min_adu = max(0.0, tot_noise_bkgd/starlist.gain)
@@ -1194,6 +1186,15 @@ def process_single_image(filename, metadata, options, temp_dir,
     print("... removing ", len(bad_rows), " stars.")
     sources.remove_rows(bad_rows)
     print("... now have ", len(sources), " stars.")
+
+    # Populate the background flux column. The "+0.5" is to reproduce the
+    # behavior of the original code.
+    sources['bkgd_flux'] = [
+        background[min(int(0.5+y), height-1), min(int(0.5+x), width-1)]
+        for (x, y) in zip(sources['x'], sources['y'], strict=True)
+    ]
+    if options.use_annulus:
+        sources['bkgd_flux'] += sources['mean_annulus']
 
     # Turn this on to see the original image with "valid" stars
     # circled. You'll probably need to adjust the 600/1600 in imshow.
