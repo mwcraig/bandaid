@@ -1175,22 +1175,36 @@ def process_single_image(filename, metadata, options, temp_dir,
     if options.use_annulus:
         sources['bkgd_flux'] += annulus_data.mean
 
+    bad_rows = []
+    min_adu = max(0.0, tot_noise_bkgd/starlist.gain)
     # Clean up the sources table
     print("Sources cleanup starts with ", len(sources), " stars.")
+    print('   ... and min_adu of ', min_adu, ' and gain = ',
+          starlist.gain)
+    print('   ... and smallest peak_flux of ', min(sources['peak']))
+    print('   ... and smallest tot_flux of ', min(sources['tot_flux']))
 
-    bad_rows = []
-    min_adu = 0.0
     for row,content in enumerate(sources):
         if (content['x'] <= 3.0
             or content['y'] <= 3.0
             or content['x'] >= (width-3)
             or content['y'] >= (height-3)
-            or content['peak'] <= min_adu
             or content['tot_flux'] <= min_adu):
             bad_rows.append(row)
     print("... removing ", len(bad_rows), " stars.")
     sources.remove_rows(bad_rows)
     print("... now have ", len(sources), " stars.")
+
+    # Turn this on to see the original image with "valid" stars
+    # circled. You'll probably need to adjust the 600/1600 in imshow.
+    if False:
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import Circle
+        fig,ax = plt.subplots(1)
+        ax.imshow(ccd_image, cmap='Greys', vmin=600.0, vmax=1600.0)
+        for row in sources:
+            ax.add_patch(Circle((row['x'],row['y']), 8, fc=None, fill=False))
+        plt.show()
 
     sources.rename_column('peak', 'peak_flux')
     # Sort so that order is well-defined and tests will pass
