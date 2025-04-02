@@ -72,6 +72,7 @@ from . import psf_fitting
 from . import field_solve
 
 warnings.filterwarnings('error', category=RuntimeWarning)
+ui = None
 
 ################################################################
 ##        Algorithmic Stuff Comes First
