@@ -1,57 +1,55 @@
 Working with the meta data
 
 The meta data required is defined in the code:
-   valid_meta_keys=  about line 515
+   valid_meta_keys=  (about line 547)
+   Note that meta keys are lower case.
 
 We build to that from what is collected in this order:
-- probe for the image type using header keywords
+- probe for the mfg and image type using header keywords
     probe_file_for_type() identifies the mfg and the options selected
+    eg mfg: "Unistellar", "Seestar", "Origin", "Dwarf2", "Dwarf3", "other"
+    eg types: "bayered", "mono", "3Dstacked", "3Hstacked", "unknown"
 - FITS header
+    Read in the whole header. Note that these keys are upper case.
 - JSON sidecar file, if it exists
-- A "personal.json" that might provide things missing in the above. eg. Obscode
-- fetch adjustment json from meta_json_files/<type>/basic.json
-- look for a json in meta_json_files/<type>/<subtype>.json for tweaks
-   There are special flags available for the values in these jsons
+    Some mfg provide a json sidecar file along with the FITS file. Others like 
+    the Seestar do not have this extra json: the fits header is complete enough.
+- add the raw file name as meta["filename"]
+    There may be useful information in the file name    
+
+- Now we begin the process of building the meta dict. The data above is all grist for the mill.
+
+-  A "basic.json" exists for each mfg type.
+   These are json files but with special flags to acively adjust the values.
    - prefix the key with a _ to indicate a comment, line to be ignored
-   - prefix the value with a @ to indicate a value to be looked up in the meta dict
-      eg   "exposure": "@StackedInfo.captureParams.exposure"
-   - prefix the value with a ! to indicate a function to be called to adjust the value
-      eg   "obs_time": "!DATE-OBS Local2UTC"
+      eg  "_comment": "this is a comment"
+   - prefix the value with a @ to indicate a value to be used as a key already in the meta dict
+      ie The data is in the meta already, but not keyed as needed.
+      eg  "exposure": "@EXPTIME"
+      Note that the some of the sidecare json files had nested keys
+      eg  the Origin we would use: "exposure": "@StackedInfo.captureParams.exposure"
+   - prefix the value with a ! to indicate a function is to be called to adjust the value
+      eg  "obs_time": "!DATE-OBS Local2UTC" means look for the DATE-OBS key and convert it to UTC
       eg  "obs_time": "!StackedInfo.dateTime refmtDate %m-%d-%yB%H_%M_%S"
            change from the existing format to the std  "%Y-%m-%dT%H:%M:%S"
-      eg   "tel_firmware" : "!@CREATOR index 1"
-           get the second field from  CREATOR 	= 'Origin 1.1.4233 '    
-      eg   "ra": "!RA hr2deg"
+      The index function splits the refereced field on spaces and returns the nth field     
+      eg   "tel_firmware" : "!CREATOR index 1"
+           get the second field from  CREATOR 	= 'Origin 1.1.4233 '   
+      In some cases the the RA are in hours and we want degrees      
+      eg   "ra": "!RA hr2deg" 
            convert from decimal hours to degrees   
    - prefix the key with a # to indicate that this value should not replace an existing value,
       only provide the data if its not there yet.
       eg  #SITEELEV  don't overwrite the value if the FITS provided it
    
+After the basic.json there may be a second json file specific to the image type.
+   eg the Dwarf's need an adjustment if the image is bayered, so a bayered.json file is sought.
+   In this case the largest_useable_adu_value has been set to 60000 by the basic.json, but 
+       the case of the bayered image this must be reset to 4070.
 
+These json files are all from the mfg or from the code. There is one last json file
+   that is created by the user. This has been called the personal.json file. This is
+   is to fill in missing data.
+   eg.  #obscode" : "UNKN"
+      note the # sign to indicate that this value should not replace an existing value.
 
-
-- Distinguish raw files from stacked by NAXIS count: 2 for raw, 3 for stacked
-    assuming we don't get multiple hdu fits files...
-- ignore BAYERPAT for stacked files 
-
-
-Other settings for Astrometry.next
-ast.show_allowed_settings()
-allow_commercial_use: type 'str', default value d, allowed values ('d', 'y', 'n')
-allow_modifications: type 'str', default value d, allowed values ('d', 'y', 'n')
-center_dec: type 'float', default value None, allowed values (-90, 90)
-center_ra: type 'float', default value None, allowed values (0, 360)
-crpix_center: type 'bool', default value None, allowed values ()
-downsample_factor: type 'int', default value None, allowed values (1,)
-parity: type 'int', default value None, allowed values (0, 2)
-positional_error: type 'float', default value None, allowed values (0,)
-publicly_visible: type 'str', default value y, allowed values ('y', 'n')
-radius: type 'float', default value None, allowed values (0,)
-scale_err: type 'float', default value None, allowed values (0, 100)
-scale_est: type 'float', default value None, allowed values (0,)
-scale_lower: type 'float', default value None, allowed values (0,)
-scale_type: type 'str', default value None, allowed values ('ev', 'ul')
-scale_units: type 'str', default value None, allowed values ('degwidth', 'arcminwidth', 'arcsecperpix')
-scale_upper: type 'float', default value None, allowed values (0,)
-tweak_order: type 'int', default value 2, allowed values (0,)
-use_sextractor: type 'bool', default value False, allowed values ()
