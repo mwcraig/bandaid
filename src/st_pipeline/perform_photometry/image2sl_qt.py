@@ -1459,6 +1459,7 @@ class FileChooser:
         self.text_widget = text_entry_widget
         self.popup_button = chooser_button
         self.multiple_files_okay = multiple_files_okay
+        self.last_directory = last_directory
         chooser_button.clicked.connect(self.chooser_popup)
 
         if not multiple_files_okay:
@@ -1481,6 +1482,11 @@ class FileChooser:
         """
         dialog = QFileDialog(self.text_widget)
         dialog.setFileMode(self.file_mode)
+        if self.last_directory is None:
+            if pt := self.text_widget.text():
+                pt = self.text_widget.text().split('\n', 1)[0]
+                self.last_directory = str(Path(pt).parent)
+        dialog.setDirectory(self.last_directory)
         if dialog.exec():
             if self.multiple_files_okay:
                 # Now append to the filelist
@@ -1489,6 +1495,7 @@ class FileChooser:
                     self.text_widget.appendPlainText(entry + '\n')
             else:
                 self.text_widget.setText(dialog.selectedFiles()[0])
+            self.last_directory = dialog.directory().path()
         else:
             self.text_widget.setText("")
 
