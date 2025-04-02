@@ -1432,7 +1432,8 @@ class FileChooser:
     def __init__(self,
                  text_entry_widget,
                  chooser_button,
-                 multiple_files_okay=False):
+                 multiple_files_okay=False,
+                 last_directory=None):
         """Create a file-chooser object
 
         Create a FileChooser object (used for dark, flat, metadata,
@@ -1830,7 +1831,10 @@ class OptionsUI:
         str
             The pathname of the bias file
         """
-        return self._bias_file.entered_filename()
+        self._bias_file.setDirectory(self._bias_file.lastDirectory)
+        ef= self._bias_file.entered_filename()
+        self._bias_file.lastDirectory = os.path.dirname(ef)
+        return ef
 
     @property
     def dark_file(self):
