@@ -1915,7 +1915,7 @@ class BayerHandlingOptions(StrEnum):
     PRETEND_MONOCHROME = "pretend_monochrome"
     STACKED_CHANNELS = "stacked_channels"
     INTERP_STACK_CHANNELS = "interp_stack_channels"
-    SPLIT_STACKED_IMAGE = "split_stacked_image"
+    SPLIT_STACKED = "split_stacked"
 
 
 class PhotometryMethods(StrEnum):
@@ -1978,6 +1978,11 @@ class OptionsAPI(BaseModel):
     @property
     def use_annulus(self):
         return self.subtract_annulus
+
+    @property
+    def one_channel(self):
+        return self.bayer_handling == BayerHandlingOptions.SPLIT_STACKED
+
 
 class UI:
     """Singleton class used to connect Qt Designer to this app
