@@ -578,7 +578,8 @@ def get_json_value(data, keys):
     for key in keys.split('.'):
         try:
             value = data[key]
-        except: pass
+        except KeyError:
+            pass
     if value is None:
         print(f"WARNING: JSON key '{keys}' not found in metadata")    
     return value
