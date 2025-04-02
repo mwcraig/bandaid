@@ -1451,6 +1451,10 @@ class FileChooser:
             A flag to indicate whether this FileChooser is allowed to
             select multiple files (i.e., light image files) or just a
             single file (e.g., a master flat image)
+        last_directory : str, optional, default=None
+            The last directory used to select a file. If None, the
+            directory will be the one in the text_entry_widget, if
+            there is one.
 
         Returns
         -------
