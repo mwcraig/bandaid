@@ -69,10 +69,9 @@ from timezonefinder import TimezoneFinder
 from .. import __version__
 from ..schema_definition import StarItem, StarList, StarListSet
 from . import psf_fitting
+from . import field_solve
 
 warnings.filterwarnings('error', category=RuntimeWarning)
-
-astrometry_api_key = None
 
 ################################################################
 ##        Algorithmic Stuff Comes First
@@ -91,6 +90,9 @@ def de_bayer_file(filename, metadata, temp_dir):
         The metadata for this image file
     temp_dir : str
         pathname to the temporary directory where the new images go
+    field_solver: field_solve.FieldSolver
+        This instance of FieldSolver is used to coordinate all the WCS
+        generation that occurs during deBayering.
 
     Returns
     -------
@@ -856,156 +858,10 @@ def table_to_star_items(photometry_table):
         )
     return star_items
 
-
-def plate_solve_image(filename, metadata, temp_dir, wcs, sources, height, width)    :
-    """Plate solve an image
-
-    Plate solve an image using astrometry.net or other means. The image will be
-    plate-solved and the WCS information will be stored in the metadata
-    dictionary. The WCS information will be stored as a string in the
-    metadata dictionary.
-
-    Parameters
-    ----------
-    filename : str
-        Pathname of the image to be plate-solved
-    metadata : dict
-        Dictionary of metadata values
-    options : class OptionBox object
-        An object holding all of the operator's conversion options
-    temp_dir : str
-        Pathname of a directory in which temporary files can be put
-    wcs : WCS object
-        WCS object to be used if it is already known
-    sources, height, width : if you are going to use astrometry.net, you need these
-
-    Returns
-    -------
-    wcs WCS Object
-    """
-
-    ################################
-    ## WCS handling overall sequence
-    ## 1. If wcs is passed in as parameter, use it. Do not
-    ## plate-solve.
-    ## 2. If the "solve-field" program is installed, use it to
-    ## plate-solve. (Only tested on Linux so far.)
-    ## 3. Otherwise, go out to astrometry.net and use the online
-    ## plate-solver.
-    ################################
-    def build_local_command(temp_dir):
-        print("WCS using temp_dir = ", temp_dir.name)
-        temp_dirname = temp_dir.name
-        plate_solve_dir = temp_dirname
-
-        command = " " #"solve-field  will be added later"
-        temp_dir_arg = " --dir " + str(plate_solve_dir) #.replace('\\', '/') # output dir
-        command += temp_dir_arg
-        print("plate_solve_dir = ", plate_solve_dir)
-        print("temp_dir_arg = ", temp_dir_arg)
-        #command += (" --config + config_file)
-        if 'PIXSCALE' in metadata and metadata['PIXSCALE'] is not None:
-            pixelscale = metadata['PIXSCALE']
-        elif 'pixscale' in metadata and metadata['pixscale'] is not None:
-            pixelscale = metadata['pixscale']
-        else:
-            raise ValueError("Pixelscale not defined.")
-        pixel_low = pixelscale * 0.9
-        pixel_hi = pixelscale * 1.1
-        command += (" --scale-low " + str(pixel_low)
-                    + " --scale-high " + str(pixel_hi)
-                    + " --scale-units arcsecperpix ")
-
-        if ('dec' in metadata and 'ra' in metadata and
-              metadata['dec'] is not None and metadata['ra'] is not None):
-            command += (" --ra " + str(metadata['ra'])
-                        + " --dec " + str(metadata['dec']))
-        else:
-            raise ValueError("Dec/RA not defined")
-
-        if 'fov_rad' in metadata and metadata['fov_rad'] is not None:
-            command += (" --radius " + str(metadata['fov_rad'])) # in degrees
-        else:
-            raise AssertionError("Image FOV not defined")
-
-        command += ' "' + str(filename) + '"'
-        return command
-
-    if not wcs:
-        print("No WCS provided. Will plate-solve.")
-        ################################
-        ## Plate-solve the image
-        ################################
-        temp_dir = tempfile.TemporaryDirectory()
-        local_system = platform.system()
-        if local_system == 'Windows':
-            p = Path(os.path.expandvars('%LOCALAPPDATA%'))
-            q = p  / 'cygwin_ansvr' / 'bin' / 'solve-field'
-            if q.exists():
-                cmd = build_local_command(temp_dir)
-                cmd2= (str(q) + cmd ).replace('\\', '/')
-                full_cmd = f"%LOCALAPPDATA%\\cygwin_ansvr\\bin\\bash.exe --login -c '{cmd2}'"
-                print("Executing: ", full_cmd)
-                return_code= os.system(full_cmd)
-                print("solve-field returned ", return_code)
-                if return_code:
-                    raise ValueError("Abnormal termination of solve-field")
-            else:
-                cmd = None
-        else:
-            if shutil.which('solve-field') is not None:
-                cmd = 'solve-field ' + build_local_command(temp_dir)
-                print("Executing: ", cmd)
-
-                if os.system(cmd) != 0:
-                    raise ValueError("Abnormal termination of solve-field")
-            else:
-                cmd = None
-
-        if cmd is not None:
-                wcs_basename = Path(filename).with_suffix(".new").name
-                print("wcs_basename = ", wcs_basename)
-                wcs_pathname = Path(temp_dir.name) / wcs_basename
-                print("Looking for WCS info in ", str(wcs_pathname))
-                with fits.open(str(wcs_pathname)) as hdul:
-                    header = hdul[0].header
-                    wcs = WCS(header, naxis=2)
-
-        if wcs is None and sources is not None:
-            print("Trying astrometry.net.")
-            ast = AstrometryNet()
-            if astrometry_api_key is None:
-                global ui
-                dlg = QMessageBox(ui.window)
-                dlg.setWindowTitle("No astrometry.net API Key")
-                dlg.setText("Must enter astrometry.net API Key via Menu Bar")
-                dlg.exec()
-                return None
-
-            ast.api_key = astrometry_api_key
-            # star_x and star_y were sorted by flux earlier... important here.
-            wcs_header = ast.solve_from_source_list(sources['x'],
-                                                    sources['y'],
-                                                    width,
-                                                    height,
-                                                    solve_timeout= 120
-                                                    #,
-                                                    #verbose= True,
-                                                    #center_dec=metadata['dec'],
-                                                    #center_ra=metadata['ra'],
-                                                    #scale_lower=0.9*metadata['pixscale'],
-                                                    #scale_upper=1.1*metadata['pixscale']
-                                                    )
-            wcs = WCS(header=wcs_header)
-    return wcs
-
-
-
-
 # Process one (possibly de-Bayered) image
-def process_single_image(filename, metadata, options, temp_dir,
+def process_single_image(filename, width, height, metadata, options, temp_dir,
                          starlist_json_path, passband_filter,
-                         psf_builder, wcs=None):
+                         psf_builder, field_solver, wcs=None):
     """Turn an image file into a starlist
 
     In a strictly one-to-one operation, turn an image into a starlist,
@@ -1022,8 +878,9 @@ def process_single_image(filename, metadata, options, temp_dir,
         An object holding all of the operator's conversion options
     temp_dir : str
         Pathname of a directory in which temporary files can be put
-    starlist_json_path : str
-        Pathname that will be used to store the resulting starlist
+    starlist_json_path : str or None
+        Pathname that will be used to store the resulting starlist. If
+        this is None, then no output object will be created
     filter : str
         Short string holding the AAVSO reporting name for the filter
         associated with this image
@@ -1033,6 +890,9 @@ def process_single_image(filename, metadata, options, temp_dir,
     wcs : astropy WCS object
         WCS object that maps pixel coordinates to sky coordinates. If
         provided then astrometry.net fitting is skipped.
+    field_solver: field_solve.FieldSolver
+        This is the "plate-solver" that is being used for this image
+    
     Returns
     -------
     OutputObject
@@ -1219,16 +1079,17 @@ def process_single_image(filename, metadata, options, temp_dir,
     # Set flux errors to zero for negative fluxes
     sources['flux_err'][sources['tot_flux'] < 0] = 0.0
 
+    wcs = field_solver.solve(sources, width, height, source_wcs=wcs)
+    print("field_solver returned wcs = ", wcs)
+    
     # Check if WCS is already present in the FITS header
     if wcs is None:
         wcs = ccd_image.wcs # This looks for the WCSAXES keyword
 
-    wcs = plate_solve_image(filename, metadata, temp_dir, wcs, sources, height, width)
-
     # Calculate RA and Dec
-    star_coords = wcs.pixel_to_world(sources['x'], sources['y'])
-    sources['ra'] = star_coords.ra.deg
-    sources['dec'] = star_coords.dec.deg
+    #star_coords = wcs.pixel_to_world(sources['x'], sources['y'])
+    #sources['ra'] = star_coords.ra.deg
+    #sources['dec'] = star_coords.dec.deg
 
     print(sources.colnames)
     print(StarItem.model_fields.keys())
@@ -1249,11 +1110,13 @@ def process_single_image(filename, metadata, options, temp_dir,
     print("starlist is ", type(starlist))
     print('creating OutputObject w/filename = ',
           metadata['orig_filename'])
-    return OutputObject(
-        filename=starlist_json_path,
-        orig_image_path=metadata['orig_filename'],
-        logical_starlist=StarListSet(star_lists=[starlist])
-    )
+    if starlist_json_path is not None:
+        return OutputObject(
+            filename=starlist_json_path,
+            orig_image_path=metadata['orig_filename'],
+            logical_starlist=StarListSet(star_lists=[starlist])
+        )
+    return None
 
 def process_3d_file(filename, temp_dir):
     """Process an RGB image, converting it into one or more starlists
@@ -1352,8 +1215,12 @@ def process_rgb_file(filename, options, temp_dir, metadata,
         These are the logical starlists that result.
 
     """
+    global ui
     if not meta_validator.validate(metadata):
         return []
+    field_solver = field_solve.FieldSolver(metadata, ui, options)
+    metadata['width'] = metadata['NAXIS1']
+    metadata['height'] = metadata['NAXIS2']
     de_bayer = options.de_bayer
     fits_format = metadata['telescope_probe'][1] # fits_format
     # can't get here without a telescope_probe   if 'fits_format' in metadata else "bayered")
@@ -1377,23 +1244,43 @@ def process_rgb_file(filename, options, temp_dir, metadata,
                 return []
 
         single_color_files = process_3d_file(filename, temp_dir)
+        color_width = metadata['width']
+        color_height = metadata['height']
         do_stacking = not options.split_stacked_image
         #adj_meta_dict['pixscale'] /= 2.0 # Correct for non-de-Bayered image
     elif de_bayer:
         single_color_files = de_bayer_file(filename, adj_meta_dict, temp_dir)
+        color_width = metadata['width']/2
+        color_height = metadata['height']/2
         do_stacking = options.stack_channels
 
+    if (not field_solver.solved) and fits_format != "3Dstacked":
+        # Process the original image, just to get the field solved
+        # for use in jump-starting the deBayered subimages
+        process_single_image(filename,
+                             metadata['width'],
+                             metadata['height'],
+                             adj_meta_dict,
+                             options,
+                             temp_dir,
+                             None,
+                             'M',
+                             psf_builder,
+                             field_solver,
+                             wcs=wcs)
     if do_stacking:
         print("Stacking images")
         stacked_image = stack_images(single_color_files, options, temp_dir)
         starlist_filename = starlist_tgtname.replace("$$","M")
         output_objects.append(process_single_image(stacked_image,
+                                                   color_width, color_height,
                                                    adj_meta_dict,
                                                    options,
                                                    temp_dir,
                                                    starlist_filename,
                                                    'M',
                                                    psf_builder,
+                                                   field_solver,
                                                    wcs=wcs))
     elif len(single_color_files) > 1:
         print("Processing separate channels")
@@ -1406,12 +1293,14 @@ def process_rgb_file(filename, options, temp_dir, metadata,
                 tg_num += 1
             starlist_filename = starlist_tgtname.replace("$$",filter_file)
             output_objects.append(process_single_image(file,
+                                                       color_width, color_height,
                                                        adj_meta_dict,
                                                        options,
                                                        temp_dir,
                                                        starlist_filename,
                                                        photfilter,
                                                        psf_builder,
+                                                       field_solver,
                                                        wcs=wcs))
     else:
         # Not de-Bayered; treat as single monochrome image
@@ -1419,12 +1308,15 @@ def process_rgb_file(filename, options, temp_dir, metadata,
         starlist_filename = starlist_tgtname.replace("$$","M") # M==monochrome
         print(metadata)
         output_objects.append(process_single_image(filename,
+                                                   adj_meta_dict['width'],
+                                                   adj_meta_dict['height'],
                                                    adj_meta_dict,
                                                    options,
                                                    temp_dir,
                                                    starlist_filename,
                                                    'M',
                                                    psf_builder,
+                                                   field_solver,
                                                    wcs=wcs))
     print(f"ProcessRGB: returning {len(output_objects)} output_objects.")
     return output_objects
@@ -2022,142 +1914,6 @@ class UI:
         self.window.ApertureSize.setText("1.0")
         self.window.actionQuit.triggered.connect(QApplication.quit)
 
-class APIEntryDialog(QDialog):
-    """The QDialog popup window used to enter the astrometry.net API key
-
-    The QDialog popup window used to enter the astrometry.net API key.
-
-    Attributes
-    ----------
-    prompt : QLabel widget
-        Holds the prompt message telling the user what to do
-    lineEdit : QLineEdit widget
-        Text entry widget that holds the value of the API key. This
-        will be initialized to any previously-entered key value.
-    save_checkbox : QCheckBox widget
-        Checkbox to indicate that the API key value should be saved
-        for use in the future as the default API key value
-    buttonBox : QDialogButtonBox widget
-        Container widget that holds the buttons for the popup
-    """
-    def __init__(self, parent=None):
-        """Create a popup dialog window
-
-        Create a popup dialog window. The "Okay" standard button will
-        have its default behavior overridden so that the entered API
-        key value gets saved.
-
-        Parameters
-        ----------
-        parent : Qt window
-            The parent widget that "owns" this popup
-
-        Returns
-        -------
-        Qt QDialog window
-        """
-        super().__init__(parent)
-
-        self.setWindowTitle("Astrometry.net API Key Entry")
-        layout = QVBoxLayout()
-        self.prompt = QLabel('Enter your astrometry.net API key:')
-        layout.addWidget(self.prompt)
-        self.lineEdit = QLineEdit()
-        if astrometry_api_key is not None:
-            self.lineEdit.setText(astrometry_api_key)
-        layout.addWidget(self.lineEdit)
-
-        self.save_checkbox = QCheckBox('Save API Key')
-        layout.addWidget(self.save_checkbox)
-
-        q_btn = (QDialogButtonBox.StandardButton.Ok |
-                QDialogButtonBox.StandardButton.Cancel)
-        self.buttonBox = QDialogButtonBox(q_btn)
-        self.buttonBox.accepted.connect(self.accept_key)
-        self.buttonBox.rejected.connect(self.reject)
-        layout.addWidget(self.buttonBox)
-
-        self.setLayout(layout)
-
-    def accept_key(self):
-        """Intercept the dialog's "Okay" button
-
-        Before executing the default "Okay" button behavior, save the
-        API key value for use here in this program (as a global
-        variable) and save in the user's STWG local storage folder.
-        """
-        global astrometry_api_key
-        astrometry_api_key = self.lineEdit.text()
-        if self.save_checkbox.isChecked():
-            save_astrometry_key(astrometry_api_key)
-        self.accept()           # execute default behavior (kills the popup)
-
-def get_astrometry_key():
-    """Lookup the saved value of the astrometry.net API key
-
-    Look for the file containing the astrometry.net API key. If the
-    file exists and contains some text, return that text as the
-    key. It is *not* an error for the file to not exist -- in which
-    case this function will silently return "None".
-
-    Returns
-    -------
-    Either a string (the stored API key) or None
-    """
-    localdir = None
-    local_system = platform.system()
-    if local_system == 'Windows':
-        localdir = Path.home() / "AppData" / "Local" / "STWG"
-    elif local_system == 'Linux':
-        localdir = Path.home() / ".stwg"
-    elif local_system == 'Darwin':
-        localdir = Path.home() / ".stwg"
-    else:
-        raise ValueError("OS Name not recognized")
-
-    localdir.mkdir(parents=True, exist_ok=True)
-    api_key_pathname = localdir / "astrometryAPIkey.txt"
-
-    try:
-        return api_key_pathname.read_text()
-    except (PermissionError, FileNotFoundError):
-        return None
-
-def save_astrometry_key(key_value):
-    """Store the value of the astrometry.net API key in a local file
-
-    Store the value of the astrometry.net API key in a file in the
-    user's app data area (windows) or home directory (Linus/MacOS).
-
-    Parameters
-    ----------
-    key_value : string
-        The value of the API key
-
-    Returns
-    -------
-    None
-    """
-    localdir = None
-    local_system = platform.system()
-    if local_system == 'Windows':
-        localdir = Path.home() / "AppData" / "Local" / "STWG"
-    elif local_system == 'Linux':
-        localdir = Path.home() / ".stwg"
-    elif local_system == 'Darwin':
-        localdir = Path.home() / ".stwg"
-    else:
-        raise ValueError("OS Name not recognized")
-
-    localdir.mkdir(parents=True, exist_ok=True)
-    api_key_pathname = localdir / "astrometryAPIkey.txt"
-
-    try:
-        api_key_pathname.write_text(key_value)
-    except (FileNotFoundError, json.JSONDecodeError):
-        print("Error Trying to save API Key")
-        raise
-
 class MainWindow:
     def __init__(self, options, ui=None, wcs=None):
         """Set up main display window and key singleton objects
@@ -2199,11 +1955,6 @@ class MainWindow:
         self.options = options
         self.ui = ui
         self._wcs = wcs
-        # Try getting the API key from options, or return None if not there
-        astrometry_api_key = getattr(self.options, "astrometry_net_api_key", None)
-        if astrometry_api_key is None:
-            astrometry_api_key = get_astrometry_key()
-
         self.have_ui = False
         if self.ui:
             self.have_ui = True
@@ -2409,19 +2160,21 @@ class MainWindow:
                 hdul.flush()
 
             # if the WCS is not provided, then we should get it now
-            if self._wcs is None:
-                wcs = CCDData.read(temp_image_filename, unit='adu', format='fits').wcs
-                if wcs is None:
-                    wcs = plate_solve_image(temp_image_filename, meta, self.temp_dirname, wcs, None, None, None)
-                    # Save the filename with its WCS
-                    if wcs is not None:
-                        wcs_header = wcs.to_header()
-                        with fits.open(temp_image_filename, mode='update') as hdul:
-                            hdul[0].header.extend(wcs_header, useblanks=False, update=True)
-                            hdul.flush()
-            else:
-                wcs= self._wcs.copy()
+            if False:
+                if self._wcs is None:
+                    wcs = CCDData.read(temp_image_filename, unit='adu', format='fits').wcs
+                    if wcs is None:
+                        wcs = plate_solve_image(temp_image_filename, meta, self.temp_dirname, wcs, None, None, None)
+                        # Save the filename with its WCS
+                        if wcs is not None:
+                            wcs_header = wcs.to_header()
+                            with fits.open(temp_image_filename, mode='update') as hdul:
+                                hdul[0].header.extend(wcs_header, useblanks=False, update=True)
+                                hdul.flush()
+                else:
+                    wcs= self._wcs.copy()
 
+            wcs = self._wcs.copy() if self._wcs is not None else None
             if meta_validator.validate(meta):
                 meta['orig_filename'] = image_filename
                 if self.options.get_color_balance:
