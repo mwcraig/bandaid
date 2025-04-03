@@ -2301,6 +2301,7 @@ class MainWindow:
             if image_filename == '':
                 continue
 
+            telescope_type= probe_file_for_type(image_filename) # (scope, image type)
             working_filename = image_filename
             image_path = Path(image_filename)
             orig_dir = image_path.parent
@@ -2312,6 +2313,9 @@ class MainWindow:
             if (dark_filename
                 or flat_filename
                 or bias_filename):
+                if telescope_type[1] == "3Dstacked":
+                    print("Cannot calibrate a 3D stacked image")
+                    continue    
                 calibrated_image = str(Path(self.temp_dirname, "light.fits"))
                 with fits.open(image_filename) as hdu_working:
                     working_image = hdu_working[0].data.astype(float)
