@@ -1093,9 +1093,13 @@ def process_single_image(filename, metadata, options, temp_dir,
     (mean, median, std) = sigma_clipped_stats(clean_image, sigma=3.0)
     sources = daofind(clean_image)
     print("Initial quicklook found ", len(sources), " stars.")
-
     # Sort the table in-place by flux in reverse order
     sources.sort('flux', reverse=True)
+
+    # Exclude rows where flux is saturated
+    mask = sources['peak'] > metadata['largest_usable_adu_value'] 
+    sources = sources[~mask]
+    print("after removal of saturated stars, the count is ", len(sources), " stars.")
 
     # Grab a subset of the brightest stars to estimate the FWHM
     subset_size = min(10, len(sources))
