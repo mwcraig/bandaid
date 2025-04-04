@@ -1964,7 +1964,7 @@ class MainWindow:
             self.generate_starlist()
 
     def get_key(self):
-        dialog = APIEntryDialog(self.ui.window)
+        dialog = field_solve.APIEntryDialog(self.ui.window)
         dialog.exec()
 
     ################################
