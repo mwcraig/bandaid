@@ -1946,8 +1946,6 @@ class MainWindow:
         -------
         None
         """
-        global astrometry_api_key
-
         temp_dir = tempfile.TemporaryDirectory()
         self.temp_dir = temp_dir
         self.temp_dirname = self.temp_dir.name
