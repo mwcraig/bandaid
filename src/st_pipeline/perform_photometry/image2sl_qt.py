@@ -1080,13 +1080,13 @@ def process_single_image(filename, width, height, metadata, options, temp_dir,
     # Set flux errors to zero for negative fluxes
     sources['flux_err'][sources['tot_flux'] < 0] = 0.0
 
-    wcs = field_solver.solve(sources, width, height, source_wcs=wcs)
-    print("field_solver returned wcs = ", wcs)
-    
     # Check if WCS is already present in the FITS header
     if wcs is None:
         wcs = ccd_image.wcs # This looks for the WCSAXES keyword
 
+    wcs = field_solver.solve(sources, width, height, source_wcs=wcs)
+    print("field_solver returned wcs = ", wcs)
+    
     # Calculate RA and Dec
     #star_coords = wcs.pixel_to_world(sources['x'], sources['y'])
     #sources['ra'] = star_coords.ra.deg
@@ -2159,21 +2159,6 @@ class MainWindow:
                 if 'YBAYROFF' not in hdu0h: hdu0h['YBAYROFF'] = meta['ybayroff']
                 hdul[0].header = hdu0h
                 hdul.flush()
-
-            # if the WCS is not provided, then we should get it now
-            if False:
-                if self._wcs is None:
-                    wcs = CCDData.read(temp_image_filename, unit='adu', format='fits').wcs
-                    if wcs is None:
-                        wcs = plate_solve_image(temp_image_filename, meta, self.temp_dirname, wcs, None, None, None)
-                        # Save the filename with its WCS
-                        if wcs is not None:
-                            wcs_header = wcs.to_header()
-                            with fits.open(temp_image_filename, mode='update') as hdul:
-                                hdul[0].header.extend(wcs_header, useblanks=False, update=True)
-                                hdul.flush()
-                else:
-                    wcs= self._wcs.copy()
 
             wcs = self._wcs.copy() if self._wcs is not None else None
             if meta_validator.validate(meta):
