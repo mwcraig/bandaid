@@ -1042,7 +1042,8 @@ def process_single_image(filename, width, height, metadata, options, temp_dir,
             or content['y'] <= 3.0
             or content['x'] >= (width-3)
             or content['y'] >= (height-3)
-            or content['tot_flux'] <= min_adu):
+            or content['tot_flux'] <= min_adu
+            or content['peak'] <= min_adu):
             bad_rows.append(row)
     print("... removing ", len(bad_rows), " stars.")
     sources.remove_rows(bad_rows)
