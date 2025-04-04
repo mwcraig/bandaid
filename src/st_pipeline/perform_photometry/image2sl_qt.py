@@ -48,7 +48,7 @@ from photutils.background import Background2D, MedianBackground
 from photutils.detection import DAOStarFinder
 from pydantic import BaseModel, ConfigDict
 from PySide6 import QtCore, QtWidgets
-from PySide6.QtCore import QFile, QIODevice
+from PySide6.QtCore import QFile, QIODevice, QSettings
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtUiTools import QUiLoader
 from PySide6.QtWidgets import (
@@ -581,7 +581,10 @@ def get_json_value(data, keys):
     # keys can be a string with '.' separators
     value = None
     for key in keys.split('.'):
-        value = data[key]
+        try:
+            value = data[key]
+        except KeyError:
+            pass
     if value is None:
         print(f"WARNING: JSON key '{keys}' not found in metadata")
     return value
@@ -1809,7 +1812,7 @@ class BayerHandlingOptions(StrEnum):
     PRETEND_MONOCHROME = "pretend_monochrome"
     STACKED_CHANNELS = "stacked_channels"
     INTERP_STACK_CHANNELS = "interp_stack_channels"
-    SPLIT_STACKED_IMAGE = "split_stacked_image"
+    SPLIT_STACKED = "split_stacked"
 
 
 class PhotometryMethods(StrEnum):
@@ -1872,6 +1875,11 @@ class OptionsAPI(BaseModel):
     @property
     def use_annulus(self):
         return self.subtract_annulus
+
+    @property
+    def one_channel(self):
+        return self.bayer_handling == BayerHandlingOptions.SPLIT_STACKED
+
 
 class UI:
     """Singleton class used to connect Qt Designer to this app
@@ -2309,7 +2317,22 @@ def main():
         ui.window.GenerateStarlistButton.clicked.connect(not_a_window.do_generate_starlist)
         ui.window.actionEnter_astrometry_net_API_key.triggered.connect(not_a_window.get_key)
 
-        sys.exit(app.exec())
+        settings = QSettings("AAVSO_STWG", "image2sl")
+        ui.window.bias_entry.setText(settings.value("bias", ""))
+        ui.window.dark_entry.setText(settings.value("dark", ""))
+        ui.window.flat_entry.setText(settings.value("flat", ""))
+        ui.window.meta_entry.setPlainText(settings.value("metas", ""))
+        ui.window.image_filename_list.setPlainText(settings.value("images", ""))
+
+        appx= app.exec()
+        
+        settings.setValue("bias", ui.window.bias_entry.text())
+        settings.setValue("dark", ui.window.dark_entry.text())
+        settings.setValue("flat", ui.window.flat_entry.text())
+        settings.setValue("metas", ui.window.meta_entry.toPlainText())
+        settings.setValue("images", ui.window.image_filename_list.toPlainText())
+
+        sys.exit(appx)
 
 
 if __name__ == "__main__":
