@@ -1096,9 +1096,13 @@ def process_single_image(filename, metadata, options, temp_dir,
     (mean, median, std) = sigma_clipped_stats(clean_image, sigma=3.0)
     sources = daofind(clean_image)
     print("Initial quicklook found ", len(sources), " stars.")
-
     # Sort the table in-place by flux in reverse order
     sources.sort('flux', reverse=True)
+
+    # Exclude rows where flux is saturated
+    mask = sources['peak'] > metadata['largest_usable_adu_value'] 
+    sources = sources[~mask]
+    print("after removal of saturated stars, the count is ", len(sources), " stars.")
 
     # Grab a subset of the brightest stars to estimate the FWHM
     subset_size = min(10, len(sources))
@@ -1458,7 +1462,8 @@ class FileChooser:
     def __init__(self,
                  text_entry_widget,
                  chooser_button,
-                 multiple_files_okay=False):
+                 multiple_files_okay=False,
+                 last_directory=None):
         """Create a file-chooser object
 
         Create a FileChooser object (used for dark, flat, metadata,
@@ -1476,6 +1481,10 @@ class FileChooser:
             A flag to indicate whether this FileChooser is allowed to
             select multiple files (i.e., light image files) or just a
             single file (e.g., a master flat image)
+        last_directory : str, optional, default=None
+            The last directory used to select a file. If None, the
+            directory will be the one in the text_entry_widget, if
+            there is one.
 
         Returns
         -------
@@ -1484,6 +1493,7 @@ class FileChooser:
         self.text_widget = text_entry_widget
         self.popup_button = chooser_button
         self.multiple_files_okay = multiple_files_okay
+        self.last_directory = last_directory
         chooser_button.clicked.connect(self.chooser_popup)
 
         if not multiple_files_okay:
@@ -1506,6 +1516,11 @@ class FileChooser:
         """
         dialog = QFileDialog(self.text_widget)
         dialog.setFileMode(self.file_mode)
+        if self.last_directory is None:
+            if pt := self.text_widget.text():
+                pt = self.text_widget.text().split('\n', 1)[0]
+                self.last_directory = str(Path(pt).parent)
+        dialog.setDirectory(self.last_directory)
         if dialog.exec():
             if self.multiple_files_okay:
                 # Now append to the filelist
@@ -1514,6 +1529,7 @@ class FileChooser:
                     self.text_widget.appendPlainText(entry + '\n')
             else:
                 self.text_widget.setText(dialog.selectedFiles()[0])
+            self.last_directory = dialog.directory().path()
         else:
             self.text_widget.clear()
 
@@ -1836,7 +1852,10 @@ class OptionsUI:
         str
             The pathname of the bias file
         """
-        return self._bias_file.entered_filename()
+        self._bias_file.setDirectory(self._bias_file.lastDirectory)
+        ef= self._bias_file.entered_filename()
+        self._bias_file.lastDirectory = os.path.dirname(ef)
+        return ef
 
     @property
     def dark_file(self):
@@ -2290,6 +2309,7 @@ class MainWindow:
             if image_filename == '':
                 continue
 
+            telescope_type= probe_file_for_type(image_filename) # (scope, image type)
             working_filename = image_filename
             image_path = Path(image_filename)
             orig_dir = image_path.parent
@@ -2301,6 +2321,9 @@ class MainWindow:
             if (dark_filename
                 or flat_filename
                 or bias_filename):
+                if telescope_type[1] == "3Dstacked":
+                    print("Cannot calibrate a 3D stacked image")
+                    continue    
                 calibrated_image = str(Path(self.temp_dirname, "light.fits"))
                 with fits.open(image_filename) as hdu_working:
                     working_image = hdu_working[0].data.astype(float)
