@@ -643,8 +643,9 @@ class MetaValidator:
         if isinstance(value, str) and value.startswith('@'):
             # This is a reference to another key in the existing meta dir file
             self.json[key] = value # show we will get the value from the prior meta
-            meta_dict[key]= get_json_value(meta_dict, value[1:]) # show that the fits had the value
-            return meta_dict[key]
+            if nv := get_json_value(meta_dict, value[1:]): # show that the fits had the value
+                meta_dict[key]= nv # don't replace an existing key
+            return nv
         if key.startswith('#'):
             # do not replace an existing key
             key= key[1:]
@@ -652,7 +653,7 @@ class MetaValidator:
                 print(f"WARNING: {key} | {meta_dict[key]} not replaced with {value}")
                 return None
         if key in meta_dict:
-            print(f"Replacing existing meta key '{key}' value '{meta_dict}' with new value '{value}'")
+            print(f"Replacing existing meta key '{key}' value with new value '{value}'")
         meta_dict[key] = value
         return value
 
@@ -1751,10 +1752,7 @@ class OptionsUI:
         str
             The pathname of the bias file
         """
-        self._bias_file.setDirectory(self._bias_file.lastDirectory)
-        ef= self._bias_file.entered_filename()
-        self._bias_file.lastDirectory = os.path.dirname(ef)
-        return ef
+        return self._bias_file.entered_filename()
 
     @property
     def dark_file(self):
