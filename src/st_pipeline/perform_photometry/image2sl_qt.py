@@ -1410,10 +1410,15 @@ class FileChooser:
         """
         dialog = QFileDialog(self.text_widget)
         dialog.setFileMode(self.file_mode)
-        if self.last_directory is None:
-            if pt := self.text_widget.text():
-                pt = self.text_widget.text().split('\n', 1)[0]
-                self.last_directory = str(Path(pt).parent)
+        if self.multiple_files_okay:
+            if self.last_directory is None:
+                if pt := self.text_widget.toPlainText():  
+                    pt = pt.split('\n', 1)[0]
+                    self.last_directory = str(Path(pt).parent)
+        else:
+            if self.last_directory is None:
+                if pt := self.text_widget.text():
+                    self.last_directory = str(Path(pt).parent)
         dialog.setDirectory(self.last_directory)
         if dialog.exec():
             if self.multiple_files_okay:
