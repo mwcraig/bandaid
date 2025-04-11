@@ -38,6 +38,7 @@ FOCUSPOS	= 1625 / Focuser position in steps
 TELESCOP	= 'Seestar S50'        / Telescope name                                 
 OBJECT  	= 'Arcturus'           / name or catalog number of object being imaged  
 INPUTFMT	= 'FITS    ' /          Format of file from which image was read       
+
 new with version 4.27
 PRODUCER	= 'ZWO     '           / Powered by ZWO                                 
 APERTURE	= 5. / Name of field of view aperture      (cm)           
@@ -125,7 +126,8 @@ BP_2_0  	= -5.56375069433E-07 / no comment
 IMAGEW  	= 1080 / Image width,  in pixels.                       
 IMAGEH  	= 1920 / Image height, in pixels.                       
 INPUTFMT	= 'FITS    ' /          Format of file from which image was read        
-SWOWNER 	= 'George Silvis' /     Licensed owner of software                      
+SWOWNER 	= 'George Silvis' /     Licensed owner of software     
+                 
 new with version 4.27
 PRODUCER	= 'ZWO     '           / Powered by ZWO                                 
 APERTURE	= 5. / Name of field of view aperture      (cm)           
