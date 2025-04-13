@@ -124,16 +124,7 @@ def de_bayer_file(filename, metadata, temp_dir):
             output_tgt = Path(temp_dir) / ("image"+str(index)+"_"+color+".fits")
 
             hdu = fits.PrimaryHDU()
-            # push keywords in from the original file
-            for keyword in hdul[0].header:
-                if keyword not in ('COMMENT', 'HISTORY'):
-                    value = hdul[0].header[keyword]
-                    comment = hdul[0].header.comments[keyword]
-                    hdu.header[keyword] = (value,comment)
-                else: # Yes, this is a comment/history
-                    comment = hdul[0].header[keyword]
-                    for card in comment:
-                        hdu.header[keyword] = card
+            hdu.header = hdul[0].header.copy() # copy the header from the original file
 
             hdu.data = array[index]
             # fix up header to match the data
@@ -212,15 +203,8 @@ def stack_images(channel_list, options, temp_dir):
     filename = channel_list[0].filename
     with fits.open(filename) as hdul:
         (height,width) = np.shape(hdul[0].data)
-        for keyword in hdul[0].header:
-            if keyword not in ('COMMENT', 'HISTORY'):
-                value = hdul[0].header[keyword]
-                comment = hdul[0].header.comments[keyword]
-                hdu.header[keyword] = (value,comment)
-            else: # Yes, this is a comment/history
-                comment = hdul[0].header[keyword]
-                for card in comment:
-                    hdu.header[keyword] = card
+        hdu.header = hdul[0].header.copy() # copy the header from the original file
+
     hdu.data = np.zeros((height,width),dtype=np.float32)
     for (bayer_id,(_, channel)) in enumerate(channel_list):
         with fits.open(channel) as hdul:
@@ -266,15 +250,7 @@ def duplicate_file_with_new_image(hdul, new_data, new_filter, new_pathname):
     """
     hdu = fits.PrimaryHDU()
     # push keywords in from the original file
-    for keyword in hdul[0].header:
-        if keyword not in ('COMMENT', 'HISTORY'):
-            value = hdul[0].header[keyword]
-            comment = hdul[0].header.comments[keyword]
-            hdu.header[keyword] = (value,comment)
-        else: # Yes, this is a comment/history
-            comment = hdul[0].header[keyword]
-            for card in comment:
-                hdu.header[keyword] = card
+    hdu.header = hdul[0].header.copy() # copy the header from the original file
 
     hdu.data = new_data
     hdu.header['filter'] = new_filter
@@ -943,7 +919,7 @@ def process_single_image(filename, width, height, metadata, options, temp_dir,
     sources.sort('flux', reverse=True)
 
     # Exclude rows where flux is saturated
-    mask = sources['peak'] > metadata['largest_usable_adu_value'] 
+    mask = sources['peak'] > metadata['largest_usable_adu_value']
     sources = sources[~mask]
     print("after removal of saturated stars, the count is ", len(sources), " stars.")
 
@@ -1076,7 +1052,7 @@ def process_single_image(filename, width, height, metadata, options, temp_dir,
 
     wcs = field_solver.solve(sources, width, height, source_wcs=wcs)
     print("field_solver returned wcs = ", wcs)
-    
+
     # Calculate RA and Dec
     #star_coords = wcs.pixel_to_world(sources['x'], sources['y'])
     #sources['ra'] = star_coords.ra.deg
@@ -1145,15 +1121,7 @@ def process_3d_file(filename, temp_dir):
 
             hdu = fits.PrimaryHDU()
             # push keywords in from the original file
-            for keyword in hdul[0].header:
-                if keyword not in ('COMMENT', 'HISTORY'):
-                    value = hdul[0].header[keyword]
-                    comment = hdul[0].header.comments[keyword]
-                    hdu.header[keyword] = (value,comment)
-                else: # Yes, this is a comment/history
-                    comment = hdul[0].header[keyword]
-                    for card in comment:
-                        hdu.header[keyword] = card
+            hdu.header = hdul[0].header.copy()
 
             hdu.data = data
             hdu.header['filter'] = (color, 'Bayer color mask')
@@ -1394,7 +1362,7 @@ class FileChooser:
         dialog.setFileMode(self.file_mode)
         if self.multiple_files_okay:
             if self.last_directory is None:
-                if pt := self.text_widget.toPlainText():  
+                if pt := self.text_widget.toPlainText():
                     pt = pt.split('\n', 1)[0]
                     self.last_directory = str(Path(pt).parent)
         else:
@@ -2058,7 +2026,7 @@ class MainWindow:
                 or bias_filename):
                 if telescope_type[1] == "3Dstacked":
                     print("Cannot calibrate a 3D stacked image")
-                    continue    
+                    continue
                 calibrated_image = str(Path(self.temp_dirname, "light.fits"))
                 with fits.open(image_filename) as hdu_working:
                     working_image = hdu_working[0].data.astype(float)
@@ -2332,7 +2300,7 @@ def main():
         ui.window.image_filename_list.setPlainText(settings.value("images", ""))
 
         appx= app.exec()
-        
+
         settings.setValue("bias", ui.window.bias_entry.text())
         settings.setValue("dark", ui.window.dark_entry.text())
         settings.setValue("flat", ui.window.flat_entry.text())
