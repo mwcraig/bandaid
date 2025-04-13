@@ -843,25 +843,6 @@ def wcs_text_2wcs(wcs_text):
     wcs_header = fits.Header(cards=card_list)
     return WCS(wcs_header)
 
-def table_to_star_items(photometry_table):
-    """
-    Convert an astropy table with photometry to a list of star items.
-
-    Parameters
-    ----------
-    photometry_table : astropy table
-        The table to convert to a list of star items. The table must
-        have as column each of the fields in the `StarItem` class.
-    """
-    star_items = []
-    for row in photometry_table:
-        missing_keys = set(StarItem.model_fields.keys()) - set(row.keys())
-        if missing_keys:
-            raise ValueError(f"Missing keys in table: {missing_keys}")
-        star_items.append(
-            StarItem(**{key: row[key] for key in StarItem.model_fields.keys()})
-        )
-    return star_items
 
 # Process one (possibly de-Bayered) image
 def process_single_image(filename, width, height, metadata, options, temp_dir,
@@ -897,7 +878,7 @@ def process_single_image(filename, width, height, metadata, options, temp_dir,
         provided then astrometry.net fitting is skipped.
     field_solver: field_solve.FieldSolver
         This is the "plate-solver" that is being used for this image
-    
+
     Returns
     -------
     OutputObject
@@ -1104,7 +1085,7 @@ def process_single_image(filename, width, height, metadata, options, temp_dir,
     print(sources.colnames)
     print(StarItem.model_fields.keys())
     print("Creating starlist with ", len(sources), " stars.")
-    starlist.staritems = table_to_star_items(sources)
+    starlist.staritems = StarList.from_table(sources, metadata=starlist.model_dump()).staritems
 
     ################################
     ## Do PSF fitting, if requested
