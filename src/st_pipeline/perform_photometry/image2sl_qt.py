@@ -57,6 +57,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
+    QErrorMessage,
     QFileDialog,
     QLabel,
     QLineEdit,
@@ -919,23 +920,39 @@ def process_single_image(filename, width, height, metadata, options, temp_dir,
     sources.sort('flux', reverse=True)
 
     # Exclude rows where flux is saturated
-    mask = sources['peak'] > metadata['largest_usable_adu_value']
+    mask = (
+        (sources['peak'] > metadata['largest_usable_adu_value'])
+        | (sources['xcentroid'] < 3.0)
+        | (sources['ycentroid'] < 3.0)
+        | (sources['flux'] < 0.0)
+    )
     sources = sources[~mask]
-    print("after removal of saturated stars, the count is ", len(sources), " stars.")
+    print("after removal of saturated/poor stars, the count is ", len(sources), " stars.")
 
     # Grab a subset of the brightest stars to estimate the FWHM
     subset_size = min(10, len(sources))
+    if subset_size == 0:
+        print('No stars. Cannot estimate FWHM.')
+        if ui is not None:
+            msg = QErrorMessage()
+            msg.showMessage(
+                f'No stars: no FWHM for file: {starlist_json_path}({filename})')
+            msg.exec()
+        raise ValueError('NoStarsFound')
     subset = sources[:subset_size]
-    fwhm = psf.fit_fwhm(
+    fwhm_10 = psf.fit_fwhm(
         clean_image,
         xypos=list(zip(subset['xcentroid'], subset['ycentroid'], strict=True)),
         fit_shape=15
-    ).mean()
+    )
+    fwhm = fwhm_10.mean()
 
     print("Estimate FWHM from photutils = ", fwhm)
     metadata['fwhm'] = fwhm
 
     # Now that we know the *real* FWHM, re-find the stars
+    #print('2nd call to DAOStarFinder w/fwhm = ', fwhm,
+    #      ' and threshold= ', 4.0*std)
     daofind = DAOStarFinder(fwhm=fwhm, threshold=4.0*std,
                             sharplo=0.05, sharphi=3.0,
                             roundlo=-4.0, roundhi=4.0)
@@ -994,7 +1011,7 @@ def process_single_image(filename, width, height, metadata, options, temp_dir,
         sources['y'] = result['ycenter'].value
 
     bad_rows = []
-    min_adu = max(0.0, tot_noise_bkgd/starlist.gain)
+    min_adu = 1.0 # max(0.0, tot_noise_bkgd/starlist.gain)
     # Clean up the sources table
     print("Sources cleanup starts with ", len(sources), " stars.")
     print('   ... and min_adu of ', min_adu, ' and gain = ',
@@ -1051,7 +1068,14 @@ def process_single_image(filename, width, height, metadata, options, temp_dir,
         wcs = ccd_image.wcs # This looks for the WCSAXES keyword
 
     wcs = field_solver.solve(sources, width, height, source_wcs=wcs)
-    print("field_solver returned wcs = ", wcs)
+    if wcs is None:
+        print('field_solver failed to solve the field.')
+        if ui is not None:
+            msg = QErrorMessage()
+            msg.showMessage(
+                f'Field_solver failed to solve the field for file: {starlist_json_path}({filename})')
+            msg.exec()
+        raise ValueError('FieldSolver Failed')
 
     # Calculate RA and Dec
     #star_coords = wcs.pixel_to_world(sources['x'], sources['y'])
