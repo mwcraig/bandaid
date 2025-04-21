@@ -920,11 +920,13 @@ def process_single_image(filename, width, height, metadata, options, temp_dir,
     sources.sort('flux', reverse=True)
 
     # Exclude rows where flux is saturated
-    mask1 = np.array(sources['peak'] > metadata['largest_usable_adu_value'])
-    mask2 = np.array(sources['xcentroid'] < 3.0)
-    mask3 = np.array(sources['ycentroid'] < 3.0)
-    mask4 = np.array(sources['flux'] < 0.0)
-    sources = sources[~(mask1 | mask2 | mask3 | mask4)]
+    mask = (
+        (sources['peak'] > metadata['largest_usable_adu_value'])
+        | (sources['xcentroid'] < 3.0)
+        | (sources['ycentroid'] < 3.0)
+        | (sources['flux'] < 0.0)
+    )
+    sources = sources[~mask]
     print("after removal of saturated/poor stars, the count is ", len(sources), " stars.")
 
     # Grab a subset of the brightest stars to estimate the FWHM
