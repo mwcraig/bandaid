@@ -75,6 +75,8 @@ from . import field_solve
 warnings.filterwarnings('error', category=RuntimeWarning)
 ui = None
 
+LOW_SNR = 2.0
+
 ################################################################
 ##        Algorithmic Stuff Comes First
 ################################################################
@@ -1062,6 +1064,16 @@ def process_single_image(filename, width, height, metadata, options, temp_dir,
 
     # Set flux errors to zero for negative fluxes
     sources['flux_err'][sources['tot_flux'] < 0] = 0.0
+
+    # Calculate SNR and drop stars with low SNR or with negative flux
+    snr = sources['tot_flux'] / sources['flux_err']
+    good_snr = (
+        (snr > LOW_SNR)              # Only keep stars with decent SNR
+        & ~np.isnan(snr)             # Drop any nan SNRs, likely from flux_err=0
+        & (sources['tot_flux'] > 0)  # Drop any negative fluxes, which are unphysical
+    )
+
+    sources = sources[good_snr]
 
     # Check if WCS is already present in the FITS header
     if wcs is None:
