@@ -4,7 +4,7 @@ The meta data required is defined in the code:
    valid_meta_keys=  (about line 547)
    Note that meta keys are lower case.
 
-We build to that from what is collected in this order:
+We build to that from what is collected, in this order:
 - probe for the mfg and image type using header keywords
     probe_file_for_type() identifies the mfg and the options selected
     eg mfg: "Unistellar", "Seestar", "Origin", "Dwarf2", "Dwarf3", "other"
@@ -20,19 +20,23 @@ We build to that from what is collected in this order:
 - Now we begin the process of building the meta dict. The data above is all grist for the mill.
 
 -  A "basic.json" exists for each mfg type.
-   These are json files but with special flags to acively adjust the values.
+   These are json files but with special flags to actively adjust the values.
    - prefix the key with a _ to indicate a comment, line to be ignored
       eg  "_comment": "this is a comment"
    - prefix the value with a @ to indicate a value to be used as a key already in the meta dict
-      ie The data is in the meta already, but not keyed as needed.
+      ie The data is in the meta already, but not keyed as needed. Here you pay attention to the
+      order of the steps building the meta. Reading in the files FITS header comes first and all
+      those keys will be in upper case. Note that the meta dict is all lower case.
       eg  "exposure": "@EXPTIME"
       Note that the some of the sidecare json files had nested keys
       eg  the Origin we would use: "exposure": "@StackedInfo.captureParams.exposure"
    - prefix the value with a ! to indicate a function is to be called to adjust the value
       eg  "obs_time": "!DATE-OBS Local2UTC" means look for the DATE-OBS key and convert it to UTC
-      eg  "obs_time": "!StackedInfo.dateTime refmtDate %m-%d-%yB%H_%M_%S"
-           change from the existing format to the std  "%Y-%m-%dT%H:%M:%S"
-      The index function splits the refereced field on spaces and returns the nth field     
+      eg  "obs_time": "!StackedInfo.dateTime refmtDate %m-%d-%yB%H_%M_%S"  1
+           - change from the existing format to the std  "%Y-%m-%dT%H:%M:%S"
+           - to keep the format field as one token, use B to replace any spaces
+           - perform the conversion to UTC if last token is not 0
+      The index function splits the referenced field on spaces and returns the nth field     
       eg   "tel_firmware" : "!CREATOR index 1"
            get the second field from  CREATOR 	= 'Origin 1.1.4233 '   
       In some cases the the RA are in hours and we want degrees      
