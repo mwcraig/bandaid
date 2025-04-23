@@ -459,7 +459,7 @@ def probe_file_for_type(filename):
     ValueError
         Raised if unable to determine which smart telescope type
     """
-    with fits.open(filename) as hdul:
+    with fits.open(filename, ignore_missing_simple=True) as hdul:
         hdu0h = hdul[0].header
 
         ################################
@@ -479,8 +479,9 @@ def probe_file_for_type(filename):
         ################################
         ## Celestron Origin test
         ################################
-        if 'CREATOR' in hdu0h and 'Origin' in hdu0h['CREATOR']:
-            return ("Origin", "bayered")
+        if ('CREATOR' in hdu0h and 'Origin' in hdu0h['CREATOR']) or \
+           ('SWCREATE' in hdu0h and 'Origin' in hdu0h['SWCREATE']):
+            return ("Origin", ["bayered", "3Dstacked"][hdu0h['NAXIS'] == 3])
 
         ################################
         ## DWARF
@@ -558,15 +559,16 @@ valid_meta_keys = ['schema_version',
 def get_json_value(data, keys):
     # data is a dictionary that was read from the JSON file
     # keys can be a string with '.' separators
+    # this is pretty much a replacement for data[keys] that can handle simple and compound keys
     value = None
+    datav= data.copy()
     for key in keys.split('.'):
         try:
-            value = data[key]
+            datav = datav[key]
         except KeyError:
-            pass
-    if value is None:
-        print(f"WARNING: JSON key '{keys}' not found in metadata")
-    return value
+            print(f"WARNING: JSON key '{keys}' not found in metadata")
+            return None
+    return datav 
 
 class MetaValidator:
     """Class that tests metadata to see what's missing
@@ -615,26 +617,84 @@ class MetaValidator:
         value: any value
             The value that was read
         return: the value that belongs to this key, resolving any references,
-            or None if the key is a comment
+            or None if the key is a comment, and possible new key name        
         """
-        if key.startswith('_'): # json comment
-            return None # skip
+        # utility to convert local time to UTC
+        def Local2UTC(lat, long, local_time_str):
+            # courtesy of GPT-4o
+            # Parse the local time string into a datetime object
+            local_time = datetime.strptime(local_time_str, '%Y-%m-%dT%H:%M:%S.%f')
+            # Find the timezone
+            tf = TimezoneFinder()
+            timezone_str = tf.timezone_at(lng=long, lat=lat)
+            if timezone_str is None:
+                raise ValueError("Could not find timezone for the given coordinates.")
+            # Get the timezone object
+            local_tz = pytz.timezone(timezone_str)
+            # Localize the datetime to the found timezone
+            local_dt = local_tz.localize(local_time)
+            # Convert to UTC
+            utc_dt = local_dt.astimezone(pytz.utc)
+            return utc_dt.strftime('%Y-%m-%dT%H:%M:%S')
+        
+        def get_processed_value(key, value, meta_dict):
+            nv= None
+            try:
+                tt= value[1:].split()
+                if tt[1] == "hr2deg": # convert decimal hours to degrees
+                    if val := get_json_value(meta_dict, tt[0]):
+                        nv= float(val) * 15.0
+                elif tt[1] == "Local2UTC": # convert local time to UTC
+                    # eg  "obs_time": "!DATE-OBS Local2UTC"
+                    nv= Local2UTC(meta_dict["site_lat"], meta_dict["site_lon"], get_json_value(meta_dict, tt[0]))
+                elif tt[1] == "refmtDate":
+                    try:
+                        # "obs_time": "!StackedInfo.dateTime refmtDate %m-%d-%yB%H_%M_%S" 1
+                        #   B is a blank space
+                        d= datetime.strptime(get_json_value(meta_dict, tt[0]), tt[2].replace('B', ' '))
+                        nv= d.strftime("%Y-%m-%dT%H:%M:%S")
+                        if len(tt) > 3:
+                            if tt[3]: # not zero convert to UTC
+                                nv= Local2UTC(meta_dict["site_lat"], meta_dict["site_lon"], nv)
+                    except ValueError as e:
+                        print("Error in date format ", tt[2], e)
+                        nv= None
+                elif tt[1] == "index":
+                    # eg "tel_firmware" : "!CREATOR index 1"
+                    nv= get_json_value(meta_dict, tt[0]).split()[int(tt[2])]
+                else:
+                    nv= get_json_value(meta_dict, value)
+            except:
+                pass
+            return nv
+
+        nv= None
+        # json comment to be skipped
+        if key.startswith('_'): 
+            return key, nv
+        # backup key, use only if needed
+        if key.startswith('#'):
+            # ie. do not replace an existing key
+            key= key[1:]
+            if key in meta_dict:
+                if meta_dict[key] != None:
+                    print(f"WARNING: {key} | {get_json_value(meta_dict, key)} not replaced with {value}")
+                else:
+                    nv= get_processed_value(key, value, meta_dict)
+                return key, nv
+        # compound key
         if isinstance(value, str) and value.startswith('@'):
             # This is a reference to another key in the existing meta dir file
             self.json[key] = value # show we will get the value from the prior meta
-            if nv := get_json_value(meta_dict, value[1:]): # show that the fits had the value
-                meta_dict[key]= nv # don't replace an existing key
-            return nv
-        if key.startswith('#'):
-            # do not replace an existing key
-            key= key[1:]
-            if key in meta_dict:
-                print(f"WARNING: {key} | {meta_dict[key]} not replaced with {value}")
-                return None
+            nv = get_json_value(meta_dict, value[1:]) # show that the fits had the value
+            return key, nv
+        # value that needs processing
+        if isinstance(value, str) and value.startswith('!'):
+            nv= get_processed_value(key, value, meta_dict)
+            return key, nv
         if key in meta_dict:
             print(f"Replacing existing meta key '{key}' value with new value '{value}'")
-        meta_dict[key] = value
-        return value
+        return key, value
 
     def add_fits_item(self, key, value):
         """Add a piece of metadata pulled from the FITS file
@@ -757,8 +817,9 @@ def read_meta_from_json(filename, meta_dict):
             raise
 
         for (keyword, value) in data.items():
-            if val := meta_validator.add_json_item(keyword, value, meta_dict):
-                meta_dict[keyword] = val
+            nk, nv = meta_validator.add_json_item(keyword, value, meta_dict)
+            if nv is not None:
+                meta_dict[nk] = nv
 
 
 # Read metadata from a FITS header. The metadata that's found will be
@@ -1463,6 +1524,7 @@ class FileChooser:
                 "Call to EnteredFilenameList should be EnteredFilename"
         raw_text = self.text_widget.toPlainText()
         text_words = raw_text.split('\n')
+        text_words = [word.strip() for word in text_words if word.strip()]
         print("Files to process = ", text_words)
         return text_words
 
@@ -2118,45 +2180,6 @@ class MainWindow:
             mpp= Path(mp, meta["telescope_probe"][0], meta["telescope_probe"][1]+".json")
             if (mpp.is_file() and mpp.exists() and mpp.stat().st_mode & 0o400):
                 read_meta_from_json(mpp, meta)
-
-            # post processing of '!' keys in the metadata
-            # utility to convert local time to UTC
-            def Local2UTC(lat, long, local_time_str):
-                # courtesy of GPT-4o
-                # Parse the local time string into a datetime object
-                local_time = datetime.strptime(local_time_str, '%Y-%m-%dT%H:%M:%S.%f')
-                # Find the timezone
-                tf = TimezoneFinder()
-                timezone_str = tf.timezone_at(lng=long, lat=lat)
-                if timezone_str is None:
-                    raise ValueError("Could not find timezone for the given coordinates.")
-                # Get the timezone object
-                local_tz = pytz.timezone(timezone_str)
-                # Localize the datetime to the found timezone
-                local_dt = local_tz.localize(local_time)
-                # Convert to UTC
-                utc_dt = local_dt.astimezone(pytz.utc)
-                return utc_dt.strftime('%Y-%m-%dT%H:%M:%S')
-
-            # look for special processing keys
-            for key, value in meta.items():
-                # eg "ra": "!RA hr2deg"
-                if isinstance(value, str) and value.startswith('!'):
-                    tt= value[1:].split()
-                    if tt[1] == "hr2deg": # convert decimal hours to degrees
-                        if val := get_json_value(meta, tt[0]):
-                            meta[key]= float(val) * 15.0
-                    elif tt[1] == "Local2UTC": # convert local time to UTC
-                        # eg  "obs_time": "!DATE-OBS Local2UTC"
-                        meta[key]= Local2UTC(meta["site_lat"], meta["site_lon"], get_json_value(meta, tt[0]))
-                    elif tt[1] == "refmtDate":
-                        # "obs_time": "!StackedInfo.dateTime refmtDate %m-%d-%yB%H_%M_%S"
-                        #   B is a blank space
-                        d= datetime.strptime(get_json_value(meta, tt[0]), tt[2].replace('B', ' '))
-                        meta[key]= d.strftime("%Y-%m-%dT%H:%M:%S")
-                    elif tt[1] == "index":
-                        # eg "tel_firmware" : "!CREATOR index 1"
-                        meta[key]= get_json_value(meta, tt[0]).split()[int(tt[2])]
 
             print("Final metadata is ", meta)
 
