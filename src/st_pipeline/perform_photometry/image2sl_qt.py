@@ -57,6 +57,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
+    QErrorMessage,
     QFileDialog,
     QLabel,
     QLineEdit,
@@ -73,6 +74,8 @@ from . import field_solve
 
 warnings.filterwarnings('error', category=RuntimeWarning)
 ui = None
+
+LOW_SNR = 2.0
 
 ################################################################
 ##        Algorithmic Stuff Comes First
@@ -124,16 +127,7 @@ def de_bayer_file(filename, metadata, temp_dir):
             output_tgt = Path(temp_dir) / ("image"+str(index)+"_"+color+".fits")
 
             hdu = fits.PrimaryHDU()
-            # push keywords in from the original file
-            for keyword in hdul[0].header:
-                if keyword not in ('COMMENT', 'HISTORY'):
-                    value = hdul[0].header[keyword]
-                    comment = hdul[0].header.comments[keyword]
-                    hdu.header[keyword] = (value,comment)
-                else: # Yes, this is a comment/history
-                    comment = hdul[0].header[keyword]
-                    for card in comment:
-                        hdu.header[keyword] = card
+            hdu.header = hdul[0].header.copy() # copy the header from the original file
 
             hdu.data = array[index]
             # fix up header to match the data
@@ -212,15 +206,8 @@ def stack_images(channel_list, options, temp_dir):
     filename = channel_list[0].filename
     with fits.open(filename) as hdul:
         (height,width) = np.shape(hdul[0].data)
-        for keyword in hdul[0].header:
-            if keyword not in ('COMMENT', 'HISTORY'):
-                value = hdul[0].header[keyword]
-                comment = hdul[0].header.comments[keyword]
-                hdu.header[keyword] = (value,comment)
-            else: # Yes, this is a comment/history
-                comment = hdul[0].header[keyword]
-                for card in comment:
-                    hdu.header[keyword] = card
+        hdu.header = hdul[0].header.copy() # copy the header from the original file
+
     hdu.data = np.zeros((height,width),dtype=np.float32)
     for (bayer_id,(_, channel)) in enumerate(channel_list):
         with fits.open(channel) as hdul:
@@ -266,15 +253,7 @@ def duplicate_file_with_new_image(hdul, new_data, new_filter, new_pathname):
     """
     hdu = fits.PrimaryHDU()
     # push keywords in from the original file
-    for keyword in hdul[0].header:
-        if keyword not in ('COMMENT', 'HISTORY'):
-            value = hdul[0].header[keyword]
-            comment = hdul[0].header.comments[keyword]
-            hdu.header[keyword] = (value,comment)
-        else: # Yes, this is a comment/history
-            comment = hdul[0].header[keyword]
-            for card in comment:
-                hdu.header[keyword] = card
+    hdu.header = hdul[0].header.copy() # copy the header from the original file
 
     hdu.data = new_data
     hdu.header['filter'] = new_filter
@@ -903,25 +882,6 @@ def wcs_text_2wcs(wcs_text):
     wcs_header = fits.Header(cards=card_list)
     return WCS(wcs_header)
 
-def table_to_star_items(photometry_table):
-    """
-    Convert an astropy table with photometry to a list of star items.
-
-    Parameters
-    ----------
-    photometry_table : astropy table
-        The table to convert to a list of star items. The table must
-        have as column each of the fields in the `StarItem` class.
-    """
-    star_items = []
-    for row in photometry_table:
-        missing_keys = set(StarItem.model_fields.keys()) - set(row.keys())
-        if missing_keys:
-            raise ValueError(f"Missing keys in table: {missing_keys}")
-        star_items.append(
-            StarItem(**{key: row[key] for key in StarItem.model_fields.keys()})
-        )
-    return star_items
 
 # Process one (possibly de-Bayered) image
 def process_single_image(filename, width, height, metadata, options, temp_dir,
@@ -957,7 +917,7 @@ def process_single_image(filename, width, height, metadata, options, temp_dir,
         provided then astrometry.net fitting is skipped.
     field_solver: field_solve.FieldSolver
         This is the "plate-solver" that is being used for this image
-    
+
     Returns
     -------
     OutputObject
@@ -1022,23 +982,39 @@ def process_single_image(filename, width, height, metadata, options, temp_dir,
     sources.sort('flux', reverse=True)
 
     # Exclude rows where flux is saturated
-    mask = sources['peak'] > metadata['largest_usable_adu_value'] 
+    mask = (
+        (sources['peak'] > metadata['largest_usable_adu_value'])
+        | (sources['xcentroid'] < 3.0)
+        | (sources['ycentroid'] < 3.0)
+        | (sources['flux'] < 0.0)
+    )
     sources = sources[~mask]
-    print("after removal of saturated stars, the count is ", len(sources), " stars.")
+    print("after removal of saturated/poor stars, the count is ", len(sources), " stars.")
 
     # Grab a subset of the brightest stars to estimate the FWHM
     subset_size = min(10, len(sources))
+    if subset_size == 0:
+        print('No stars. Cannot estimate FWHM.')
+        if ui is not None:
+            msg = QErrorMessage()
+            msg.showMessage(
+                f'No stars: no FWHM for file: {starlist_json_path}({filename})')
+            msg.exec()
+        raise ValueError('NoStarsFound')
     subset = sources[:subset_size]
-    fwhm = psf.fit_fwhm(
+    fwhm_10 = psf.fit_fwhm(
         clean_image,
         xypos=list(zip(subset['xcentroid'], subset['ycentroid'], strict=True)),
         fit_shape=15
-    ).mean()
+    )
+    fwhm = fwhm_10.mean()
 
     print("Estimate FWHM from photutils = ", fwhm)
     metadata['fwhm'] = fwhm
 
     # Now that we know the *real* FWHM, re-find the stars
+    #print('2nd call to DAOStarFinder w/fwhm = ', fwhm,
+    #      ' and threshold= ', 4.0*std)
     daofind = DAOStarFinder(fwhm=fwhm, threshold=4.0*std,
                             sharplo=0.05, sharphi=3.0,
                             roundlo=-4.0, roundhi=4.0)
@@ -1097,7 +1073,7 @@ def process_single_image(filename, width, height, metadata, options, temp_dir,
         sources['y'] = result['ycenter'].value
 
     bad_rows = []
-    min_adu = max(0.0, tot_noise_bkgd/starlist.gain)
+    min_adu = 1.0 # max(0.0, tot_noise_bkgd/starlist.gain)
     # Clean up the sources table
     print("Sources cleanup starts with ", len(sources), " stars.")
     print('   ... and min_adu of ', min_adu, ' and gain = ',
@@ -1149,13 +1125,30 @@ def process_single_image(filename, width, height, metadata, options, temp_dir,
     # Set flux errors to zero for negative fluxes
     sources['flux_err'][sources['tot_flux'] < 0] = 0.0
 
+    # Calculate SNR and drop stars with low SNR or with negative flux
+    snr = sources['tot_flux'] / sources['flux_err']
+    good_snr = (
+        (snr > LOW_SNR)              # Only keep stars with decent SNR
+        & ~np.isnan(snr)             # Drop any nan SNRs, likely from flux_err=0
+        & (sources['tot_flux'] > 0)  # Drop any negative fluxes, which are unphysical
+    )
+
+    sources = sources[good_snr]
+
     # Check if WCS is already present in the FITS header
     if wcs is None:
         wcs = ccd_image.wcs # This looks for the WCSAXES keyword
 
     wcs = field_solver.solve(sources, width, height, source_wcs=wcs)
-    print("field_solver returned wcs = ", wcs)
-    
+    if wcs is None:
+        print('field_solver failed to solve the field.')
+        if ui is not None:
+            msg = QErrorMessage()
+            msg.showMessage(
+                f'Field_solver failed to solve the field for file: {starlist_json_path}({filename})')
+            msg.exec()
+        raise ValueError('FieldSolver Failed')
+
     # Calculate RA and Dec
     #star_coords = wcs.pixel_to_world(sources['x'], sources['y'])
     #sources['ra'] = star_coords.ra.deg
@@ -1164,7 +1157,7 @@ def process_single_image(filename, width, height, metadata, options, temp_dir,
     print(sources.colnames)
     print(StarItem.model_fields.keys())
     print("Creating starlist with ", len(sources), " stars.")
-    starlist.staritems = table_to_star_items(sources)
+    starlist.staritems = StarList.from_table(sources, metadata=starlist.model_dump()).staritems
 
     ################################
     ## Do PSF fitting, if requested
@@ -1224,15 +1217,7 @@ def process_3d_file(filename, temp_dir):
 
             hdu = fits.PrimaryHDU()
             # push keywords in from the original file
-            for keyword in hdul[0].header:
-                if keyword not in ('COMMENT', 'HISTORY'):
-                    value = hdul[0].header[keyword]
-                    comment = hdul[0].header.comments[keyword]
-                    hdu.header[keyword] = (value,comment)
-                else: # Yes, this is a comment/history
-                    comment = hdul[0].header[keyword]
-                    for card in comment:
-                        hdu.header[keyword] = card
+            hdu.header = hdul[0].header.copy()
 
             hdu.data = data
             hdu.header['filter'] = (color, 'Bayer color mask')
@@ -1473,7 +1458,7 @@ class FileChooser:
         dialog.setFileMode(self.file_mode)
         if self.multiple_files_okay:
             if self.last_directory is None:
-                if pt := self.text_widget.toPlainText():  
+                if pt := self.text_widget.toPlainText():
                     pt = pt.split('\n', 1)[0]
                     self.last_directory = str(Path(pt).parent)
         else:
@@ -2138,7 +2123,7 @@ class MainWindow:
                 or bias_filename):
                 if telescope_type[1] == "3Dstacked":
                     print("Cannot calibrate a 3D stacked image")
-                    continue    
+                    continue
                 calibrated_image = str(Path(self.temp_dirname, "light.fits"))
                 with fits.open(image_filename) as hdu_working:
                     working_image = hdu_working[0].data.astype(float)
@@ -2373,7 +2358,7 @@ def main():
         ui.window.image_filename_list.setPlainText(settings.value("images", ""))
 
         appx= app.exec()
-        
+
         settings.setValue("bias", ui.window.bias_entry.text())
         settings.setValue("dark", ui.window.dark_entry.text())
         settings.setValue("flat", ui.window.flat_entry.text())
