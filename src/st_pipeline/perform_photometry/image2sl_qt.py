@@ -559,6 +559,7 @@ valid_meta_keys = ['schema_version',
 def get_json_value(data, keys):
     # data is a dictionary that was read from the JSON file
     # keys can be a string with '.' separators
+    # this is pretty much a replacement for data[keys] that can handle simple and compound keys
     value = None
     datav= data.copy()
     for key in keys.split('.'):
