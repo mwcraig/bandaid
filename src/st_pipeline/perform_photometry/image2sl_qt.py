@@ -1545,10 +1545,6 @@ class OptionsAPI(BaseModel):
         return self.add_WCS_to_image
 
     @property
-    def all_channel_extraction(self):
-        return self.all_channel_extraction
-
-    @property
     def aperture_size_fwhm(self):
         return self.aperture_size
 
