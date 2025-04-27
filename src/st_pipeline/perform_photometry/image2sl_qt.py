@@ -211,7 +211,7 @@ def get_json_value(data, keys):
         except KeyError:
             print(f"WARNING: JSON key '{keys}' not found in metadata")
             return None
-    return datav 
+    return datav
 
 class MetaValidator:
     """Class that tests metadata to see what's missing
@@ -260,7 +260,7 @@ class MetaValidator:
         value: any value
             The value that was read
         return: the value that belongs to this key, resolving any references,
-            or None if the key is a comment, and possible new key name        
+            or None if the key is a comment, and possible new key name
         """
         # utility to convert local time to UTC
         def Local2UTC(lat, long, local_time_str):
@@ -279,7 +279,7 @@ class MetaValidator:
             # Convert to UTC
             utc_dt = local_dt.astimezone(pytz.utc)
             return utc_dt.strftime('%Y-%m-%dT%H:%M:%S')
-        
+
         def get_processed_value(key, value, meta_dict):
             nv= None
             try:
@@ -313,7 +313,7 @@ class MetaValidator:
 
         nv= None
         # json comment to be skipped
-        if key.startswith('_'): 
+        if key.startswith('_'):
             return key, nv
         # backup key, use only if needed
         if key.startswith('#'):
