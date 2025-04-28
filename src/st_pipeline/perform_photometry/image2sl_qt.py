@@ -584,15 +584,15 @@ class StarlistGenerator:
         self.source_table = self._find_sources(sum_image)
         self._do_photometry(self.working_image, self.source_table)
         self.wcs = self._setup_wcs(self.source_table, self.wcs)
+        self.metadata['filter'] = 'CV' # should be 'L3'
         starlist = StarList.from_table(self.source_table, metadata=self.metadata)
-        starlist.filter = 'L3'
         final_starlists = [starlist]
 
         for (image,color) in image_list:
             copy_source_table = self.source_table.copy()
             self._do_photometry(image, copy_source_table)
+            self.metadata['filter'] = color
             starlist = StarList.from_table(copy_source_table, metadata=self.metadata)
-            starlist.filter = color
             final_starlists.append(starlist)
 
         return StarListSet(star_lists=final_starlists)
@@ -603,7 +603,6 @@ class StarlistGenerator:
         self._do_photometry(self.working_image, self.source_table)
         self.wcs = self._setup_wcs(self.source_table, self.wcs)
         starlist = StarList.from_table(self.source_table, metadata=self.metadata)
-        starlist.filter = 'L3'
 
         ################################
         ## Do PSF fitting, if requested
@@ -657,8 +656,8 @@ class StarlistGenerator:
         self.source_table = self._find_sources(full_image)
         self._do_photometry(self.working_image, self.source_table)
         self.wcs = self._setup_wcs(self.source_table, self.wcs)
+        self.metadata['filter'] = 'CV' # should be 'L4'
         starlist = StarList.from_table(self.source_table, metadata=self.metadata)
-        starlist.filter = 'L4'
         final_starlists = [starlist]
 
         for (color, img_mask) in bayer_info:
@@ -666,8 +665,8 @@ class StarlistGenerator:
             self._do_photometry(self.working_image,
                                 copy_source_table,
                                 image_mask=img_mask)
+            self.metadata['filter'] = color
             starlist = StarList.from_table(copy_source_table, metadata=self.metadata)
-            starlist.filter = 'T' + color
             final_starlists.append(starlist)
 
         return StarListSet(star_lists=final_starlists)
@@ -846,6 +845,7 @@ class StarlistGenerator:
                                 roundlo=-4.0, roundhi=4.0)
         sources = daofind(working_image)
         print("Sources found before edge-culling: ", len(sources), " stars.")
+        sources.rename_column('peak', 'peak_flux')
 
         # eliminate stars too close to the edges
         EDGELIMIT = 15
@@ -890,14 +890,17 @@ class StarlistGenerator:
         sources['x'] = centroids[:, 0]
         sources['y'] = centroids[:, 1]
         sources['tot_flux'] = central_sum.sum
-        sources.add_column(annulus_data.mean, name='mean_annulus')
+        if 'mean_annulus' not in sources.columns:
+            sources.add_column(annulus_data.mean, name='mean_annulus')
+        else:
+            sources['mean_annulus'] = annulus_data.mean
 
         bad_rows = []
         min_adu = 1.0 # max(0.0, tot_noise_bkgd/starlist.gain)
         # Clean up the sources table
         print("Sources cleanup starts with ", len(sources), " stars.")
         print('   ... and min_adu of ', min_adu, ' and gain = ', gain)
-        print('   ... and smallest peak_flux of ', min(sources['peak']))
+        print('   ... and smallest peak_flux of ', min(sources['peak_flux']))
         print('   ... and smallest tot_flux of ', min(sources['tot_flux']))
 
         for row,content in enumerate(sources):
@@ -906,7 +909,7 @@ class StarlistGenerator:
                 or content['x'] >= (self.width-3)
                 or content['y'] >= (self.height-3)
                 or content['tot_flux'] <= min_adu
-                or content['peak'] <= min_adu):
+                or content['peak_flux'] <= min_adu):
                 bad_rows.append(row)
         print("... removing ", len(bad_rows), " stars.")
         sources.remove_rows(bad_rows)
@@ -933,7 +936,6 @@ class StarlistGenerator:
                 ax.add_patch(Circle((row['x'],row['y']), 8, fc=None, fill=False))
             plt.show()
 
-        sources.rename_column('peak', 'peak_flux')
         # Sort so that order is well-defined and tests will pass
         sources.sort(keys='tot_flux', reverse=True)
 
@@ -1775,12 +1777,52 @@ class MainWindow:
             if (mpp.is_file() and mpp.exists() and mpp.stat().st_mode & 0o400):
                 read_meta_from_json(mpp, meta)
 
+            # post processing of '!' keys in the metadata
+            # utility to convert local time to UTC
+            def Local2UTC(lat, long, local_time_str):
+                # courtesy of GPT-4o
+                # Parse the local time string into a datetime object
+                local_time = datetime.strptime(local_time_str, '%Y-%m-%dT%H:%M:%S.%f')
+                # Find the timezone
+                tf = TimezoneFinder()
+                timezone_str = tf.timezone_at(lng=long, lat=lat)
+                if timezone_str is None:
+                    raise ValueError("Could not find timezone for the given coordinates.")
+                # Get the timezone object
+                local_tz = pytz.timezone(timezone_str)
+                # Localize the datetime to the found timezone
+                local_dt = local_tz.localize(local_time)
+                # Convert to UTC
+                utc_dt = local_dt.astimezone(pytz.utc)
+                return utc_dt.strftime('%Y-%m-%dT%H:%M:%S')
+
+            # look for special processing keys
+            for key, value in meta.items():
+                # eg "ra": "!RA hr2deg"
+                if isinstance(value, str) and value.startswith('!'):
+                    tt= value[1:].split()
+                    if tt[1] == "hr2deg": # convert decimal hours to degrees
+                        if val := get_json_value(meta, tt[0]):
+                            meta[key]= float(val) * 15.0
+                    elif tt[1] == "Local2UTC": # convert local time to UTC
+                        # eg  "obs_time": "!DATE-OBS Local2UTC"
+                        meta[key]= Local2UTC(meta["site_lat"], meta["site_lon"], get_json_value(meta, tt[0]))
+                    elif tt[1] == "refmtDate":
+                        # "obs_time": "!StackedInfo.dateTime refmtDate %m-%d-%yB%H_%M_%S"
+                        #   B is a blank space
+                        d= datetime.strptime(get_json_value(meta, tt[0]), tt[2].replace('B', ' '))
+                        meta[key]= d.strftime("%Y-%m-%dT%H:%M:%S")
+                    elif tt[1] == "index":
+                        # eg "tel_firmware" : "!CREATOR index 1"
+                        meta[key]= get_json_value(meta, tt[0]).split()[int(tt[2])]
+
+            meta['gain'] = meta['system_gain']
             print("Final metadata is ", meta)
 
             wcs = self._wcs.copy() if self._wcs is not None else None
             if meta_validator.validate(meta):
                 meta['orig_filename'] = image_filename
-                starlist_gen = StarlistGenerator(full_path = image_filename,
+                starlist_gen = StarlistGenerator(full_path = Path(image_filename),
                                                  meta = meta,
                                                  options = self.options,
                                                  working_image = working_image,
