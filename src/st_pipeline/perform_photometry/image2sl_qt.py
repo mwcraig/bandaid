@@ -531,7 +531,84 @@ def wcs_text_2wcs(wcs_text):
 #    - a single stacked luminance image (created from 3Dstacked image)
 
 class StarlistGenerator:
-    def __init__(self, full_path, meta, options, working_image, wcs, interactive, ui, telescope_type, image_type):
+    """Convert an image file into a StarlistSet
+
+    This class does all the heavy lifting for converting an image file
+    into a StarListSet. It has two externally-visible methods: a
+    constructor and write_starlists(). All of the hard work is done
+    within the constructor.
+
+    Attributes
+    ----------
+    filename : Path
+        The original image file
+    height, width : int
+        The dimensions of the original image
+    metadata : dict
+        The metadata for this image; the metadata will be (slightly)
+        modified by this class.
+    options : OptionsAPI or OptionsUI
+        Run-time options
+    wcs : WCS
+        The WCS for the original image; the result of plate-solving
+    working_image : np.ndarray
+        The 2D array of pixel values
+    interactive : bool
+        True if this is being run with a GUI
+    telescope_type : str
+        The telescope type as found by probe_file_for_type()
+    image_type : str
+        One of the three image types, as found by probe_file_for_type()
+    bkgd_mean : float
+        A rough estimate of the image's background (sky) ADU level
+    background : np.ndarray
+        A 2D model of the sky background in the image. This blends
+        together the red, green, and blue background into one
+        slowly-varying gradient.
+    std : float
+        The standard deviation of the original image's background. An
+        attempt is made to compensate for differing red, green, and
+        blue background averages
+    noise_bkgd_per_pixel : float
+        The noise level of the sky background in e-/pixel
+    source_table : astropy.Table
+        The table listing all the stars in the image. This is always
+        kept as the "best" set of stars (derived from luminance or
+        fake monochrome channel).
+    starlist_set : schema.StarListSet
+        The StarListSet containing all the logical starlists extracted
+        from this image.
+    fwhm : float
+        The best estimate of average FWHM for stars in this image
+    field_solver : field_solve.FieldSolver
+        The FieldSolver used to plate-solve this image
+    """
+    def __init__(self, full_path, meta, options, working_image,
+                 wcs, interactive, ui, telescope_type, image_type):
+        """Construct a GenerateStarlist instance
+
+        Parameters
+        ----------
+        full_path : str
+            The original image file
+        meta : dict
+            The metadata for this image; the metadata will be (slightly)
+            modified by this class.
+        options : OptionsAPI or OptionsUI
+            Run-time options
+        working_image : np.ndarray
+            The 2D array of pixel values
+        wcs : WCS
+            The WCS for the original image; the result of plate-solving
+        interactive : bool
+            True if this is being run with a GUI
+        ui : UI
+            The instance of UI if this is being run interactively
+        telescope_type : str
+            The telescope type as found by probe_file_for_type()
+        image_type : str
+            One of the three image types, as found by probe_file_for_type()
+        """
         self.filename : Path  = full_path
         if working_image.ndim == 3:
             (_, self.height, self.width) = np.shape(working_image)
@@ -563,11 +640,33 @@ class StarlistGenerator:
             raise ValueError("UnknownImageType:"+image_type)
 
     def write_starlists(self):
+        """Store the resulting StarListSet as a file
+        """
         output_file = self.filename.with_suffix('.star')
         with open(output_file, 'w', encoding='utf-8') as fp:
             json.dump(self.starlist_set.model_dump(), fp, indent=2)
 
     def _process_3d_file(self):
+        """Process a stacked image with r, g, and b layers
+
+        The three layers are stacked into a luminance layer. Star
+        centroids are established from that layer. It becomes the CV
+        (L3) starlist. The same set of centroids is used for
+        photometry of each of the three separate layers; those three
+        become TR, TG, and TB starlists.
+
+        Returns
+        -------
+        StarListSet
+            The StarListSet holding all four starlists.
+
+        Bugs
+        ----
+            1. Assumes that all stacked images use the same format as the
+        Seestar S50. When we find something that works differently,
+        this will need to change.
+            2. Does not perform PSF fitting photometry
+        """
         assert self.working_image.ndim == 3
         image1 = self.working_image[0,0:,0:]
         image2 = self.working_image[1,0:,0:]
@@ -598,6 +697,20 @@ class StarlistGenerator:
         return StarListSet(star_lists=final_starlists)
 
     def _process_mono_file(self):
+        """Process a single (monochrome) image
+
+        The single image will have stars identified, the image will be
+        plate-solved, and photometry will be done on each star.
+
+        Returns
+        -------
+        StarListSet
+            A StarListSet containing a single StarList
+
+        Bugs
+        ----
+        Does not perform PSF fitting properly
+        """
         self._remove_background(self.working_image)
         self.source_table = self._find_sources(self.working_image)
         self._do_photometry(self.working_image, self.source_table)
@@ -618,6 +731,23 @@ class StarlistGenerator:
         return StarListSet(star_lists=starlist)
 
     def _process_bayer_file(self):
+        """Process a single raw (Bayered) image
+
+        A fake monochrome image will be used to create a list of
+        stars. That list will be used for photometry 4 times: once on
+        the fake monochrome image and once each on the original image
+        with only red, green, or blue pixels masked "true". The four
+        resulting starlists will be packed into a StarListSet
+
+        Returns
+        -------
+        StarListSet
+            A StarListSet containing the four resulting StarLists
+
+        Bugs
+        ----
+            Does not perform PSF fitting photometry
+        """
         pattern = self.metadata['bayerpat']
 
         # now re-jumble based on roworder and ybaryoff
@@ -771,6 +901,19 @@ class StarlistGenerator:
         image[1::2,1::2] = temp4
 
     def _remove_background(self, image, do_color_balance=False):
+        """Calculate and remove the background from an image
+
+        Parameters
+        ----------
+        image : np.ndarray
+            The image. The background will be estimated and then
+            subtracted from each pixel
+        do_color_balance : bool
+            If True, the four pixel color channels will be adjusted
+            with a linear transformation to achieve a flat gray
+            background that has the same noise level in each color
+            channel. 
+        """
         gain = self.metadata['system_gain']
 
         if do_color_balance:
@@ -797,6 +940,18 @@ class StarlistGenerator:
         self.background = background
 
     def _find_sources(self, working_image):
+        """Find the stars in an image
+
+        Parameters
+        ----------
+        working_image : np.ndarray
+            The image to be searched
+
+        Returns
+        -------
+        astropy.Table
+            A table of the stars found
+        """
         # We find stars twice. First time (here) is sloppy and will
         # probably miss lots of stars because of combination of incorrect
         # FWHM and using default star shape thresholds. Doing this first
@@ -860,6 +1015,27 @@ class StarlistGenerator:
         return sources
 
     def _do_photometry(self, working_image, sources, image_mask=None):
+        """Perform photometry on a set of sources in an image
+
+        Aperture photometry will be performed, using a sky annulus to
+        determine the (residual) sky background for each star. The
+        input "sources" table is both an input and output. Centroid
+        locations will be taken from the table, while flux and
+        background values will be written into the table.
+
+        Parameters
+        ----------
+        working_image : np.ndarray
+            The image
+        sources: astropy.Table
+            The table containing x- and y-coordinate centroids for
+            each star to be measured. (Any existing flux or background
+            values will be overwritten)
+        image_mask : np.ndarray of bool
+            Only pixels with a value of True will be used in the
+            photometry. Must have the same shape as working_image.
+        
+        """
         gain = self.metadata['system_gain']
         phot_radius = self.options.aperture_size_fwhm * self.fwhm
         annulus_inner = max(3*phot_radius, 4*self.fwhm)
@@ -958,6 +1134,21 @@ class StarlistGenerator:
         sources = sources[good_snr]
 
     def _setup_wcs(self, sources, wcs):
+        """Plate-solve and set RA/Dec in the sources table
+
+        Parmaters
+        ---------
+        sources : astropy.Table
+            List of stars in the image
+        wcs : WCS
+            If not None, this WCS will prevent plate-solving from
+            being performed.
+
+        Returns
+        -------
+        WCS
+            The WCS used to set Dec/RA for the stars.
+        """
         wcs = self.field_solver.solve(sources, self.width, self.height, source_wcs=wcs)
         if wcs is None:
             print('field_solver failed to solve the field.')
