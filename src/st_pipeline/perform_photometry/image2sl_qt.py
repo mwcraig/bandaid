@@ -996,6 +996,7 @@ def process_single_image(filename, width, height, metadata, options, temp_dir,
     subset_size = min(10, len(sources))
     if subset_size == 0:
         print('No stars. Cannot estimate FWHM.')
+        print(f"problem file:  {metadata['filename']}")
         if ui is not None:
             msg = QErrorMessage()
             msg.showMessage(
@@ -1143,6 +1144,7 @@ def process_single_image(filename, width, height, metadata, options, temp_dir,
     wcs = field_solver.solve(sources, width, height, source_wcs=wcs)
     if wcs is None:
         print('field_solver failed to solve the field.')
+        print(f"problem file:  {metadata['filename']}")
         if ui is not None:
             msg = QErrorMessage()
             msg.showMessage(
