@@ -645,6 +645,7 @@ class StarlistGenerator:
         output_file = self.filename.with_suffix('.star')
         with open(output_file, 'w', encoding='utf-8') as fp:
             json.dump(self.starlist_set.model_dump(), fp, indent=2)
+        print('All starlists written.')
 
     def _process_3d_file(self):
         """Process a stacked image with r, g, and b layers
@@ -912,7 +913,7 @@ class StarlistGenerator:
             If True, the four pixel color channels will be adjusted
             with a linear transformation to achieve a flat gray
             background that has the same noise level in each color
-            channel. 
+            channel.
         """
         gain = self.metadata['system_gain']
 
@@ -1034,7 +1035,7 @@ class StarlistGenerator:
         image_mask : np.ndarray of bool
             Only pixels with a value of True will be used in the
             photometry. Must have the same shape as working_image.
-        
+
         """
         gain = self.metadata['system_gain']
         phot_radius = self.options.aperture_size_fwhm * self.fwhm
@@ -1359,20 +1360,10 @@ class OptionsUI:
                                        multiple_files_okay=True)
 
         # The remaining options
-        self.pretend_monochrome = ui.window.MonochromeButton
-        self.one_channel = ui.window.SingleChannelButton
-        self.stacked_channels = ui.window.StackedButton
-        self.interp_stack_channels = ui.window.StackInterpButton
-        self.mono_and_rgb = ui.window.mono_and_rgbButton
-        self.color_correx = ui.window.ColorBalanceButton
         self.psf_photometry = ui.window.PSFPhotButton
         self.aperture_photometry = ui.window.AperturePhotButton
 
-        self.add_wcs_to_image = ui.window.UpdateWCSButton
         self.aperture_size = ui.window.ApertureSize
-        self.subtract_annulus = ui.window.AnnulusSubtractionCheckbox
-
-        self.split_stacked_image = True
 
     @property
     def add_wcs(self):
@@ -1748,7 +1739,6 @@ class OptionsAPI(BaseModel):
     @property
     def one_channel(self):
         return self.bayer_handling == BayerHandlingOptions.SPLIT_STACKED
-
 
 class UI:
     """Singleton class used to connect Qt Designer to this app
