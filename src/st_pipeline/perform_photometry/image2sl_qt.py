@@ -60,8 +60,7 @@ from timezonefinder import TimezoneFinder
 
 from .. import __version__
 from ..schema_definition import StarItem, StarList, StarListSet
-from . import psf_fitting
-from . import field_solve
+from . import field_solve, psf_fitting
 
 warnings.filterwarnings('error', category=RuntimeWarning)
 ui = None
@@ -203,7 +202,7 @@ def get_json_value(data, keys):
     # data is a dictionary that was read from the JSON file
     # keys can be a string with '.' separators
     # this is pretty much a replacement for data[keys] that can handle simple and compound keys
-    value = None
+
     datav= data.copy()
     for key in keys.split('.'):
         try:
@@ -946,11 +945,11 @@ class StarlistGenerator:
         sources.rename_column('peak', 'peak_flux')
 
         # eliminate stars too close to the edges
-        EDGELIMIT = 15
-        mask = np.array([row['xcentroid'] < EDGELIMIT
-                         or row['xcentroid'] > self.width-EDGELIMIT
-                         or row['ycentroid'] < EDGELIMIT
-                         or row['ycentroid'] > self.height-EDGELIMIT
+        edgelimit = 15
+        mask = np.array([row['xcentroid'] < edgelimit
+                         or row['xcentroid'] > self.width-edgelimit
+                         or row['ycentroid'] < edgelimit
+                         or row['ycentroid'] > self.height-edgelimit
                          for row in sources])
         sources = sources[~mask]
         print("Official source extraction found ", len(sources), " stars after culling.")
