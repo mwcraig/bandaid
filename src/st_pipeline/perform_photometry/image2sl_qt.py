@@ -34,6 +34,7 @@ from pathlib import Path
 import numpy as np
 import pytz
 from astropy.io import fits
+from astropy.nddata import CCDData
 from astropy.stats import SigmaClip, sigma_clipped_stats
 from astropy.utils.data import get_pkg_data_filename
 from astropy.wcs import WCS
@@ -1725,7 +1726,7 @@ class UI:
         self.window.actionQuit.triggered.connect(QApplication.quit)
 
 class MainWindow:
-    def __init__(self, options, ui=None, wcs=None):
+    def __init__(self, options, ui=None):
         """Set up main display window and key singleton objects
 
         Create the FileChooser objects for each file chooser button in
@@ -1762,7 +1763,7 @@ class MainWindow:
         print(f"===> st-pipeline version {__version__} <===")
         self.options = options
         self.ui = ui
-        self._wcs = wcs
+        self._wcs = None
         self.have_ui = False
         if self.ui:
             self.have_ui = True
@@ -1842,8 +1843,11 @@ class MainWindow:
 
             telescope_type,image_type = probe_file_for_type(image_filename)
 
-            hdu_working = fits.open(image_filename)
-            working_image = hdu_working[0].data.astype(float)
+            ccd = CCDData.read(image_filename, unit="adu")
+
+            working_image = ccd.data.astype(float)
+            self._wcs = ccd.wcs
+
             if (dark_filename
                 or flat_filename
                 or bias_filename):
