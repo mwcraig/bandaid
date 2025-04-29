@@ -59,7 +59,7 @@ from PySide6.QtWidgets import (
 from timezonefinder import TimezoneFinder
 
 from .. import __version__
-from ..schema_definition import StarItem, StarList, StarListSet
+from ..schema_definition import StarList, StarListSet
 from . import field_solve, psf_fitting
 
 warnings.filterwarnings('error', category=RuntimeWarning)
