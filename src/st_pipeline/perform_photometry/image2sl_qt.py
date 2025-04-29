@@ -665,10 +665,11 @@ class StarlistGenerator:
         if self.options.use_psf_fitting:
             starlist.staritems.sort(key=lambda star:
                                     star.tot_flux, reverse=True)
-            psf_builder.add_image(self.working_image,
-                                  self.metadata,
-                                  self.noise_bkgd_per_pixel,
-                                  starlist)
+            raise NotImplementedError("PSF fitting not implemented yet")
+            # psf_builder.add_image(self.working_image,
+            #                       self.metadata,
+            #                       self.noise_bkgd_per_pixel,
+            #                       starlist)
 
         return StarListSet(star_lists=starlist)
 
