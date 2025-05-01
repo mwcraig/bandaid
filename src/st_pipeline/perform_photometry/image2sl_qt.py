@@ -34,9 +34,9 @@ from pathlib import Path
 import numpy as np
 import pytz
 from astropy.io import fits
-from astropy.nddata import CCDData
 from astropy.stats import SigmaClip, sigma_clipped_stats
 from astropy.utils.data import get_pkg_data_filename
+from astropy.nddata import CCDData
 from astropy.wcs import WCS
 from photutils import aperture, psf
 from photutils.background import Background2D, MedianBackground
@@ -102,7 +102,7 @@ def probe_file_for_type(filename):
     ValueError
         Raised if unable to determine which smart telescope type
     """
-    with fits.open(filename, ignore_missing_simple=True) as hdul:
+    with fits.open(filename, IGNORE_MISSING_SIMPLE=tRUE) as hdul:
         hdu0h = hdul[0].header
 
         ################################
@@ -207,7 +207,7 @@ def get_json_value(data, keys):
     datav= data.copy()
     for key in keys.split('.'):
         try:
-            datav = datav[key]
+            datav = data[key]
         except KeyError:
             print(f"WARNING: JSON key '{keys}' not found in metadata")
             return None
@@ -621,9 +621,9 @@ class StarlistGenerator:
                       (image3, 'TB')]
 
         sum_image = image1 + image2 + image3
-        self._remove_background(sum_image)
-        self.source_table = self._find_sources(sum_image)
-        self._do_photometry(self.working_image, self.source_table)
+        sum_copy_image = sum_image.copy()
+        self.source_table = self._find_sources(sum_copy_image)
+        self._do_photometry(self.sum_image, self.source_table)
         self.wcs = self._setup_wcs(self.source_table, self.wcs)
         self.metadata['filter'] = 'CV' # should be 'L3'
         starlist = StarList.from_table(self.source_table, metadata=self.metadata)
@@ -653,7 +653,6 @@ class StarlistGenerator:
         ----
         Does not perform PSF fitting properly
         """
-        self._remove_background(self.working_image)
         self.source_table = self._find_sources(self.working_image)
         self._do_photometry(self.working_image, self.source_table)
         self.wcs = self._setup_wcs(self.source_table, self.wcs)
@@ -725,8 +724,7 @@ class StarlistGenerator:
         # Make a copy, since we're going to adjust pixels to get best
         # star detection & centroids
         full_image = np.copy(self.working_image)
-        self._remove_background(full_image, do_color_balance=True)
-        self.source_table = self._find_sources(full_image)
+        self.source_table = self._find_sources(full_image, do_color_balance=True)
         self._do_photometry(self.working_image, self.source_table)
         self.wcs = self._setup_wcs(self.source_table, self.wcs)
         self.metadata['filter'] = 'CV' # should be 'L4'
@@ -882,7 +880,7 @@ class StarlistGenerator:
         self.noise_bkgd_per_pixel = full_background.background_rms_median * gain
         self.background = background
 
-    def _find_sources(self, working_image):
+    def _find_sources(self, working_image, do_color_balance=False):
         """Find the stars in an image
 
         Parameters
@@ -901,8 +899,11 @@ class StarlistGenerator:
         # find anyway just to get better handle on FWHM and to extract
         # image statistics in the process.
 
+        local_image = working_image.copy()
+        self._remove_background(local_image, do_color_balance=do_color_balance)
+
         daofind = DAOStarFinder(fwhm=3.0, threshold=4.*self.std)
-        sources = daofind(working_image)
+        sources = daofind(local_image)
         print("Initial quicklook found ", len(sources), " stars.")
         # Sort the table in-place by flux in reverse order
         sources.sort('flux', reverse=True)
@@ -928,7 +929,7 @@ class StarlistGenerator:
                 msg.exec()
             raise ValueError('NoStarsFound')
         subset = sources[:subset_size]
-        fwhm = psf.fit_fwhm(working_image,
+        fwhm = psf.fit_fwhm(local_image,
                             xypos=list(zip(subset['xcentroid'],
                                            subset['ycentroid'],
                                            strict=True)),
@@ -941,7 +942,7 @@ class StarlistGenerator:
         daofind = DAOStarFinder(fwhm=fwhm, threshold=4.0*self.std,
                                 sharplo=0.05, sharphi=3.0,
                                 roundlo=-4.0, roundhi=4.0)
-        sources = daofind(working_image)
+        sources = daofind(local_image)
         print("Sources found before edge-culling: ", len(sources), " stars.")
         sources.rename_column('peak', 'peak_flux')
 
@@ -985,12 +986,23 @@ class StarlistGenerator:
         annulus_outer = math.sqrt(100*phot_radius**2 + annulus_inner**2)
         print(f"Aperture radius = {phot_radius:.2f} , with {math.pi * phot_radius * phot_radius:.2f} pixels total")
 
+        sigma_clip = SigmaClip(sigma=3.0)
+        bkg_estimator = MedianBackground()
+        full_background = Background2D(working_image,
+                                       (int(self.width/8),int(self.height/8)),
+                                       filter_size=(3,3),
+                                       exclude_percentile=80,
+                                       sigma_clip=sigma_clip,
+                                       bkg_estimator=bkg_estimator)
+        # noise_bkgd_per_pixel in units of e-/pixel
+        noise_bkgd_per_pixel = full_background.background_rms_median * gain
+
         # Perform the photometry
         positions = list(zip(sources['xcentroid'],
                              sources['ycentroid'], strict=False))
         apertures = aperture.CircularAperture(positions, r=phot_radius)
         # Notice! tot_noise_bkgd is in units of electrons
-        tot_noise_bkgd = np.sqrt(apertures.area) * self.noise_bkgd_per_pixel
+        tot_noise_bkgd = np.sqrt(apertures.area) * noise_bkgd_per_pixel
 
         annuli = aperture.CircularAnnulus(positions, annulus_inner, annulus_outer)
         annulus_sigma_clip = SigmaClip(sigma=2.0)
@@ -1009,10 +1021,11 @@ class StarlistGenerator:
         sources['x'] = centroids[:, 0]
         sources['y'] = centroids[:, 1]
         sources['tot_flux'] = central_sum.sum
-        if 'mean_annulus' not in sources.columns:
-            sources.add_column(annulus_data.mean, name='mean_annulus')
+        if 'bkgd_flux' not in sources.columns:
+            sources.add_column(annulus_data.mean, name='bkgd_flux')
         else:
-            sources['mean_annulus'] = annulus_data.mean
+            sources['bkgd_flux'] = annulus_data.mean
+        sources['peak_flux'] = annulus_data.max
 
         bad_rows = []
         min_adu = 1.0 # max(0.0, tot_noise_bkgd/starlist.gain)
@@ -1033,16 +1046,6 @@ class StarlistGenerator:
         print("... removing ", len(bad_rows), " stars.")
         sources.remove_rows(bad_rows)
         print("... now have ", len(sources), " stars.")
-
-        # Populate the background flux column. The "+0.5" is to reproduce the
-        # behavior of the original code.
-        sources['bkgd_flux'] = [
-            self.background[min(int(0.5+y), self.height-1),
-                            min(int(0.5+x), self.width-1)]
-            for (x, y) in zip(sources['x'], sources['y'], strict=True)
-        ]
-
-        sources['bkgd_flux'] += sources['mean_annulus']
 
         # Turn this on to see the original image with "valid" stars
         # circled. You'll probably need to adjust the 600/1600 in imshow.
@@ -2096,7 +2099,6 @@ def main():
         settings.setValue("images", ui.window.image_filename_list.toPlainText())
 
         sys.exit(appx)
-
 
 if __name__ == "__main__":
     main()
