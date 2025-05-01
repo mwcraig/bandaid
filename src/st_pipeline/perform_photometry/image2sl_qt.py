@@ -623,7 +623,7 @@ class StarlistGenerator:
         sum_image = image1 + image2 + image3
         sum_copy_image = sum_image.copy()
         self.source_table = self._find_sources(sum_copy_image)
-        self._do_photometry(self.sum_image, self.source_table)
+        self.source_table = self._do_photometry(self.sum_image, self.source_table)
         self.wcs = self._setup_wcs(self.source_table, self.wcs)
         self.metadata['filter'] = 'CV' # should be 'L3'
         starlist = StarList.from_table(self.source_table, metadata=self.metadata)
@@ -631,7 +631,7 @@ class StarlistGenerator:
 
         for (image,color) in image_list:
             copy_source_table = self.source_table.copy()
-            self._do_photometry(image, copy_source_table)
+            copy_source_table = self._do_photometry(image, copy_source_table)
             self.metadata['filter'] = color
             starlist = StarList.from_table(copy_source_table, metadata=self.metadata)
             final_starlists.append(starlist)
@@ -654,7 +654,7 @@ class StarlistGenerator:
         Does not perform PSF fitting properly
         """
         self.source_table = self._find_sources(self.working_image)
-        self._do_photometry(self.working_image, self.source_table)
+        self.source_table = self._do_photometry(self.working_image, self.source_table)
         self.wcs = self._setup_wcs(self.source_table, self.wcs)
         starlist = StarList.from_table(self.source_table, metadata=self.metadata)
 
@@ -725,7 +725,8 @@ class StarlistGenerator:
         # star detection & centroids
         full_image = np.copy(self.working_image)
         self.source_table = self._find_sources(full_image, do_color_balance=True)
-        self._do_photometry(self.working_image, self.source_table)
+        self.source_table = self._do_photometry(self.working_image, self.source_table)
+        print('...top level has ', len(self.source_table), ' stars.')
         self.wcs = self._setup_wcs(self.source_table, self.wcs)
         self.metadata['filter'] = 'CV' # should be 'L4'
         starlist = StarList.from_table(self.source_table, metadata=self.metadata)
@@ -733,9 +734,10 @@ class StarlistGenerator:
 
         for (color, img_mask) in bayer_info:
             copy_source_table = self.source_table.copy()
-            self._do_photometry(self.working_image,
-                                copy_source_table,
-                                image_mask=img_mask)
+            copy_source_table = self._do_photometry(self.working_image,
+                                                    copy_source_table,
+                                                    image_mask=img_mask)
+            print('...top level has ', len(copy_source_table), ' stars.')
             self.metadata['filter'] = color
             starlist = StarList.from_table(copy_source_table, metadata=self.metadata)
             final_starlists.append(starlist)
@@ -954,7 +956,6 @@ class StarlistGenerator:
                          or row['ycentroid'] > self.height-edgelimit
                          for row in sources])
         sources = sources[~mask]
-        print("Official source extraction found ", len(sources), " stars after culling.")
         sources.sort('flux', reverse=True)
         return sources
 
@@ -1077,7 +1078,7 @@ class StarlistGenerator:
             & (sources['tot_flux'] > 0)  # Drop any negative fluxes, which are unphysical
         )
 
-        sources = sources[good_snr]
+        return sources[good_snr]
 
     def _setup_wcs(self, sources, wcs):
         """Plate-solve and set RA/Dec in the sources table
