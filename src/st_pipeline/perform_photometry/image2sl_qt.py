@@ -102,7 +102,7 @@ def probe_file_for_type(filename):
     ValueError
         Raised if unable to determine which smart telescope type
     """
-    with fits.open(filename, IGNORE_MISSING_SIMPLE=tRUE) as hdul:
+    with fits.open(filename, ignore_missing_simple=True) as hdul:
         hdu0h = hdul[0].header
 
         ################################
@@ -1025,7 +1025,7 @@ class StarlistGenerator:
             sources.add_column(annulus_data.mean, name='bkgd_flux')
         else:
             sources['bkgd_flux'] = annulus_data.mean
-        sources['peak_flux'] = annulus_data.max
+        sources['peak_flux'] = central_sum.max + annulus_data.mean
 
         bad_rows = []
         min_adu = 1.0 # max(0.0, tot_noise_bkgd/starlist.gain)
