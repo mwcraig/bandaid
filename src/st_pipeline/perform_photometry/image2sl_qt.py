@@ -1018,9 +1018,8 @@ class StarlistGenerator:
                                              sum_method='exact',
                                              mask=image_mask,
                                              local_bkg=annulus_data.mean)
-        centroids = central_sum.centroid
-        sources['x'] = centroids[:, 0]
-        sources['y'] = centroids[:, 1]
+        sources['x'] = sources['xcentroid']
+        sources['y'] = sources['ycentroid']
         sources['tot_flux'] = central_sum.sum
         if 'bkgd_flux' not in sources.columns:
             sources.add_column(annulus_data.mean, name='bkgd_flux')
