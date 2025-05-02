@@ -550,6 +550,7 @@ class StarlistGenerator:
         image_type : str
             One of the three image types, as found by probe_file_for_type()
         """
+        print('Starting StarlistGenerator.__init__()')
         self.filename : Path  = full_path
         if working_image.ndim == 3:
             (_, self.height, self.width) = np.shape(working_image)
