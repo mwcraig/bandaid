@@ -624,7 +624,7 @@ class StarlistGenerator:
         sum_image = image1 + image2 + image3
         sum_copy_image = sum_image.copy()
         self.source_table = self._find_sources(sum_copy_image)
-        self.source_table = self._do_photometry(self.sum_image, self.source_table)
+        self.source_table = self._do_photometry(sum_image, self.source_table)
         self.wcs = self._setup_wcs(self.source_table, self.wcs)
         self.metadata['filter'] = 'CV' # should be 'L3'
         starlist = StarList.from_table(self.source_table, metadata=self.metadata)
