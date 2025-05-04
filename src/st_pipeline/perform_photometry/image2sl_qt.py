@@ -1312,24 +1312,6 @@ class OptionsUI:
         self.aperture_size = ui.window.ApertureSize
 
     @property
-    def add_wcs(self):
-        """Query whether WCS keywords need to be added to the image
-
-        Return True if the input FITS file needs to have the WCS
-        information added to it
-
-        Parameters
-        ----------
-        None
-
-        Returns
-        -------
-        bool
-            True if WCS is to be added
-        """
-        return self.add_wcs_to_image.isChecked()
-
-    @property
     def aperture_size_fwhm(self):
         """Query the aperture size factor
 
@@ -1359,60 +1341,6 @@ class OptionsUI:
             return 1.0
         return entry_float
 
-    @property
-    def use_annulus(self):
-        """Query whether an annulus aperture helps estimate background
-
-        Return True if the sky background found in an annulus around
-        the star centroid should be used during background
-        subtraction. The alternative is to use only a slowly-varying
-        background level across the entire image to estimate
-        background.
-
-        Parameters
-        ----------
-        None
-
-        Returns
-        -------
-        bool
-            True if an annulus is to be used
-        """
-        return self.subtract_annulus.isChecked()
-
-    @property
-    def all_channel_extraction(self):
-        """Query whether a mono+RGB integration extration to be done
-
-        Return True if the input images are to be extracted directly
-        into color channels plus a pretend monochrome channel
-
-        Returns
-        -------
-        bool
-            True is integration extraction is to be done
-        """
-        return self.mono_and_rgb.isChecked()
-
-    @property
-    def de_bayer(self):
-        """Query whether input file(s) need to be de-Bayered
-
-        Return True if the input images need to be split into separate
-        color images (de-Bayer).
-
-        Parameters
-        ----------
-        None
-
-        Returns
-        -------
-        bool
-            True if input images needed to be split
-        """
-        return not (self.pretend_monochrome.isChecked() or
-                    self.mono_and_rgb.isChecked())
-
     # return "psf" or "app_phot"
     @property
     def get_phot(self):
@@ -1432,73 +1360,6 @@ class OptionsUI:
             photometry is to be done
         """
         return "psf" if self.psf_photometry.isChecked() else "app_phot"
-
-    @property
-    def stack_channels(self):
-        """Query whether de-Bayered images are to be stacked
-
-        Query whether de-Bayered images are to be stacked into a
-        single sort-of-luminance channel image. Only makes sense to
-        query this if de_bayer() returns True. If stacking was chosen,
-        the method used for doing the stacking depends on the setting
-        of the interpolate_channels() query.
-
-        Parameters
-        ----------
-        None
-
-        Returns
-        -------
-        bool
-            True if the four de-Bayered images are to be stacked
-        """
-        return (self.stacked_channels.isChecked()  or
-                self.interp_stack_channels.isChecked())
-
-    @property
-    def interpolate_channels(self):
-        """Query whether de-Bayered images get shifted into pixel alignment
-
-        Query whether the four de-Bayered images are to be shifted
-        into pixel alignment. Each color gets shifted one or two
-        pixels left/right/up/down using flux-preserving bilinear
-        interpolation in order to have the pixels in each color
-        channel correspond to exactly the same Dec/RA sky location.
-
-        Parameters
-        ----------
-        None
-
-        Returns
-        -------
-        bool
-            True if the de-Bayered images need to be shifted slightly
-            to bring them into sky coordinate alignment
-        """
-        return self.interp_stack_channels.isChecked()
-
-    @property
-    def get_color_balance(self):
-        """Query whether the pixel values should be adjusted for color balance
-
-        Query whether "color balancing" should be done. This is
-        performed on the original RGB image with a linear
-        transformation to adjust pixel values. Four different
-        transformations are used; one for each color channel. The
-        values for the transformation coefficients are chosen to give
-        all four channels the same background average level and the
-        same standard deviation around that common average.
-
-        Parameters
-        ----------
-        None
-
-        Returns
-        -------
-        bool
-            True if color balancing is to be done
-        """
-        return self.color_correx.isChecked()
 
     @property
     def use_psf_fitting(self):
