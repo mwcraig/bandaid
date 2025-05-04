@@ -1647,7 +1647,7 @@ class MainWindow:
                 # 3D stacked files get read in without a WCS. Try a little
                 # harder to get the WCS from the header.
                 wcs = WCS(fits.getheader(image_filename), naxis=2)
-                ccd.wcs = wcs
+                ccd.wcs = wcs if wcs.wcs.ctype[0] else None
 
             working_image = ccd.data.astype(float)
             self._wcs = ccd.wcs
