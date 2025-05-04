@@ -1273,51 +1273,82 @@ class FileChooser:
         """
         self.text_widget.setText("")
 
-class OptionsUI:
-    def __init__(self):
-        """Create an object for the UI options, including file names
 
-        Create an OptionsUI object (a singleton), and associate the
-        related display button widgets with a set of available option
-        queries.
+class PhotometryMethods(StrEnum):
+    """Enumeration of photometry methods"""
+    # See the python documentation for Enums work. Behind the scenes pythopn
+    # creates a class whose attributes have the names listed below.
+    APERTURE = "aperture"
+    PSF = "psf"
 
-        Parameters
-        ----------
-        None
 
-        Returns
-        -------
-        An OptionsUI instance
-        """
-        # File choosers first...use the properties defined later
-        # to get the file names out.
-        self._bias_file = FileChooser(ui.window.bias_entry,
-                                      ui.window.BiasButton)
+class OptionsAPI(BaseModel):
+    model_config = ConfigDict(extra='forbid', validate_default=True, validate_assignment=True)
+    aperture_size: float = 1.0
+    photometry_method: PhotometryMethods = PhotometryMethods.APERTURE
+    astrometry_net_api_key: str = ""
+    bias_file: str = ""
+    dark_file: str = ""
+    flat_file: str = ""
+    meta_file: list[str] = [""]
+    image_file: list[str] = [""]
 
-        self._dark_file = FileChooser(ui.window.dark_entry,
-                                      ui.window.DarkButton)
-        self._flat_file = FileChooser(ui.window.flat_entry,
-                                      ui.window.FlatButton)
-        self._meta_file = FileChooser(ui.window.meta_entry,
-                                      ui.window.MetaButton,
-                                      multiple_files_okay=True)
-        self._image_file = FileChooser(ui.window.image_filename_list,
-                                       ui.window.AddImageButton,
-                                       multiple_files_okay=True)
-
-        # The remaining options
-        self.psf_photometry = ui.window.PSFPhotButton
-        self.aperture_photometry = ui.window.AperturePhotButton
-
-        self.aperture_size = ui.window.ApertureSize
+    @property
+    def use_psf_fitting(self):
+        return self.photometry_method == PhotometryMethods.PSF
 
     @property
     def aperture_size_fwhm(self):
-        """Query the aperture size factor
+        return self.aperture_size
 
-        The aperture size factor is multiplied by the image's average
-        FWHM to establish the photometry aperture radius. This query
-        returns that multiplicative factor.
+    @classmethod
+    def from_ui(cls, ui):
+        """Create an OptionsAPI object from a UI object
+
+        Create an OptionsAPI object from a UI object. This is used to
+        create the API-based options object from the UI-based options
+        object.
+
+        Parameters
+        ----------
+        ui : OptionsUI
+            The UI object that holds the options
+
+        Returns
+        -------
+        OptionsAPI
+            The API-based options object
+        """
+        return cls(
+            aperture_size=ui.aperture_size_fwhm,
+            photometry_method=PhotometryMethods.PSF if ui.use_psf_fitting else PhotometryMethods.APERTURE,
+            bias_file=ui.bias_file if ui.bias_file else "",
+            dark_file=ui.dark_file if ui.dark_file else "",
+            flat_file=ui.flat_file if ui.flat_file else "",
+            meta_file=ui.meta_file,
+            image_file=ui.image_file
+        )
+
+
+class UI:
+    """Singleton class used to connect Qt Designer to this app
+
+    This class (and its singlton instance, "ui") are used to hold the
+    widget hierarchy that is read in from the *.ui file created by Qt
+    Designer for this app.
+
+    Attributes
+    ----------
+    window : Qt window
+        The root of the *.ui file.
+    """
+    def __init__(self):
+        """Set up Qt widgets for this app
+
+        Read in the .ui file created with the Qt designer app. Store
+        all the resulting widgets as children of self.window. This
+        requires the .ui file to be in the same directory as the
+        Python script is located.
 
         Parameters
         ----------
@@ -1325,41 +1356,38 @@ class OptionsUI:
 
         Returns
         -------
-        float
-            The factor that should be used. A value of 1.0 is returned
-            if nothing is entered or if an entry is invalid.
+        UI object
         """
-        entry_str = self.aperture_size.text()
-        try:
-            entry_float = float(entry_str)
-        except ValueError:
-            ErrorPopup("Invalid Aperture Size entry: " + entry_str)
-            return 1.0
-        if entry_float < 0.1 or entry_float > 10.0:
-            ErrorPopup("Aperture size entry out of bounds (0.1 .. 10.0)")
-            self.aperture_size.setText("1.0")
-            return 1.0
-        return entry_float
+        source_path = Path(__file__).resolve()
+        ui_filename = source_path.parent / "image2sl.ui"
+        ui_file = QFile(ui_filename)
+        if not ui_file.open(QIODevice.ReadOnly):
+            print(f"Cannot open {ui_filename}: {ui_file.errorString()}")
+            sys.exit(-1)
+        loader = QUiLoader()
+        self.window = loader.load(ui_file, None)
+        ui_file.close()
+        if not self.window:
+            print(loader.errorString())
+            sys.exit(-1)
+        self.window.ApertureSize.setText("1.0")
+        self.window.actionQuit.triggered.connect(QApplication.quit)
+        self._bias_file = FileChooser(self.window.bias_entry,
+                                      self.window.BiasButton)
+        self._dark_file = FileChooser(self.window.dark_entry,
+                                      self.window.DarkButton)
+        self._flat_file = FileChooser(self.window.flat_entry,
+                                      self.window.FlatButton)
+        self._meta_file = FileChooser(self.window.meta_entry,
+                                      self.window.MetaButton,
+                                      multiple_files_okay=True)
+        self._image_file = FileChooser(self.window.image_filename_list,
+                                       self.window.AddImageButton,
+                                       multiple_files_okay=True)
+        self.psf_photometry = self.window.PSFPhotButton
+        self.aperture_photometry = self.window.AperturePhotButton
 
-    # return "psf" or "app_phot"
-    @property
-    def get_phot(self):
-        """Query the kind of photometry to be done
-
-        Return a string indicating whether aperture photometry or
-        PSF-fitting photometry is to be done.
-
-        Parameters
-        ----------
-        None
-
-        Returns
-        -------
-        str
-            'psf' if PSF-fitting is to be done; 'app_phot' if aperture
-            photometry is to be done
-        """
-        return "psf" if self.psf_photometry.isChecked() else "app_phot"
+        self.aperture_size = self.window.ApertureSize
 
     @property
     def use_psf_fitting(self):
@@ -1368,10 +1396,6 @@ class OptionsUI:
         Return a boolean indicating whether
         PSF-fitting photometry is to be done. This method is 100%
         redundant with get_phot() and should be retired.
-
-        Parameters
-        ----------
-        None
 
         Returns
         -------
@@ -1470,55 +1494,13 @@ class OptionsUI:
         """
         return self._image_file.entered_filename_list()
 
-
-class PhotometryMethods(StrEnum):
-    """Enumeration of photometry methods"""
-    # See the python documentation for Enums work. Behind the scenes pythopn
-    # creates a class whose attributes have the names listed below.
-    APERTURE = "aperture"
-    PSF = "psf"
-
-
-class OptionsAPI(BaseModel):
-    model_config = ConfigDict(extra='forbid', validate_default=True, validate_assignment=True)
-    aperture_size: float = 1.0
-    photometry_method: PhotometryMethods = PhotometryMethods.APERTURE
-    astrometry_net_api_key: str = ""
-    bias_file: str = ""
-    dark_file: str = ""
-    flat_file: str = ""
-    meta_file: list[str] = [""]
-    image_file: list[str] = [""]
-
-    @property
-    def use_psf_fitting(self):
-        return self.photometry_method == PhotometryMethods.PSF
-
     @property
     def aperture_size_fwhm(self):
-        return self.aperture_size
+        """Query the aperture size factor
 
-
-
-class UI:
-    """Singleton class used to connect Qt Designer to this app
-
-    This class (and its singlton instance, "ui") are used to hold the
-    widget hierarchy that is read in from the *.ui file created by Qt
-    Designer for this app.
-
-    Attributes
-    ----------
-    window : Qt window
-        The root of the *.ui file.
-    """
-    def __init__(self):
-        """Set up Qt widgets for this app
-
-        Read in the .ui file created with the Qt designer app. Store
-        all the resulting widgets as children of self.window. This
-        requires the .ui file to be in the same directory as the
-        Python script is located.
+        The aperture size factor is multiplied by the image's average
+        FWHM to establish the photometry aperture radius. This query
+        returns that multiplicative factor.
 
         Parameters
         ----------
@@ -1526,23 +1508,21 @@ class UI:
 
         Returns
         -------
-        UI object
+        float
+            The factor that should be used. A value of 1.0 is returned
+            if nothing is entered or if an entry is invalid.
         """
-        source_path = Path(__file__).resolve()
-        ui_filename = source_path.parent / "image2sl.ui"
-        ui_file = QFile(ui_filename)
-        if not ui_file.open(QIODevice.ReadOnly):
-            print(f"Cannot open {ui_filename}: {ui_file.errorString()}")
-            sys.exit(-1)
-        loader = QUiLoader()
-        self.window = loader.load(ui_file, None)
-        ui_file.close()
-        if not self.window:
-            print(loader.errorString())
-            sys.exit(-1)
-        self.window.ApertureSize.setText("1.0")
-        self.window.actionQuit.triggered.connect(QApplication.quit)
-
+        entry_str = self.aperture_size.text()
+        try:
+            entry_float = float(entry_str)
+        except ValueError:
+            ErrorPopup("Invalid Aperture Size entry: " + entry_str)
+            return 1.0
+        if entry_float < 0.1 or entry_float > 10.0:
+            ErrorPopup("Aperture size entry out of bounds (0.1 .. 10.0)")
+            self.aperture_size.setText("1.0")
+            return 1.0
+        return entry_float
 class MainWindow:
     def __init__(self, options, ui=None):
         """Set up main display window and key singleton objects
@@ -1556,7 +1536,7 @@ class MainWindow:
 
         Parameters
         ----------
-        options : an Options object
+        options : an OptionsAPI object or None
             Either a UI-based or API-based object that holds the
             options. Should be either an instance of OptionsUI or
             OptionsAPI.
@@ -1622,6 +1602,7 @@ class MainWindow:
         self.progressbar.setFormat("...Running...")
         self.progressbar.setAlignment(QtCore.Qt.AlignCenter)
         self.progressbar.show()
+        self.options = OptionsAPI.from_ui(self.ui)
         self.generate_starlist()
         self.progressbar.hide()
 
@@ -1834,7 +1815,7 @@ def main():
         ui = UI()
         ui.window.show()
         ui.window.setWindowTitle(f"image2sl version {__version__}")
-        not_a_window = MainWindow(OptionsUI(), ui=ui)
+        not_a_window = MainWindow(None, ui=ui)
 
         ui.window.progressBar.hide()
         ui.window.GenerateStarlistButton.clicked.connect(not_a_window.do_generate_starlist)
