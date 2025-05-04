@@ -1995,69 +1995,6 @@ class ErrorPopup:
         dlg.setText(msg)
         dlg.exec()
 
-class Option3DPopup(QDialog):
-    """A popup window that appears if the FITS file contains 3 images
-
-    If the FITS file has 3 images in it, then we need to ask the user
-    what to do with the three images: stack them into a single
-    luminance channel or process them into three distinct logical
-    starlists.
-
-    Attributes
-    ----------
-    options: OptionsUI reference
-        A reference to the OptionsUI instance that holds all option
-        info. The two buttons of this popup map into the
-        split_stacked_image bool option.
-    radio_stack: QRadioButton
-        One of the two buttons. If checked, user is asking for
-        stacking.
-    radio_split: QRadioButton
-        One of the two buttons. If checked, user is asking for three
-        distinct logical starlists.
-    """
-    def __init__(self, options, parent=None):
-        """Create a Option3DPopup window
-
-        This window is a subclass of the QDialog popup.
-
-        Parameters
-        ----------
-        options: OptionsUI reference
-            A reference to the OptionsUI instance that holds all
-            option info.
-        parent: QWidget
-            The parent to this window. The popup should be centered in
-            the parent window, if one is specified.
-        """
-        super().__init__(parent)
-        self.options = options
-
-        self.setWindowTitle("image2sl: Stacked Image Options")
-        q_btn = QDialogButtonBox.Ok | QDialogButtonBox.Cancel
-        button_box = QDialogButtonBox(q_btn)
-        button_box.accepted.connect(self.accept)
-        button_box.rejected.connect(self.reject)
-
-        layout = QVBoxLayout()
-        message = QLabel("Choose stacked image processing option")
-        layout.addWidget(message)
-        button_group = QButtonGroup()
-        self.radio_stack = QRadioButton("Combine RGB into one monochrome image")
-        self.radio_split = QRadioButton("Separate into R, G, B images")
-        button_group.addButton(self.radio_stack)
-        button_group.addButton(self.radio_split)
-        self.radio_stack.toggled.connect(self.button_change)
-        self.radio_split.toggled.connect(self.button_change)
-        layout.addWidget(self.radio_stack)
-        layout.addWidget(self.radio_split)
-        layout.addWidget(button_box)
-        self.setLayout(layout)
-        self.show()
-
-    def button_change(self):
-        """Callback when either of the two radio buttons changes state """
-        self.options.split_stacked_image = self.radio_split.isChecked()
 
 def main():
     global ui
