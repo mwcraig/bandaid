@@ -1709,6 +1709,11 @@ class MainWindow:
             telescope_type,image_type = probe_file_for_type(image_filename)
 
             ccd = CCDData.read(image_filename, unit="adu")
+            if ccd.wcs is None:
+                # 3D stacked files get read in without a WCS. Try a little
+                # harder to get the WCS from the header.
+                wcs = WCS(fits.getheader(image_filename), naxis=2)
+                ccd.wcs = wcs
 
             working_image = ccd.data.astype(float)
             self._wcs = ccd.wcs
