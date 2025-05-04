@@ -1471,16 +1471,6 @@ class OptionsUI:
         return self._image_file.entered_filename_list()
 
 
-class BayerHandlingOptions(StrEnum):
-    """Enumeration of Bayer handling options"""
-    # See the python documentation for Enums work. Behind the scenes pythopn
-    # creates a class whose attributes have the names listed below.
-    PRETEND_MONOCHROME = "pretend_monochrome"
-    STACKED_CHANNELS = "stacked_channels"
-    INTERP_STACK_CHANNELS = "interp_stack_channels"
-    SPLIT_STACKED = "split_stacked"
-
-
 class PhotometryMethods(StrEnum):
     """Enumeration of photometry methods"""
     # See the python documentation for Enums work. Behind the scenes pythopn
@@ -1491,11 +1481,6 @@ class PhotometryMethods(StrEnum):
 
 class OptionsAPI(BaseModel):
     model_config = ConfigDict(extra='forbid', validate_default=True, validate_assignment=True)
-    bayer_handling: BayerHandlingOptions = BayerHandlingOptions.PRETEND_MONOCHROME
-    color_correx: bool = False
-    all_channel_extraction: bool = True
-    subtract_annulus: bool = False
-    add_wcs_to_image: bool = False
     aperture_size: float = 1.0
     photometry_method: PhotometryMethods = PhotometryMethods.APERTURE
     astrometry_net_api_key: str = ""
@@ -1504,48 +1489,16 @@ class OptionsAPI(BaseModel):
     flat_file: str = ""
     meta_file: list[str] = [""]
     image_file: list[str] = [""]
-    # This options is set by a popup when running interactively
-    split_stacked_image: bool = False
-
-    # These are accessed by the current code.
-    @property
-    def de_bayer(self):
-        return self.bayer_handling != BayerHandlingOptions.PRETEND_MONOCHROME
-
-    @property
-    def interpolate_channels(self):
-        return self.bayer_handling == BayerHandlingOptions.INTERP_STACK_CHANNELS
-
-    @property
-    def get_color_balance(self):
-        return self.color_correx
-
-    @property
-    def stack_channels(self):
-        return (
-            self.bayer_handling == BayerHandlingOptions.STACKED_CHANNELS
-            or self.bayer_handling == BayerHandlingOptions.INTERP_STACK_CHANNELS
-        )
 
     @property
     def use_psf_fitting(self):
         return self.photometry_method == PhotometryMethods.PSF
 
     @property
-    def add_wcs(self):
-        return self.add_WCS_to_image
-
-    @property
     def aperture_size_fwhm(self):
         return self.aperture_size
 
-    @property
-    def use_annulus(self):
-        return self.subtract_annulus
 
-    @property
-    def one_channel(self):
-        return self.bayer_handling == BayerHandlingOptions.SPLIT_STACKED
 
 class UI:
     """Singleton class used to connect Qt Designer to this app
