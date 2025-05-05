@@ -23,14 +23,10 @@
 import argparse
 import json
 import math
-import os
-import platform
-import shutil
 import statistics
 import sys
 import tempfile
 import warnings
-from collections import namedtuple
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -38,29 +34,25 @@ from pathlib import Path
 import numpy as np
 import pytz
 from astropy.io import fits
-from astropy.nddata import CCDData
 from astropy.stats import SigmaClip, sigma_clipped_stats
 from astropy.utils.data import get_pkg_data_filename
+from astropy.nddata import CCDData
 from astropy.wcs import WCS
-from astroquery.astrometry_net import AstrometryNet
 from photutils import aperture, psf
 from photutils.background import Background2D, MedianBackground
 from photutils.detection import DAOStarFinder
 from pydantic import BaseModel, ConfigDict
 from PySide6 import QtCore, QtWidgets
 from PySide6.QtCore import QFile, QIODevice, QSettings
-from PySide6.QtGui import QGuiApplication
 from PySide6.QtUiTools import QUiLoader
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
-    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QErrorMessage,
     QFileDialog,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QRadioButton,
     QVBoxLayout,
@@ -68,361 +60,12 @@ from PySide6.QtWidgets import (
 from timezonefinder import TimezoneFinder
 
 from .. import __version__
-from ..schema_definition import StarItem, StarList, StarListSet
-from . import psf_fitting
-from . import field_solve
+from ..schema_definition import StarList, StarListSet
+from . import field_solve, psf_fitting
 
 warnings.filterwarnings('error', category=RuntimeWarning)
 ui = None
-
 LOW_SNR = 2.0
-
-################################################################
-##        Algorithmic Stuff Comes First
-################################################################
-
-def de_bayer_file(filename, metadata, temp_dir):
-    """Split an RGB image into four images, one for each Bayer channel
-    The four channels are extracted using a string description of the
-    Bayer sequence (e.g., 'BGGR'); each extracted sub-image is stored
-    as a new FITS image file.
-    Parameters
-    ----------
-    filename : str
-        pathname to the original image to be de-Bayered
-    metadata: dict
-        The metadata for this image file
-    temp_dir : str
-        pathname to the temporary directory where the new images go
-    field_solver: field_solve.FieldSolver
-        This instance of FieldSolver is used to coordinate all the WCS
-        generation that occurs during deBayering.
-
-    Returns
-    -------
-    List of named tuples (will always be list of exactly 4 elements)
-        The named tuples are created from namedtuple('filter','filename')
-    filter : str
-        The name of the Bayer filter color (e.g., 'TG1' or 'TB')
-    filename : str
-        The name of the file with that channel's image
-
-    """
-    with fits.open(filename) as hdul:
-        temp1 = hdul[0].data[0::2,0::2]
-        temp2 = hdul[0].data[0::2,1::2]
-        temp3 = hdul[0].data[1::2,0::2]
-        temp4 = hdul[0].data[1::2,1::2]
-
-        array = [temp1, temp2, temp3, temp4] # roworder= top-down, ybayroff= 0
-        if metadata['roworder'] == 'bottom-up':
-            array = [array[i-1] for i in [3,4,1,2]]
-        if metadata['ybayroff'] != 0: # left or right shift the same
-            array = [array[i-1] for i in [2,1,4,3]]
-
-        output_filenames = [] # each entry in this list is a tuple: (filter, filename)
-
-        for index in range(4):
-            color = metadata['bayerpat'][index]
-            output_tgt = Path(temp_dir) / ("image"+str(index)+"_"+color+".fits")
-
-            hdu = fits.PrimaryHDU()
-            hdu.header = hdul[0].header.copy() # copy the header from the original file
-
-            hdu.data = array[index]
-            # fix up header to match the data
-            hdu.header['FILTER'] = ('T'+color, 'Bayer color mask')
-            hdu.header['BAYERPAT'] = ('NA', 'No longer a Bayered image')
-            hdu.header['PIXSCALE'] = (metadata['pixscale'] * 2.0, 'arcsec/pix')
-            hdu.header['NAXIS1'] = int(hdu.header['NAXIS1'] / 2)
-            hdu.header['NAXIS2'] = int(hdu.header['NAXIS2'] / 2)
-
-            # modify the wcs to reflect the new pixel scale
-            if 'CD1_1' in hdu.header: hdu.header['CD1_1'] *= 2.0
-            if 'CD1_2' in hdu.header: hdu.header['CD1_2'] *= 2.0
-            if 'CD2_1' in hdu.header: hdu.header['CD2_1'] *= 2.0
-            if 'CD2_2' in hdu.header: hdu.header['CD2_2'] *= 2.0
-            if 'CRPIX_1' in hdu.header: hdu.header['CRPIX_1'] /= 2.0
-            if 'CRPIX_2' in hdu.header: hdu.header['CRPIX_2'] /= 2.0
-            if 'CDELT_1' in hdu.header: hdu.header['CDELT_1'] *= 2.0
-            if 'CDELT_2' in hdu.header: hdu.header['CDELT_2'] *= 2.0
-            hdu.header['CTYPE1'] = 'RA---TAN'
-            hdu.header['CTYPE2'] = 'DEC--TAN'
-            hdu.header['CTYPE2'] = hdu.header['CTYPE2'].replace('-SIP', '')
-            # update_header will "fix" the header to match the data
-            hdu.update_header()
-            fits.writeto(output_tgt, array[index], header=hdu.header, overwrite=True)
-            print("write debayered image: ", output_tgt) # so you can look at the image files
-            ImageDescriptor = namedtuple('ImageDescriptor', ['filter','filename'])
-            output_filenames.append(ImageDescriptor(color,output_tgt))
-
-        # change the metadata to reflect the new state of the image
-        metadata['pixscale'] = metadata['pixscale'] * 2.0
-        metadata['bayerpat'] = 'NA'
-        metadata['telescope_probe']= (metadata['telescope_probe'][0], 'mono')
-
-        return output_filenames
-
-# pattern triplet: (x_offset, y_offset, weight)
-interp_pattern = [
-    [ (0,0,9), (0,1,3),  (1,0,3),  (1,1,1)   ], # color 0
-    [ (0,0,9), (-1,0,3), (0,1,3),  (-1,1,1)  ], # color 1
-    [ (0,0,9), (1,0,3),  (0,-1,3), (1,-1,1)  ], # color 2
-    [ (0,0,9), (-1,0,3), (0,-1,3), (-1,-1,1) ]  # color 3
-]
-
-def stack_images(channel_list, options, temp_dir):
-    """ Create a stacked image from 4 individual Bayer sub-images
-
-    Four Bayer sub-images are stacked into a single image. If
-    `options` includes the interpolate_channels flag, the sub-images
-    will be shifted as they are added, recognizing the offsets between
-    the locations of the different Bayer colors. The resulting sum
-    image will be stored as a new FITS file with floating point pixel
-    values (to avoid overflow issues as the four pixel values are
-    added). The resulting FITS file will have all the FITS
-    keyword/value pairs found in the first sub-image, except that the
-    FILTER keyword will be set to 'CV'.
-
-    Parameters
-    ----------
-    channel_list : list of named tuples (taken from de_bayer_file)
-        Each tuple is a (filtername, filename) pair specifying the
-        input files.
-    options : OptionBox
-        Object of class OptionBox, describing options the user has
-        selected
-    temp_dir : str
-        pathname to the temporary directory where the new images go
-
-    Returns
-    -------
-    str
-        pathname to the new FITS file holding the stacked image
-    """
-    output_tgt = Path(temp_dir) /  "image_S.fits"
-    hdu = fits.PrimaryHDU()
-    # push keywords in from the original file(s)
-    filename = channel_list[0].filename
-    with fits.open(filename) as hdul:
-        (height,width) = np.shape(hdul[0].data)
-        hdu.header = hdul[0].header.copy() # copy the header from the original file
-
-    hdu.data = np.zeros((height,width),dtype=np.float32)
-    for (bayer_id,(_, channel)) in enumerate(channel_list):
-        with fits.open(channel) as hdul:
-            source_hdu = hdul[0].data
-            if options.interpolate_channels:
-                new_data = np.zeros(np.shape(hdul[0].data),dtype=np.float32)
-                orig_data = source_hdu.astype(np.float32)
-                for y in range(height-1):
-                    for x in range(width-1):
-                        tgt = sum(p[2]*orig_data[y+p[1],x+p[0]]
-                                   for p in interp_pattern[bayer_id])
-                        new_data[y,x] = tgt
-                source_hdu = new_data/16.0
-            hdu.data += source_hdu/4.0
-    hdu.header['filter'] = 'CV'
-    hdu.update_header()
-    fits.writeto(output_tgt, hdu.data, header=hdu.header, overwrite=True)
-    return output_tgt
-
-def duplicate_file_with_new_image(hdul, new_data, new_filter, new_pathname):
-    """ Copy a FITS file, replacing the pixel data with new pixel data
-
-    Create a copy of a FITS file, replacing the original pixels with a
-    new set of pixels (possibly with a different shape). FITS keywords
-    will be copied over, except for those keywords affected by a shape
-    change or a possible pixel numeric type change (e.g., int to float).
-
-    Parameters
-    ----------
-    hdul : list of HDUs as provided by fits.open()
-        The HDU list conveying the contents of the FITS file to be copied.
-    new_data : numpy 2D array of pixel values
-        The new pixel values (data type will be preserved into the new file)
-    new_filter : str
-        The name of the filter to be put into the new FITS header
-    new_pathname : str
-        The pathname of the file to be created
-
-    Returns
-    -------
-    None
-
-    """
-    hdu = fits.PrimaryHDU()
-    # push keywords in from the original file
-    hdu.header = hdul[0].header.copy() # copy the header from the original file
-
-    hdu.data = new_data
-    hdu.header['filter'] = new_filter
-    # update_header will "fix" the header to match the data
-    hdu.update_header()
-    fits.writeto(new_pathname, new_data, header=hdu.header, overwrite=True)
-
-def bayer_balance_file(filename, temp_dir):
-    """Duplicate an image file while adjusting pixel values per the Bayer pattern
-
-    Duplicate an existing FITS file, performing a linear adjustment to
-    each pixel value according to its position in the Bayer
-    pattern. The adjustment factors are calculated so as to give the
-    new file the same background grayness and the same background
-    noise in each of the four Bayer pattern pixels. The new file will
-    have float32 pixels to avoid pixel overflow problems that result
-    from the adjustments. The new file will have the same filename as
-    the original file, but with '_M' appended to the filename 'stem'.
-
-    Parameters
-    ----------
-    filename : str
-        Pathname to the file to be duplicated
-    temp_dir : str
-        Pathname to the temp directory
-
-    Returns
-    -------
-    Path
-        The full pathname of the new file.
-    """
-    with fits.open(filename) as hdul:
-        temp1 = hdul[0].data[0::2,0::2].astype(np.float32)
-        temp2 = hdul[0].data[0::2,1::2].astype(np.float32)
-        temp3 = hdul[0].data[1::2,0::2].astype(np.float32)
-        temp4 = hdul[0].data[1::2,1::2].astype(np.float32)
-
-        def flatten_slice(slice, target):
-            m = statistics.stdev(slice.flatten())
-            factor = (target/m)
-            slice = slice * factor
-            print("  new slice mean = ", statistics.mean(slice.flatten()))
-
-        def print_img_stats(data):
-            data = data.astype(np.float32)
-            print("        Min = ",
-                  min(data),
-                  ", Max = ",
-                  max(data),
-                  ", Avg = ",
-                  statistics.mean(data),
-                  ", Stdev = ",
-                  statistics.stdev(data))
-
-        raw_pixels = hdul[0].data.flatten().astype(np.float32)
-        raw_avg = statistics.mean(raw_pixels)
-        raw_stdev = statistics.stdev(raw_pixels)
-        cutoff = raw_avg + 5*raw_stdev
-
-        temp1x = temp1[(0 <= temp1) &  (temp1 < cutoff)].flatten()
-        temp2x = temp2[(0 <= temp2) &  (temp2 < cutoff)].flatten()
-        temp3x = temp3[(0 <= temp3) &  (temp3 < cutoff)].flatten()
-        temp4x = temp4[(0 <= temp4) &  (temp4 < cutoff)].flatten()
-
-        #print_img_stats(temp1x.flatten())
-        #print_img_stats(temp2x.flatten())
-        #print_img_stats(temp3x.flatten())
-        #print_img_stats(temp4x.flatten())
-        print(" -------------- balancing ---------------")
-
-        # adjust everything based on the overall mean
-        target_stdev = statistics.mean([statistics.stdev(x) for x in [temp1x,
-                                                                      temp2x,
-                                                                      temp3x,
-                                                                      temp4x]])
-        target_mean = statistics.mean(list(temp1x)+list(temp2x)+list(temp3x)+list(temp4x))
-
-
-        #target_stdev = statistics.stdev(hdul[0].data.flatten().astype(np.float32))
-        #target_mean = statistics.mean(hdul[0].data.flatten().astype(np.float32))
-        print("Overall mean is ", target_mean, ", overall stdev = ", target_stdev)
-
-        m = statistics.stdev(temp1x.flatten())
-        factor = (target_stdev/m)
-        temp1 = temp1 * factor
-        temp1x = temp1x * factor
-        m = statistics.mean(temp1x.flatten())
-        temp1 = temp1 - (m-target_mean)
-        print("Bayer 1 factor = ", factor)
-
-        m = statistics.stdev(temp2x.flatten())
-        factor = (target_stdev/m)
-        temp2 = temp2 * factor
-        temp2x = temp2x * factor
-        m = statistics.mean(temp2x.flatten())
-        temp2 = temp2 - (m-target_mean)
-        print("Bayer 2 factor = ", factor)
-
-        m = statistics.stdev(temp3x.flatten())
-        factor = (target_stdev/m)
-        temp3 = temp3 * factor
-        temp3x = temp3x * factor
-        m = statistics.mean(temp3x.flatten())
-        temp3 = temp3 - (m-target_mean)
-        print("Bayer 3 factor = ", factor)
-
-        m = statistics.stdev(temp4x.flatten())
-        factor = (target_stdev/m)
-        temp4 = temp4 * factor
-        temp4x = temp4x * factor
-        m = statistics.mean(temp4x.flatten())
-        temp4 = temp4 - (m-target_mean)
-        print("Bayer 4 factor = ", factor)
-
-        #print_img_stats(temp1x.flatten())
-        #print_img_stats(temp2x.flatten())
-        #print_img_stats(temp3x.flatten())
-        #print_img_stats(temp4x.flatten())
-
-        new_data = hdul[0].data.astype(np.float32)
-        new_data[0::2,0::2] = temp1
-        new_data[0::2,1::2] = temp2
-        new_data[1::2,0::2] = temp3
-        new_data[1::2,1::2] = temp4
-
-        new_filename = filename.replace(".fit","_M.fit")
-        new_path = Path(temp_dir) / Path(new_filename).name
-        duplicate_file_with_new_image(hdul, new_data, "M", new_path)
-        return new_path
-
-class OutputObject(BaseModel):
-    """This class represents one logical output (result) starlist
-
-    One starlist file can contain multiple logical starlists. An
-    OutputObject instance represents one of those logical
-    starlists. If the "One Starlist Per File" option is selected, each
-    instance of OutputObject will receive its own file. Otherwise,
-    multiple OutputObject instances will be combined into a single
-    file.
-
-    Attributes
-    ----------
-    logical_starlist: a single StarListSet
-        A StarListSet that results from processing of an image
-    filename: Path
-        The filename path that the file will be stored into if each
-        starlist is given its own file; otherwise, this is ignored
-    """
-    filename: Path
-    orig_image_path: Path
-    logical_starlist: StarListSet
-
-    def write(self):
-        """write this logical starlist to its own file
-
-        Create a file holding this (single) logical starlist
-
-        Parameters
-        ----------
-        None
-
-        Returns
-        -------
-        None
-        """
-
-        with open(self.filename, 'w', encoding='utf-8') as fp:
-            json.dump(self.logical_starlist.model_dump(),
-                      fp, indent=2)
 
 def probe_file_for_type(filename):
     """Figure out what kind of a smart telescope created an image
@@ -560,15 +203,15 @@ def get_json_value(data, keys):
     # data is a dictionary that was read from the JSON file
     # keys can be a string with '.' separators
     # this is pretty much a replacement for data[keys] that can handle simple and compound keys
-    value = None
+
     datav= data.copy()
     for key in keys.split('.'):
         try:
-            datav = datav[key]
+            datav = data[key]
         except KeyError:
             print(f"WARNING: JSON key '{keys}' not found in metadata")
             return None
-    return datav 
+    return datav
 
 class MetaValidator:
     """Class that tests metadata to see what's missing
@@ -617,84 +260,26 @@ class MetaValidator:
         value: any value
             The value that was read
         return: the value that belongs to this key, resolving any references,
-            or None if the key is a comment, and possible new key name        
+            or None if the key is a comment
         """
-        # utility to convert local time to UTC
-        def Local2UTC(lat, long, local_time_str):
-            # courtesy of GPT-4o
-            # Parse the local time string into a datetime object
-            local_time = datetime.strptime(local_time_str, '%Y-%m-%dT%H:%M:%S.%f')
-            # Find the timezone
-            tf = TimezoneFinder()
-            timezone_str = tf.timezone_at(lng=long, lat=lat)
-            if timezone_str is None:
-                raise ValueError("Could not find timezone for the given coordinates.")
-            # Get the timezone object
-            local_tz = pytz.timezone(timezone_str)
-            # Localize the datetime to the found timezone
-            local_dt = local_tz.localize(local_time)
-            # Convert to UTC
-            utc_dt = local_dt.astimezone(pytz.utc)
-            return utc_dt.strftime('%Y-%m-%dT%H:%M:%S')
-        
-        def get_processed_value(key, value, meta_dict):
-            nv= None
-            try:
-                tt= value[1:].split()
-                if tt[1] == "hr2deg": # convert decimal hours to degrees
-                    if val := get_json_value(meta_dict, tt[0]):
-                        nv= float(val) * 15.0
-                elif tt[1] == "Local2UTC": # convert local time to UTC
-                    # eg  "obs_time": "!DATE-OBS Local2UTC"
-                    nv= Local2UTC(meta_dict["site_lat"], meta_dict["site_lon"], get_json_value(meta_dict, tt[0]))
-                elif tt[1] == "refmtDate":
-                    try:
-                        # "obs_time": "!StackedInfo.dateTime refmtDate %m-%d-%yB%H_%M_%S" 1
-                        #   B is a blank space
-                        d= datetime.strptime(get_json_value(meta_dict, tt[0]), tt[2].replace('B', ' '))
-                        nv= d.strftime("%Y-%m-%dT%H:%M:%S")
-                        if len(tt) > 3:
-                            if tt[3]: # not zero convert to UTC
-                                nv= Local2UTC(meta_dict["site_lat"], meta_dict["site_lon"], nv)
-                    except ValueError as e:
-                        print("Error in date format ", tt[2], e)
-                        nv= None
-                elif tt[1] == "index":
-                    # eg "tel_firmware" : "!CREATOR index 1"
-                    nv= get_json_value(meta_dict, tt[0]).split()[int(tt[2])]
-                else:
-                    nv= get_json_value(meta_dict, value)
-            except:
-                pass
-            return nv
-
-        nv= None
-        # json comment to be skipped
-        if key.startswith('_'): 
-            return key, nv
-        # backup key, use only if needed
-        if key.startswith('#'):
-            # ie. do not replace an existing key
-            key= key[1:]
-            if key in meta_dict:
-                if meta_dict[key] != None:
-                    print(f"WARNING: {key} | {get_json_value(meta_dict, key)} not replaced with {value}")
-                else:
-                    nv= get_processed_value(key, value, meta_dict)
-                return key, nv
-        # compound key
+        if key.startswith('_'): # json comment
+            return None # skip
         if isinstance(value, str) and value.startswith('@'):
             # This is a reference to another key in the existing meta dir file
             self.json[key] = value # show we will get the value from the prior meta
-            nv = get_json_value(meta_dict, value[1:]) # show that the fits had the value
-            return key, nv
-        # value that needs processing
-        if isinstance(value, str) and value.startswith('!'):
-            nv= get_processed_value(key, value, meta_dict)
-            return key, nv
+            if nv := get_json_value(meta_dict, value[1:]): # show that the fits had the value
+                meta_dict[key]= nv # don't replace an existing key
+            return nv
+        if key.startswith('#'):
+            # do not replace an existing key
+            key= key[1:]
+            if key in meta_dict:
+                print(f"WARNING: {key} | {meta_dict[key]} not replaced with {value}")
+                return None
         if key in meta_dict:
             print(f"Replacing existing meta key '{key}' value with new value '{value}'")
-        return key, value
+        meta_dict[key] = value
+        return value
 
     def add_fits_item(self, key, value):
         """Add a piece of metadata pulled from the FITS file
@@ -801,11 +386,11 @@ def read_meta_from_json(filename, meta_dict):
     None
 
     """
-    bytes = Path(filename).stat().st_size
+    len_bytes = Path(filename).stat().st_size
     # This file should NEVER be more than 10K bytes long. In order to
     # limit cyber vulnerability, we immediately quit if we're given a
     # long file here.
-    if bytes > 10000:
+    if len_bytes > 10000:
         print("ERROR: Refusing to read JSON metadata file that exceeds 10K bytes.")
         raise ValueError
 
@@ -817,10 +402,8 @@ def read_meta_from_json(filename, meta_dict):
             raise
 
         for (keyword, value) in data.items():
-            nk, nv = meta_validator.add_json_item(keyword, value, meta_dict)
-            if nv is not None:
-                meta_dict[nk] = nv
-
+            if val := meta_validator.add_json_item(keyword, value, meta_dict):
+                meta_dict[keyword] = val
 
 # Read metadata from a FITS header. The metadata that's found will be
 # put into the dictionary that's passed as the argument "dict".
@@ -883,501 +466,646 @@ def wcs_text_2wcs(wcs_text):
     wcs_header = fits.Header(cards=card_list)
     return WCS(wcs_header)
 
+# Three possibilities:
+#    - a single raw RGB Bayered image
+#    - a single stacked color channel image
+#    - a single stacked luminance image (created from 3Dstacked image)
 
-# Process one (possibly de-Bayered) image
-def process_single_image(filename, width, height, metadata, options, temp_dir,
-                         starlist_json_path, passband_filter,
-                         psf_builder, field_solver, wcs=None):
-    """Turn an image file into a starlist
+class StarlistGenerator:
+    """Convert an image file into a StarlistSet
 
-    In a strictly one-to-one operation, turn an image into a starlist,
-    and store the starlist as a JSON file in the AAVSO starlist
-    format.
+    This class does all the heavy lifting for converting an image file
+    into a StarListSet. It has two externally-visible methods: a
+    constructor and write_starlists(). All of the hard work is done
+    within the constructor.
 
-    Parameters
+    Attributes
     ----------
-    filename : str
-        The pathname of the image to be turned into a starlist
+    filename : Path
+        The original image file
+    height, width : int
+        The dimensions of the original image
     metadata : dict
-        A dictionary of metadata values
-    options : class OptionBox object
-        An object holding all of the operator's conversion options
-    temp_dir : str
-        Pathname of a directory in which temporary files can be put
-    starlist_json_path : str or None
-        Pathname that will be used to store the resulting starlist. If
-        this is None, then no output object will be created
-    filter : str
-        Short string holding the AAVSO reporting name for the filter
-        associated with this image
-    psf_builder: psf_fitting.PSFBuilder reference
-        Reference to the PSFBuilder() that is only used when
-        psf_fitting is enabled.
-    wcs : astropy WCS object
-        WCS object that maps pixel coordinates to sky coordinates. If
-        provided then astrometry.net fitting is skipped.
-    field_solver: field_solve.FieldSolver
-        This is the "plate-solver" that is being used for this image
+        The metadata for this image; the metadata will be (slightly)
+        modified by this class.
+    options : OptionsAPI or OptionsUI
+        Run-time options
+    wcs : WCS
+        The WCS for the original image; the result of plate-solving
+    working_image : np.ndarray
+        The 2D array of pixel values
+    interactive : bool
+        True if this is being run with a GUI
+    telescope_type : str
+        The telescope type as found by probe_file_for_type()
+    image_type : str
+        One of the three image types, as found by probe_file_for_type()
+    bkgd_mean : float
+        A rough estimate of the image's background (sky) ADU level
+    background : np.ndarray
+        A 2D model of the sky background in the image. This blends
+        together the red, green, and blue background into one
+        slowly-varying gradient.
+    std : float
+        The standard deviation of the original image's background. An
+        attempt is made to compensate for differing red, green, and
+        blue background averages
+    noise_bkgd_per_pixel : float
+        The noise level of the sky background in e-/pixel
+    source_table : astropy.Table
+        The table listing all the stars in the image. This is always
+        kept as the "best" set of stars (derived from luminance or
+        fake monochrome channel).
+    starlist_set : schema.StarListSet
+        The StarListSet containing all the logical starlists extracted
+        from this image.
+    fwhm : float
+        The best estimate of average FWHM for stars in this image
+    field_solver : field_solve.FieldSolver
+        The FieldSolver used to plate-solve this image
+    """
+    def __init__(self, full_path, meta, options, working_image,
+                 wcs, interactive, ui, telescope_type, image_type):
+        """Construct a GenerateStarlist instance
 
-    Returns
-    -------
-    OutputObject
-        An instance of an OutputObject containing the resulting
+        Parameters
+        ----------
+        full_path : str
+            The original image file
+        meta : dict
+            The metadata for this image; the metadata will be (slightly)
+            modified by this class.
+        options : OptionsAPI or OptionsUI
+            Run-time options
+        working_image : np.ndarray
+            The 2D array of pixel values
+        wcs : WCS
+            The WCS for the original image; the result of plate-solving
+        interactive : bool
+            True if this is being run with a GUI
+        ui : UI
+            The instance of UI if this is being run interactively
+        telescope_type : str
+            The telescope type as found by probe_file_for_type()
+        image_type : str
+            One of the three image types, as found by probe_file_for_type()
+        """
+        print('Starting StarlistGenerator.__init__()')
+        self.filename : Path  = full_path
+        if working_image.ndim == 3:
+            (_, self.height, self.width) = np.shape(working_image)
+        else:
+            (self.height, self.width) = np.shape(working_image)
+        self.metadata : dict = meta
+        self.options = options
+        self.wcs : WCS = wcs
+        self.working_image : np.ndarray = working_image
+        self.interactive : bool = interactive
+        self.telescope_type = telescope_type
+        self.image_type = image_type
+        self.bkgd_mean = None
+        self.background = None
+        self.std = None
+        self.noise_bkgd_per_pixel = None
+        self.source_table = None
+        self.starlist_set = None
+        self.fwhm = None
+        self.field_solver = field_solve.FieldSolver(meta, ui, options)
+
+        if image_type == 'bayered':
+            self.starlist_set = self._process_bayer_file()
+        elif image_type == 'mono':
+            self.starlist_set = self._process_mono_file()
+        elif image_type == '3Dstacked':
+            self.starlist_set = self._process_3d_file()
+        else:
+            raise ValueError("UnknownImageType:"+image_type)
+
+    def write_starlists(self):
+        """Store the resulting StarListSet as a file
+        """
+        output_file = self.filename.with_suffix('.star')
+        with open(output_file, 'w', encoding='utf-8') as fp:
+            json.dump(self.starlist_set.model_dump(), fp, indent=2)
+        print('All starlists written.')
+
+    def _process_3d_file(self):
+        """Process a stacked image with r, g, and b layers
+
+        The three layers are stacked into a luminance layer. Star
+        centroids are established from that layer. It becomes the CV
+        (L3) starlist. The same set of centroids is used for
+        photometry of each of the three separate layers; those three
+        become TR, TG, and TB starlists.
+
+        Returns
+        -------
         StarListSet
-    """
-    # filter == 'M' is a special case == 'CV'
-    if passband_filter == 'M':
-        passband_filter = 'CV'
+            The StarListSet holding all four starlists.
 
-    # "G" needs to become "TG" if it hasn't already
-    if len(passband_filter) == 1:
-        passband_filter = 'T'+passband_filter
+        Bugs
+        ----
+            1. Assumes that all stacked images use the same format as the
+        Seestar S50. When we find something that works differently,
+        this will need to change.
+            2. Does not perform PSF fitting photometry
+        """
+        assert self.working_image.ndim == 3
+        image1 = self.working_image[0,0:,0:]
+        image2 = self.working_image[1,0:,0:]
+        image3 = self.working_image[2,0:,0:]
 
-    width = None
-    height = None
-
-    # This is essentially creating a placeholder for the star items to
-    # go into. The star items will be filled in later.
-
-    # starlist = AAVSOStarlist(metadata, passband_filter)
-    metadata['staritems'] = []
-    metadata['filter'] = passband_filter
-    metadata['gain'] = metadata['system_gain']
-    #print("model_validate: ", metadata)
-
-
-    starlist = StarList.model_validate(metadata)
-    ccd_image = CCDData.read(filename, unit='adu')
-
-    image_data = ccd_image.data.astype(np.float32)
-    (height, width) = np.shape(image_data)
-    print("height = ", height, ", width = ", width)
-
-    # Estimate the background
-    (mean, median, std) = sigma_clipped_stats(image_data, sigma=3.0)
-    sigma_clip = SigmaClip(sigma=3.0)
-    bkg_estimator = MedianBackground()
-    full_background = Background2D(
-        image_data,
-        (int(width/8),int(height/8)),
-        filter_size=(3,3),
-        sigma_clip=sigma_clip, bkg_estimator=bkg_estimator)
-    background = full_background.background
-    (bkgd_mean, _dummy, bkgd_std) = sigma_clipped_stats(background, sigma=3.0)
-    print("background.median = ", full_background.background_median,
-          ", background.rms = ", full_background.background_rms_median)
-    # Notice! noise_bkgd_per_pixel is in units of electrons, not ADU
-    noise_bkgd_per_pixel = full_background.background_rms_median * starlist.gain
-
-    # We find stars twice. First time (here) is sloppy and will
-    # probably miss lots of stars because of combination of incorrect
-    # FWHM and using default star shape thresholds. Doing this first
-    # find anyway just to get better handle on FWHM and to extract
-    # image statistics in the process.
-    daofind = DAOStarFinder(fwhm=3.0, threshold=4.*std)
-    clean_image = (image_data - background)
-    (mean, median, std) = sigma_clipped_stats(clean_image, sigma=3.0)
-    sources = daofind(clean_image)
-    print("Initial quicklook found ", len(sources), " stars.")
-    # Sort the table in-place by flux in reverse order
-    sources.sort('flux', reverse=True)
-
-    # Exclude rows where flux is saturated
-    mask = (
-        (sources['peak'] > metadata['largest_usable_adu_value'])
-        | (sources['xcentroid'] < 3.0)
-        | (sources['ycentroid'] < 3.0)
-        | (sources['flux'] < 0.0)
-    )
-    sources = sources[~mask]
-    print("after removal of saturated/poor stars, the count is ", len(sources), " stars.")
-
-    # Grab a subset of the brightest stars to estimate the FWHM
-    subset_size = min(10, len(sources))
-    if subset_size == 0:
-        print('No stars. Cannot estimate FWHM.')
-        print(f"problem file:  {metadata['filename']}")
-        if ui is not None:
-            msg = QErrorMessage()
-            msg.showMessage(
-                f'No stars: no FWHM for file: {starlist_json_path}({filename})')
-            msg.exec()
-        raise ValueError('NoStarsFound')
-    subset = sources[:subset_size]
-    fwhm_10 = psf.fit_fwhm(
-        clean_image,
-        xypos=list(zip(subset['xcentroid'], subset['ycentroid'], strict=True)),
-        fit_shape=15
-    )
-    fwhm = fwhm_10.mean()
-
-    print("Estimate FWHM from photutils = ", fwhm)
-    metadata['fwhm'] = fwhm
-
-    # Now that we know the *real* FWHM, re-find the stars
-    #print('2nd call to DAOStarFinder w/fwhm = ', fwhm,
-    #      ' and threshold= ', 4.0*std)
-    daofind = DAOStarFinder(fwhm=fwhm, threshold=4.0*std,
-                            sharplo=0.05, sharphi=3.0,
-                            roundlo=-4.0, roundhi=4.0)
-    sources = daofind(clean_image)
-    print("Sources found before edge-culling: ", len(sources), " stars.")
-
-    # eliminate stars too close to the edges
-    EDGELIMIT = 15
-    mask = np.array([row['xcentroid'] < EDGELIMIT
-                     or row['xcentroid'] > width-EDGELIMIT
-                     or row['ycentroid'] < EDGELIMIT
-                     or row['ycentroid'] > height-EDGELIMIT
-                     for row in sources])
-    sources = sources[~mask]
-    print("Official source extraction found ", len(sources), " stars.")
-    sources.sort('flux', reverse=True)
-
-    phot_radius = options.aperture_size_fwhm * fwhm
-    annulus_inner = max(3*phot_radius, 4*fwhm)
-    annulus_outer = math.sqrt(100*phot_radius**2 + annulus_inner**2)
-    print(f"Aperture radius = {phot_radius:.2f} , with {math.pi * phot_radius * phot_radius:.2f} pixels total")
-
-    # Perform the photometry
-    positions = list(zip(sources['xcentroid'],
-                         sources['ycentroid'], strict=False))
-    apertures = aperture.CircularAperture(positions, r=phot_radius)
-    # Notice! tot_noise_bkgd is in units of electrons
-    tot_noise_bkgd = np.sqrt(apertures.area) * noise_bkgd_per_pixel
-
-    if options.use_annulus:
-        annuli = aperture.CircularAnnulus(positions, annulus_inner, annulus_outer)
-        annulus_sigma_clip = SigmaClip(sigma=2.0)
-        annulus_data = aperture.ApertureStats(clean_image,
-                                              annuli,
-                                              sigma_clip=annulus_sigma_clip,
-                                              sum_method='center')
-
-        central_sum = aperture.ApertureStats(clean_image,
-                                             apertures,
-                                             sum_method='exact',
-                                             local_bkg=annulus_data.mean)
-        centroids = central_sum.centroid
-        sources['x'] = centroids[:, 0]
-        sources['y'] = centroids[:, 1]
-        sources['tot_flux'] = central_sum.sum
-        sources.add_column(annulus_data.mean, name='mean_annulus')
-    else: # not using an annulus
-        result = aperture.aperture_photometry(clean_image, apertures)
-        print(result)
-
-        # Make some column names match the starlist schema
-        sources['tot_flux'] = result['aperture_sum']
-        # Use .value for these next two because they are astropy Quantity
-        # objects with the unit "pixels" and we don't need the unit.
-        sources['x'] = result['xcenter'].value
-        sources['y'] = result['ycenter'].value
-
-    bad_rows = []
-    min_adu = 1.0 # max(0.0, tot_noise_bkgd/starlist.gain)
-    # Clean up the sources table
-    print("Sources cleanup starts with ", len(sources), " stars.")
-    print('   ... and min_adu of ', min_adu, ' and gain = ',
-          starlist.gain)
-    print('   ... and smallest peak_flux of ', min(sources['peak']))
-    print('   ... and smallest tot_flux of ', min(sources['tot_flux']))
-
-    for row,content in enumerate(sources):
-        if (content['x'] <= 3.0
-            or content['y'] <= 3.0
-            or content['x'] >= (width-3)
-            or content['y'] >= (height-3)
-            or content['tot_flux'] <= min_adu
-            or content['peak'] <= min_adu):
-            bad_rows.append(row)
-    print("... removing ", len(bad_rows), " stars.")
-    sources.remove_rows(bad_rows)
-    print("... now have ", len(sources), " stars.")
-
-    # Populate the background flux column. The "+0.5" is to reproduce the
-    # behavior of the original code.
-    sources['bkgd_flux'] = [
-        background[min(int(0.5+y), height-1), min(int(0.5+x), width-1)]
-        for (x, y) in zip(sources['x'], sources['y'], strict=True)
-    ]
-    if options.use_annulus:
-        sources['bkgd_flux'] += sources['mean_annulus']
-
-    # Turn this on to see the original image with "valid" stars
-    # circled. You'll probably need to adjust the 600/1600 in imshow.
-    if False:
-        import matplotlib.pyplot as plt
-        from matplotlib.patches import Circle
-        fig,ax = plt.subplots(1)
-        ax.imshow(ccd_image, cmap='Greys', vmin=600.0, vmax=1600.0)
-        for row in sources:
-            ax.add_patch(Circle((row['x'],row['y']), 8, fc=None, fill=False))
-        plt.show()
-
-    sources.rename_column('peak', 'peak_flux')
-    # Sort so that order is well-defined and tests will pass
-    sources.sort(keys='tot_flux', reverse=True)
-
-    # Calculate errors using table columns and star flux error in column
-    poiss_noise = np.sqrt(starlist.gain * sources['tot_flux'])
-    tot_noise = np.sqrt(poiss_noise**2 + tot_noise_bkgd**2) / starlist.gain
-    sources['flux_err'] = tot_noise
-
-    # Set flux errors to zero for negative fluxes
-    sources['flux_err'][sources['tot_flux'] < 0] = 0.0
-
-    # Calculate SNR and drop stars with low SNR or with negative flux
-    snr = sources['tot_flux'] / sources['flux_err']
-    good_snr = (
-        (snr > LOW_SNR)              # Only keep stars with decent SNR
-        & ~np.isnan(snr)             # Drop any nan SNRs, likely from flux_err=0
-        & (sources['tot_flux'] > 0)  # Drop any negative fluxes, which are unphysical
-    )
-
-    sources = sources[good_snr]
-
-    # Check if WCS is already present in the FITS header
-    if wcs is None:
-        wcs = ccd_image.wcs # This looks for the WCSAXES keyword
-
-    wcs = field_solver.solve(sources, width, height, source_wcs=wcs)
-    if wcs is None:
-        print('field_solver failed to solve the field.')
-        print(f"problem file:  {metadata['filename']}")
-        if ui is not None:
-            msg = QErrorMessage()
-            msg.showMessage(
-                f'Field_solver failed to solve the field for file: {starlist_json_path}({filename})')
-            msg.exec()
-        raise ValueError('FieldSolver Failed')
-
-    # Calculate RA and Dec
-    #star_coords = wcs.pixel_to_world(sources['x'], sources['y'])
-    #sources['ra'] = star_coords.ra.deg
-    #sources['dec'] = star_coords.dec.deg
-
-    print(sources.colnames)
-    print(StarItem.model_fields.keys())
-    print("Creating starlist with ", len(sources), " stars.")
-    starlist.staritems = StarList.from_table(sources, metadata=starlist.model_dump()).staritems
-
-    ################################
-    ## Do PSF fitting, if requested
-    ################################
-    if options.use_psf_fitting:
-        starlist.staritems.sort(key=lambda star:
-                                star.tot_flux, reverse=True)
-        psf_builder.add_image(clean_image,
-                              metadata,
-                              noise_bkgd_per_pixel,
-                              starlist)
-
-    print("starlist is ", type(starlist))
-    print('creating OutputObject w/filename = ',
-          metadata['orig_filename'])
-    if starlist_json_path is not None:
-        return OutputObject(
-            filename=starlist_json_path,
-            orig_image_path=metadata['orig_filename'],
-            logical_starlist=StarListSet(star_lists=[starlist])
-        )
-    return None
-
-def process_3d_file(filename, temp_dir):
-    """Process an RGB image, converting it into one or more starlists
-
-    Process a stacked, one-shot-color image using the user's selected options
-    to turn it into some number of starlists. Depending on options,
-    the image may be separated into color subchannels or treated
-    as a monochrome image. Create a starlist for each resulting channel.
-
-    Parameters
-    ----------
-    filename : str
-        Pathname of the image to be processed
-    temp_dir : str
-        Pathname of a directory in which temporary files can be put
-
-    Returns
-    -------
-    list of ImageDescriptors (tuples: (filename, filtername))
-        These are the three files that this 3D file was converted into
-
-    """
-    output_filenames = [] # each entry in this list is a tuple: (filter, filename)
-    with fits.open(filename) as hdul:
-        image1 = hdul[0].data[0,0:,0:]
-        image2 = hdul[0].data[1,0:,0:]
-        image3 = hdul[0].data[2,0:,0:]
-
+        # We know the following mapping is correct for Seestar. Need
+        # examples from other vendors, though.
         image_list = [(image1, 'TR'),
                       (image2, 'TG'),
                       (image3, 'TB')]
 
-        for (data, color) in image_list:
-            output_tgt = Path(temp_dir) / ("image_"+color+".fits")
+        sum_image = image1 + image2 + image3
+        sum_copy_image = sum_image.copy()
+        self.source_table = self._find_sources(sum_copy_image)
+        self.source_table = self._do_photometry(sum_image, self.source_table)
+        self.wcs = self._setup_wcs(self.source_table, self.wcs)
+        self.metadata['filter'] = 'CV' # should be 'L3'
+        starlist = StarList.from_table(self.source_table, metadata=self.metadata)
+        final_starlists = [starlist]
 
-            hdu = fits.PrimaryHDU()
-            # push keywords in from the original file
-            hdu.header = hdul[0].header.copy()
+        for (image,color) in image_list:
+            copy_source_table = self.source_table.copy()
+            copy_source_table = self._do_photometry(image, copy_source_table)
+            self.metadata['filter'] = color
+            starlist = StarList.from_table(copy_source_table, metadata=self.metadata)
+            final_starlists.append(starlist)
 
-            hdu.data = data
-            hdu.header['filter'] = (color, 'Bayer color mask')
-            # update_header will "fix" the header to match the data
-            hdu.update_header()
-            fits.writeto(output_tgt, data, header=hdu.header, overwrite=True)
-            ImageDescriptor = namedtuple('ImageDescriptor', ['filter','filename'])
-            output_filenames.append(ImageDescriptor(color,output_tgt))
-    return output_filenames
+        return StarListSet(star_lists=final_starlists)
 
-def process_rgb_file(filename, options, temp_dir, metadata,
-                     starlist_tgtname, psf_builder, wcs=None, interactive=True):
-    """Process an RGB image, converting it into one or more starlists
+    def _process_mono_file(self):
+        """Process a single (monochrome) image
 
-    Process a one-shot-color image using the user's selected options
-    to turn it into some number of starlists. Depending on options,
-    the image may be separated into Bayer color subchannels or treated
-    as a monochrome image. Depending on options, pixels may or may not
-    have their values adjusted. Depending on options, de-Bayered
-    images may or may not be shifted into alignment and stacked into a
-    luminance channel. Create a starlist for each resulting channel.
+        The single image will have stars identified, the image will be
+        plate-solved, and photometry will be done on each star.
 
-    Parameters
-    ----------
-    filename : str
-        Pathname of the image to be processed
-    options : class OptionBox object
-        Reference to the OptionBox object that holds information on
-        the user's processing options
-    temp_dir : str
-        Pathname of a directory in which temporary files can be put
-    metadata : dict
-        Dictionary of metadata for the image
-    starlist_tgtname : str
-        Pathname to be used (possibly as a template) for the resulting starlist(s).
-    wcs : astropy WCS object, optional
-        WCS object that maps pixel coordinates to sky coordinates. If
-        provided then astrometry.net fitting is skipped.
-    psf_builder: psf_fitting.PSFBuilder
-        This option is always present (even when PSF fitting isn't
-        being done). It's a reference to the PSF processing class.
-    interactive : bool, optional
-        If True, the user will be prompted to select the
-        processing options. If False, the options will be taken from
-        the `options` parameter.
+        Returns
+        -------
+        StarListSet
+            A StarListSet containing a single StarList
 
-    Returns
-    -------
-    list of OutputObjects
-        These are the logical starlists that result.
+        Bugs
+        ----
+        Does not perform PSF fitting properly
+        """
+        self.source_table = self._find_sources(self.working_image)
+        self.source_table = self._do_photometry(self.working_image, self.source_table)
+        self.wcs = self._setup_wcs(self.source_table, self.wcs)
+        starlist = StarList.from_table(self.source_table, metadata=self.metadata)
 
-    """
-    global ui
-    if not meta_validator.validate(metadata):
-        return []
-    field_solver = field_solve.FieldSolver(metadata, ui, options)
-    metadata['width'] = metadata['NAXIS1']
-    metadata['height'] = metadata['NAXIS2']
-    de_bayer = options.de_bayer
-    fits_format = metadata['telescope_probe'][1] # fits_format
-    # can't get here without a telescope_probe   if 'fits_format' in metadata else "bayered")
-    output_objects = []
-    single_color_files = []
-    do_stacking = False
-    # Copy the original metadata so that whatever changes we make here
-    # don't haunt us later.
-    adj_meta_dict = dict(metadata)
-    if fits_format == "3Dstacked":
-        # Need the user to choose between combining the R, G, and B
-        # images into a single luminance channel vs. generating three
-        # starlists, one for each of the three channels. Choice will
-        # go straight into options.split_stacked_image.
-        if interactive:
-            popup = Option3DPopup(options)
-            ret_val = popup.exec()
-            # if the popup returned 0, then the user selected the Cancel
-            # button.
-            if ret_val == 0:
-                return []
+        ################################
+        ## Do PSF fitting, if requested
+        ################################
+        if self.options.use_psf_fitting:
+            starlist.staritems.sort(key=lambda star:
+                                    star.tot_flux, reverse=True)
+            raise NotImplementedError("PSF fitting not implemented yet")
+            # psf_builder.add_image(self.working_image,
+            #                       self.metadata,
+            #                       self.noise_bkgd_per_pixel,
+            #                       starlist)
 
-        single_color_files = process_3d_file(filename, temp_dir)
-        color_width = metadata['width']
-        color_height = metadata['height']
-        do_stacking = not options.split_stacked_image
-        #adj_meta_dict['pixscale'] /= 2.0 # Correct for non-de-Bayered image
-    elif de_bayer:
-        single_color_files = de_bayer_file(filename, adj_meta_dict, temp_dir)
-        color_width = metadata['width']/2
-        color_height = metadata['height']/2
-        do_stacking = options.stack_channels
+        return StarListSet(star_lists=starlist)
 
-    if (not field_solver.solved) and fits_format != "3Dstacked":
-        # Process the original image, just to get the field solved
-        # for use in jump-starting the deBayered subimages
-        process_single_image(filename,
-                             metadata['width'],
-                             metadata['height'],
-                             adj_meta_dict,
-                             options,
-                             temp_dir,
-                             None,
-                             'M',
-                             psf_builder,
-                             field_solver,
-                             wcs=wcs)
-    if do_stacking:
-        print("Stacking images")
-        stacked_image = stack_images(single_color_files, options, temp_dir)
-        starlist_filename = starlist_tgtname.replace("$$","M")
-        output_objects.append(process_single_image(stacked_image,
-                                                   color_width, color_height,
-                                                   adj_meta_dict,
-                                                   options,
-                                                   temp_dir,
-                                                   starlist_filename,
-                                                   'M',
-                                                   psf_builder,
-                                                   field_solver,
-                                                   wcs=wcs))
-    elif len(single_color_files) > 1:
-        print("Processing separate channels")
-        tg_num = 1
-        for (photfilter,file) in single_color_files:
-            filter_file = photfilter
-            # Hangle "TG" and "G" filters the same
-            if photfilter in ['TG', 'G']:
-                filter_file = "TG"+str(tg_num)
-                tg_num += 1
-            starlist_filename = starlist_tgtname.replace("$$",filter_file)
-            output_objects.append(process_single_image(file,
-                                                       color_width, color_height,
-                                                       adj_meta_dict,
-                                                       options,
-                                                       temp_dir,
-                                                       starlist_filename,
-                                                       photfilter,
-                                                       psf_builder,
-                                                       field_solver,
-                                                       wcs=wcs))
-    else:
-        # Not de-Bayered; treat as single monochrome image
-        print("Processing single monochrome image")
-        starlist_filename = starlist_tgtname.replace("$$","M") # M==monochrome
-        print(metadata)
-        output_objects.append(process_single_image(filename,
-                                                   adj_meta_dict['width'],
-                                                   adj_meta_dict['height'],
-                                                   adj_meta_dict,
-                                                   options,
-                                                   temp_dir,
-                                                   starlist_filename,
-                                                   'M',
-                                                   psf_builder,
-                                                   field_solver,
-                                                   wcs=wcs))
-    print(f"ProcessRGB: returning {len(output_objects)} output_objects.")
-    return output_objects
+    def _process_bayer_file(self):
+        """Process a single raw (Bayered) image
+
+        A fake monochrome image will be used to create a list of
+        stars. That list will be used for photometry 4 times: once on
+        the fake monochrome image and once each on the original image
+        with only red, green, or blue pixels masked "true". The four
+        resulting starlists will be packed into a StarListSet
+
+        Returns
+        -------
+        StarListSet
+            A StarListSet containing the four resulting StarLists
+
+        Bugs
+        ----
+            Does not perform PSF fitting photometry
+        """
+        pattern = self.metadata['bayerpat']
+
+        # now re-jumble based on roworder and ybaryoff
+        print('extract_mono_and_rgb: initial pattern = ', pattern)
+        if self.metadata['roworder'] == 'bottom-up':
+            pattern = pattern[2:3] + pattern[0:1]
+        if self.metadata['ybayroff'] != 0:
+            pattern = pattern[1] + pattern[0] + pattern[3] + pattern[2]
+
+        print('adjusted pattern = ', pattern)
+        img_slice = {}
+        img_slice[0] = (0, 0)
+        img_slice[1] = (0, 1)
+        img_slice[2] = (1, 0)
+        img_slice[3] = (1, 1)
+
+        bayer_info = [] # list of tuples (filter, img_mask)
+        total_pixels = self.height * self.width
+        for color in ['R', 'B', 'G']:
+            # In the mask, True means masked/ignore; False means yes/use/valid
+            img_mask = np.ones((self.height, self.width), dtype=bool)
+            for channel in range(4):
+                if pattern[channel] == color:
+                    slicer = img_slice[channel]
+                    img_mask[slicer[0]::2, slicer[1]::2] = False
+
+            print('Color ', color, ' has ',
+                  total_pixels - np.count_nonzero(img_mask),
+                  'usable cells')
+            bayer_info.append(('T'+color, img_mask))
+
+        # Make a copy, since we're going to adjust pixels to get best
+        # star detection & centroids
+        full_image = np.copy(self.working_image)
+        self.source_table = self._find_sources(full_image, do_color_balance=True)
+        self.source_table = self._do_photometry(self.working_image, self.source_table)
+        print('...top level has ', len(self.source_table), ' stars.')
+        self.wcs = self._setup_wcs(self.source_table, self.wcs)
+        self.metadata['filter'] = 'CV' # should be 'L4'
+        starlist = StarList.from_table(self.source_table, metadata=self.metadata)
+        final_starlists = [starlist]
+
+        for (color, img_mask) in bayer_info:
+            copy_source_table = self.source_table.copy()
+            copy_source_table = self._do_photometry(self.working_image,
+                                                    copy_source_table,
+                                                    image_mask=img_mask)
+            print('...top level has ', len(copy_source_table), ' stars.')
+            self.metadata['filter'] = color
+            starlist = StarList.from_table(copy_source_table, metadata=self.metadata)
+            final_starlists.append(starlist)
+
+        return StarListSet(star_lists=final_starlists)
+
+    def _bayer_balance_image(self, image):
+        """adjust pixel values per the Bayer pattern
+
+        Perform a linear adjustment to
+        each pixel value according to its position in the Bayer
+        pattern. The adjustment factors are calculated so as to give the
+        new file the same background grayness and the same background
+        noise in each of the four Bayer pattern pixels.
+
+        The image itself is changed by this operation.
+
+        Parameters
+        ----------
+        image : np.ndarray
+            The image to be modified
+        """
+        temp1 = image[0::2,0::2].astype(np.float32)
+        temp2 = image[0::2,1::2].astype(np.float32)
+        temp3 = image[1::2,0::2].astype(np.float32)
+        temp4 = image[1::2,1::2].astype(np.float32)
+
+        def print_img_stats(data):
+            data = data.astype(np.float32)
+            print("        Min = ", min(data),
+                  ", Max = ", max(data),
+                  ", Avg = ", statistics.mean(data),
+                  ", Stdev = ", statistics.stdev(data))
+
+        raw_pixels = image.flatten().astype(np.float32)
+        raw_avg = statistics.mean(raw_pixels)
+        raw_stdev = statistics.stdev(raw_pixels)
+        cutoff = raw_avg + 5*raw_stdev
+
+        ## sample the image into tempnx, to be used to generate statistics
+        temp1x = temp1[(0 <= temp1) &  (temp1 < cutoff)].flatten()
+        temp2x = temp2[(0 <= temp2) &  (temp2 < cutoff)].flatten()
+        temp3x = temp3[(0 <= temp3) &  (temp3 < cutoff)].flatten()
+        temp4x = temp4[(0 <= temp4) &  (temp4 < cutoff)].flatten()
+
+        #print_img_stats(temp1x.flatten())
+        #print_img_stats(temp2x.flatten())
+        #print_img_stats(temp3x.flatten())
+        #print_img_stats(temp4x.flatten())
+        print(" -------------- balancing ---------------")
+
+        # adjust everything based on the overall mean
+        target_stdev = statistics.mean([statistics.stdev(x) for x in [temp1x,
+                                                                      temp2x,
+                                                                      temp3x,
+                                                                      temp4x]])
+        target_mean = statistics.mean(list(temp1x)+list(temp2x)+list(temp3x)+list(temp4x))
+
+
+        #target_stdev = statistics.stdev(hdul[0].data.flatten().astype(np.float32))
+        #target_mean = statistics.mean(hdul[0].data.flatten().astype(np.float32))
+        print("Overall mean is ", target_mean, ", overall stdev = ", target_stdev)
+
+        m = statistics.stdev(temp1x.flatten())
+        factor = target_stdev/m
+        temp1 = temp1 * factor
+        temp1x = temp1x * factor
+        m = statistics.mean(temp1x.flatten())
+        temp1 = temp1 - (m-target_mean)
+        print("Bayer 1 factor = ", factor)
+
+        m = statistics.stdev(temp2x.flatten())
+        factor = target_stdev/m
+        temp2 = temp2 * factor
+        temp2x = temp2x * factor
+        m = statistics.mean(temp2x.flatten())
+        temp2 = temp2 - (m-target_mean)
+        print("Bayer 2 factor = ", factor)
+
+        m = statistics.stdev(temp3x.flatten())
+        factor = target_stdev/m
+        temp3 = temp3 * factor
+        temp3x = temp3x * factor
+        m = statistics.mean(temp3x.flatten())
+        temp3 = temp3 - (m-target_mean)
+        print("Bayer 3 factor = ", factor)
+
+        m = statistics.stdev(temp4x.flatten())
+        factor = target_stdev/m
+        temp4 = temp4 * factor
+        temp4x = temp4x * factor
+        m = statistics.mean(temp4x.flatten())
+        temp4 = temp4 - (m-target_mean)
+        print("Bayer 4 factor = ", factor)
+
+        #print_img_stats(temp1x.flatten())
+        #print_img_stats(temp2x.flatten())
+        #print_img_stats(temp3x.flatten())
+        #print_img_stats(temp4x.flatten())
+
+        image[0::2,0::2] = temp1
+        image[0::2,1::2] = temp2
+        image[1::2,0::2] = temp3
+        image[1::2,1::2] = temp4
+
+    def _remove_background(self, image, do_color_balance=False):
+        """Calculate and remove the background from an image
+
+        Parameters
+        ----------
+        image : np.ndarray
+            The image. The background will be estimated and then
+            subtracted from each pixel
+        do_color_balance : bool
+            If True, the four pixel color channels will be adjusted
+            with a linear transformation to achieve a flat gray
+            background that has the same noise level in each color
+            channel.
+        """
+        gain = self.metadata['system_gain']
+
+        if do_color_balance:
+            self._bayer_balance_image(image)
+        (self.bkgd_mean,
+         median,
+         self.std) = sigma_clipped_stats(image, sigma=3.0)
+        sigma_clip = SigmaClip(sigma=3.0)
+        bkg_estimator = MedianBackground()
+        full_background = Background2D(image,
+                                       (int(self.width/8),int(self.height/8)),
+                                       filter_size=(3,3),
+                                       exclude_percentile=80,
+                                       sigma_clip=sigma_clip,
+                                       bkg_estimator=bkg_estimator)
+        background = full_background.background
+        image -= background
+        (self.bkgd_mean,
+         _dummy,
+         bkgd_std) = sigma_clipped_stats(background, sigma=3.0)
+        print("background.median = ", full_background.background_median,
+              ", background.rms = ", full_background.background_rms_median)
+        self.noise_bkgd_per_pixel = full_background.background_rms_median * gain
+        self.background = background
+
+    def _find_sources(self, working_image, do_color_balance=False):
+        """Find the stars in an image
+
+        Parameters
+        ----------
+        working_image : np.ndarray
+            The image to be searched
+
+        Returns
+        -------
+        astropy.Table
+            A table of the stars found
+        """
+        # We find stars twice. First time (here) is sloppy and will
+        # probably miss lots of stars because of combination of incorrect
+        # FWHM and using default star shape thresholds. Doing this first
+        # find anyway just to get better handle on FWHM and to extract
+        # image statistics in the process.
+
+        local_image = working_image.copy()
+        self._remove_background(local_image, do_color_balance=do_color_balance)
+
+        daofind = DAOStarFinder(fwhm=3.0, threshold=4.*self.std)
+        sources = daofind(local_image)
+        print("Initial quicklook found ", len(sources), " stars.")
+        # Sort the table in-place by flux in reverse order
+        sources.sort('flux', reverse=True)
+
+        # Exclude rows where flux is saturated
+        mask = (
+            (sources['peak'] > self.metadata['largest_usable_adu_value'])
+            | (sources['xcentroid'] < 3.0)
+            | (sources['ycentroid'] < 3.0)
+            | (sources['flux'] < 0.0)
+        )
+        sources = sources[~mask]
+        print("after removal of saturated/poor stars, the count is ", len(sources), " stars.")
+
+        # Grab a subset of the brightest stars to estimate the FWHM
+        subset_size = min(10, len(sources))
+        if subset_size == 0:
+            print('No stars. Cannot estimate FWHM.')
+            if ui is not None:
+                msg = QErrorMessage()
+                msg.showMessage(
+                    f'No stars: no FWHM for file: {self.metadata['filename']}')
+                msg.exec()
+            raise ValueError('NoStarsFound')
+        subset = sources[:subset_size]
+        fwhm = psf.fit_fwhm(local_image,
+                            xypos=list(zip(subset['xcentroid'],
+                                           subset['ycentroid'],
+                                           strict=True)),
+                            fit_shape=15).mean()
+        print("Estimate FWHM from photutils = ", fwhm)
+        self.metadata['fwhm'] = fwhm
+        self.fwhm = fwhm
+
+        # Now that we know the *real* FWHM, re-find the stars
+        daofind = DAOStarFinder(fwhm=fwhm, threshold=4.0*self.std,
+                                sharplo=0.05, sharphi=3.0,
+                                roundlo=-4.0, roundhi=4.0)
+        sources = daofind(local_image)
+        print("Sources found before edge-culling: ", len(sources), " stars.")
+        sources.rename_column('peak', 'peak_flux')
+
+        # eliminate stars too close to the edges
+        edgelimit = 15
+        mask = np.array([row['xcentroid'] < edgelimit
+                         or row['xcentroid'] > self.width-edgelimit
+                         or row['ycentroid'] < edgelimit
+                         or row['ycentroid'] > self.height-edgelimit
+                         for row in sources])
+        sources = sources[~mask]
+        sources.sort('flux', reverse=True)
+        return sources
+
+    def _do_photometry(self, working_image, sources, image_mask=None):
+        """Perform photometry on a set of sources in an image
+
+        Aperture photometry will be performed, using a sky annulus to
+        determine the (residual) sky background for each star. The
+        input "sources" table is both an input and output. Centroid
+        locations will be taken from the table, while flux and
+        background values will be written into the table.
+
+        Parameters
+        ----------
+        working_image : np.ndarray
+            The image
+        sources: astropy.Table
+            The table containing x- and y-coordinate centroids for
+            each star to be measured. (Any existing flux or background
+            values will be overwritten)
+        image_mask : np.ndarray of bool
+            Only pixels with a value of True will be used in the
+            photometry. Must have the same shape as working_image.
+
+        """
+        gain = self.metadata['system_gain']
+        phot_radius = self.options.aperture_size_fwhm * self.fwhm
+        annulus_inner = max(3*phot_radius, 4*self.fwhm)
+        annulus_outer = math.sqrt(100*phot_radius**2 + annulus_inner**2)
+        print(f"Aperture radius = {phot_radius:.2f} , with {math.pi * phot_radius * phot_radius:.2f} pixels total")
+
+        sigma_clip = SigmaClip(sigma=3.0)
+        bkg_estimator = MedianBackground()
+        full_background = Background2D(working_image,
+                                       (int(self.width/8),int(self.height/8)),
+                                       filter_size=(3,3),
+                                       exclude_percentile=80,
+                                       sigma_clip=sigma_clip,
+                                       bkg_estimator=bkg_estimator)
+        # noise_bkgd_per_pixel in units of e-/pixel
+        noise_bkgd_per_pixel = full_background.background_rms_median * gain
+
+        # Perform the photometry
+        positions = list(zip(sources['xcentroid'],
+                             sources['ycentroid'], strict=False))
+        apertures = aperture.CircularAperture(positions, r=phot_radius)
+        # Notice! tot_noise_bkgd is in units of electrons
+        tot_noise_bkgd = np.sqrt(apertures.area) * noise_bkgd_per_pixel
+
+        annuli = aperture.CircularAnnulus(positions, annulus_inner, annulus_outer)
+        annulus_sigma_clip = SigmaClip(sigma=2.0)
+        annulus_data = aperture.ApertureStats(working_image,
+                                              annuli,
+                                              sigma_clip=annulus_sigma_clip,
+                                              mask=image_mask,
+                                              sum_method='center')
+
+        central_sum = aperture.ApertureStats(working_image,
+                                             apertures,
+                                             sum_method='exact',
+                                             mask=image_mask,
+                                             local_bkg=annulus_data.mean)
+        sources['x'] = sources['xcentroid']
+        sources['y'] = sources['ycentroid']
+        sources['tot_flux'] = central_sum.sum
+        if 'bkgd_flux' not in sources.columns:
+            sources.add_column(annulus_data.mean, name='bkgd_flux')
+        else:
+            sources['bkgd_flux'] = annulus_data.mean
+        sources['peak_flux'] = central_sum.max + annulus_data.mean
+
+        bad_rows = []
+        min_adu = 1.0 # max(0.0, tot_noise_bkgd/starlist.gain)
+        # Clean up the sources table
+        print("Sources cleanup starts with ", len(sources), " stars.")
+        print('   ... and min_adu of ', min_adu, ' and gain = ', gain)
+        print('   ... and smallest peak_flux of ', min(sources['peak_flux']))
+        print('   ... and smallest tot_flux of ', min(sources['tot_flux']))
+
+        for row,content in enumerate(sources):
+            if (content['x'] <= 3.0
+                or content['y'] <= 3.0
+                or content['x'] >= (self.width-3)
+                or content['y'] >= (self.height-3)
+                or content['tot_flux'] <= min_adu
+                or content['peak_flux'] <= min_adu):
+                bad_rows.append(row)
+        print("... removing ", len(bad_rows), " stars.")
+        sources.remove_rows(bad_rows)
+        print("... now have ", len(sources), " stars.")
+
+        # Turn this on to see the original image with "valid" stars
+        # circled. You'll probably need to adjust the 600/1600 in imshow.
+        if False:
+            import matplotlib.pyplot as plt
+            from matplotlib.patches import Circle
+            fig,ax = plt.subplots(1)
+            ax.imshow(self.working_image, cmap='Greys', vmin=600.0, vmax=1600.0)
+            for row in self.sources:
+                ax.add_patch(Circle((row['x'],row['y']), 8, fc=None, fill=False))
+            plt.show()
+
+        # Sort so that order is well-defined and tests will pass
+        sources.sort(keys='tot_flux', reverse=True)
+
+        # Calculate errors using table columns and star flux error in column
+        poiss_noise = np.sqrt(gain * sources['tot_flux'])
+        tot_noise = np.sqrt(poiss_noise**2 + tot_noise_bkgd**2) / gain
+        sources['flux_err'] = tot_noise
+
+        # Set flux errors to zero for negative fluxes
+        sources['flux_err'][sources['tot_flux'] < 0] = 0.0
+
+        # Calculate SNR and drop stars with low SNR or with negative flux
+        snr = sources['tot_flux'] / sources['flux_err']
+        good_snr = (
+            (snr > LOW_SNR)              # Only keep stars with decent SNR
+            & ~np.isnan(snr)             # Drop any nan SNRs, likely from flux_err=0
+            & (sources['tot_flux'] > 0)  # Drop any negative fluxes, which are unphysical
+        )
+
+        return sources[good_snr]
+
+    def _setup_wcs(self, sources, wcs):
+        """Plate-solve and set RA/Dec in the sources table
+
+        Parmaters
+        ---------
+        sources : astropy.Table
+            List of stars in the image
+        wcs : WCS
+            If not None, this WCS will prevent plate-solving from
+            being performed.
+
+        Returns
+        -------
+        WCS
+            The WCS used to set Dec/RA for the stars.
+        """
+        wcs = self.field_solver.solve(sources, self.width, self.height, source_wcs=wcs)
+        if wcs is None:
+            print('field_solver failed to solve the field.')
+            if self.interactive:
+                msg = QErrorMessage()
+                msg.showMessage(
+                    f'Field_solver failed to solve the field for file: {self.filename}')
+                msg.exec()
+            raise ValueError('FieldSolver Failed')
+        return wcs
 
 ################################################################
 ##        Display GUI Comes Next
@@ -1545,78 +1273,82 @@ class FileChooser:
         """
         self.text_widget.setText("")
 
-class OptionsUI:
-    def __init__(self):
-        """Create an object for the UI options, including file names
 
-        Create an OptionsUI object (a singleton), and associate the
-        related display button widgets with a set of available option
-        queries.
+class PhotometryMethods(StrEnum):
+    """Enumeration of photometry methods"""
+    # See the python documentation for Enums work. Behind the scenes pythopn
+    # creates a class whose attributes have the names listed below.
+    APERTURE = "aperture"
+    PSF = "psf"
 
-        Parameters
-        ----------
-        None
 
-        Returns
-        -------
-        An OptionsUI instance
-        """
-        # File choosers first...use the properties defined later
-        # to get the file names out.
-        self._bias_file = FileChooser(ui.window.bias_entry,
-                                      ui.window.BiasButton)
-
-        self._dark_file = FileChooser(ui.window.dark_entry,
-                                      ui.window.DarkButton)
-        self._flat_file = FileChooser(ui.window.flat_entry,
-                                      ui.window.FlatButton)
-        self._meta_file = FileChooser(ui.window.meta_entry,
-                                      ui.window.MetaButton,
-                                      multiple_files_okay=True)
-        self._image_file = FileChooser(ui.window.image_filename_list,
-                                       ui.window.AddImageButton,
-                                       multiple_files_okay=True)
-
-        # The remaining options
-        self.pretend_monochrome = ui.window.MonochromeButton
-        self.one_channel = ui.window.SingleChannelButton
-        self.stacked_channels = ui.window.StackedButton
-        self.interp_stack_channels = ui.window.StackInterpButton
-        self.color_correx = ui.window.ColorBalanceButton
-        self.psf_photometry = ui.window.PSFPhotButton
-        self.aperture_photometry = ui.window.AperturePhotButton
-
-        self.add_wcs_to_image = ui.window.UpdateWCSButton
-        self.aperture_size = ui.window.ApertureSize
-        self.subtract_annulus = ui.window.AnnulusSubtractionCheckbox
-
-        self.split_stacked_image = True
+class OptionsAPI(BaseModel):
+    model_config = ConfigDict(extra='forbid', validate_default=True, validate_assignment=True)
+    aperture_size: float = 1.0
+    photometry_method: PhotometryMethods = PhotometryMethods.APERTURE
+    astrometry_net_api_key: str = ""
+    bias_file: str = ""
+    dark_file: str = ""
+    flat_file: str = ""
+    meta_file: list[str] = [""]
+    image_file: list[str] = [""]
 
     @property
-    def add_wcs(self):
-        """Query whether WCS keywords need to be added to the image
-
-        Return True if the input FITS file needs to have the WCS
-        information added to it
-
-        Parameters
-        ----------
-        None
-
-        Returns
-        -------
-        bool
-            True if WCS is to be added
-        """
-        return self.add_wcs_to_image.isChecked()
+    def use_psf_fitting(self):
+        return self.photometry_method == PhotometryMethods.PSF
 
     @property
     def aperture_size_fwhm(self):
-        """Query the aperture size factor
+        return self.aperture_size
 
-        The aperture size factor is multiplied by the image's average
-        FWHM to establish the photometry aperture radius. This query
-        returns that multiplicative factor.
+    @classmethod
+    def from_ui(cls, ui):
+        """Create an OptionsAPI object from a UI object
+
+        Create an OptionsAPI object from a UI object. This is used to
+        create the API-based options object from the UI-based options
+        object.
+
+        Parameters
+        ----------
+        ui : OptionsUI
+            The UI object that holds the options
+
+        Returns
+        -------
+        OptionsAPI
+            The API-based options object
+        """
+        return cls(
+            aperture_size=ui.aperture_size_fwhm,
+            photometry_method=PhotometryMethods.PSF if ui.use_psf_fitting else PhotometryMethods.APERTURE,
+            bias_file=ui.bias_file if ui.bias_file else "",
+            dark_file=ui.dark_file if ui.dark_file else "",
+            flat_file=ui.flat_file if ui.flat_file else "",
+            meta_file=ui.meta_file,
+            image_file=ui.image_file
+        )
+
+
+class UI:
+    """Singleton class used to connect Qt Designer to this app
+
+    This class (and its singlton instance, "ui") are used to hold the
+    widget hierarchy that is read in from the *.ui file created by Qt
+    Designer for this app.
+
+    Attributes
+    ----------
+    window : Qt window
+        The root of the *.ui file.
+    """
+    def __init__(self):
+        """Set up Qt widgets for this app
+
+        Read in the .ui file created with the Qt designer app. Store
+        all the resulting widgets as children of self.window. This
+        requires the .ui file to be in the same directory as the
+        Python script is located.
 
         Parameters
         ----------
@@ -1624,147 +1356,38 @@ class OptionsUI:
 
         Returns
         -------
-        float
-            The factor that should be used. A value of 1.0 is returned
-            if nothing is entered or if an entry is invalid.
+        UI object
         """
-        entry_str = self.aperture_size.text()
-        try:
-            entry_float = float(entry_str)
-        except ValueError:
-            ErrorPopup("Invalid Aperture Size entry: " + entry_str)
-            return 1.0
-        if entry_float < 0.1 or entry_float > 10.0:
-            ErrorPopup("Aperture size entry out of bounds (0.1 .. 10.0)")
-            self.aperture_size.setText("1.0")
-            return 1.0
-        return entry_float
+        source_path = Path(__file__).resolve()
+        ui_filename = source_path.parent / "image2sl.ui"
+        ui_file = QFile(ui_filename)
+        if not ui_file.open(QIODevice.ReadOnly):
+            print(f"Cannot open {ui_filename}: {ui_file.errorString()}")
+            sys.exit(-1)
+        loader = QUiLoader()
+        self.window = loader.load(ui_file, None)
+        ui_file.close()
+        if not self.window:
+            print(loader.errorString())
+            sys.exit(-1)
+        self.window.ApertureSize.setText("1.0")
+        self.window.actionQuit.triggered.connect(QApplication.quit)
+        self._bias_file = FileChooser(self.window.bias_entry,
+                                      self.window.BiasButton)
+        self._dark_file = FileChooser(self.window.dark_entry,
+                                      self.window.DarkButton)
+        self._flat_file = FileChooser(self.window.flat_entry,
+                                      self.window.FlatButton)
+        self._meta_file = FileChooser(self.window.meta_entry,
+                                      self.window.MetaButton,
+                                      multiple_files_okay=True)
+        self._image_file = FileChooser(self.window.image_filename_list,
+                                       self.window.AddImageButton,
+                                       multiple_files_okay=True)
+        self.psf_photometry = self.window.PSFPhotButton
+        self.aperture_photometry = self.window.AperturePhotButton
 
-    @property
-    def use_annulus(self):
-        """Query whether an annulus aperture helps estimate background
-
-        Return True if the sky background found in an annulus around
-        the star centroid should be used during background
-        subtraction. The alternative is to use only a slowly-varying
-        background level across the entire image to estimate
-        background.
-
-        Parameters
-        ----------
-        None
-
-        Returns
-        -------
-        bool
-            True if an annulus is to be used
-        """
-        return self.subtract_annulus.isChecked()
-
-    @property
-    def de_bayer(self):
-        """Query whether input file(s) need to be de-Bayered
-
-        Return True if the input images need to be split into separate
-        color images (de-Bayer).
-
-        Parameters
-        ----------
-        None
-
-        Returns
-        -------
-        bool
-            True if input images needed to be split
-        """
-        return not self.pretend_monochrome.isChecked()
-
-    # return "psf" or "app_phot"
-    @property
-    def get_phot(self):
-        """Query the kind of photometry to be done
-
-        Return a string indicating whether aperture photometry or
-        PSF-fitting photometry is to be done.
-
-        Parameters
-        ----------
-        None
-
-        Returns
-        -------
-        str
-            'psf' if PSF-fitting is to be done; 'app_phot' if aperture
-            photometry is to be done
-        """
-        return "psf" if self.psf_photometry.isChecked() else "app_phot"
-
-    @property
-    def stack_channels(self):
-        """Query whether de-Bayered images are to be stacked
-
-        Query whether de-Bayered images are to be stacked into a
-        single sort-of-luminance channel image. Only makes sense to
-        query this if de_bayer() returns True. If stacking was chosen,
-        the method used for doing the stacking depends on the setting
-        of the interpolate_channels() query.
-
-        Parameters
-        ----------
-        None
-
-        Returns
-        -------
-        bool
-            True if the four de-Bayered images are to be stacked
-        """
-        return (self.stacked_channels.isChecked()  or
-                self.interp_stack_channels.isChecked())
-
-    @property
-    def interpolate_channels(self):
-        """Query whether de-Bayered images get shifted into pixel alignment
-
-        Query whether the four de-Bayered images are to be shifted
-        into pixel alignment. Each color gets shifted one or two
-        pixels left/right/up/down using flux-preserving bilinear
-        interpolation in order to have the pixels in each color
-        channel correspond to exactly the same Dec/RA sky location.
-
-        Parameters
-        ----------
-        None
-
-        Returns
-        -------
-        bool
-            True if the de-Bayered images need to be shifted slightly
-            to bring them into sky coordinate alignment
-        """
-        return self.interp_stack_channels.isChecked()
-
-    @property
-    def get_color_balance(self):
-        """Query whether the pixel values should be adjusted for color balance
-
-        Query whether "color balancing" should be done. This is
-        performed on the original RGB image with a linear
-        transformation to adjust pixel values. Four different
-        transformations are used; one for each color channel. The
-        values for the transformation coefficients are chosen to give
-        all four channels the same background average level and the
-        same standard deviation around that common average.
-
-        Parameters
-        ----------
-        None
-
-        Returns
-        -------
-        bool
-            True if color balancing is to be done
-        """
-        return self.color_correx.isChecked()
+        self.aperture_size = self.window.ApertureSize
 
     @property
     def use_psf_fitting(self):
@@ -1773,10 +1396,6 @@ class OptionsUI:
         Return a boolean indicating whether
         PSF-fitting photometry is to be done. This method is 100%
         redundant with get_phot() and should be retired.
-
-        Parameters
-        ----------
-        None
 
         Returns
         -------
@@ -1875,102 +1494,13 @@ class OptionsUI:
         """
         return self._image_file.entered_filename_list()
 
-
-class BayerHandlingOptions(StrEnum):
-    """Enumeration of Bayer handling options"""
-    # See the python documentation for Enums work. Behind the scenes pythopn
-    # creates a class whose attributes have the names listed below.
-    PRETEND_MONOCHROME = "pretend_monochrome"
-    STACKED_CHANNELS = "stacked_channels"
-    INTERP_STACK_CHANNELS = "interp_stack_channels"
-    SPLIT_STACKED = "split_stacked"
-
-
-class PhotometryMethods(StrEnum):
-    """Enumeration of photometry methods"""
-    # See the python documentation for Enums work. Behind the scenes pythopn
-    # creates a class whose attributes have the names listed below.
-    APERTURE = "aperture"
-    PSF = "psf"
-
-
-class OptionsAPI(BaseModel):
-    model_config = ConfigDict(extra='forbid', validate_default=True, validate_assignment=True)
-    bayer_handling: BayerHandlingOptions = BayerHandlingOptions.PRETEND_MONOCHROME
-    color_correx: bool = False
-    subtract_annulus: bool = False
-    add_wcs_to_image: bool = False
-    aperture_size: float = 1.0
-    photometry_method: PhotometryMethods = PhotometryMethods.APERTURE
-    astrometry_net_api_key: str = ""
-    bias_file: str = ""
-    dark_file: str = ""
-    flat_file: str = ""
-    meta_file: list[str] = [""]
-    image_file: list[str] = [""]
-    # This options is set by a popup when running interactively
-    split_stacked_image: bool = False
-
-    # These are accessed by the current code.
-    @property
-    def de_bayer(self):
-        return self.bayer_handling != BayerHandlingOptions.PRETEND_MONOCHROME
-
-    @property
-    def interpolate_channels(self):
-        return self.bayer_handling == BayerHandlingOptions.INTERP_STACK_CHANNELS
-
-    @property
-    def get_color_balance(self):
-        return self.color_correx
-
-    @property
-    def stack_channels(self):
-        return (
-            self.bayer_handling == BayerHandlingOptions.STACKED_CHANNELS
-            or self.bayer_handling == BayerHandlingOptions.INTERP_STACK_CHANNELS
-        )
-
-    @property
-    def use_psf_fitting(self):
-        return self.photometry_method == PhotometryMethods.PSF
-
-    @property
-    def add_wcs(self):
-        return self.add_WCS_to_image
-
     @property
     def aperture_size_fwhm(self):
-        return self.aperture_size
+        """Query the aperture size factor
 
-    @property
-    def use_annulus(self):
-        return self.subtract_annulus
-
-    @property
-    def one_channel(self):
-        return self.bayer_handling == BayerHandlingOptions.SPLIT_STACKED
-
-
-class UI:
-    """Singleton class used to connect Qt Designer to this app
-
-    This class (and its singlton instance, "ui") are used to hold the
-    widget hierarchy that is read in from the *.ui file created by Qt
-    Designer for this app.
-
-    Attributes
-    ----------
-    window : Qt window
-        The root of the *.ui file.
-    """
-    def __init__(self):
-        """Set up Qt widgets for this app
-
-        Read in the .ui file created with the Qt designer app. Store
-        all the resulting widgets as children of self.window. This
-        requires the .ui file to be in the same directory as the
-        Python script is located.
+        The aperture size factor is multiplied by the image's average
+        FWHM to establish the photometry aperture radius. This query
+        returns that multiplicative factor.
 
         Parameters
         ----------
@@ -1978,25 +1508,23 @@ class UI:
 
         Returns
         -------
-        UI object
+        float
+            The factor that should be used. A value of 1.0 is returned
+            if nothing is entered or if an entry is invalid.
         """
-        source_path = Path(__file__).resolve()
-        ui_filename = source_path.parent / "image2sl.ui"
-        ui_file = QFile(ui_filename)
-        if not ui_file.open(QIODevice.ReadOnly):
-            print(f"Cannot open {ui_filename}: {ui_file.errorString()}")
-            sys.exit(-1)
-        loader = QUiLoader()
-        self.window = loader.load(ui_file, None)
-        ui_file.close()
-        if not self.window:
-            print(loader.errorString())
-            sys.exit(-1)
-        self.window.ApertureSize.setText("1.0")
-        self.window.actionQuit.triggered.connect(QApplication.quit)
-
+        entry_str = self.aperture_size.text()
+        try:
+            entry_float = float(entry_str)
+        except ValueError:
+            ErrorPopup("Invalid Aperture Size entry: " + entry_str)
+            return 1.0
+        if entry_float < 0.1 or entry_float > 10.0:
+            ErrorPopup("Aperture size entry out of bounds (0.1 .. 10.0)")
+            self.aperture_size.setText("1.0")
+            return 1.0
+        return entry_float
 class MainWindow:
-    def __init__(self, options, ui=None, wcs=None):
+    def __init__(self, options, ui=None):
         """Set up main display window and key singleton objects
 
         Create the FileChooser objects for each file chooser button in
@@ -2008,7 +1536,7 @@ class MainWindow:
 
         Parameters
         ----------
-        options : an Options object
+        options : an OptionsAPI object or None
             Either a UI-based or API-based object that holds the
             options. Should be either an instance of OptionsUI or
             OptionsAPI.
@@ -2033,7 +1561,7 @@ class MainWindow:
         print(f"===> st-pipeline version {__version__} <===")
         self.options = options
         self.ui = ui
-        self._wcs = wcs
+        self._wcs = None
         self.have_ui = False
         if self.ui:
             self.have_ui = True
@@ -2074,6 +1602,7 @@ class MainWindow:
         self.progressbar.setFormat("...Running...")
         self.progressbar.setAlignment(QtCore.Qt.AlignCenter)
         self.progressbar.show()
+        self.options = OptionsAPI.from_ui(self.ui)
         self.generate_starlist()
         self.progressbar.hide()
 
@@ -2101,10 +1630,9 @@ class MainWindow:
         metadata_list = self.options.meta_file
 
         psf_builder = psf_fitting.PSFBuilder(display_graphs=self.have_ui)
-        all_output = [] #  this is a list of lists of OutputObjects
 
         for image_filename in image_list:
-            QGuiApplication.processEvents()
+            #QGuiApplication.processEvents()
             #Skip blank lines (if present)
             if image_filename is None:
                 continue
@@ -2112,41 +1640,37 @@ class MainWindow:
             if image_filename == '':
                 continue
 
-            telescope_type= probe_file_for_type(image_filename) # (scope, image type)
-            working_filename = image_filename
-            image_path = Path(image_filename)
-            orig_dir = image_path.parent
-            orig_file_base = image_path.stem
-            starlist_tgtname = str(Path(orig_dir, orig_file_base+"_$$.star"))
+            telescope_type,image_type = probe_file_for_type(image_filename)
 
-            hdu_working = fits.open(image_filename)
-            working_image = hdu_working[0].data.astype(float)
+            ccd = CCDData.read(image_filename, unit="adu")
+            if ccd.wcs is None:
+                # 3D stacked files get read in without a WCS. Try a little
+                # harder to get the WCS from the header.
+                wcs = WCS(fits.getheader(image_filename), naxis=2)
+                ccd.wcs = wcs if wcs.wcs.ctype[0] else None
+
+            working_image = ccd.data.astype(float)
+            self._wcs = ccd.wcs
+
             if (dark_filename
                 or flat_filename
                 or bias_filename):
                 if telescope_type[1] == "3Dstacked":
                     print("Cannot calibrate a 3D stacked image")
                     continue
-                calibrated_image = str(Path(self.temp_dirname, "light.fits"))
-                with fits.open(image_filename) as hdu_working:
-                    working_image = hdu_working[0].data.astype(float)
-                    if bias_filename:
-                        with fits.open(bias_filename) as hdul:
-                            bias = hdul[0].data
-                            working_image -= bias
-                    if dark_filename:
-                        with fits.open(dark_filename) as hdul:
-                            dark = hdul[0].data
-                            working_image -= dark
-                    if flat_filename:
-                        with fits.open(flat_filename) as hdul:
-                            flat = hdul[0].data
-                            flat = flat.astype(float) / np.median(flat)
-                            working_image /= flat
-                    hdu_working[0].update_header()
-                    fits.writeto(calibrated_image, working_image,
-                                 hdu_working[0].header, overwrite=True)
-                working_filename = calibrated_image
+                if bias_filename:
+                    with fits.open(bias_filename) as hdul:
+                        bias = hdul[0].data
+                        working_image -= bias
+                if dark_filename:
+                    with fits.open(dark_filename) as hdul:
+                        dark = hdul[0].data
+                        working_image -= dark
+                if flat_filename:
+                    with fits.open(flat_filename) as hdul:
+                        flat = hdul[0].data
+                        flat = flat.astype(float) / np.median(flat)
+                        working_image /= flat
 
             meta = {} # This is the metadata dictionary
 
@@ -2154,7 +1678,7 @@ class MainWindow:
             # whatever is found in the FITS header of the image file
             read_meta_from_fits(image_filename, meta)
 
-            QGuiApplication.processEvents()
+            #QGuiApplication.processEvents()
             # Now get the metadata from the standalone metadata file (sidecar)
             for metadata_filename in metadata_list:
                 if metadata_filename is not None and metadata_filename != '':
@@ -2183,61 +1707,68 @@ class MainWindow:
             if (mpp.is_file() and mpp.exists() and mpp.stat().st_mode & 0o400):
                 read_meta_from_json(mpp, meta)
 
-            print("Final metadata is ", meta)
+            # post processing of '!' keys in the metadata
+            # utility to convert local time to UTC
+            def Local2UTC(lat, long, local_time_str):
+                # courtesy of GPT-4o
+                # Parse the local time string into a datetime object
+                local_time = datetime.strptime(local_time_str, '%Y-%m-%dT%H:%M:%S.%f')
+                # Find the timezone
+                tf = TimezoneFinder()
+                timezone_str = tf.timezone_at(lng=long, lat=lat)
+                if timezone_str is None:
+                    raise ValueError("Could not find timezone for the given coordinates.")
+                # Get the timezone object
+                local_tz = pytz.timezone(timezone_str)
+                # Localize the datetime to the found timezone
+                local_dt = local_tz.localize(local_time)
+                # Convert to UTC
+                utc_dt = local_dt.astimezone(pytz.utc)
+                return utc_dt.strftime('%Y-%m-%dT%H:%M:%S')
 
-            # Copy the file to the temporary directory (ie, don't touch input file)
-            temp_image_filename = os.path.join(self.temp_dirname, os.path.basename(image_filename))
-            shutil.copy(image_filename, temp_image_filename)
-            print("modified input file is ", temp_image_filename)
-            # is the file fits header missing necessary info?
-            #   Should be complete enough so you can load into VPhot and be plate solved
-            with fits.open(temp_image_filename, mode='update') as hdul:
-                hdu0h = hdul[0].header
-                if 'RA' not in hdu0h:  hdu0h['RA'] = meta['ra'] / 15.0 # FITS wants hours
-                if 'DEC' not in hdu0h: hdu0h['DEC'] = meta['dec']
-                if 'DATE-OBS' not in hdu0h: hdu0h['DATE-OBS'] = meta['obs_time']
-                if 'EXPTIME' not in hdu0h: hdu0h['EXPTIME'] = meta['exposure']
-                if 'BAYERPAT' not in hdu0h: hdu0h['BAYERPAT'] = meta['bayerpat']
-                if 'ROWORDER' not in hdu0h: hdu0h['ROWORDER'] = meta['roworder']
-                if 'YBAYROFF' not in hdu0h: hdu0h['YBAYROFF'] = meta['ybayroff']
-                hdul[0].header = hdu0h
-                hdul.flush()
+            # look for special processing keys
+            for key, value in meta.items():
+                # eg "ra": "!RA hr2deg"
+                if isinstance(value, str) and value.startswith('!'):
+                    tt= value[1:].split()
+                    if tt[1] == "hr2deg": # convert decimal hours to degrees
+                        if val := get_json_value(meta, tt[0]):
+                            meta[key]= float(val) * 15.0
+                    elif tt[1] == "Local2UTC": # convert local time to UTC
+                        # eg  "obs_time": "!DATE-OBS Local2UTC"
+                        meta[key]= Local2UTC(meta["site_lat"], meta["site_lon"], get_json_value(meta, tt[0]))
+                    elif tt[1] == "refmtDate":
+                        # "obs_time": "!StackedInfo.dateTime refmtDate %m-%d-%yB%H_%M_%S"
+                        #   B is a blank space
+                        d= datetime.strptime(get_json_value(meta, tt[0]), tt[2].replace('B', ' '))
+                        meta[key]= d.strftime("%Y-%m-%dT%H:%M:%S")
+                    elif tt[1] == "index":
+                        # eg "tel_firmware" : "!CREATOR index 1"
+                        meta[key]= get_json_value(meta, tt[0]).split()[int(tt[2])]
+
+            meta['gain'] = meta['system_gain']
+            print("Final metadata is ", meta)
 
             wcs = self._wcs.copy() if self._wcs is not None else None
             if meta_validator.validate(meta):
                 meta['orig_filename'] = image_filename
-                if self.options.get_color_balance:
-                    working_filename = bayer_balance_file(working_filename,
-                                                          self.temp_dirname)
-                output_objs = process_rgb_file(working_filename,
-                                               self.options,
-                                               self.temp_dirname,
-                                               meta,
-                                               starlist_tgtname,
-                                               psf_builder,
-                                               wcs=wcs,
-                                               interactive=self.have_ui)
-                all_output.append(output_objs)
+                starlist_gen = StarlistGenerator(full_path = Path(image_filename),
+                                                 meta = meta,
+                                                 options = self.options,
+                                                 working_image = working_image,
+                                                 wcs = wcs,
+                                                 interactive = self.have_ui,
+                                                 ui = self.ui,
+                                                 telescope_type = telescope_type,
+                                                 image_type = image_type)
+                starlist_gen.write_starlists()
+
+
         # Now that all images have been processed, let the psf_fitter
         # perform PSF photometry. If the option was not turned on,
         # this will return quietly without doing anything.
         psf_builder.build_psf()
 
-        # Write the starlist files
-        for output_objs in all_output:
-            if len(output_objs) == 0:
-                continue
-            path1 = output_objs[0].orig_image_path
-            filename = path1.with_suffix('.star')
-            sl_set = output_objs[0].logical_starlist
-            for output in output_objs[1:]:
-                sl_set.star_lists.extend(output.logical_starlist.star_lists)
-            print("Writing total of ",
-                  len(sl_set.star_lists),
-                  " logical starlists to ",
-                  filename)
-
-            filename.write_text(sl_set.model_dump_json(indent=2))
         return False
 
 class ErrorPopup:
@@ -2264,69 +1795,6 @@ class ErrorPopup:
         dlg.setText(msg)
         dlg.exec()
 
-class Option3DPopup(QDialog):
-    """A popup window that appears if the FITS file contains 3 images
-
-    If the FITS file has 3 images in it, then we need to ask the user
-    what to do with the three images: stack them into a single
-    luminance channel or process them into three distinct logical
-    starlists.
-
-    Attributes
-    ----------
-    options: OptionsUI reference
-        A reference to the OptionsUI instance that holds all option
-        info. The two buttons of this popup map into the
-        split_stacked_image bool option.
-    radio_stack: QRadioButton
-        One of the two buttons. If checked, user is asking for
-        stacking.
-    radio_split: QRadioButton
-        One of the two buttons. If checked, user is asking for three
-        distinct logical starlists.
-    """
-    def __init__(self, options, parent=None):
-        """Create a Option3DPopup window
-
-        This window is a subclass of the QDialog popup.
-
-        Parameters
-        ----------
-        options: OptionsUI reference
-            A reference to the OptionsUI instance that holds all
-            option info.
-        parent: QWidget
-            The parent to this window. The popup should be centered in
-            the parent window, if one is specified.
-        """
-        super().__init__(parent)
-        self.options = options
-
-        self.setWindowTitle("image2sl: Stacked Image Options")
-        q_btn = QDialogButtonBox.Ok | QDialogButtonBox.Cancel
-        button_box = QDialogButtonBox(q_btn)
-        button_box.accepted.connect(self.accept)
-        button_box.rejected.connect(self.reject)
-
-        layout = QVBoxLayout()
-        message = QLabel("Choose stacked image processing option")
-        layout.addWidget(message)
-        button_group = QButtonGroup()
-        self.radio_stack = QRadioButton("Combine RGB into one monochrome image")
-        self.radio_split = QRadioButton("Separate into R, G, B images")
-        button_group.addButton(self.radio_stack)
-        button_group.addButton(self.radio_split)
-        self.radio_stack.toggled.connect(self.button_change)
-        self.radio_split.toggled.connect(self.button_change)
-        layout.addWidget(self.radio_stack)
-        layout.addWidget(self.radio_split)
-        layout.addWidget(button_box)
-        self.setLayout(layout)
-        self.show()
-
-    def button_change(self):
-        """Callback when either of the two radio buttons changes state """
-        self.options.split_stacked_image = self.radio_split.isChecked()
 
 def main():
     global ui
@@ -2347,7 +1815,7 @@ def main():
         ui = UI()
         ui.window.show()
         ui.window.setWindowTitle(f"image2sl version {__version__}")
-        not_a_window = MainWindow(OptionsUI(), ui=ui)
+        not_a_window = MainWindow(None, ui=ui)
 
         ui.window.progressBar.hide()
         ui.window.GenerateStarlistButton.clicked.connect(not_a_window.do_generate_starlist)
@@ -2369,7 +1837,6 @@ def main():
         settings.setValue("images", ui.window.image_filename_list.toPlainText())
 
         sys.exit(appx)
-
 
 if __name__ == "__main__":
     main()
