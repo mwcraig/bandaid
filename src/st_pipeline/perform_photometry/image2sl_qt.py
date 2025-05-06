@@ -761,76 +761,74 @@ class StarlistGenerator:
         image : np.ndarray
             The image to be modified
         """
-        temp1 = image[0::2,0::2].astype(np.float32)
-        temp2 = image[0::2,1::2].astype(np.float32)
-        temp3 = image[1::2,0::2].astype(np.float32)
-        temp4 = image[1::2,1::2].astype(np.float32)
+        # Drop the casts to float -- this has already been done
+        temp1 = image[0::2,0::2]
+        temp2 = image[0::2,1::2]
+        temp3 = image[1::2,0::2]
+        temp4 = image[1::2,1::2]
 
         def print_img_stats(data):
-            data = data.astype(np.float32)
+            data = data
             print("        Min = ", min(data),
                   ", Max = ", max(data),
                   ", Avg = ", statistics.mean(data),
                   ", Stdev = ", statistics.stdev(data))
 
-        raw_pixels = image.flatten().astype(np.float32)
-        raw_avg = statistics.mean(raw_pixels)
-        raw_stdev = statistics.stdev(raw_pixels)
+        raw_avg = image.mean()
+        raw_stdev = image.std()
         cutoff = raw_avg + 5*raw_stdev
 
         ## sample the image into tempnx, to be used to generate statistics
-        temp1x = temp1[(0 <= temp1) &  (temp1 < cutoff)].flatten()
-        temp2x = temp2[(0 <= temp2) &  (temp2 < cutoff)].flatten()
-        temp3x = temp3[(0 <= temp3) &  (temp3 < cutoff)].flatten()
-        temp4x = temp4[(0 <= temp4) &  (temp4 < cutoff)].flatten()
+        temp1x = temp1[(0 <= temp1) &  (temp1 < cutoff)]
+        temp2x = temp2[(0 <= temp2) &  (temp2 < cutoff)]
+        temp3x = temp3[(0 <= temp3) &  (temp3 < cutoff)]
+        temp4x = temp4[(0 <= temp4) &  (temp4 < cutoff)]
 
         #print_img_stats(temp1x.flatten())
         #print_img_stats(temp2x.flatten())
         #print_img_stats(temp3x.flatten())
         #print_img_stats(temp4x.flatten())
         print(" -------------- balancing ---------------")
-
+        tempexes = [temp1x, temp2x, temp3x, temp4x]
         # adjust everything based on the overall mean
-        target_stdev = statistics.mean([statistics.stdev(x) for x in [temp1x,
-                                                                      temp2x,
-                                                                      temp3x,
-                                                                      temp4x]])
-        target_mean = statistics.mean(list(temp1x)+list(temp2x)+list(temp3x)+list(temp4x))
+        target_stdev = np.mean([temp.std() for temp in tempexes])
+        # The temp1x, etc arrays are not all the same size, so just
+        # sum it all and divide by the number of items.
+        summed_temps = sum(temp.sum() for temp in tempexes)
+        summed_numbers = sum(len(temp) for temp in tempexes)
+        target_mean = summed_temps / summed_numbers
 
-
-        #target_stdev = statistics.stdev(hdul[0].data.flatten().astype(np.float32))
-        #target_mean = statistics.mean(hdul[0].data.flatten().astype(np.float32))
         print("Overall mean is ", target_mean, ", overall stdev = ", target_stdev)
 
-        m = statistics.stdev(temp1x.flatten())
+        m = temp1x.std()
         factor = target_stdev/m
         temp1 = temp1 * factor
         temp1x = temp1x * factor
-        m = statistics.mean(temp1x.flatten())
+        m = temp1x.mean()
         temp1 = temp1 - (m-target_mean)
         print("Bayer 1 factor = ", factor)
 
-        m = statistics.stdev(temp2x.flatten())
+        m = temp2x.std()
         factor = target_stdev/m
         temp2 = temp2 * factor
         temp2x = temp2x * factor
-        m = statistics.mean(temp2x.flatten())
+        m = temp2x.mean()
         temp2 = temp2 - (m-target_mean)
         print("Bayer 2 factor = ", factor)
 
-        m = statistics.stdev(temp3x.flatten())
+        m = temp3x.std()
         factor = target_stdev/m
         temp3 = temp3 * factor
         temp3x = temp3x * factor
-        m = statistics.mean(temp3x.flatten())
+        m = temp3x.mean()
         temp3 = temp3 - (m-target_mean)
         print("Bayer 3 factor = ", factor)
 
-        m = statistics.stdev(temp4x.flatten())
+        m = temp4x.std()
         factor = target_stdev/m
         temp4 = temp4 * factor
         temp4x = temp4x * factor
-        m = statistics.mean(temp4x.flatten())
+        m = temp4x.mean()
         temp4 = temp4 - (m-target_mean)
         print("Bayer 4 factor = ", factor)
 
