@@ -926,7 +926,7 @@ class StarlistGenerator:
             if ui is not None:
                 msg = QErrorMessage()
                 msg.showMessage(
-                    f'No stars: no FWHM for file: {self.metadata['filename']}')
+                    f'No stars: no FWHM for file: {self.metadata["filename"]}')
                 msg.exec()
             raise ValueError('NoStarsFound')
         subset = sources[:subset_size]
