@@ -626,6 +626,12 @@ class StarlistGenerator:
         self.source_table = self._do_photometry(sum_image, self.source_table)
         self.wcs = self._setup_wcs(self.source_table, self.wcs)
         self.metadata['filter'] = 'L3'
+        for key in ['height', 'width', 'fwhm']:
+            self.metadata[key] = getattr(self, key)
+
+        # This needs to be properly added to metadata, which is probably different
+        # for each telescope.
+        self.metadata['stack'] = self.metadata["STACKCNT"]
         starlist = StarList.from_table(self.source_table, metadata=self.metadata)
         final_starlists = [starlist]
 
@@ -729,6 +735,10 @@ class StarlistGenerator:
         print('...top level has ', len(self.source_table), ' stars.')
         self.wcs = self._setup_wcs(self.source_table, self.wcs)
         self.metadata['filter'] = 'L4'
+        for key in ['height', 'width', 'fwhm']:
+            self.metadata[key] = getattr(self, key)
+
+        self.metadata['stack'] = None
         starlist = StarList.from_table(self.source_table, metadata=self.metadata)
         final_starlists = [starlist]
 
