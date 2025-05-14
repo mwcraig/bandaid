@@ -1744,7 +1744,7 @@ class MainWindow:
                         # eg "tel_firmware" : "!CREATOR index 1"
                         meta[key]= get_json_value(meta, tt[0]).split()[int(tt[2])]
 
-            meta['gain'] = meta['system_gain']
+            meta['egain'] = meta['system_gain']
             print("Final metadata is ", meta)
 
             wcs = self._wcs.copy() if self._wcs is not None else None
