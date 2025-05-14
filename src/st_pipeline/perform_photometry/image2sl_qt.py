@@ -189,7 +189,6 @@ valid_meta_keys = ['schema_version',
                    'system_gain', # a float, the gain of the camera system, e-/ADU
                    'bayerpat', # a 4-character string (e.g., 'BGGR')
                    'pixscale', # a float, pixel scale *after* debayering, arcsec/pix
-                   'epoch', # a string, (e.g., "J2000")
                    'refframe', # a string, (e.g., "ICRS")
                    'dec', # a float, nominal declination of image center (deg)
                    'ra', # a float, nominal RA of image center (deg)
