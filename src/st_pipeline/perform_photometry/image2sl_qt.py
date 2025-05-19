@@ -676,7 +676,7 @@ class StarlistGenerator:
             #                       self.noise_bkgd_per_pixel,
             #                       starlist)
 
-        return StarListSet(star_lists=starlist)
+        return StarListSet(star_lists=[starlist])
 
     def _process_bayer_file(self):
         """Process a single raw (Bayered) image
