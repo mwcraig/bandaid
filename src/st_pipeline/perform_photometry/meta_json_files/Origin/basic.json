@@ -18,7 +18,7 @@
     "adc_depth" : "@StackedInfo.captureParams.bitDepth",
     "#adc_depth" : 16,
     "largest_usable_adu_value" : 50000,
-    "system_gain" : 0.5,
+    "egain" : 0.5,
     "bayerpat" : "@StackedInfo.bayer",
     "#bayerpat": "BGGR", 
     "pixscale" : 1.48,

@@ -13,7 +13,7 @@
     "tel_firmware" : "@SOFTVER",
     "adc_depth" : "@BITPIX",
     "largest_usable_adu_value" : 60000,
-    "system_gain" : "@GAIN",
+    "egain" : "@GAIN",
     "bayerpat": "@BAYERPAT", 
     "pixscale" : 1.71,
     "epoch" : "J2000",
