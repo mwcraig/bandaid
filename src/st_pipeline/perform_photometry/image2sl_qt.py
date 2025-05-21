@@ -186,7 +186,7 @@ valid_meta_keys = ['schema_version',
                    'tel_firmware', # a string, the firmware ID (e.g. "v1.2.3")
                    'adc_depth', # an integer, bit depth of the camera ADC (e.g. 12)
                    'largest_usable_adu_value', # an integer, the ADU level where saturation starts
-                   'system_gain', # a float, the gain of the camera system, e-/ADU
+                   'egain', # a float, the gain of the camera system, e-/ADU
                    'bayerpat', # a 4-character string (e.g., 'BGGR')
                    'pixscale', # a float, pixel scale *after* debayering, arcsec/pix
                    'refframe', # a string, (e.g., "ICRS")
@@ -865,7 +865,7 @@ class StarlistGenerator:
             background that has the same noise level in each color
             channel.
         """
-        gain = self.metadata['system_gain']
+        egain = self.metadata['egain']
 
         if do_color_balance:
             self._bayer_balance_image(image)
@@ -887,7 +887,7 @@ class StarlistGenerator:
          bkgd_std) = sigma_clipped_stats(background, sigma=3.0)
         print("background.median = ", full_background.background_median,
               ", background.rms = ", full_background.background_rms_median)
-        self.noise_bkgd_per_pixel = full_background.background_rms_median * gain
+        self.noise_bkgd_per_pixel = full_background.background_rms_median * egain
         self.background = background
 
     def _find_sources(self, working_image, do_color_balance=False):
@@ -989,7 +989,7 @@ class StarlistGenerator:
             photometry. Must have the same shape as working_image.
 
         """
-        gain = self.metadata['system_gain']
+        egain = self.metadata['egain']
         phot_radius = self.options.aperture_size_fwhm * self.fwhm
         annulus_inner = max(3*phot_radius, 4*self.fwhm)
         annulus_outer = math.sqrt(100*phot_radius**2 + annulus_inner**2)
@@ -1004,7 +1004,7 @@ class StarlistGenerator:
                                        sigma_clip=sigma_clip,
                                        bkg_estimator=bkg_estimator)
         # noise_bkgd_per_pixel in units of e-/pixel
-        noise_bkgd_per_pixel = full_background.background_rms_median * gain
+        noise_bkgd_per_pixel = full_background.background_rms_median * egain
 
         # Perform the photometry
         positions = list(zip(sources['xcentroid'],
@@ -1039,7 +1039,7 @@ class StarlistGenerator:
         min_adu = 1.0 # max(0.0, tot_noise_bkgd/starlist.gain)
         # Clean up the sources table
         print("Sources cleanup starts with ", len(sources), " stars.")
-        print('   ... and min_adu of ', min_adu, ' and gain = ', gain)
+        print('   ... and min_adu of ', min_adu, ' and egain = ', egain)
         print('   ... and smallest peak_count of ', min(sources['peak_count']))
         print('   ... and smallest tot_count of ', min(sources['tot_count']))
 
@@ -1753,7 +1753,6 @@ class MainWindow:
                         # eg "tel_firmware" : "!CREATOR index 1"
                         meta[key]= get_json_value(meta, tt[0]).split()[int(tt[2])]
 
-            meta['egain'] = meta['system_gain']
             print("Final metadata is ", meta)
 
             wcs = self._wcs.copy() if self._wcs is not None else None
