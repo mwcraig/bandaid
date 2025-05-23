@@ -169,7 +169,7 @@ def probe_file_for_type(filename):
 ##    DEC - a float, nominal declination of image center (deg)
 ##    RA - a float, nominal RA of image center (deg)
 ##    FOV_RAD - a float, nominal field of view radius (deg)
-##    telescope_probe - a str, value returned by probe_file_for_type()
+##    telescope_probe - a tuple value returned by probe_file_for_type()
 ################################################################
 
 valid_meta_keys = ['schema_version',
@@ -193,7 +193,7 @@ valid_meta_keys = ['schema_version',
                    'dec', # a float, nominal declination of image center (deg)
                    'ra', # a float, nominal RA of image center (deg)
                    'fov_rad', # a float, nominal field of view radius (deg) (half the diagonal)
-                   'telescope_probe', # a tuple, with type and format of the image
+                   'telescope_probe', # a tuple, with telescope_type and image_type
                    'roworder', # a string, bayerpat modifier. "top-down" or "bottom-up"
                    'ybayroff' # an integer, bayerpat modifier. Column shift horizontally, 0 or 1
         ]
@@ -426,10 +426,10 @@ def read_meta_from_fits(filename, meta_dict):
     -------
     None
     """
-    telescope_type= probe_file_for_type(filename)
+    telescope_probe= probe_file_for_type(filename) # tuple of telescope_type and image_type
     with fits.open(filename) as hdul:
         hdu0h = hdul[0].header
-        meta_dict['telescope_probe'] = telescope_type
+        meta_dict['telescope_probe'] = telescope_probe 
 
         # read in the whole header
         for key in hdu0h:
@@ -1647,7 +1647,7 @@ class MainWindow:
             if image_filename == '':
                 continue
 
-            telescope_type,image_type = probe_file_for_type(image_filename)
+            telescope_type, image_type = probe_file_for_type(image_filename)
 
             ccd = CCDData.read(image_filename, unit="adu")
             if ccd.wcs is None:
