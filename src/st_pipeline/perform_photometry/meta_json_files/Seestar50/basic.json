@@ -24,6 +24,8 @@
     "_telescope_probe" : "from fits",
     "roworder": "top-down",
     "ybayroff": 0,
+    "stack": "@STACKCNT",
+    "#stack": 1,
 
      "object": "@OBJECT"
 }
