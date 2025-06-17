@@ -195,7 +195,8 @@ valid_meta_keys = ['schema_version',
                    'fov_rad', # a float, nominal field of view radius (deg) (half the diagonal)
                    'telescope_probe', # a tuple, with telescope_type and image_type
                    'roworder', # a string, bayerpat modifier. "top-down" or "bottom-up"
-                   'ybayroff' # an integer, bayerpat modifier. Column shift horizontally, 0 or 1
+                   'ybayroff', # an integer, bayerpat modifier. Column shift horizontally, 0 or 1
+                   'stack' # integer, number of images stacked in this fits image. default is 1
         ]
 
 def get_json_value(data, keys):
@@ -206,7 +207,7 @@ def get_json_value(data, keys):
     datav= data.copy()
     for key in keys.split('.'):
         try:
-            datav = data[key]
+            datav = datav[key]
         except KeyError:
             print(f"WARNING: JSON key '{keys}' not found in metadata")
             return None
@@ -267,7 +268,7 @@ class MetaValidator:
             # This is a reference to another key in the existing meta dir file
             self.json[key] = value # show we will get the value from the prior meta
             if nv := get_json_value(meta_dict, value[1:]): # show that the fits had the value
-                meta_dict[key]= nv # don't replace an existing key
+                meta_dict[key]= nv 
             return nv
         if key.startswith('#'):
             # do not replace an existing key
@@ -275,8 +276,8 @@ class MetaValidator:
             if key in meta_dict:
                 print(f"WARNING: {key} | {meta_dict[key]} not replaced with {value}")
                 return None
-        if key in meta_dict:
-            print(f"Replacing existing meta key '{key}' value with new value '{value}'")
+        if key in meta_dict and meta_dict[key] is not None:
+            print(f"Replacing existing meta key '{key}' value '{meta_dict[key]}' with new value '{value}'")
         meta_dict[key] = value
         return value
 
@@ -1070,8 +1071,8 @@ class StarlistGenerator:
         sources.sort(keys='tot_count', reverse=True)
 
         # Calculate errors using table columns and star flux error in column
-        poiss_noise = np.sqrt(gain * sources['tot_count'])
-        tot_noise = np.sqrt(poiss_noise**2 + tot_noise_bkgd**2) / gain
+        poiss_noise = np.sqrt(egain * sources['tot_count'])
+        tot_noise = np.sqrt(poiss_noise**2 + tot_noise_bkgd**2) / egain
         sources['count_err'] = tot_noise
 
         # Set flux errors to zero for negative fluxes
@@ -1757,6 +1758,7 @@ class MainWindow:
 
             wcs = self._wcs.copy() if self._wcs is not None else None
             if meta_validator.validate(meta):
+                # at this point the meta dictionary is complete, same as meta_validator.final
                 meta['orig_filename'] = image_filename
                 starlist_gen = StarlistGenerator(full_path = Path(image_filename),
                                                  meta = meta,
