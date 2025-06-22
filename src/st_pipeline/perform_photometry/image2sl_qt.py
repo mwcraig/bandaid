@@ -137,6 +137,13 @@ def probe_file_for_type(filename):
         ################################
         ## Unrecognized
         ################################
+        if 'NAXIS' in hdu0h and hdu0h['NAXIS'] == 3:
+            return ("other", "3Dstacked")
+        if 'NAXIS' in hdu0h and hdu0h['NAXIS'] == 2:
+            if 'BAYERPAT' in hdu0h:
+                return ("other", "bayered")
+            else:
+                return ("other", "mono")
         return ("other", "unknown")
 
 ################################################################
@@ -1715,6 +1722,11 @@ class MainWindow:
             if (mpp.is_file() and mpp.exists() and mpp.stat().st_mode & 0o400):
                 read_meta_from_json(mpp, meta)
 
+#            #   look for and apply the personal.json
+#            mpp= Path(mp, "personal.json")
+#            print("Reading personal.json from ", mpp)
+#            read_meta_from_json(mpp, meta)
+#
             # post processing of '!' keys in the metadata
             # utility to convert local time to UTC
             def Local2UTC(lat, long, local_time_str):
