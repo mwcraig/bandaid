@@ -124,7 +124,9 @@ def probe_file_for_type(filename):
         ################################
         if ('CREATOR' in hdu0h and 'Origin' in hdu0h['CREATOR']) or \
            ('SWCREATE' in hdu0h and 'Origin' in hdu0h['SWCREATE']):
-            return ("Origin", ["bayered", "3Dstacked"][hdu0h['NAXIS'] == 3])
+            if hdu0h['NAXIS'] == 3: return ("Origin", "3Dstacked")
+            if 'BAYERPAT' in hdu0h:  return ("Origin", "bayered")    
+            return ("Origin", "mono")
 
         ################################
         ## DWARF
