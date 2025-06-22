@@ -1752,21 +1752,24 @@ class MainWindow:
             for key, value in meta.items():
                 # eg "ra": "!RA hr2deg"
                 if isinstance(value, str) and value.startswith('!'):
-                    tt= value[1:].split()
-                    if tt[1] == "hr2deg": # convert decimal hours to degrees
-                        if val := get_json_value(meta, tt[0]):
-                            meta[key]= float(val) * 15.0
-                    elif tt[1] == "Local2UTC": # convert local time to UTC
-                        # eg  "obs_time": "!DATE-OBS Local2UTC"
-                        meta[key]= Local2UTC(meta["site_lat"], meta["site_lon"], get_json_value(meta, tt[0]))
-                    elif tt[1] == "refmtDate":
-                        # "obs_time": "!StackedInfo.dateTime refmtDate %m-%d-%yB%H_%M_%S"
-                        #   B is a blank space
-                        d= datetime.strptime(get_json_value(meta, tt[0]), tt[2].replace('B', ' '))
-                        meta[key]= d.strftime("%Y-%m-%dT%H:%M:%S")
-                    elif tt[1] == "index":
-                        # eg "tel_firmware" : "!CREATOR index 1"
-                        meta[key]= get_json_value(meta, tt[0]).split()[int(tt[2])]
+                    try:
+                        tt= value[1:].split()
+                        if tt[1] == "hr2deg": # convert decimal hours to degrees
+                            if val := get_json_value(meta, tt[0]):
+                                meta[key]= float(val) * 15.0
+                        elif tt[1] == "Local2UTC": # convert local time to UTC
+                            # eg  "obs_time": "!DATE-OBS Local2UTC"
+                            meta[key]= Local2UTC(meta["site_lat"], meta["site_lon"], get_json_value(meta, tt[0]))
+                        elif tt[1] == "refmtDate":
+                            # "obs_time": "!StackedInfo.dateTime refmtDate %m-%d-%yB%H_%M_%S"
+                            #   B is a blank space
+                            d= datetime.strptime(get_json_value(meta, tt[0]), tt[2].replace('B', ' '))
+                            meta[key]= d.strftime("%Y-%m-%dT%H:%M:%S")
+                        elif tt[1] == "index":
+                                # eg "tel_firmware" : "!CREATOR index 1"
+                                meta[key]= get_json_value(meta, tt[0]).split()[int(tt[2])]
+                    except Exception as e:
+                        print(f"Error: {e} when processing key {key} with value {value}: {tt}")
 
             print("Final metadata is ", meta)
 
