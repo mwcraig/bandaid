@@ -32,6 +32,7 @@
     "_telescope_probe" : "from fits",
     "roworder": "top-down",
     "ybayroff": 0,
+    "stack": "@StackedInfo.stackedDepth",
     
     "object": "@StackedInfo.objectName"
 }
