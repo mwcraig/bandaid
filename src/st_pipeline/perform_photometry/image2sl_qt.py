@@ -276,7 +276,8 @@ class MetaValidator:
         if isinstance(value, str) and value.startswith('@'):
             # This is a reference to another key in the existing meta dir file
             self.json[key] = value # show we will get the value from the prior meta
-            if nv := get_json_value(meta_dict, value[1:]): # show that the fits had the value
+            nv= get_json_value(meta_dict, value[1:]) # show that the fits had the value
+            if nv is not None:
                 meta_dict[key]= nv 
             return nv
         if key.startswith('#'):
