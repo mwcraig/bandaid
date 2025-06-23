@@ -5,8 +5,8 @@
     "site_lat": "@StackedInfo.gps.latitude",
     "site_lon": "@StackedInfo.gps.longitude",
     "site_elev": "@StackedInfo.gps.altitude",
-    "observer": "@personal.obscode",
-    "_filter": "not for unprocessed files",
+    "observer": "@OBSERVER",
+    "filter": "@FILTER",
     "block_filter": "@StackedInfo.filter",
     "#block_filter" : "UV+IR",  
     "exposure": "@StackedInfo.captureParams.exposure",
@@ -33,6 +33,7 @@
     "roworder": "top-down",
     "ybayroff": 0,
     "stack": "@StackedInfo.stackedDepth",
-    
+    "height": "@StackedInfo.imageHeight",
+    "width": "@StackedInfo.imageWidth",
     "object": "@StackedInfo.objectName"
 }
