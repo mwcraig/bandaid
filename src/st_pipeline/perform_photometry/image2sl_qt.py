@@ -33,6 +33,7 @@ from pathlib import Path
 
 import numpy as np
 import pytz
+from PIL import Image
 from astropy.io import fits
 from astropy.stats import SigmaClip, sigma_clipped_stats
 from astropy.utils.data import get_pkg_data_filename
@@ -102,51 +103,80 @@ def probe_file_for_type(filename):
     ValueError
         Raised if unable to determine which smart telescope type
     """
-    with fits.open(filename, ignore_missing_simple=True) as hdul:
-        hdu0h = hdul[0].header
+    # Check if the file is a TIFF file
+    if filename.lower().endswith('.tiff') or filename.lower().endswith('.tif'):
+        # Open the TIFF image
+        tiff_image = Image.open(filename)
+        # Convert the image to a NumPy array
+        image_data = np.array(tiff_image)
+        # Create a FITS PrimaryHDU object
+        hdu = fits.PrimaryHDU(image_data)
+        # Get EXIF metadata (if available)
+        exif_data = tiff_image.getexif()
+        # Add some EXIF info to the FITS header
+        header = hdu.header
+        # Check if EXIF data exists
+        if exif_data:
+            # Loop through EXIF tags and add to header
+            for tag, value in exif_data.items():
+                # Tag names can be retrieved using ExifTags.TAGS
+                # But Pillow's getexif() returns a dictionary with tag IDs
+                # For simplicity, you can add the raw tag ID and value
+                header[tag] = str(value)
+        else:
+            header['COMMENT'] = "No EXIF metadata found."
+        # Save the FITS file
+        hdu.writeto(Path(filename).with_suffix('.fits'), overwrite=True)
 
-        ################################
-        ## Unistellar test
-        ################################
-        if 'ORIGIN' in hdu0h and 'Unistellar' in hdu0h['ORIGIN']:
-            return ("Unistellar", "bayered")
+    try:
+        with fits.open(filename, ignore_missing_simple=True) as hdul:
+            hdu0h = hdul[0].header
 
-        ################################
-        ## Seestar test
-        ################################
-        if 'CREATOR' in hdu0h and 'Seestar' in hdu0h['CREATOR']:
-            if hdu0h['NAXIS'] == 3:
-                return ("Seestar50", "3Dstacked")
-            return ("Seestar50", "bayered")
+            ################################
+            ## Unistellar test
+            ################################
+            if 'ORIGIN' in hdu0h and 'Unistellar' in hdu0h['ORIGIN']:
+                return ("Unistellar", "bayered")
 
-        ################################
-        ## Celestron Origin test
-        ################################
-        if ('CREATOR' in hdu0h and 'Origin' in hdu0h['CREATOR']) or \
-           ('SWCREATE' in hdu0h and 'Origin' in hdu0h['SWCREATE']):
-            if hdu0h['NAXIS'] == 3: return ("Origin", "3Dstacked")
-            if 'BAYERPAT' in hdu0h:  return ("Origin", "bayered")    
-            return ("Origin", "mono")
+            ################################
+            ## Seestar test
+            ################################
+            if 'CREATOR' in hdu0h and 'Seestar' in hdu0h['CREATOR']:
+                if hdu0h['NAXIS'] == 3:
+                    return ("Seestar50", "3Dstacked")
+                return ("Seestar50", "bayered")
 
-        ################################
-        ## DWARF
-        ################################
-        if 'TELESCOP' in hdu0h and 'DWARFIII' in hdu0h['TELESCOP']:
-            return ("Dwarf3", ["bayered", "3Dstacked"][hdu0h['NAXIS'] == 3])
-        if 'TELESCOP' in hdu0h and 'DWARFII' in hdu0h['TELESCOP']:
-            return ("Dwarf2", ["bayered", "3Dstacked"][hdu0h['NAXIS'] == 3])
+            ################################
+            ## Celestron Origin test
+            ################################
+            if ('CREATOR' in hdu0h and 'Origin' in hdu0h['CREATOR']) or \
+            ('SWCREATE' in hdu0h and 'Origin' in hdu0h['SWCREATE']):
+                if hdu0h['NAXIS'] == 3: return ("Origin", "3Dstacked")
+                if 'BAYERPAT' in hdu0h:  return ("Origin", "bayered")    
+                return ("Origin", "mono")
 
-        ################################
-        ## Unrecognized
-        ################################
-        if 'NAXIS' in hdu0h and hdu0h['NAXIS'] == 3:
-            return ("other", "3Dstacked")
-        if 'NAXIS' in hdu0h and hdu0h['NAXIS'] == 2:
-            if 'BAYERPAT' in hdu0h:
-                return ("other", "bayered")
-            else:
-                return ("other", "mono")
-        return ("other", "unknown")
+            ################################
+            ## DWARF
+            ################################
+            if 'TELESCOP' in hdu0h and 'DWARFIII' in hdu0h['TELESCOP']:
+                return ("Dwarf3", ["bayered", "3Dstacked"][hdu0h['NAXIS'] == 3])
+            if 'TELESCOP' in hdu0h and 'DWARFII' in hdu0h['TELESCOP']:
+                return ("Dwarf2", ["bayered", "3Dstacked"][hdu0h['NAXIS'] == 3])
+
+            ################################
+            ## Unrecognized
+            ################################
+            if 'NAXIS' in hdu0h and hdu0h['NAXIS'] == 3:
+                return ("other", "3Dstacked")
+            if 'NAXIS' in hdu0h and hdu0h['NAXIS'] == 2:
+                if 'BAYERPAT' in hdu0h:
+                    return ("other", "bayered")
+                else:
+                    return ("other", "mono")
+    except Exception as e:
+        print(f"Error reading FITS file {filename}: {e}")
+        raise ValueError(f"Unable to determine telescope type from {filename}") 
+    return ("other", "unknown")
 
 ################################################################
 ##                METADATA
