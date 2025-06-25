@@ -476,7 +476,10 @@ def read_meta_from_fits(filename, meta_dict):
         for key in hdu0h:
             meta_validator.add_fits_item(key, hdu0h[key])
             meta_dict[key] = hdu0h[key] # copy the value into the meta_dict
-
+            if comment:= hdu0h.comments[key]:
+                # If the FITS header has a comment for this key, add it to the meta_dict
+                meta_dict[key+"_comment"] = comment
+    
 def wcs_text_2wcs(wcs_text):
     """Convert WCS FITS header text into an astropy WCS object
 
@@ -1763,6 +1766,8 @@ class MainWindow:
             # post processing of '!' keys in the metadata
             # utility to convert local time to UTC
             def Local2UTC(lat, long, local_time_str):
+                if "UTC" in meta["DATE-OBS_comment"]:
+                    return local_time_str  # already in UTC, no conversion needed
                 # courtesy of GPT-4o
                 # Parse the local time string into a datetime object
                 local_time = datetime.strptime(local_time_str, '%Y-%m-%dT%H:%M:%S.%f')
