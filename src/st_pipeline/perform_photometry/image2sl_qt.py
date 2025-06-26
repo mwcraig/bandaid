@@ -631,7 +631,7 @@ class StarlistGenerator:
 
         # This needs to be properly added to metadata, which is probably different
         # for each telescope.
-        #done self.metadata['stack'] = self.metadata["STACKCNT"]
+        self.metadata['stack'] = self.metadata["STACKCNT"]
         starlist = StarList.from_table(self.source_table, metadata=self.metadata)
         final_starlists = [starlist]
 
