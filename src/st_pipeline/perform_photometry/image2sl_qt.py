@@ -954,7 +954,7 @@ class StarlistGenerator:
                                 roundlo=-4.0, roundhi=4.0)
         sources = daofind(local_image)
         print("Sources found before edge-culling: ", len(sources), " stars.")
-        sources.rename_column('peak', 'peak_flux')
+        sources.rename_column('peak', 'peak_count')
 
         # eliminate stars too close to the edges
         edgelimit = 15
@@ -1028,28 +1028,28 @@ class StarlistGenerator:
                                              local_bkg=annulus_data.mean)
         sources['x'] = sources['xcentroid']
         sources['y'] = sources['ycentroid']
-        sources['tot_flux'] = central_sum.sum
-        if 'bkgd_flux' not in sources.columns:
-            sources.add_column(annulus_data.mean, name='bkgd_flux')
+        sources['tot_count'] = central_sum.sum
+        if 'bkgd_count' not in sources.columns:
+            sources.add_column(annulus_data.mean, name='bkgd_count')
         else:
-            sources['bkgd_flux'] = annulus_data.mean
-        sources['peak_flux'] = central_sum.max + annulus_data.mean
+            sources['bkgd_count'] = annulus_data.mean
+        sources['peak_count'] = central_sum.max + annulus_data.mean
 
         bad_rows = []
         min_adu = 1.0 # max(0.0, tot_noise_bkgd/starlist.gain)
         # Clean up the sources table
         print("Sources cleanup starts with ", len(sources), " stars.")
         print('   ... and min_adu of ', min_adu, ' and gain = ', gain)
-        print('   ... and smallest peak_flux of ', min(sources['peak_flux']))
-        print('   ... and smallest tot_flux of ', min(sources['tot_flux']))
+        print('   ... and smallest peak_count of ', min(sources['peak_count']))
+        print('   ... and smallest tot_count of ', min(sources['tot_count']))
 
         for row,content in enumerate(sources):
             if (content['x'] <= 3.0
                 or content['y'] <= 3.0
                 or content['x'] >= (self.width-3)
                 or content['y'] >= (self.height-3)
-                or content['tot_flux'] <= min_adu
-                or content['peak_flux'] <= min_adu):
+                or content['tot_count'] <= min_adu
+                or content['peak_count'] <= min_adu):
                 bad_rows.append(row)
         print("... removing ", len(bad_rows), " stars.")
         sources.remove_rows(bad_rows)
@@ -1067,22 +1067,22 @@ class StarlistGenerator:
             plt.show()
 
         # Sort so that order is well-defined and tests will pass
-        sources.sort(keys='tot_flux', reverse=True)
+        sources.sort(keys='tot_count', reverse=True)
 
         # Calculate errors using table columns and star flux error in column
-        poiss_noise = np.sqrt(gain * sources['tot_flux'])
+        poiss_noise = np.sqrt(gain * sources['tot_count'])
         tot_noise = np.sqrt(poiss_noise**2 + tot_noise_bkgd**2) / gain
-        sources['flux_err'] = tot_noise
+        sources['count_err'] = tot_noise
 
         # Set flux errors to zero for negative fluxes
-        sources['flux_err'][sources['tot_flux'] < 0] = 0.0
+        sources['count_err'][sources['tot_count'] < 0] = 0.0
 
         # Calculate SNR and drop stars with low SNR or with negative flux
-        snr = sources['tot_flux'] / sources['flux_err']
+        snr = sources['tot_count'] / sources['count_err']
         good_snr = (
             (snr > LOW_SNR)              # Only keep stars with decent SNR
-            & ~np.isnan(snr)             # Drop any nan SNRs, likely from flux_err=0
-            & (sources['tot_flux'] > 0)  # Drop any negative fluxes, which are unphysical
+            & ~np.isnan(snr)             # Drop any nan SNRs, likely from count_err=0
+            & (sources['tot_count'] > 0)  # Drop any negative fluxes, which are unphysical
         )
 
         return sources[good_snr]
