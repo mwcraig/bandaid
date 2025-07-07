@@ -103,31 +103,6 @@ def probe_file_for_type(filename):
     ValueError
         Raised if unable to determine which smart telescope type
     """
-    # Check if the file is a TIFF file
-    if filename.lower().endswith('.tiff') or filename.lower().endswith('.tif'):
-        # Open the TIFF image
-        tiff_image = Image.open(filename)
-        # Convert the image to a NumPy array
-        image_data = np.array(tiff_image)
-        # Create a FITS PrimaryHDU object
-        hdu = fits.PrimaryHDU(image_data)
-        # Get EXIF metadata (if available)
-        exif_data = tiff_image.getexif()
-        # Add some EXIF info to the FITS header
-        header = hdu.header
-        # Check if EXIF data exists
-        if exif_data:
-            # Loop through EXIF tags and add to header
-            for tag, value in exif_data.items():
-                # Tag names can be retrieved using ExifTags.TAGS
-                # But Pillow's getexif() returns a dictionary with tag IDs
-                # For simplicity, you can add the raw tag ID and value
-                header[tag] = str(value)
-        else:
-            header['COMMENT'] = "No EXIF metadata found."
-        # Save the FITS file
-        hdu.writeto(Path(filename).with_suffix('.fits'), overwrite=True)
-
     try:
         with fits.open(filename, ignore_missing_simple=True) as hdul:
             hdu0h = hdul[0].header
@@ -306,9 +281,9 @@ class MetaValidator:
         if isinstance(value, str) and value.startswith('@'):
             # This is a reference to another key in the existing meta dir file
             self.json[key] = value # show we will get the value from the prior meta
-            nv= get_json_value(meta_dict, value[1:]) # show that the fits had the value
+            nv = get_json_value(meta_dict, value[1:]) # show that the fits had the value
             if nv is not None:
-                meta_dict[key]= nv 
+                meta_dict[key] = nv 
             return nv
         if key.startswith('#'):
             # do not replace an existing key
@@ -467,7 +442,7 @@ def read_meta_from_fits(filename, meta_dict):
     -------
     None
     """
-    telescope_probe= probe_file_for_type(filename) # tuple of telescope_type and image_type
+    telescope_probe = probe_file_for_type(filename) # tuple of telescope_type and image_type
     with fits.open(filename) as hdul:
         hdu0h = hdul[0].header
         meta_dict['telescope_probe'] = telescope_probe 
@@ -675,7 +650,6 @@ class StarlistGenerator:
 
         # This needs to be properly added to metadata, which is probably different
         # for each telescope.
-        self.metadata['stack'] = self.metadata["STACKCNT"]
         starlist = StarList.from_table(self.source_table, metadata=self.metadata)
         final_starlists = [starlist]
 
@@ -1789,18 +1763,18 @@ class MainWindow:
                 # eg "ra": "!RA hr2deg"
                 if isinstance(value, str) and value.startswith('!'):
                     try:
-                        tt= value[1:].split()
+                        tt = value[1:].split()
                         if tt[1] == "hr2deg": # convert decimal hours to degrees
                             if val := get_json_value(meta, tt[0]):
-                                meta[key]= float(val) * 15.0
+                                meta[key] = float(val) * 15.0
                         elif tt[1] == "Local2UTC": # convert local time to UTC
                             # eg  "obs_time": "!DATE-OBS Local2UTC"
-                            meta[key]= Local2UTC(meta["site_lat"], meta["site_lon"], get_json_value(meta, tt[0]))
+                            meta[key] = Local2UTC(meta["site_lat"], meta["site_lon"], get_json_value(meta, tt[0]))
                         elif tt[1] == "refmtDate":
                             # "obs_time": "!StackedInfo.dateTime refmtDate %m-%d-%yB%H_%M_%S"
                             #   B is a blank space
-                            d= datetime.strptime(get_json_value(meta, tt[0]), tt[2].replace('B', ' '))
-                            meta[key]= d.strftime("%Y-%m-%dT%H:%M:%S")
+                            d = datetime.strptime(get_json_value(meta, tt[0]), tt[2].replace('B', ' '))
+                            meta[key] = d.strftime("%Y-%m-%dT%H:%M:%S")
                         elif tt[1] == "index":
                                 # eg "tel_firmware" : "!CREATOR index 1"
                                 meta[key]= get_json_value(meta, tt[0]).split()[int(tt[2])]
