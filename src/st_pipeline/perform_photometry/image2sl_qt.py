@@ -33,6 +33,7 @@ from pathlib import Path
 
 import numpy as np
 import pytz
+from PIL import Image
 from astropy.io import fits
 from astropy.stats import SigmaClip, sigma_clipped_stats
 from astropy.utils.data import get_pkg_data_filename
@@ -102,42 +103,55 @@ def probe_file_for_type(filename):
     ValueError
         Raised if unable to determine which smart telescope type
     """
-    with fits.open(filename, ignore_missing_simple=True) as hdul:
-        hdu0h = hdul[0].header
+    try:
+        with fits.open(filename, ignore_missing_simple=True) as hdul:
+            hdu0h = hdul[0].header
 
-        ################################
-        ## Unistellar test
-        ################################
-        if 'ORIGIN' in hdu0h and 'Unistellar' in hdu0h['ORIGIN']:
-            return ("Unistellar", "bayered")
+            ################################
+            ## Unistellar test
+            ################################
+            if 'ORIGIN' in hdu0h and 'Unistellar' in hdu0h['ORIGIN']:
+                return ("Unistellar", "bayered")
 
-        ################################
-        ## Seestar test
-        ################################
-        if 'CREATOR' in hdu0h and 'Seestar' in hdu0h['CREATOR']:
-            if hdu0h['NAXIS'] == 3:
-                return ("Seestar50", "3Dstacked")
-            return ("Seestar50", "bayered")
+            ################################
+            ## Seestar test
+            ################################
+            if 'CREATOR' in hdu0h and 'Seestar' in hdu0h['CREATOR']:
+                if hdu0h['NAXIS'] == 3:
+                    return ("Seestar50", "3Dstacked")
+                return ("Seestar50", "bayered")
 
-        ################################
-        ## Celestron Origin test
-        ################################
-        if ('CREATOR' in hdu0h and 'Origin' in hdu0h['CREATOR']) or \
-           ('SWCREATE' in hdu0h and 'Origin' in hdu0h['SWCREATE']):
-            return ("Origin", ["bayered", "3Dstacked"][hdu0h['NAXIS'] == 3])
+            ################################
+            ## Celestron Origin test
+            ################################
+            if ('CREATOR' in hdu0h and 'Origin' in hdu0h['CREATOR']) or \
+            ('SWCREATE' in hdu0h and 'Origin' in hdu0h['SWCREATE']):
+                if hdu0h['NAXIS'] == 3: return ("Origin", "3Dstacked")
+                return ("Origin", "bayered")
+                # nb   no mono option for Origin
 
-        ################################
-        ## DWARF
-        ################################
-        if 'TELESCOP' in hdu0h and 'DWARFIII' in hdu0h['TELESCOP']:
-            return ("Dwarf3", ["bayered", "3Dstacked"][hdu0h['NAXIS'] == 3])
-        if 'TELESCOP' in hdu0h and 'DWARFII' in hdu0h['TELESCOP']:
-            return ("Dwarf2", ["bayered", "3Dstacked"][hdu0h['NAXIS'] == 3])
+            ################################
+            ## DWARF
+            ################################
+            if 'TELESCOP' in hdu0h and 'DWARFIII' in hdu0h['TELESCOP']:
+                return ("Dwarf3", ["bayered", "3Dstacked"][hdu0h['NAXIS'] == 3])
+            if 'TELESCOP' in hdu0h and 'DWARFII' in hdu0h['TELESCOP']:
+                return ("Dwarf2", ["bayered", "3Dstacked"][hdu0h['NAXIS'] == 3])
 
-        ################################
-        ## Unrecognized
-        ################################
-        return ("other", "unknown")
+            ################################
+            ## Unrecognized
+            ################################
+            if 'NAXIS' in hdu0h and hdu0h['NAXIS'] == 3:
+                return ("other", "3Dstacked")
+            if 'NAXIS' in hdu0h and hdu0h['NAXIS'] == 2:
+                if 'BAYERPAT' in hdu0h:
+                    return ("other", "bayered")
+                else:
+                    return ("other", "mono")
+    except Exception as e:
+        print(f"Error reading FITS file {filename}: {e}")
+        raise ValueError(f"Unable to determine telescope type from {filename}") 
+    return ("other", "unknown")
 
 ################################################################
 ##                METADATA
@@ -169,7 +183,7 @@ def probe_file_for_type(filename):
 ##    DEC - a float, nominal declination of image center (deg)
 ##    RA - a float, nominal RA of image center (deg)
 ##    FOV_RAD - a float, nominal field of view radius (deg)
-##    telescope_probe - a str, value returned by probe_file_for_type()
+##    telescope_probe - a tuple value returned by probe_file_for_type()
 ################################################################
 
 valid_meta_keys = ['schema_version',
@@ -186,16 +200,17 @@ valid_meta_keys = ['schema_version',
                    'tel_firmware', # a string, the firmware ID (e.g. "v1.2.3")
                    'adc_depth', # an integer, bit depth of the camera ADC (e.g. 12)
                    'largest_usable_adu_value', # an integer, the ADU level where saturation starts
-                   'system_gain', # a float, the gain of the camera system, e-/ADU
+                   'egain', # a float, the gain of the camera system, e-/ADU
                    'bayerpat', # a 4-character string (e.g., 'BGGR')
                    'pixscale', # a float, pixel scale *after* debayering, arcsec/pix
                    'refframe', # a string, (e.g., "ICRS")
                    'dec', # a float, nominal declination of image center (deg)
                    'ra', # a float, nominal RA of image center (deg)
                    'fov_rad', # a float, nominal field of view radius (deg) (half the diagonal)
-                   'telescope_probe', # a tuple, with type and format of the image
+                   'telescope_probe', # a tuple, with telescope_type and image_type
                    'roworder', # a string, bayerpat modifier. "top-down" or "bottom-up"
-                   'ybayroff' # an integer, bayerpat modifier. Column shift horizontally, 0 or 1
+                   'ybayroff', # an integer, bayerpat modifier. Column shift horizontally, 0 or 1
+                   'stack' # integer, number of images stacked in this fits image. default is 1
         ]
 
 def get_json_value(data, keys):
@@ -206,7 +221,7 @@ def get_json_value(data, keys):
     datav= data.copy()
     for key in keys.split('.'):
         try:
-            datav = data[key]
+            datav = datav[key]
         except KeyError:
             print(f"WARNING: JSON key '{keys}' not found in metadata")
             return None
@@ -266,8 +281,9 @@ class MetaValidator:
         if isinstance(value, str) and value.startswith('@'):
             # This is a reference to another key in the existing meta dir file
             self.json[key] = value # show we will get the value from the prior meta
-            if nv := get_json_value(meta_dict, value[1:]): # show that the fits had the value
-                meta_dict[key]= nv # don't replace an existing key
+            nv = get_json_value(meta_dict, value[1:]) # show that the fits had the value
+            if nv is not None:
+                meta_dict[key] = nv 
             return nv
         if key.startswith('#'):
             # do not replace an existing key
@@ -275,8 +291,8 @@ class MetaValidator:
             if key in meta_dict:
                 print(f"WARNING: {key} | {meta_dict[key]} not replaced with {value}")
                 return None
-        if key in meta_dict:
-            print(f"Replacing existing meta key '{key}' value with new value '{value}'")
+        if key in meta_dict and meta_dict[key] is not None:
+            print(f"Replacing existing meta key '{key}' value '{meta_dict[key]}' with new value '{value}'")
         meta_dict[key] = value
         return value
 
@@ -426,16 +442,19 @@ def read_meta_from_fits(filename, meta_dict):
     -------
     None
     """
-    telescope_type= probe_file_for_type(filename)
+    telescope_probe = probe_file_for_type(filename) # tuple of telescope_type and image_type
     with fits.open(filename) as hdul:
         hdu0h = hdul[0].header
-        meta_dict['telescope_probe'] = telescope_type
+        meta_dict['telescope_probe'] = telescope_probe 
 
         # read in the whole header
         for key in hdu0h:
             meta_validator.add_fits_item(key, hdu0h[key])
             meta_dict[key] = hdu0h[key] # copy the value into the meta_dict
-
+            if comment:= hdu0h.comments[key]:
+                # If the FITS header has a comment for this key, add it to the meta_dict
+                meta_dict[key+"_comment"] = comment
+    
 def wcs_text_2wcs(wcs_text):
     """Convert WCS FITS header text into an astropy WCS object
 
@@ -631,7 +650,6 @@ class StarlistGenerator:
 
         # This needs to be properly added to metadata, which is probably different
         # for each telescope.
-        self.metadata['stack'] = self.metadata["STACKCNT"]
         starlist = StarList.from_table(self.source_table, metadata=self.metadata)
         final_starlists = [starlist]
 
@@ -865,7 +883,7 @@ class StarlistGenerator:
             background that has the same noise level in each color
             channel.
         """
-        gain = self.metadata['system_gain']
+        egain = self.metadata['egain']
 
         if do_color_balance:
             self._bayer_balance_image(image)
@@ -887,7 +905,7 @@ class StarlistGenerator:
          bkgd_std) = sigma_clipped_stats(background, sigma=3.0)
         print("background.median = ", full_background.background_median,
               ", background.rms = ", full_background.background_rms_median)
-        self.noise_bkgd_per_pixel = full_background.background_rms_median * gain
+        self.noise_bkgd_per_pixel = full_background.background_rms_median * egain
         self.background = background
 
     def _find_sources(self, working_image, do_color_balance=False):
@@ -989,7 +1007,7 @@ class StarlistGenerator:
             photometry. Must have the same shape as working_image.
 
         """
-        gain = self.metadata['system_gain']
+        egain = self.metadata['egain']
         phot_radius = self.options.aperture_size_fwhm * self.fwhm
         annulus_inner = max(3*phot_radius, 4*self.fwhm)
         annulus_outer = math.sqrt(100*phot_radius**2 + annulus_inner**2)
@@ -1004,7 +1022,7 @@ class StarlistGenerator:
                                        sigma_clip=sigma_clip,
                                        bkg_estimator=bkg_estimator)
         # noise_bkgd_per_pixel in units of e-/pixel
-        noise_bkgd_per_pixel = full_background.background_rms_median * gain
+        noise_bkgd_per_pixel = full_background.background_rms_median * egain
 
         # Perform the photometry
         positions = list(zip(sources['xcentroid'],
@@ -1039,7 +1057,7 @@ class StarlistGenerator:
         min_adu = 1.0 # max(0.0, tot_noise_bkgd/starlist.gain)
         # Clean up the sources table
         print("Sources cleanup starts with ", len(sources), " stars.")
-        print('   ... and min_adu of ', min_adu, ' and gain = ', gain)
+        print('   ... and min_adu of ', min_adu, ' and egain = ', egain)
         print('   ... and smallest peak_count of ', min(sources['peak_count']))
         print('   ... and smallest tot_count of ', min(sources['tot_count']))
 
@@ -1070,8 +1088,8 @@ class StarlistGenerator:
         sources.sort(keys='tot_count', reverse=True)
 
         # Calculate errors using table columns and star flux error in column
-        poiss_noise = np.sqrt(gain * sources['tot_count'])
-        tot_noise = np.sqrt(poiss_noise**2 + tot_noise_bkgd**2) / gain
+        poiss_noise = np.sqrt(egain * sources['tot_count'])
+        tot_noise = np.sqrt(poiss_noise**2 + tot_noise_bkgd**2) / egain
         sources['count_err'] = tot_noise
 
         # Set flux errors to zero for negative fluxes
@@ -1647,7 +1665,7 @@ class MainWindow:
             if image_filename == '':
                 continue
 
-            telescope_type,image_type = probe_file_for_type(image_filename)
+            telescope_type, image_type = probe_file_for_type(image_filename)
 
             ccd = CCDData.read(image_filename, unit="adu")
             if ccd.wcs is None:
@@ -1714,9 +1732,16 @@ class MainWindow:
             if (mpp.is_file() and mpp.exists() and mpp.stat().st_mode & 0o400):
                 read_meta_from_json(mpp, meta)
 
+#            #   look for and apply the personal.json
+#            mpp= Path(mp, "personal.json")
+#            print("Reading personal.json from ", mpp)
+#            read_meta_from_json(mpp, meta)
+#
             # post processing of '!' keys in the metadata
             # utility to convert local time to UTC
             def Local2UTC(lat, long, local_time_str):
+                if "UTC" in meta["DATE-OBS_comment"]:
+                    return local_time_str  # already in UTC, no conversion needed
                 # courtesy of GPT-4o
                 # Parse the local time string into a datetime object
                 local_time = datetime.strptime(local_time_str, '%Y-%m-%dT%H:%M:%S.%f')
@@ -1737,27 +1762,30 @@ class MainWindow:
             for key, value in meta.items():
                 # eg "ra": "!RA hr2deg"
                 if isinstance(value, str) and value.startswith('!'):
-                    tt= value[1:].split()
-                    if tt[1] == "hr2deg": # convert decimal hours to degrees
-                        if val := get_json_value(meta, tt[0]):
-                            meta[key]= float(val) * 15.0
-                    elif tt[1] == "Local2UTC": # convert local time to UTC
-                        # eg  "obs_time": "!DATE-OBS Local2UTC"
-                        meta[key]= Local2UTC(meta["site_lat"], meta["site_lon"], get_json_value(meta, tt[0]))
-                    elif tt[1] == "refmtDate":
-                        # "obs_time": "!StackedInfo.dateTime refmtDate %m-%d-%yB%H_%M_%S"
-                        #   B is a blank space
-                        d= datetime.strptime(get_json_value(meta, tt[0]), tt[2].replace('B', ' '))
-                        meta[key]= d.strftime("%Y-%m-%dT%H:%M:%S")
-                    elif tt[1] == "index":
-                        # eg "tel_firmware" : "!CREATOR index 1"
-                        meta[key]= get_json_value(meta, tt[0]).split()[int(tt[2])]
+                    try:
+                        tt = value[1:].split()
+                        if tt[1] == "hr2deg": # convert decimal hours to degrees
+                            if val := get_json_value(meta, tt[0]):
+                                meta[key] = float(val) * 15.0
+                        elif tt[1] == "Local2UTC": # convert local time to UTC
+                            # eg  "obs_time": "!DATE-OBS Local2UTC"
+                            meta[key] = Local2UTC(meta["site_lat"], meta["site_lon"], get_json_value(meta, tt[0]))
+                        elif tt[1] == "refmtDate":
+                            # "obs_time": "!StackedInfo.dateTime refmtDate %m-%d-%yB%H_%M_%S"
+                            #   B is a blank space
+                            d = datetime.strptime(get_json_value(meta, tt[0]), tt[2].replace('B', ' '))
+                            meta[key] = d.strftime("%Y-%m-%dT%H:%M:%S")
+                        elif tt[1] == "index":
+                                # eg "tel_firmware" : "!CREATOR index 1"
+                                meta[key]= get_json_value(meta, tt[0]).split()[int(tt[2])]
+                    except Exception as e:
+                        raise RuntimeError(f"Error processing key {key} with value {value}: {tt}") from e
 
-            meta['egain'] = meta['system_gain']
             print("Final metadata is ", meta)
 
             wcs = self._wcs.copy() if self._wcs is not None else None
             if meta_validator.validate(meta):
+                # at this point the meta dictionary is complete, same as meta_validator.final
                 meta['orig_filename'] = image_filename
                 starlist_gen = StarlistGenerator(full_path = Path(image_filename),
                                                  meta = meta,
