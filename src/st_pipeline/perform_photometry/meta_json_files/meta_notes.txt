@@ -116,7 +116,7 @@ tel_model                 Req  @TELESCOP                       DWARFIII
 tel_firmware              Opt
 adc_depth                 Req                                  12
 largest_usable_adu_value  Req                                  64000
-system_gain               Req                                  0.3116
+egain                     Req                                  0.3116
 bayerpat                  Req  @BAYERPAT                       RGGB
 pixscale                  Req                                  2.8
 epoch                     Req                                  J2000
