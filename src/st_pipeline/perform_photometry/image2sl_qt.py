@@ -1779,7 +1779,8 @@ class MainWindow:
                                 # eg "tel_firmware" : "!CREATOR index 1"
                                 meta[key]= get_json_value(meta, tt[0]).split()[int(tt[2])]
                     except Exception as e:
-                        raise RuntimeError(f"Error processing key {key} with value {value}: {tt}") from e
+                        #raise RuntimeError(f"Error processing key {key} with value {value}: {tt}") from e
+                        print(f"Error processing key {key} with value {value}: {tt}") 
 
             print("Final metadata is ", meta)
 
