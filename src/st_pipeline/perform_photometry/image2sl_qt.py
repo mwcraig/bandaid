@@ -1778,9 +1778,17 @@ class MainWindow:
                         elif tt[1] == "index":
                                 # eg "tel_firmware" : "!CREATOR index 1"
                                 meta[key]= get_json_value(meta, tt[0]).split()[int(tt[2])]
+                        else:
+                            print(f"Unknown processing function for key {key} with value {value}")
                     except Exception as e:
                         #raise RuntimeError(f"Error processing key {key} with value {value}: {tt}") from e
                         print(f"Error processing key {key} with value {value}: {tt}") 
+                        # programmer's note: We don't raise an error here in the expectation 
+                        # that the basic.json file will be prepared to act as the catch mechanism.
+                        # If the validation fails, look for these messages in the console log
+                        # and examine how to improve the basic.json file.
+                        # Details of the basic.json features are described in
+                        #    perform_photometry\meta_json_files\meta_notes.txt
 
             print("Final metadata is ", meta)
 
