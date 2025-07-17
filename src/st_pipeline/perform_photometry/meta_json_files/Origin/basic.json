@@ -36,5 +36,6 @@
     "stack": "@StackedInfo.stackedDepth",
     "height": "@StackedInfo.imageHeight",
     "width": "@StackedInfo.imageWidth",
-    "object": "@StackedInfo.objectName"
+    "object": "@StackedInfo.objectName",
+    "system_id": "@StackedInfo.uuid"
 }
