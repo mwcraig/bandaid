@@ -210,7 +210,8 @@ valid_meta_keys = ['schema_version',
                    'telescope_probe', # a tuple, with telescope_type and image_type
                    'roworder', # a string, bayerpat modifier. "top-down" or "bottom-up"
                    'ybayroff', # an integer, bayerpat modifier. Column shift horizontally, 0 or 1
-                   'stack' # integer, number of images stacked in this fits image. default is 1
+                   'stack', # integer, number of images stacked in this fits image. default is 1
+                   'system_id' # a string, the system identification of the smart telescope, if available
         ]
 
 def get_json_value(data, keys):
