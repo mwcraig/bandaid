@@ -32,7 +32,6 @@ from enum import StrEnum
 from pathlib import Path
 
 import numpy as np
-import pytz
 from PIL import Image
 from astropy.io import fits
 from astropy.stats import SigmaClip, sigma_clipped_stats
@@ -58,7 +57,6 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QVBoxLayout,
 )
-from timezonefinder import TimezoneFinder
 
 from .. import __version__
 from ..schema_definition import StarList, StarListSet
@@ -265,27 +263,6 @@ class MetaValidator:
         self.json = {}
         self.fits = {}
 
-    # utility to convert local time to UTC
-    def Local2UTC(lat, long, local_time_str, meta_dict):
-        if "UTC" in meta_dict["DATE-OBS_comment"]:
-            return local_time_str  # already in UTC, no conversion needed
-        # courtesy of GPT-4o
-        # Parse the local time string into a datetime object
-        local_time = datetime.strptime(local_time_str, '%Y-%m-%dT%H:%M:%S.%f')
-        # Find the timezone
-        tf = TimezoneFinder()
-        timezone_str = tf.timezone_at(lng=long, lat=lat)
-        if timezone_str is None:
-            raise ValueError("Could not find timezone for the given coordinates.")
-        # Get the timezone object
-        local_tz = pytz.timezone(timezone_str)
-        # Localize the datetime to the found timezone
-        local_dt = local_tz.localize(local_time)
-        # Convert to UTC
-        utc_dt = local_dt.astimezone(pytz.utc)
-        return utc_dt.strftime('%Y-%m-%dT%H:%M:%S')
-
-
     def add_json_item(self, key, value, meta_dict):
         """Add a piece of metadata pulled from the JSON file
 
@@ -325,9 +302,6 @@ class MetaValidator:
                     val = get_json_value(meta_dict, tt[0])
                     if val is not None:
                         nv= float(val) * 15.0 # convert hours to degrees
-                elif tt[1] == "Local2UTC": # convert local time to UTC
-                    # eg  "obs_time": "!DATE-OBS Local2UTC"
-                    nv = self.Local2UTC(meta_dict["site_lat"], meta_dict["site_lon"], get_json_value(meta_dict, tt[0], meta_dict))
                 elif tt[1] == "refmtDate":
                     # "obs_time": "!StackedInfo.dateTime refmtDate %m-%d-%yB%H_%M_%S"
                     #   B is a blank space
