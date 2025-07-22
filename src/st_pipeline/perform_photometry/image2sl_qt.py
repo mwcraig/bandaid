@@ -32,7 +32,6 @@ from enum import StrEnum
 from pathlib import Path
 
 import numpy as np
-import pytz
 from PIL import Image
 from astropy.io import fits
 from astropy.stats import SigmaClip, sigma_clipped_stats
@@ -58,7 +57,6 @@ from PySide6.QtWidgets import (
     QRadioButton,
     QVBoxLayout,
 )
-from timezonefinder import TimezoneFinder
 
 from .. import __version__
 from ..schema_definition import StarList, StarListSet
@@ -210,7 +208,8 @@ valid_meta_keys = ['schema_version',
                    'telescope_probe', # a tuple, with telescope_type and image_type
                    'roworder', # a string, bayerpat modifier. "top-down" or "bottom-up"
                    'ybayroff', # an integer, bayerpat modifier. Column shift horizontally, 0 or 1
-                   'stack' # integer, number of images stacked in this fits image. default is 1
+                   'stack', # integer, number of images stacked in this fits image. default is 1
+                   'system_id' # a string, the system identification of the smart telescope, if available
         ]
 
 def get_json_value(data, keys):
@@ -278,6 +277,15 @@ class MetaValidator:
         """
         if key.startswith('_'): # json comment
             return None # skip
+        if key.startswith('#'):
+            # do not replace an existing key
+            key= key[1:]
+            if key in meta_dict:
+                print(f"WARNING: {key} | {meta_dict[key]} not replaced with {value}")
+                return None
+            else:
+                print(f"Adding backup value to meta key '{key}' with value '{value}'")
+                # fall through to process this new key:value
         if isinstance(value, str) and value.startswith('@'):
             # This is a reference to another key in the existing meta dir file
             self.json[key] = value # show we will get the value from the prior meta
@@ -285,12 +293,39 @@ class MetaValidator:
             if nv is not None:
                 meta_dict[key] = nv 
             return nv
-        if key.startswith('#'):
-            # do not replace an existing key
-            key= key[1:]
-            if key in meta_dict:
-                print(f"WARNING: {key} | {meta_dict[key]} not replaced with {value}")
+        # look for special processing keys
+        # eg "ra": "!RA hr2deg"
+        if isinstance(value, str) and value.startswith('!'):
+            try:
+                tt = value[1:].split()
+                if tt[1] == "hr2deg": # convert decimal hours to degrees
+                    val = get_json_value(meta_dict, tt[0])
+                    if val is not None:
+                        nv= float(val) * 15.0 # convert hours to degrees
+                elif tt[1] == "refmtDate":
+                    # "obs_time": "!StackedInfo.dateTime refmtDate %m-%d-%yB%H_%M_%S"
+                    #   B is a blank space
+                    d = datetime.strptime(get_json_value(meta_dict, tt[0]), tt[2].replace('B', ' '))
+                    nv = d.strftime("%Y-%m-%dT%H:%M:%S")
+                elif tt[1] == "index":
+                    # eg "tel_firmware" : "!CREATOR index 1"
+                    nv = get_json_value(meta_dict, tt[0]).split()[int(tt[2])]
+                else:
+                    print(f"Unknown processing function for key {key} with value {value}")
+                    nv= None
+                meta_dict[key] = nv
+                return nv
+            except Exception as e:
+                #raise RuntimeError(f"Error processing key {key} with value {value}: {tt}") from e
+                print(f"Error processing key {key} with value {value}: {tt}") 
                 return None
+                # programmer's note: We don't raise an error here in the expectation 
+                # that the basic.json file will be prepared to act as the catch mechanism.
+                # If the validation fails, look for these messages in the console log
+                # and examine how to improve the basic.json file.
+                # Details of the basic.json features are described in
+                #    perform_photometry\meta_json_files\meta_notes.txt
+        # If we get here, we have a normal key:value pair
         if key in meta_dict and meta_dict[key] is not None:
             print(f"Replacing existing meta key '{key}' value '{meta_dict[key]}' with new value '{value}'")
         meta_dict[key] = value
@@ -417,8 +452,10 @@ def read_meta_from_json(filename, meta_dict):
             raise
 
         for (keyword, value) in data.items():
-            if val := meta_validator.add_json_item(keyword, value, meta_dict):
+            val = meta_validator.add_json_item(keyword, value, meta_dict)
+            if val is not None:
                 meta_dict[keyword] = val
+                print(f"Adding JSON metadata key '{keyword}' with value '{val}'")
 
 # Read metadata from a FITS header. The metadata that's found will be
 # put into the dictionary that's passed as the argument "dict".
@@ -1737,51 +1774,17 @@ class MainWindow:
 #            print("Reading personal.json from ", mpp)
 #            read_meta_from_json(mpp, meta)
 #
-            # post processing of '!' keys in the metadata
-            # utility to convert local time to UTC
-            def Local2UTC(lat, long, local_time_str):
-                if "UTC" in meta["DATE-OBS_comment"]:
-                    return local_time_str  # already in UTC, no conversion needed
-                # courtesy of GPT-4o
-                # Parse the local time string into a datetime object
-                local_time = datetime.strptime(local_time_str, '%Y-%m-%dT%H:%M:%S.%f')
-                # Find the timezone
-                tf = TimezoneFinder()
-                timezone_str = tf.timezone_at(lng=long, lat=lat)
-                if timezone_str is None:
-                    raise ValueError("Could not find timezone for the given coordinates.")
-                # Get the timezone object
-                local_tz = pytz.timezone(timezone_str)
-                # Localize the datetime to the found timezone
-                local_dt = local_tz.localize(local_time)
-                # Convert to UTC
-                utc_dt = local_dt.astimezone(pytz.utc)
-                return utc_dt.strftime('%Y-%m-%dT%H:%M:%S')
 
-            # look for special processing keys
+            print("Final metadata is: ")
+            lback= False
             for key, value in meta.items():
-                # eg "ra": "!RA hr2deg"
-                if isinstance(value, str) and value.startswith('!'):
-                    try:
-                        tt = value[1:].split()
-                        if tt[1] == "hr2deg": # convert decimal hours to degrees
-                            if val := get_json_value(meta, tt[0]):
-                                meta[key] = float(val) * 15.0
-                        elif tt[1] == "Local2UTC": # convert local time to UTC
-                            # eg  "obs_time": "!DATE-OBS Local2UTC"
-                            meta[key] = Local2UTC(meta["site_lat"], meta["site_lon"], get_json_value(meta, tt[0]))
-                        elif tt[1] == "refmtDate":
-                            # "obs_time": "!StackedInfo.dateTime refmtDate %m-%d-%yB%H_%M_%S"
-                            #   B is a blank space
-                            d = datetime.strptime(get_json_value(meta, tt[0]), tt[2].replace('B', ' '))
-                            meta[key] = d.strftime("%Y-%m-%dT%H:%M:%S")
-                        elif tt[1] == "index":
-                                # eg "tel_firmware" : "!CREATOR index 1"
-                                meta[key]= get_json_value(meta, tt[0]).split()[int(tt[2])]
-                    except Exception as e:
-                        raise RuntimeError(f"Error processing key {key} with value {value}: {tt}") from e
-
-            print("Final metadata is ", meta)
+                if "comment" in key:
+                    print(f" ({key}: {value})")
+                    lback= False
+                else:
+                    newline_or_not = '\n' if lback else ''
+                    print(f"{newline_or_not}{key}: {value}", end="")
+                    lback= True
 
             wcs = self._wcs.copy() if self._wcs is not None else None
             if meta_validator.validate(meta):
