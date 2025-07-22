@@ -27,7 +27,8 @@
     "stack": "@STACKCNT",
     "#stack": 1,
 
-     "object": "@OBJECT"
+     "object": "@OBJECT",
+     "system_id": "@TELESCOP"
 }
 
     
