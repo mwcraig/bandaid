@@ -1808,7 +1808,8 @@ class MainWindow:
                     print(f" ({key}: {value})")
                     lback= False
                 else:
-                    print(f"{'\n' if lback else ''}{key}: {value}", end="")
+                    newline_or_not = '\n' if lback else ''
+                    print(f"{newline_or_not}{key}: {value}", end="")
                     lback= True
 
             wcs = self._wcs.copy() if self._wcs is not None else None
