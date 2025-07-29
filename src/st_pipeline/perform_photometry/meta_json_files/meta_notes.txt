@@ -14,6 +14,11 @@ We build to that from what is collected, in this order:
 - JSON sidecar file, if it exists
     Some mfg provide a json sidecar file along with the FITS file. Others like 
     the Seestar do not have this extra json: the fits header is complete enough.
+    There can be more than one file in this metadata group of files.
+    Note that one of the files in the metadata group of files can be flagged as 
+       as being the "personal.json" file. That means it is processed last.
+       The flag is to include in the file the string "DoLast""
+       eg:  "_DoLast": "treat as a personal.json file and process last",
 - add the raw file name as meta["filename"]
     There may be useful information in the file name    
 
@@ -50,6 +55,10 @@ After the basic.json there may be a second json file specific to the image type.
    eg the Dwarf's need an adjustment if the image is bayered, so a bayered.json file is sought.
    In this case the largest_useable_adu_value has been set to 60000 by the basic.json, but 
        the case of the bayered image this must be reset to 4070.
+
+And finally, there might be a personal.json file to be processed last. See the 
+   instructions above how a metadata json file can be flagged to be the personal.json file.
+
 
 These json files are all from the mfg or from the code. There is one last json file
    that is created by the user. This has been called the personal.json file. This is
