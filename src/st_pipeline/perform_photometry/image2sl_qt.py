@@ -27,7 +27,7 @@ import statistics
 import sys
 import tempfile
 import warnings
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 
@@ -284,7 +284,7 @@ class MetaValidator:
                 print(f"WARNING: {key} | {meta_dict[key]} not replaced with {value}")
                 return None
             else:
-                print(f"Adding backup value to meta key '{key}' with value '{value}'")
+                print(f"Setting backup value to meta key '{key}' with value '{value}'")
                 # fall through to process this new key:value
         if isinstance(value, str) and value.startswith('@'):
             # This is a reference to another key in the existing meta dir file
@@ -310,6 +310,17 @@ class MetaValidator:
                 elif tt[1] == "index":
                     # eg "tel_firmware" : "!CREATOR index 1"
                     nv = get_json_value(meta_dict, tt[0]).split()[int(tt[2])]
+                elif tt[1] == "timeAdj":
+                    # adjust the time by a datetime by hours
+                    # eg "obs_time": "!StackedInfo.dateTime timeAdj -1"
+                    date= get_json_value(meta_dict, tt[0])
+                    if '.' in date:  fmt = "%Y-%m-%dT%H:%M:%S.%f"
+                    else: fmt = "%Y-%m-%dT%H:%M:%S" # no fractional seconds
+                    d = datetime.strptime(date, fmt)
+                    hours = int(tt[2]) # can be negative
+                    d = d + timedelta(hours=hours)
+                    nv = d.strftime("%Y-%m-%dT%H:%M:%S") # return as a string
+                    print(f"Adjusting obs_time by {hours} hours to {nv}")
                 else:
                     print(f"Unknown processing function for key {key} with value {value}")
                     nv= None
@@ -453,7 +464,7 @@ def read_meta_from_json(filename, meta_dict):
 
         for (keyword, value) in data.items():
             val = meta_validator.add_json_item(keyword, value, meta_dict)
-            if val is not None:
+            if val is not None and not keyword.startswith('#'):
                 meta_dict[keyword] = val
                 print(f"Adding JSON metadata key '{keyword}' with value '{val}'")
 
