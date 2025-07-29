@@ -1731,8 +1731,12 @@ class MainWindow:
                 if flat_filename:
                     with fits.open(flat_filename) as hdul:
                         flat = hdul[0].data
-                        flat = flat.astype(float) / np.median(flat)
+                        condition = flat == 0.0
+                        flat[condition] = np.median(flat)
+                        flat_median = np.median(flat)
+                        flat = flat.astype(float) / flat_median
                         working_image /= flat
+                        print('Flat correction applied.')
 
             meta = {} # This is the metadata dictionary
 
