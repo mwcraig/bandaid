@@ -280,7 +280,7 @@ class MetaValidator:
         if key.startswith('#'):
             # do not replace an existing key
             key= key[1:]
-            if key in meta_dict:
+            if key in meta_dict and meta_dict[key] is not None:
                 print(f"WARNING: {key} | {meta_dict[key]} not replaced with {value}")
                 return None
             else:
@@ -390,7 +390,7 @@ class MetaValidator:
             List of the metadata keywords that don't have values, but
             are required keywords.
         """
-        print("The following metadata key(s) are missing:")
+        print("\nThe following metadata key(s) are missing:")
         print(missing)
 
         print("\n Validation Table")
@@ -1731,16 +1731,22 @@ class MainWindow:
                 if flat_filename:
                     with fits.open(flat_filename) as hdul:
                         flat = hdul[0].data
-                        flat = flat.astype(float) / np.median(flat)
+                        condition = flat == 0.0
+                        flat[condition] = np.median(flat)
+                        flat_median = np.median(flat)
+                        flat = flat.astype(float) / flat_median
                         working_image /= flat
+                        print('Flat correction applied.')
 
             meta = {} # This is the metadata dictionary
 
             # Order matters here. The standalone metadata file is to override
             # whatever is found in the FITS header of the image file
+            print("Reading metadata from FITS header")
             read_meta_from_fits(image_filename, meta)
 
             #QGuiApplication.processEvents()
+            personal_json= '' # no personal.json file by default
             # Now get the metadata from the standalone metadata file (sidecar)
             for metadata_filename in metadata_list:
                 if metadata_filename is not None and metadata_filename != '':
@@ -1749,6 +1755,11 @@ class MainWindow:
                             meta_path.stat().st_mode & 0o400):
                         print("Cannot read metadata from file ", metadata_filename)
                         raise ValueError("Cannot read metadata file")
+                    # check the meta_file for a DoLast instruction, making it a personal.json file
+                    with open(metadata_filename, 'r', encoding='utf-8') as meta_file:
+                        if "DoLast" in meta_file.read():
+                            personal_json= metadata_filename
+                            continue # do not process this file yet
                     print("Reading metadata from ", metadata_filename)
                     read_meta_from_json(metadata_filename, meta)
 
@@ -1769,11 +1780,10 @@ class MainWindow:
             if (mpp.is_file() and mpp.exists() and mpp.stat().st_mode & 0o400):
                 read_meta_from_json(mpp, meta)
 
-#            #   look for and apply the personal.json
-#            mpp= Path(mp, "personal.json")
-#            print("Reading personal.json from ", mpp)
-#            read_meta_from_json(mpp, meta)
-#
+            #   look for and apply the personal.json
+            if personal_json != '':
+                print("Reading personal.json from ", personal_json)
+                read_meta_from_json(personal_json, meta)
 
             print("Final metadata is: ")
             lback= False
