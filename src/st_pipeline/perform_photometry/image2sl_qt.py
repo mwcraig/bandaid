@@ -280,7 +280,7 @@ class MetaValidator:
         if key.startswith('#'):
             # do not replace an existing key
             key= key[1:]
-            if key in meta_dict:
+            if key in meta_dict and meta_dict[key] is not None:
                 print(f"WARNING: {key} | {meta_dict[key]} not replaced with {value}")
                 return None
             else:
