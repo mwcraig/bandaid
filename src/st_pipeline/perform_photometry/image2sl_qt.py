@@ -26,6 +26,7 @@ import math
 import statistics
 import sys
 import tempfile
+import traceback
 import warnings
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -328,9 +329,10 @@ class MetaValidator:
                 return nv
             except Exception as e:
                 #raise RuntimeError(f"Error processing key {key} with value {value}: {tt}") from e
-                print(f"Error processing key {key} with value {value}: {tt}") 
+                print(f"Error processing key {key} with value {value}: {tt}")
+                print(f"{traceback.format_exc()}")
                 return None
-                # programmer's note: We don't raise an error here in the expectation 
+                # programmer's note: We don't raise an error here in the expectation
                 # that the basic.json file will be prepared to act as the catch mechanism.
                 # If the validation fails, look for these messages in the console log
                 # and examine how to improve the basic.json file.
