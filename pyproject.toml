@@ -22,7 +22,7 @@ authors = [
     { name = "AAVSO STWG", email = "aavso@aavso.org" },
 ]
 license = "MIT"
-requires-python = ">= 3.10" # Adjust based on the minimum version of Python that you support
+requires-python = ">= 3.12" # Adjust based on the minimum version of Python that you support
 readme = {"file" = "README.md", "content-type" = "text/markdown"}
 # Please consult https://pypi.org/classifiers/ for a full list.
 classifiers = [
@@ -36,7 +36,11 @@ classifiers = [
 # TODO: add keywords
 keywords = []
 # TODO: add dependencies
-dependencies = []
+dependencies = [
+    "astropy",
+    "eloy",
+    "twirl"
+]
 
 [project.urls]
 Documentation = "https://bandaid.readthedocs.io"
