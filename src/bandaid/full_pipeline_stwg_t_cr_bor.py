@@ -112,7 +112,7 @@ fov = max(ref_data.shape) * pixel_scale
 ref_header = fits.getheader(reference_image)
 centero = SkyCoord(ref_header["RA"], ref_header["DEC"], unit=("deg", "deg"))
 # That is T CrB below
-center = SkyCoord(239.87566667, 25.92016667, unit="degree")
+center = SkyCoord.from_name("T CrB")
 
 # The WCS is computed using the twirl package.
 
@@ -129,20 +129,6 @@ all_radecs = sparsify(all_radecs, 0.01)
 # we only use the n brightest stars from Gaia -- WHY NOT N_STARS_ALIGN???
 wcs, _ = compute_wcs(ref_coords[0:15], all_radecs[0:15], tolerance=1)
 
-
-# The following section demonstrates how to cross-match detected stars with a target
-# identified by name, using astropy.
-
-# we load the wcs using the image header
-stars_radec = wcs.pixel_to_world(*ref_coords.T)
-
-target_radec = SkyCoord.from_name("T CrB")
-
-# getting target index
-target_index = int(target_radec.match_to_catalog_sky(stars_radec)[0])
-
-
-# This approach is both simple and effective.
 
 # ## Photometry
 # The photometry step follows the approach described in the [photometry tutorial](), with additional comments for clarity
@@ -185,20 +171,26 @@ for i, file in enumerate(tqdm(images)):
     # aperture photometry -- PHOTOMETRY STARTS HERE -- need to look at eloy source to
     # see how it gets done so fast...HMMM, they just call photutils.aperture_photometry
     apertures_radii = RELATIVE_RADII * fwhm
+    # THis flux is the sum of the aperture counts within each radius
     flux = photometry.aperture_photometry(
-        calibrated_data, centroid_coords, apertures_radii
+        calibrated_data, centroid_coords, apertures_radii,
     )
-    # annulus background correction -- IS THIS RIGHT?
-    annulus_radii = np.max(apertures_radii, ANNULUS[0] * fwhm), ANNULUS[1] * fwhm
+    # annulus background correction -- IS THIS RIGHT? This leaves no gap
+    # for the largest radius
+    annulus_radii = np.max([np.max(apertures_radii), ANNULUS[0] * fwhm]), ANNULUS[1] * fwhm
     aperture_area = np.pi * apertures_radii**2
+
+    # This is background per pixel
     bkg = photometry.annulus_sigma_clip_median(
-        calibrated_data, centroid_coords, *annulus_radii
+        calibrated_data, centroid_coords, *annulus_radii,
     )
+    # This bkg is TOTAL, not per pixel
     bkg = bkg[:, None] * aperture_area[None, :]
 
     # peaks
     peaks = np.nanmax(
-        utils.cutout(calibrated_data, aligned_coords, (25, 25)), axis=(1, 2)
+        utils.cutout(calibrated_data, aligned_coords, (25, 25)),
+        axis=(1, 2),
     )
 
     # getting data
@@ -215,6 +207,7 @@ for i, file in enumerate(tqdm(images)):
     data["stars_in_exp"].append(len(coords))
     data["aperture_radii"].append(apertures_radii)
     data["annulus_radii"].append(annulus_radii)
+
 
 for k, v in data.items():
     data[k] = np.array(v)
