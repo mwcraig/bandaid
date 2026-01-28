@@ -31,6 +31,9 @@ N_STARS = 200
 # Size of cutout for centroiding
 CUTOUT_SHAPE = (21, 21)
 
+EGAIN = 0.3116
+YBAYROFF =  0
+
 
 def calibration_sequence(file: str, threshold: float = 1) -> tuple:
     """
@@ -208,6 +211,7 @@ cnn = Ballet()
 
 # logger.info("Starting full reduction")
 
+# NEXT BREAK THIS INTO FUNCTIONS!!!
 for i, file in enumerate(tqdm(images)):
     filename = Path(file).name
     # logger.info(f"Processing {filename} ({i + 1}/{len(images)})")
@@ -225,7 +229,7 @@ for i, file in enumerate(tqdm(images)):
         # logger.warning(f"{filename} discarded")
         continue
     # we only use the n brightest stars from Gaia
-    this_wcs, _ = compute_wcs(coords[0:N_STARS_ALIGN], all_radecs[0:N_STARS_ALIGN], tolerance=1)
+    this_wcs = compute_wcs(coords[0:N_STARS_ALIGN], all_radecs[0:N_STARS_ALIGN], tolerance=1)
 
     # KEEP THIS -- it uses the wcs we have calculated to get approximate pixel coordinates
     aligned_coords = this_wcs.world_to_pixel(wcs.pixel_to_world(ref_coords[:N_STARS, 0], ref_coords[:N_STARS, 1]))
@@ -252,7 +256,7 @@ for i, file in enumerate(tqdm(images)):
         calibrated_data, centroid_coords, *annulus_radii,
     )
     # This bkg is TOTAL, not per pixel
-    bkg = bkg[:, None] * aperture_area[None, :]
+    total_bkg = bkg[:, None] * aperture_area[None, :]
 
     # peaks
     peaks = np.nanmax(
@@ -267,13 +271,16 @@ for i, file in enumerate(tqdm(images)):
 
     # getting data
     header = fits.open(file)[0].header
-    data["bkg"].append(bkg)
+    data["net_count"].append(net_count)
+    data["total_bkg"].append(total_bkg)
+    data["bkg_per_pix"].append(bkg)
+    data["snr"].append(snr)
     data["fluxes"].append(flux)
     data["fwhm"].append(fwhm)
     data["time"].append(Time(parser.parse(header["DATE-OBS"])).jd)
     data["dx"].append(dx)
     data["dy"].append(dy)
-    data["sky"].append(np.mean(bkg / aperture_area[None, :]))
+    data["sky"].append(np.mean(total_bkg / aperture_area[None, :]))
     data["airmass"].append(header.get("AIRMASS", np.nan))
     data["peak"].append(peaks)
     data["stars_in_exp"].append(len(coords))
