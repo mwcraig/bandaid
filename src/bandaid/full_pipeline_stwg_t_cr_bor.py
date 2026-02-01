@@ -1,5 +1,4 @@
 from collections import defaultdict
-from datetime import date, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -9,6 +8,7 @@ from astropy.time import Time
 from dateutil import parser
 from eloy import alignment, centroid, detection, photometry, psf, utils
 from eloy.centroid import Ballet
+from st_pipeline.schema_definition import StarItem, StarList, StarListSet
 from tqdm.auto import tqdm
 from twirl import compute_wcs, gaia_radecs
 from twirl.geometry import sparsify
@@ -21,18 +21,15 @@ THRESH = 0.5
 
 # Relative radii and annulus are defined here. These radii are multiplied by
 # each image's FWHM to determine the actual aperture sizes.
-RELATIVE_RADII = np.linspace(0.1, 5, 30)
+
+# Only need one radius for STWG, but it needs to be in an iterable
+RELATIVE_RADII = [1.0]  # np.linspace(0.1, 5, 30)
 ANNULUS = (5, 8)
 
 # Max number of stars to use for photometry
 N_STARS = 200
 # Size of cutout for centroiding
 CUTOUT_SHAPE = (21, 21)
-
-# Get the files
-def observation_time(file):
-    date_str = fits.getheader(file)["DATE-OBS"]
-    return parser.parse(date_str)
 
 
 def calibration_sequence(file: str, threshold: float = 1) -> tuple:
@@ -129,6 +126,76 @@ all_radecs = sparsify(all_radecs, 0.01)
 # we only use the n brightest stars from Gaia -- WHY NOT N_STARS_ALIGN???
 wcs, _ = compute_wcs(ref_coords[0:15], all_radecs[0:15], tolerance=1)
 
+# Convert eloy table to starlist format
+def eloy_to_starlist(eloy_table, metadata):
+    """
+    Convert a photometry table from eloy to a list of StarList objects.
+
+    Parameters
+    ----------
+    eloy_table : astropy.table.Table
+        Table containing photometry data from eloy. Each row has the photometry for
+        every star in one image. Must include columns: net_count, snr, bkg_per_pix,
+        peak, x, y, ra, dec, fwhm, time.
+    metadata : dict
+        Dictionary of StarList metadata fields not available in the eloy table.
+        Required keys: site_lat, site_lon, site_elev, observer, filter,
+        block_filter, exposure, tel_manufac, tel_model, tel_firmware,
+        adc_depth, largest_usable_adu_value, egain, width, height, refframe.
+
+    Returns
+    -------
+    list of StarList
+        One StarList per row (image/exposure) in the eloy table.
+    """
+    star_lists = []
+
+    for row in eloy_table:
+        net_counts = row["net_count"][:, 0]
+        snr_vals = row["snr"][:, 0]
+        bkg_vals = row["bkg_per_pix"]
+        peak_vals = row["peak"]
+        x_vals = row["x"]
+        y_vals = row["y"]
+        ra_vals = row["ra"]
+        dec_vals = row["dec"]
+
+        star_items = []
+        for i in range(len(net_counts)):
+            # Skip stars with NaN photometry
+            if np.isnan(net_counts[i]):
+                continue
+
+            count_err = (
+                abs(net_counts[i] / snr_vals[i]) if snr_vals[i] != 0 else np.nan
+            )
+
+            star_items.append(
+                StarItem(
+                    x=float(x_vals[i]),
+                    y=float(y_vals[i]),
+                    ra=float(ra_vals[i]),
+                    dec=float(dec_vals[i]),
+                    tot_count=float(net_counts[i]),
+                    count_err=float(count_err),
+                    bkgd_count=float(bkg_vals[i]),
+                    peak_count=float(peak_vals[i]),
+                )
+            )
+
+        obs_time = Time(row["time"], format="jd").isot
+
+        star_lists.append(
+            StarList(
+                obs_time=obs_time,
+                fwhm=float(row["fwhm"]),
+                staritems=star_items,
+                **metadata,
+            )
+        )
+
+    return star_lists
+
 
 # ## Photometry
 # The photometry step follows the approach described in the [photometry tutorial](), with additional comments for clarity
@@ -171,7 +238,7 @@ for i, file in enumerate(tqdm(images)):
     # aperture photometry -- PHOTOMETRY STARTS HERE -- need to look at eloy source to
     # see how it gets done so fast...HMMM, they just call photutils.aperture_photometry
     apertures_radii = RELATIVE_RADII * fwhm
-    # THis flux is the sum of the aperture counts within each radius
+    # This flux is the sum of the aperture counts within each radius
     flux = photometry.aperture_photometry(
         calibrated_data, centroid_coords, apertures_radii,
     )
@@ -193,6 +260,11 @@ for i, file in enumerate(tqdm(images)):
         axis=(1, 2),
     )
 
+    aligned_coords = this_wcs.pixel_to_world(
+        aligned_coords[..., 0],
+        aligned_coords[..., 1]
+    )
+
     # getting data
     header = fits.open(file)[0].header
     data["bkg"].append(bkg)
@@ -207,6 +279,10 @@ for i, file in enumerate(tqdm(images)):
     data["stars_in_exp"].append(len(coords))
     data["aperture_radii"].append(apertures_radii)
     data["annulus_radii"].append(annulus_radii)
+    data["ra"].append(aligned_coords.ra.degree)
+    data["dec"].append(aligned_coords.dec.degree)
+    data["x"].append(aligned_coords[..., 0])
+    data["y"].append(aligned_coords[..., 1])
 
 
 for k, v in data.items():
