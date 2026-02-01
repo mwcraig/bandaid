@@ -1,0 +1,97 @@
+Origin telescope from Celestron
+Light fits header eg:
+SIMPLE  	= T / file does conform to FITS standard             
+BITPIX  	= 16 / number of bits per data pixel                  
+NAXIS   	= 2 / number of data axes                            
+NAXIS1  	= 3056 / length of data axis 1                          
+NAXIS2  	= 2048 / length of data axis 2                          
+EXTEND  	= T / FITS dataset may contain extensions            
+COMMENT	   FITS (Flexible Image Transport System) format is defined in 'Astronomy
+COMMENT	   and Astrophysics', volume 376, page 359; bibcode: 2001A&A...376..359H 
+BZERO   	= 32768 / offset data range to that of unsigned short    
+BSCALE  	= 1 / default scaling factor                         
+CREATOR 	= 'Origin 1.1.4233 '   / Build Date: 08-20-2024 14:46                   
+INPUTFMT	= 'FITS    ' /          Format of file from which image was read        
+
+info.json
+{
+  "StackedInfo": {
+    "stackedDepth": 30,
+    "totalDurationMs": 300000,
+    "remainingTimeS": 0,
+    "objectName": "HD 4811",
+    "dateTime": "08-28-24 21_33_54",
+    "gps": {
+      "latitude": 44.92703585020864,
+      "longitude": -123.27590003046436,
+      "altitude": 0.0
+    },
+    "celestial": {
+      "first": 6.275689257945269,
+      "second": 1.0681467404339722,
+      "firstAngle": {
+        "radians": 6.275689257945269,
+        "degrees": 359.5705080158514,
+        "minutes": 21574.230480951082,
+        "seconds": 1294453.828857065,
+        "degree": 359,
+        "minute": 34,
+        "second": 13
+      },
+      "secondAngle": {
+        "radians": 1.0681467404339722,
+        "degrees": 61.20030012752244,
+        "minutes": 3672.018007651346,
+        "seconds": 220321.08045908078,
+        "degree": 61,
+        "minute": 12,
+        "second": 1
+      }
+    },
+    "captureParams": {
+      "gain": 20.0,
+      "exposure": 10.0,
+      "offset": 0,
+      "binning": 1,
+      "redBalance": 78,
+      "greenBalance": 58,
+      "blueBalance": 120,
+      "bitDepth": 16,
+      "bandwidth": 30
+    },
+    "imageWidth": 3056,
+    "imageHeight": 2048,
+    "cameraMode": "MANUAL",
+    "stackingState": "RUNNING",
+    "uuid": "6481b21e-6c0f-4262-af26-a079b4250f24",
+    "stretchStrength": 0.8,
+    "StretchBackground": 0.035
+  }
+}
+
+info.txt
+Object Name: HD 4811
+UUID: 6481b21e-6c0f-4262-af26-a079b4250f24
+Coordiante: {Right Ascension = 23h58m16.921s, Declination = 61d12m1.080s}
+Date Time: 08-28-24 21_33_54
+Stack Depth: 30
+Total Exposure Time: 300sec
+Camera Mode: MANUAL
+Exposure: 10.0sec
+Gain: 20.0dB
+Binning: 1x1
+Image Width: 3056 pixels
+Image Height: 2048 pixels
+Stacking State: RUNNING
+
+stacked as TIFF
+SIMPLE  	= T                                                  
+BITPIX  	= -32 /8 unsigned int, 16 & 32 int, -32 & -64 real     
+NAXIS   	= 3 /number of axes                                  
+NAXIS1  	= 3056 /fastest changing axis                           
+NAXIS2  	= 2048 /next to fastest changing axis                   
+NAXIS3  	= 3 /next to slowest changing axis                   
+BSCALE  	= 1.0000000000000000 /physical = BZERO + BSCALE*array_value           
+BZERO   	= 0.0000000000000000 /physical = BZERO + BSCALE*array_value           
+SWCREATE	= 'Origin 1.1.4233 08-20-2024 14:46' /Name of software                  
+INPUTFMT	= 'TIFF    ' /          Format of file from which image was read        
