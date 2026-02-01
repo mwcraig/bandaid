@@ -6,7 +6,7 @@
     "site_elev": "@SITEELEV",
     "observer": "@obscode",
     "_filter": "not for unprocessed files",
-    "block_filter" : "@FILTER",  
+    "block_filter" : "@FILTER",
     "exposure": "@EXPTIME",
     "tel_manufac": "!CREATOR index 0",
     "tel_model": "@INSTRUME",
@@ -14,9 +14,8 @@
     "adc_depth" : 12,
     "largest_usable_adu_value" : 50000,
     "egain" : 0.3116,
-    "bayerpat": "@BAYERPAT", 
+    "bayerpat": "@BAYERPAT",
     "pixscale" : 2.4,
-    "epoch" : "J2000",
     "refframe" : "ICRS",
     "dec": "@DEC",
     "ra": "@RA",
@@ -30,5 +29,3 @@
      "object": "@OBJECT",
      "system_id": "@TELESCOP"
 }
-
-    
