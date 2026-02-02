@@ -53,7 +53,7 @@ Download = "https://pypi.org/project/bandaid/#files"
 dev = [
     "hatch",
     "pre-commit",
-    "bandaid[docs,tests,style,types,audit]",
+    "bandaid[docs,tests,style,types]",
 ]
 
 docs = [
