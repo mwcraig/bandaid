@@ -374,10 +374,7 @@ bayer_masks = generate_bayer_masks(
     (metadata["height"], metadata["width"]),
     metadata,
 )
-bayer_masks["L4"] = np.ones(
-    (metadata["height"], metadata["width"]),
-    dtype=bool,
-)
+bayer_masks.append(("L4", None))
 
 star_lists = []
 for file in tqdm(images):
