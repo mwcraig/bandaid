@@ -88,20 +88,6 @@ def calibration_sequence(file: str, threshold: float = 1, max_adu=0) -> tuple:
 
 files = sorted(Path("photometry_raw_data_t_cr_bor").glob("*.fit"))
 
-# ## Reference Selection and Calibration
-#
-# Next, a reference image is selected for further processing.
-# The middle image from the observation night is chosen as the reference.
-
-images = np.array(files)
-
-reference_image = images[len(images) // 2]
-
-ref_data, ref_coords, ref_fwhm, _ = calibration_sequence(reference_image, threshold=THRESH)
-ref_reference = alignment.twirl_reference(ref_coords[0:N_STARS_ALIGN])
-
-# Create starlist metadata from input json and FITS header of the reference image
-ref_header = fits.getheader(reference_image)
 
 def metadata_from_header(header):
     """
@@ -150,8 +136,22 @@ def metadata_from_header(header):
     metadata["height"] = header["NAXIS2"]
     return metadata
 
+# ## Reference Selection and Calibration
+#
+# Next, a reference image is selected for further processing.
+# The middle image from the observation night is chosen as the reference.
 
-metadata     = metadata_from_header(ref_header)
+images = np.array(files)
+
+reference_image = images[len(images) // 2]
+
+ref_data, ref_coords, ref_fwhm, _ = calibration_sequence(reference_image, threshold=THRESH, max_adu=metadata["largest_usable_adu_valu"])
+ref_reference = alignment.twirl_reference(ref_coords[0:N_STARS_ALIGN])
+
+# Create starlist metadata from input json and FITS header of the reference image
+ref_header = fits.getheader(reference_image)
+metadata = metadata_from_header(ref_header)
+
 # _ = logger.info(f"Reference FWHM: {ref_fwhm:.2f} pixels")
 
 # size of the field-of-view in degrees -- only used to query Gaia
@@ -238,7 +238,7 @@ def align_and_centroid(calibrated_data, coords, ref):
     return centroid_coords, aligned_coords, this_wcs
 
 
-def measure_photometry(calibrated_data, centroid_coords, aligned_coords, fwhm, egain):
+def measure_photometry(calibrated_data, centroid_coords, aligned_coords, fwhm, egain, mask):
     """
     Perform aperture photometry, background subtraction, and error calculation.
 
@@ -254,6 +254,8 @@ def measure_photometry(calibrated_data, centroid_coords, aligned_coords, fwhm, e
         FWHM of the PSF in pixels.
     egain : float
         System gain in e-/adu.
+    mask : numpy.ndarray or None
+        Bayer mask to apply to the image data.
 
     Returns
     -------
@@ -263,7 +265,7 @@ def measure_photometry(calibrated_data, centroid_coords, aligned_coords, fwhm, e
     """
     apertures_radii = RELATIVE_RADII * fwhm
     flux = photometry.aperture_photometry(
-        calibrated_data, centroid_coords, apertures_radii,
+        calibrated_data, centroid_coords, apertures_radii, mask=mask,
     )
     annulus_radii = (
         np.max([np.max(apertures_radii), ANNULUS[0] * fwhm]),
@@ -301,7 +303,7 @@ def measure_photometry(calibrated_data, centroid_coords, aligned_coords, fwhm, e
     }
 
 
-def process_image(file, ref, metadata):
+def process_image(file, ref, metadata, mask):
     """
     Process a single image: detect, align, centroid, measure photometry.
 
@@ -313,6 +315,8 @@ def process_image(file, ref, metadata):
         Reference image data (coords, WCS, Gaia RA/Decs, CNN model).
     metadata : dict
         Metadata dictionary (must include 'egain').
+    mask : numpy.ndarray or None
+        Bayer mask to apply to the image data.
 
     Returns
     -------
@@ -320,7 +324,7 @@ def process_image(file, ref, metadata):
         Photometry table for this image, or None if the image was skipped.
     """
     calibrated_data, coords, fwhm, _ = calibration_sequence(
-        file, threshold=THRESH,
+        file, threshold=THRESH, max_adu=metadata["largest_usable_adu_value"],
     )
 
     if len(coords) < N_STARS_ALIGN:
@@ -331,7 +335,7 @@ def process_image(file, ref, metadata):
     )
 
     phot = measure_photometry(
-        calibrated_data, centroid_coords, aligned_coords, fwhm, metadata["egain"],
+        calibrated_data, centroid_coords, aligned_coords, fwhm, metadata["egain"], mask
     )
 
     centroid_ra_dec = this_wcs.pixel_to_world(
