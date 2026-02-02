@@ -1,19 +1,23 @@
-from collections import defaultdict
+import json
+from dataclasses import dataclass
+from importlib.resources import files as package_files
 from pathlib import Path
 
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
+from astropy.table import Table
 from astropy.time import Time
 from dateutil import parser
 from eloy import alignment, centroid, detection, photometry, psf, utils
 from eloy.centroid import Ballet
-from st_pipeline.schema_definition import StarItem, StarList, StarListSet
+from st_pipeline.schema_definition import StarList, StarListSet
 from tqdm.auto import tqdm
 from twirl import compute_wcs, gaia_radecs
 from twirl.geometry import sparsify
 
-SATURATED = 40000
+from . import generate_bayer_masks
+
 CUTOUT = 500 # 120
 
 N_STARS_ALIGN = 15
@@ -26,16 +30,11 @@ THRESH = 0.5
 RELATIVE_RADII = [1.0]  # np.linspace(0.1, 5, 30)
 ANNULUS = (5, 8)
 
-# Max number of stars to use for photometry
-N_STARS = 200
 # Size of cutout for centroiding
 CUTOUT_SHAPE = (21, 21)
 
-EGAIN = 0.3116
-YBAYROFF =  0
 
-
-def calibration_sequence(file: str, threshold: float = 1) -> tuple:
+def calibration_sequence(file: str, threshold: float = 1, max_adu=0) -> tuple:
     """
     Find sources and compute FWHM for an image.
 
@@ -57,35 +56,34 @@ def calibration_sequence(file: str, threshold: float = 1) -> tuple:
     if len(regions) < 3:
         return None, [], None, None
 
-    else:  # noqa: RET505
-        region_coords = np.array([(r.centroid[1], r.centroid[0]) for r in regions])
-        cutouts = utils.cutout(calibrated_data, region_coords, (50, 50))
+    region_coords = np.array([(r.centroid[1], r.centroid[0]) for r in regions])
+    cutouts = utils.cutout(calibrated_data, region_coords, (50, 50))
 
-        # Drop any cutouts that are saturated -- NOTE THAT THIS LEAVES BEHIND SATURATED REGIONS
-        cutouts = np.array(list(filter(lambda data: np.max(data) < SATURATED, cutouts)))
+    # Drop any cutouts that are saturated -- NOTE THAT THIS LEAVES BEHIND SATURATED REGIONS
+    cutouts = np.array(list(filter(lambda data: np.max(data) < max_adu, cutouts)))
 
-        # Drop any regions that are saturdated for calculating the FWHM
-        cutouts_normalized = cutouts / np.nanmax(cutouts, (1, 2))[:, None, None]
+    # Drop any regions that are saturdated for calculating the FWHM
+    cutouts_normalized = cutouts / np.nanmax(cutouts, (1, 2))[:, None, None]
 
-        # Average the cutouts...yolo I guess on whether these are good detections
-        epsf = np.nanmedian(cutouts_normalized, 0)
+    # Average the cutouts...yolo I guess on whether these are good detections
+    epsf = np.nanmedian(cutouts_normalized, 0)
 
-        # Note fitting is only done to the normalized cutout
-        psf_params = psf.fit_gaussian(epsf)
-        fwhm = psf.gaussian_sigma_to_fwhm * np.mean(
-            [psf_params["sigma_x"], psf_params["sigma_y"]]
-        )
+    # Note fitting is only done to the normalized cutout
+    psf_params = psf.fit_gaussian(epsf)
+    fwhm = psf.gaussian_sigma_to_fwhm * np.mean(
+        [psf_params["sigma_x"], psf_params["sigma_y"]],
+    )
 
-        # Saves a bit of memory, I guess, by forcing garbage collection
-        del (
-            cutouts_normalized,
-            data,
-            cutouts,
-            epsf,
-            header,
-        )
+    # Saves a bit of memory, I guess, by forcing garbage collection
+    del (
+        cutouts_normalized,
+        data,
+        cutouts,
+        epsf,
+        header,
+    )
 
-        return calibrated_data, region_coords, fwhm, regions
+    return calibrated_data, region_coords, fwhm, regions
 
 
 files = sorted(Path("photometry_raw_data_t_cr_bor").glob("*.fit"))
@@ -102,17 +100,64 @@ reference_image = images[len(images) // 2]
 ref_data, ref_coords, ref_fwhm, _ = calibration_sequence(reference_image, threshold=THRESH)
 ref_reference = alignment.twirl_reference(ref_coords[0:N_STARS_ALIGN])
 
+# Create starlist metadata from input json and FITS header of the reference image
+ref_header = fits.getheader(reference_image)
+
+def metadata_from_header(header):
+    """
+    Build a metadata dictionary from a JSON template and a FITS header.
+
+    Parameters
+    ----------
+    header : astropy.io.fits.Header or dict
+        FITS header to look up values in.
+
+    Returns
+    -------
+    dict
+        Metadata dictionary with header lookups resolved.
+    """
+    json_path = package_files("bandaid").joinpath(
+       "meta_json_files", "Seestar50", "basic.json",
+    )
+    with Path(json_path).open() as f:
+        template = json.load(f)
+
+    # Collect fallback values from "#key" entries
+    defaults = {}
+    for key, value in template.items():
+        if key.startswith("#"):
+            defaults[key[1:]] = value
+
+    metadata = {}
+    for key, value in template.items():
+        # Skip comment/internal keys
+        if key.startswith(("_", "#")):
+            continue
+
+        if isinstance(value, str) and value.startswith("@"):
+            header_key = value[1:]
+            metadata[key] = header.get(header_key, defaults.get(key))
+        elif isinstance(value, str) and value.startswith("!"):
+            parts = value[1:].split()
+            header_key = parts[0]
+            index = int(parts[2])
+            metadata[key] = header[header_key].split()[index]
+        else:
+            metadata[key] = value
+
+    metadata["width"] = header["NAXIS1"]
+    metadata["height"] = header["NAXIS2"]
+    return metadata
+
+
+metadata     = metadata_from_header(ref_header)
 # _ = logger.info(f"Reference FWHM: {ref_fwhm:.2f} pixels")
 
-# known pixel size in degrees ---- THIS IS ONLY USED TO FIND THE FOV
-pixel_scale = 2.37 / 3600
-# size of the field-of-view -- only used to query Gaia
-fov = max(ref_data.shape) * pixel_scale
-# RA/Dec coordinates of the image
-ref_header = fits.getheader(reference_image)
-centero = SkyCoord(ref_header["RA"], ref_header["DEC"], unit=("deg", "deg"))
+# size of the field-of-view in degrees -- only used to query Gaia
+fov = metadata["fov_rad"]
 # That is T CrB below
-center = SkyCoord.from_name("T CrB")
+center = SkyCoord.from_name(metadata["object"])
 
 # The WCS is computed using the twirl package.
 
@@ -132,14 +177,15 @@ wcs, _ = compute_wcs(ref_coords[0:15], all_radecs[0:15], tolerance=1)
 # Convert eloy table to starlist format
 def eloy_to_starlist(eloy_table, metadata):
     """
-    Convert a photometry table from eloy to a list of StarList objects.
+    Convert a single-image photometry table from eloy to a StarList.
 
     Parameters
     ----------
     eloy_table : astropy.table.Table
-        Table containing photometry data from eloy. Each row has the photometry for
-        every star in one image. Must include columns: net_count, snr, bkg_per_pix,
-        peak, x, y, ra, dec, fwhm, time.
+        Table containing photometry data from eloy for one image.
+        Each row is one star. Must include columns matching StarItem fields:
+        tot_count, count_err, bkgd_count, peak_count, x, y, ra, dec.
+        Table meta must include fwhm.
     metadata : dict
         Dictionary of StarList metadata fields not available in the eloy table.
         Required keys: site_lat, site_lon, site_elev, observer, filter,
@@ -148,149 +194,197 @@ def eloy_to_starlist(eloy_table, metadata):
 
     Returns
     -------
-    list of StarList
-        One StarList per row (image/exposure) in the eloy table.
+    StarList
     """
-    star_lists = []
-
-    for row in eloy_table:
-        net_counts = row["net_count"][:, 0]
-        snr_vals = row["snr"][:, 0]
-        bkg_vals = row["bkg_per_pix"]
-        peak_vals = row["peak"]
-        x_vals = row["x"]
-        y_vals = row["y"]
-        ra_vals = row["ra"]
-        dec_vals = row["dec"]
-
-        star_items = []
-        for i in range(len(net_counts)):
-            # Skip stars with NaN photometry
-            if np.isnan(net_counts[i]):
-                continue
-
-            count_err = (
-                abs(net_counts[i] / snr_vals[i]) if snr_vals[i] != 0 else np.nan
-            )
-
-            star_items.append(
-                StarItem(
-                    x=float(x_vals[i]),
-                    y=float(y_vals[i]),
-                    ra=float(ra_vals[i]),
-                    dec=float(dec_vals[i]),
-                    tot_count=float(net_counts[i]),
-                    count_err=float(count_err),
-                    bkgd_count=float(bkg_vals[i]),
-                    peak_count=float(peak_vals[i]),
-                )
-            )
-
-        obs_time = Time(row["time"], format="jd").isot
-
-        star_lists.append(
-            StarList(
-                obs_time=obs_time,
-                fwhm=float(row["fwhm"]),
-                staritems=star_items,
-                **metadata,
-            )
-        )
-
-    return star_lists
+    good = ~np.isnan(eloy_table["tot_count"])
+    return StarList.from_table(eloy_table[good], metadata=metadata)
 
 
-# ## Photometry
-# The photometry step follows the approach described in the [photometry tutorial](), with additional comments for clarity
-# In the pipeline we also added logging information but keep it commented not to overcrowded this tutorial page. In practice, these logging info are very useful to check the pipeline progress and debug any issue.
+@dataclass
+class ReferenceData:
+    """Reference image data used to process each science image."""
 
-data = defaultdict(list)
+    coords: np.ndarray
+    wcs: object
+    radecs: np.ndarray
+    cnn: Ballet
 
-# NOTE -- this triggers a download from HuggingFace the first time it is run. We ought to be able to cache it somewhere
-cnn = Ballet()
 
-# logger.info("Starting full reduction")
+def align_and_centroid(calibrated_data, coords, ref):
+    """
+    Compute per-image WCS, align reference coordinates, and centroid.
 
-# NEXT BREAK THIS INTO FUNCTIONS!!!
-for i, file in enumerate(tqdm(images)):
-    filename = Path(file).name
-    # logger.info(f"Processing {filename} ({i + 1}/{len(images)})")
+    Parameters
+    ----------
+    calibrated_data : numpy.ndarray
+        Calibrated image data.
+    coords : numpy.ndarray
+        Detected star coordinates in this image.
+    ref : ReferenceData
+        Reference image data (coords, WCS, Gaia RA/Decs, CNN model).
 
-    # calibration and FWHM
-    calibrated_data, coords, fwhm, regions = calibration_sequence(file, threshold=THRESH)
-    # if calibrated_data is None:
-    #     print("skipping, fewer than 3 star")
-    #     continue
-    # logger.info(f"{len(coords)} stars detected")
-    #logger.info(f"FWHM: {fwhm:.2f} pixels")
-
-    # skip images with too few stars
-    if len(coords) < N_STARS_ALIGN:
-        # logger.warning(f"{filename} discarded")
-        continue
-    # we only use the n brightest stars from Gaia
-    this_wcs = compute_wcs(coords[0:N_STARS_ALIGN], all_radecs[0:N_STARS_ALIGN], tolerance=1)
-
-    # KEEP THIS -- it uses the wcs we have calculated to get approximate pixel coordinates
-    aligned_coords = this_wcs.world_to_pixel(wcs.pixel_to_world(ref_coords[:N_STARS, 0], ref_coords[:N_STARS, 1]))
+    Returns
+    -------
+    centroid_coords, aligned_coords, this_wcs
+    """
+    this_wcs = compute_wcs(
+        coords[0:N_STARS_ALIGN], ref.radecs[0:N_STARS_ALIGN], tolerance=1,
+    )
+    aligned_coords = this_wcs.world_to_pixel(
+        ref.wcs.pixel_to_world(ref.coords[..., 0], ref.coords[..., 1]),
+    )
     aligned_coords = np.array(aligned_coords).T
-    dx, dy = np.median(ref_coords[0:N_STARS] - aligned_coords, 0)
-    # logger.info(f"(X,Y) shift: ({dx:.2f}, {dy:.2f}) pixels")
+    centroid_coords = centroid.ballet_centroid(calibrated_data, aligned_coords, ref.cnn)
+    return centroid_coords, aligned_coords, this_wcs
 
-    # centroiding
-    centroid_coords = centroid.ballet_centroid(calibrated_data, aligned_coords, cnn)
-    # aperture photometry -- PHOTOMETRY STARTS HERE -- need to look at eloy source to
-    # see how it gets done so fast...HMMM, they just call photutils.aperture_photometry
+
+def measure_photometry(calibrated_data, centroid_coords, aligned_coords, fwhm, egain):
+    """
+    Perform aperture photometry, background subtraction, and error calculation.
+
+    Parameters
+    ----------
+    calibrated_data : numpy.ndarray
+        Calibrated image data.
+    centroid_coords : numpy.ndarray
+        Centroided star coordinates.
+    aligned_coords : numpy.ndarray
+        Aligned star coordinates (used for peak measurement).
+    fwhm : float
+        FWHM of the PSF in pixels.
+    egain : float
+        System gain in e-/adu.
+
+    Returns
+    -------
+    dict
+        Keys: tot_count, count_err, bkgd_count, peak_count, snr,
+        total_bkg, fluxes, aperture_radii, annulus_radii.
+    """
     apertures_radii = RELATIVE_RADII * fwhm
-    # This flux is the sum of the aperture counts within each radius
     flux = photometry.aperture_photometry(
         calibrated_data, centroid_coords, apertures_radii,
     )
-    # annulus background correction -- IS THIS RIGHT? This leaves no gap
-    # for the largest radius
-    annulus_radii = np.max([np.max(apertures_radii), ANNULUS[0] * fwhm]), ANNULUS[1] * fwhm
+    annulus_radii = (
+        np.max([np.max(apertures_radii), ANNULUS[0] * fwhm]),
+        ANNULUS[1] * fwhm,
+    )
     aperture_area = np.pi * apertures_radii**2
 
-    # This is background per pixel
     bkg = photometry.annulus_sigma_clip_median(
         calibrated_data, centroid_coords, *annulus_radii,
     )
-    # This bkg is TOTAL, not per pixel
     total_bkg = bkg[:, None] * aperture_area[None, :]
 
-    # peaks
     peaks = np.nanmax(
         utils.cutout(calibrated_data, aligned_coords, (25, 25)),
         axis=(1, 2),
     )
 
-    aligned_coords = this_wcs.pixel_to_world(
-        aligned_coords[..., 0],
-        aligned_coords[..., 1]
+    net_count = flux - total_bkg
+    noise_bkgd_per_pixel = bkg * egain
+    tot_noise_bkgd = noise_bkgd_per_pixel[:, None] * aperture_area[None, :]
+    poiss_noise = np.sqrt(egain * net_count)
+    tot_noise = np.sqrt(poiss_noise**2 + tot_noise_bkgd**2) / egain
+    snr = net_count / tot_noise
+
+    return {
+        "tot_count": net_count[:, 0],
+        "count_err": tot_noise[:, 0],
+        "bkgd_count": bkg,
+        "peak_count": peaks,
+        "snr": snr,
+        "total_bkg": total_bkg,
+        "fluxes": flux,
+        "aperture_radii": float(apertures_radii[0]),
+        "annulus_radii": annulus_radii,
+    }
+
+
+def process_image(file, ref, metadata):
+    """
+    Process a single image: detect, align, centroid, measure photometry.
+
+    Parameters
+    ----------
+    file : str or Path
+        Path to the FITS file.
+    ref : ReferenceData
+        Reference image data (coords, WCS, Gaia RA/Decs, CNN model).
+    metadata : dict
+        Metadata dictionary (must include 'egain').
+
+    Returns
+    -------
+    Table or None
+        Photometry table for this image, or None if the image was skipped.
+    """
+    calibrated_data, coords, fwhm, _ = calibration_sequence(
+        file, threshold=THRESH,
     )
 
-    # getting data
+    if len(coords) < N_STARS_ALIGN:
+        return None
+
+    centroid_coords, aligned_coords, this_wcs = align_and_centroid(
+        calibrated_data, coords, ref,
+    )
+
+    phot = measure_photometry(
+        calibrated_data, centroid_coords, aligned_coords, fwhm, metadata["egain"],
+    )
+
+    centroid_ra_dec = this_wcs.pixel_to_world(
+        centroid_coords[..., 0],
+        centroid_coords[..., 1],
+    )
+
     header = fits.open(file)[0].header
-    data["net_count"].append(net_count)
-    data["total_bkg"].append(total_bkg)
-    data["bkg_per_pix"].append(bkg)
-    data["snr"].append(snr)
-    data["fluxes"].append(flux)
-    data["fwhm"].append(fwhm)
-    data["time"].append(Time(parser.parse(header["DATE-OBS"])).jd)
-    data["dx"].append(dx)
-    data["dy"].append(dy)
-    data["sky"].append(np.mean(total_bkg / aperture_area[None, :]))
-    data["airmass"].append(header.get("AIRMASS", np.nan))
-    data["peak"].append(peaks)
-    data["stars_in_exp"].append(len(coords))
-    data["aperture_radii"].append(apertures_radii)
-    data["annulus_radii"].append(annulus_radii)
-    data["ra"].append(aligned_coords.ra.degree)
-    data["dec"].append(aligned_coords.dec.degree)
-    data["x"].append(aligned_coords[..., 0])
-    data["y"].append(aligned_coords[..., 1])
+
+    data = Table()
+    data["tot_count"] = phot["tot_count"]
+    data["total_bkg"] = phot["total_bkg"]
+    data["bkgd_count"] = phot["bkgd_count"]
+    data["count_err"] = phot["count_err"]
+    data["snr"] = phot["snr"]
+    data["fluxes"] = phot["fluxes"]
+    data["time"] = Time(parser.parse(header["DATE-OBS"])).jd
+    data["sky"] = np.mean(
+        phot["total_bkg"] / (np.pi * (RELATIVE_RADII * fwhm) ** 2),
+    )
+    data["airmass"] = header.get("AIRMASS", np.nan)
+    data["peak_count"] = phot["peak_count"]
+    data["stars_in_exp"] = len(coords)
+    data["ra"] = centroid_ra_dec.ra.degree
+    data["dec"] = centroid_ra_dec.dec.degree
+    data["x"] = centroid_coords[..., 0]
+    data["y"] = centroid_coords[..., 1]
+    data.meta["fwhm"] = float(fwhm)
+    data.meta["aperture_radii"] = phot["aperture_radii"]
+    data.meta["annulus_radii"] = phot["annulus_radii"]
+
+    return data
 
 
-for k, v in data.items():
-    data[k] = np.array(v)
+# ## Photometry
+
+# NOTE -- this triggers a download from HuggingFace the first time it is run.
+ref = ReferenceData(coords=ref_coords, wcs=wcs, radecs=all_radecs, cnn=Ballet())
+bayer_masks = generate_bayer_masks(
+    (metadata["height"], metadata["width"]),
+    metadata,
+)
+bayer_masks["L4"] = np.ones(
+    (metadata["height"], metadata["width"]),
+    dtype=bool,
+)
+
+star_lists = []
+for file in tqdm(images):
+
+    for filter_name, mask in bayer_masks:
+        metadata["filter"] = filter_name
+        # Could save mask for later use if needed
+        data = process_image(file, ref, metadata, mask=mask)
+    if data is not None:
+        star_lists.append(eloy_to_starlist(data, metadata))
