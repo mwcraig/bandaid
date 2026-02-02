@@ -20,56 +20,28 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-import argparse
-import json
-import math
-import statistics
-import sys
-import tempfile
-import traceback
-import warnings
-from datetime import datetime, timedelta
-from enum import StrEnum
-from pathlib import Path
-
 import numpy as np
-from PIL import Image
-from astropy.io import fits
-from astropy.stats import SigmaClip, sigma_clipped_stats
-from astropy.utils.data import get_pkg_data_filename
-from astropy.nddata import CCDData
-from astropy.wcs import WCS
-from photutils import aperture, psf
-from photutils.background import Background2D, MedianBackground
-from photutils.detection import DAOStarFinder
-from pydantic import BaseModel, ConfigDict
-from PySide6 import QtCore, QtWidgets
-from PySide6.QtCore import QFile, QIODevice, QSettings
-from PySide6.QtUiTools import QUiLoader
-from PySide6.QtWidgets import (
-    QApplication,
-    QButtonGroup,
-    QDialog,
-    QDialogButtonBox,
-    QErrorMessage,
-    QFileDialog,
-    QLabel,
-    QMessageBox,
-    QRadioButton,
-    QVBoxLayout,
-)
 
-def generate_bayer_masks(data, metadata):
+
+def generate_bayer_masks(shape, metadata):
+        """
+        Generate mask for each color in a Bayer array.
+
+        Parameters
+        ----------
+        shape : tuple
+            The image data array
+        metadata : dict
+            The image metadata dictionary
+        """
         pattern = metadata['bayerpat']
 
         # now re-jumble based on roworder and ybaryoff
-        print('extract_mono_and_rgb: initial pattern = ', pattern)
         if metadata['roworder'] == 'bottom-up':
             pattern = pattern[2:3] + pattern[0:1]
         if metadata['ybayroff'] != 0:
             pattern = pattern[1] + pattern[0] + pattern[3] + pattern[2]
 
-        print('adjusted pattern = ', pattern)
         img_slice = {}
         img_slice[0] = (0, 0)
         img_slice[1] = (0, 1)
@@ -77,19 +49,16 @@ def generate_bayer_masks(data, metadata):
         img_slice[3] = (1, 1)
 
         bayer_info = [] # list of tuples (filter, img_mask)
-        total_pixels = data.shape[0] * data.shape[1]
+
         for color in ['R', 'B', 'G']:
             # In the mask, True means masked/ignore; False means yes/use/valid
-            img_mask = np.ones((data.shape[0], data.shape[1]), dtype=bool)
+            img_mask = np.ones(shape, dtype=bool)
             for channel in range(4):
                 if pattern[channel] == color:
                     slicer = img_slice[channel]
                     img_mask[slicer[0]::2, slicer[1]::2] = False
 
-            print('Color ', color, ' has ',
-                  total_pixels - np.count_nonzero(img_mask),
-                  'usable cells')
-            bayer_info.append(('T'+color, img_mask))
+            bayer_info.append(('T' + color, img_mask))
         return bayer_info
 
 
