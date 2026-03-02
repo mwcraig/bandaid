@@ -46,21 +46,20 @@ dependencies = [
 Documentation = "https://bandaid.readthedocs.io"
 Download = "https://pypi.org/project/bandaid/#files"
 
-[project.optional-dependencies]
-# The groups below should be in the [development-groups] table
-# They are here now because hatch hasn't released support for them but plans to
-# in Mid November 2025.
+[dependency-groups]
 dev = [
     "hatch",
     "pre-commit",
-    "bandaid[docs,tests,style,types]",
+    {include-group = "docs"},
+    {include-group = "tests"},
+    {include-group = "style"},
+    {include-group = "types"},
 ]
 
 docs = [
     "mkdocs-material ~=9.5",
     "mkdocstrings[python] ~=0.24",
     "mkdocs-awesome-pages-plugin ~=2.9",
-
 ]
 
 build = [
