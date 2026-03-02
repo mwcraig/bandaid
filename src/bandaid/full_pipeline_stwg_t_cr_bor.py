@@ -35,7 +35,10 @@ reference_image = images[len(images) // 2]
 ref_header = fits.getheader(reference_image)
 metadata = metadata_from_header(ref_header)
 
-ref_data, ref_coords, ref_fwhm, _ = calibration_sequence(
+# Get the sky coordinates for the stars on which to perform photometry from the
+# reference image. This is done using the twirl package for astrometric calibration
+# and eloy for source detection
+_, ref_img_coords_xy, _, _ = calibration_sequence(
     reference_image, threshold=THRESH, max_adu=metadata["largest_usable_adu_value"],
 )
 
@@ -57,12 +60,13 @@ all_radecs = sparsify(all_radecs, 0.01)
 
 
 # we only use the n brightest stars from Gaia -- WHY NOT N_STARS_ALIGN???
-wcs = compute_wcs(ref_coords[0:15], all_radecs[0:15], tolerance=1)
+wcs = compute_wcs(ref_img_coords_xy[0:15], all_radecs[0:15], tolerance=1)
 
 # ## Photometry
 
 # NOTE -- this triggers a download from HuggingFace the first time it is run.
-ref = ReferenceData.from_pixel_coords(ref_coords, wcs, all_radecs, Ballet())
+ref = ReferenceData.from_pixel_coords(ref_img_coords_xy, wcs, all_radecs, Ballet())
+
 bayer_masks = generate_bayer_masks(
     (metadata["height"], metadata["width"]),
     metadata,

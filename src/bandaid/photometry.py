@@ -14,6 +14,8 @@ from eloy.centroid import Ballet
 from st_pipeline.schema_definition import StarList
 from twirl import compute_wcs
 
+from .image2sl_qt import bayer_balance_image
+
 CUTOUT = 500 # 120
 
 N_STARS_ALIGN = 15
@@ -30,7 +32,7 @@ ANNULUS = (5, 8)
 CUTOUT_SHAPE = (21, 21)
 
 
-def calibration_sequence(file: str, threshold: float = 1, max_adu=0) -> tuple:
+def calibration_sequence(file: str, threshold: float = 1, max_adu: int = 0) -> tuple:
     """
     Find sources and compute FWHM for an image.
 
@@ -40,6 +42,9 @@ def calibration_sequence(file: str, threshold: float = 1, max_adu=0) -> tuple:
         Path to the FITS file.
     threshold : float, optional
         Detection threshold for star finding, by default 1
+    max_adu : int, optional
+        Maximum ADU value to consider for detections (used to filter out saturated
+        stars), by default 0 (no filtering)
     """
     data = fits.getdata(file)
     header = fits.getheader(file)
@@ -52,13 +57,13 @@ def calibration_sequence(file: str, threshold: float = 1, max_adu=0) -> tuple:
     if len(regions) < 3:
         return None, [], None, None
 
-    region_coords = np.array([(r.centroid[1], r.centroid[0]) for r in regions])
-    cutouts = utils.cutout(calibrated_data, region_coords, (50, 50))
+    region_coords_xy = np.array([(r.centroid[1], r.centroid[0]) for r in regions])
+    cutouts = utils.cutout(calibrated_data, region_coords_xy, (50, 50))
 
     # Drop any cutouts that are saturated -- NOTE THAT THIS LEAVES BEHIND SATURATED REGIONS
     cutouts = np.array(list(filter(lambda data: np.max(data) < max_adu, cutouts)))
 
-    # Drop any regions that are saturdated for calculating the FWHM
+    # Drop any regions that are saturated for calculating the FWHM
     cutouts_normalized = cutouts / np.nanmax(cutouts, (1, 2))[:, None, None]
 
     # Average the cutouts...yolo I guess on whether these are good detections
@@ -79,7 +84,7 @@ def calibration_sequence(file: str, threshold: float = 1, max_adu=0) -> tuple:
         header,
     )
 
-    return calibrated_data, region_coords, fwhm, regions
+    return calibrated_data, region_coords_xy, fwhm, regions
 
 
 def metadata_from_header(header):
@@ -191,7 +196,7 @@ class ImageData:
     header: fits.Header
 
 
-def align_and_centroid(calibrated_data, coords, ref):
+def align_and_centroid(calibrated_data, coords, ref, photometry_coords=None):
     """
     Compute per-image WCS, align reference coordinates, and centroid.
 
@@ -200,9 +205,14 @@ def align_and_centroid(calibrated_data, coords, ref):
     calibrated_data : numpy.ndarray
         Calibrated image data.
     coords : numpy.ndarray
-        Detected star coordinates in this image.
+        Detected star coordinates in this image. This is used for WCS alignment and, if
+        photometry_coords is None, for centroiding as well.
     ref : ReferenceData
         Reference image data (coords, WCS, Gaia RA/Decs, CNN model).
+    photometry_coords : `astropy.coordinates.SkyCoord` or None, optional
+        If provided, these are the coordinates used for centroiding instead of `coords`.
+        This allows for centroiding on a different set of coordinates than those used
+        for WCS alignment. By default None (centroiding is done on `coords`).
 
     Returns
     -------
@@ -211,13 +221,24 @@ def align_and_centroid(calibrated_data, coords, ref):
     this_wcs = compute_wcs(
         coords[0:N_STARS_ALIGN], ref.radecs[0:N_STARS_ALIGN], tolerance=1,
     )
-    aligned_coords = this_wcs.world_to_pixel(ref.sky_coords)
-    aligned_coords = np.array(aligned_coords).T
+    if photometry_coords is not None:
+        aligned_coords = this_wcs.world_to_pixel(photometry_coords)
+        aligned_coords = np.array(aligned_coords).T
+    else:
+        aligned_coords = this_wcs.world_to_pixel(ref.sky_coords)
+        aligned_coords = np.array(aligned_coords).T
     centroid_coords = centroid.ballet_centroid(calibrated_data, aligned_coords, ref.cnn)
     return centroid_coords, aligned_coords, this_wcs
 
 
-def measure_photometry(calibrated_data, centroid_coords, aligned_coords, fwhm, egain, mask):
+def measure_photometry(  # noqa: PLR0913
+        calibrated_data,
+        centroid_coords,
+        aligned_coords,
+        fwhm,
+        egain,
+        mask,
+    ):
     """
     Perform aperture photometry, background subtraction, and error calculation.
 
@@ -282,7 +303,7 @@ def measure_photometry(calibrated_data, centroid_coords, aligned_coords, fwhm, e
     }
 
 
-def prepare_image(file, ref, metadata):
+def prepare_image(file, ref, metadata, *, detect_on_bayer_balanced=False, photometry_coords=None):
     """
     Detect sources, align, and centroid for a single image.
 
@@ -294,6 +315,13 @@ def prepare_image(file, ref, metadata):
         Reference image data (sky coords, Gaia RA/Decs, CNN model).
     metadata : dict
         Metadata dictionary (must include 'largest_usable_adu_value').
+    detect_on_bayer_balanced : bool, optional
+        Whether to detect sources on Bayer balanced data (default is False).
+    photometry_coords : `astropy.coordinates.SkyCoord` or None, optional
+        If provided, these are the coordinates used for centroiding instead of those
+        detected in this image. This allows for centroiding on a different set of
+        coordinates than those used for WCS alignment. By default None (centroiding is
+        done on detected coords).
 
     Returns
     -------
@@ -307,8 +335,14 @@ def prepare_image(file, ref, metadata):
     if len(coords) < N_STARS_ALIGN:
         return None
 
+    if detect_on_bayer_balanced:
+        working_image = calibrated_data.copy()
+        bayer_balance_image(working_image)
+    else:
+        working_image = calibrated_data
+
     centroid_coords, aligned_coords, this_wcs = align_and_centroid(
-        calibrated_data, coords, ref,
+        calibrated_data, coords, ref, photometry_coords=photometry_coords,
     )
 
     header = fits.open(file)[0].header
