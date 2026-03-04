@@ -6,11 +6,13 @@ from pathlib import Path
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
+from astropy.stats import sigma_clipped_stats
 from astropy.table import Table
 from astropy.time import Time
 from dateutil import parser
 from eloy import centroid, detection, photometry, psf, utils
 from eloy.centroid import Ballet
+from photutils.aperture import CircularAnnulus
 from st_pipeline.schema_definition import StarList
 from twirl import compute_wcs
 
@@ -231,6 +233,49 @@ def align_and_centroid(calibrated_data, coords, ref, photometry_coords=None):
     return centroid_coords, aligned_coords, this_wcs
 
 
+def annulus_sigma_clip_stats(data, coords, r_in, r_out, sigma=3):
+    """
+    Compute the sigma-clipped median and standard deviation in an annulus.
+
+    Parameters
+    ----------
+    data : numpy.ndarray
+        2D image data.
+    coords : numpy.ndarray
+        Array of (x, y) coordinates.
+    r_in : float
+        Inner radius of the annulus.
+    r_out : float
+        Outer radius of the annulus.
+    sigma : float, optional
+        Sigma for sigma-clipping, by default 3.
+
+    Returns
+    -------
+    bkg_median : numpy.ndarray
+        Sigma-clipped median background per pixel for each coordinate.
+    bkg_std : numpy.ndarray
+        Sigma-clipped standard deviation per pixel for each coordinate.
+    """
+    annulus = CircularAnnulus(coords, r_in, r_out)
+    annulus_masks = annulus.to_mask(method="center")
+
+    bkg_median = []
+    bkg_std = []
+    for mask in annulus_masks:
+        annulus_data = mask.multiply(data)
+        if annulus_data is not None:
+            annulus_data_1d = annulus_data[mask.data > 0]
+            _, median_val, std_val = sigma_clipped_stats(annulus_data_1d, sigma=sigma)
+            bkg_median.append(median_val)
+            bkg_std.append(std_val)
+        else:
+            bkg_median.append(0.0)
+            bkg_std.append(0.0)
+
+    return np.array(bkg_median), np.array(bkg_std)
+
+
 def measure_photometry(  # noqa: PLR0913
         calibrated_data,
         centroid_coords,
@@ -273,7 +318,7 @@ def measure_photometry(  # noqa: PLR0913
     )
     aperture_area = np.pi * apertures_radii**2
 
-    bkg = photometry.annulus_sigma_clip_median(
+    bkg, bkg_std = annulus_sigma_clip_stats(
         calibrated_data, centroid_coords, *annulus_radii,
     )
     total_bkg = bkg[:, None] * aperture_area[None, :]
@@ -284,10 +329,10 @@ def measure_photometry(  # noqa: PLR0913
     )
 
     net_count = flux - total_bkg
-    noise_bkgd_per_pixel = bkg * egain
-    tot_noise_bkgd = noise_bkgd_per_pixel[:, None] * aperture_area[None, :]
-    poiss_noise = np.sqrt(egain * net_count)
-    tot_noise = np.sqrt(poiss_noise**2 + tot_noise_bkgd**2) / egain
+    # Background noise per pixel estimated from the annulus standard deviation
+    tot_noise_bkgd = bkg_std[:, None] * np.sqrt(aperture_area[None, :])
+    poiss_noise = np.sqrt(egain * net_count) / egain
+    tot_noise = np.sqrt(poiss_noise**2 + tot_noise_bkgd**2)
     snr = net_count / tot_noise
 
     return {
