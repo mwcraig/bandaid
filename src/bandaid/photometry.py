@@ -34,7 +34,7 @@ ANNULUS = (5, 8)
 CUTOUT_SHAPE = (21, 21)
 
 
-def calibration_sequence(file: str, threshold: float = 1, max_adu: int = 0) -> tuple:
+def calibration_sequence(file: str, threshold: float = 1) -> tuple:
     """
     Find sources and compute FWHM for an image.
 
@@ -47,9 +47,19 @@ def calibration_sequence(file: str, threshold: float = 1, max_adu: int = 0) -> t
     max_adu : int, optional
         Maximum ADU value to consider for detections (used to filter out saturated
         stars), by default 0 (no filtering)
+
+    Returns
+    -------
+    tuple
+        A tuple containing the calibrated data, metadata, region coordinates,
+        FWHM, and regions.
+
     """
     data = fits.getdata(file)
     header = fits.getheader(file)
+
+    metadata = metadata_from_header(header)
+    max_adu = metadata["largest_usable_adu_value"]
 
     # Multiplying by 1 should force conversion from int to float data
     calibrated_data = 1.0 * data
@@ -86,7 +96,7 @@ def calibration_sequence(file: str, threshold: float = 1, max_adu: int = 0) -> t
         header,
     )
 
-    return calibrated_data, region_coords_xy, fwhm, regions
+    return calibrated_data, metadata, region_coords_xy, fwhm, regions
 
 
 def metadata_from_header(header):
@@ -158,9 +168,10 @@ def eloy_to_starlist(eloy_table, metadata):
     -------
     StarList
     """
-    # REPLCE THIS WITH FILTERING FROM IMAGE2SL_QT
+    # REPLACE THIS WITH FILTERING FROM IMAGE2SL_QT
     good = ~np.isnan(eloy_table["tot_count"])
     good &= eloy_table["tot_count"] > 0
+    good &= eloy_table["count_err"] > 0
     good &= (
         (eloy_table["x"] > 0)
         & (eloy_table["x"] < metadata["width"])
@@ -348,7 +359,7 @@ def measure_photometry(  # noqa: PLR0913
     }
 
 
-def prepare_image(file, ref, metadata, *, detect_on_bayer_balanced=False, photometry_coords=None):
+def prepare_image(file, ref, *, detect_on_bayer_balanced=False, photometry_coords=None, user_specific_metadata=None):
     """
     Detect sources, align, and centroid for a single image.
 
@@ -358,8 +369,6 @@ def prepare_image(file, ref, metadata, *, detect_on_bayer_balanced=False, photom
         Path to the FITS file.
     ref : ReferenceData
         Reference image data (sky coords, Gaia RA/Decs, CNN model).
-    metadata : dict
-        Metadata dictionary (must include 'largest_usable_adu_value').
     detect_on_bayer_balanced : bool, optional
         Whether to detect sources on Bayer balanced data (default is False).
     photometry_coords : `astropy.coordinates.SkyCoord` or None, optional
@@ -367,15 +376,22 @@ def prepare_image(file, ref, metadata, *, detect_on_bayer_balanced=False, photom
         detected in this image. This allows for centroiding on a different set of
         coordinates than those used for WCS alignment. By default None (centroiding is
         done on detected coords).
+    user_specific_metadata : dict or None, optional
+        User-specific metadata to include in the output. By default None.
 
     Returns
     -------
     ImageData or None
         Per-image results, or None if too few stars were detected.
     """
-    calibrated_data, coords, fwhm, _ = calibration_sequence(
-        file, threshold=THRESH, max_adu=metadata["largest_usable_adu_value"],
+    # "calibrate" the data and get initial detections for WCS alignment and
+    # FWHM estimation
+    calibrated_data, metadata, coords, fwhm, _ = calibration_sequence(
+        file, threshold=THRESH,
     )
+
+    if user_specific_metadata is not None:
+        metadata.update(user_specific_metadata)
 
     if len(coords) < N_STARS_ALIGN:
         return None
@@ -400,10 +416,11 @@ def prepare_image(file, ref, metadata, *, detect_on_bayer_balanced=False, photom
         aligned_coords=aligned_coords,
         wcs=this_wcs,
         header=header,
+        metadata=metadata,
     )
 
 
-def build_photometry_table(img, metadata, mask):
+def build_photometry_table(img, mask):
     """
     Run photometry with a given mask and build an output table.
 
@@ -411,8 +428,6 @@ def build_photometry_table(img, metadata, mask):
     ----------
     img : ImageData
         Per-image detection/alignment results.
-    metadata : dict
-        Metadata dictionary (must include 'egain').
     mask : numpy.ndarray or None
         Bayer mask to apply to the image data.
 
@@ -423,7 +438,7 @@ def build_photometry_table(img, metadata, mask):
     """
     phot = measure_photometry(
         img.calibrated_data, img.centroid_coords, img.aligned_coords,
-        img.fwhm, metadata["egain"], mask,
+        img.fwhm, img.metadata["egain"], mask,
     )
     centroid_ra_dec = img.wcs.pixel_to_world(
         img.centroid_coords[..., 0],
