@@ -207,6 +207,7 @@ class ImageData:
     aligned_coords: np.ndarray
     wcs: object
     header: fits.Header
+    metadata: dict = None
 
 
 def align_and_centroid(calibrated_data, coords, ref, photometry_coords=None):
