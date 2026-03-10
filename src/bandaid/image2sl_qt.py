@@ -22,7 +22,6 @@
 
 import numpy as np
 
-
 def generate_bayer_masks(shape, metadata):
         """
         Generate mask for each color in a Bayer array.
@@ -33,6 +32,12 @@ def generate_bayer_masks(shape, metadata):
             The image data array
         metadata : dict
             The image metadata dictionary
+
+        Returns
+        -------
+        list of tuples
+            A list of tuples, where each tuple contains a color filter name and its
+            corresponding mask.
         """
         pattern = metadata['bayerpat']
 
@@ -60,7 +65,6 @@ def generate_bayer_masks(shape, metadata):
 
             bayer_info.append(('T' + color, img_mask))
         return bayer_info
-
 
 
 def bayer_balance_image(image):
