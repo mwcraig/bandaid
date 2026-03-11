@@ -67,7 +67,7 @@ def calibration_sequence(file: str, threshold: float = 1) -> tuple:
 
     # in case we detect fewer than 3 stars
     if len(regions) < 3:
-        return None, [], None, None
+        return None, [], None, None, None
 
     region_coords_xy = np.array([(r.centroid[1], r.centroid[0]) for r in regions])
     cutouts = utils.cutout(calibrated_data, region_coords_xy, (50, 50))
@@ -417,7 +417,7 @@ def prepare_image(file, ref, *, detect_on_bayer_balanced=False, photometry_coord
         working_image, coords, ref, photometry_coords=photometry_coords,
     )
 
-    header = fits.open(file)[0].header
+    header = fits.getheader(file)
 
     return ImageData(
         calibrated_data=calibrated_data,
