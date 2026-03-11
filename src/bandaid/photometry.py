@@ -414,7 +414,7 @@ def prepare_image(file, ref, *, detect_on_bayer_balanced=False, photometry_coord
         working_image = calibrated_data
 
     centroid_coords, aligned_coords, this_wcs = align_and_centroid(
-        calibrated_data, coords, ref, photometry_coords=photometry_coords,
+        working_image, coords, ref, photometry_coords=photometry_coords,
     )
 
     header = fits.open(file)[0].header
