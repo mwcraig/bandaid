@@ -6,13 +6,13 @@ from pathlib import Path
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
-from astropy.stats import sigma_clipped_stats
+from astropy.stats import SigmaClip
 from astropy.table import Table
 from astropy.time import Time
 from dateutil import parser
 from eloy import centroid, detection, photometry, psf, utils
 from eloy.centroid import Ballet
-from photutils.aperture import CircularAnnulus, CircularAperture
+from photutils.aperture import ApertureStats, CircularAnnulus, CircularAperture
 from st_pipeline.schema_definition import StarList
 from twirl import compute_wcs
 
@@ -278,24 +278,10 @@ def annulus_sigma_clip_stats(data, coords, r_in, r_out, input_mask=None, sigma=3
         Sigma-clipped standard deviation per pixel for each coordinate.
     """
     annulus = CircularAnnulus(coords, r_in, r_out)
-    annulus_masks = annulus.to_mask(method="center")
+    sigclip = SigmaClip(sigma=sigma)
+    aperstats = ApertureStats(data, annulus, mask=input_mask, sigma_clip=sigclip)
 
-    bkg_median = []
-    bkg_std = []
-    data_mask = 1 if input_mask is None else ~input_mask
-    masked_data = data * data_mask
-    for mask in annulus_masks:
-        annulus_data = mask.multiply(masked_data)
-        if annulus_data is not None:
-            annulus_data_1d = annulus_data[mask.data > 0]
-            _, median_val, std_val = sigma_clipped_stats(annulus_data_1d, sigma=sigma)
-            bkg_median.append(median_val)
-            bkg_std.append(std_val)
-        else:
-            bkg_median.append(0.0)
-            bkg_std.append(0.0)
-
-    return np.array(bkg_median), np.array(bkg_std)
+    return aperstats.median, aperstats.std
 
 
 def measure_photometry(  # noqa: PLR0913
@@ -338,10 +324,22 @@ def measure_photometry(  # noqa: PLR0913
         np.max([np.max(apertures_radii), ANNULUS[0] * fwhm]),
         ANNULUS[1] * fwhm,
     )
-    aperture_area = np.array([a.area_overlap(calibrated_data, mask=mask) for a in [CircularAperture(centroid_coords, r=r) for r in apertures_radii]]).T
+    aperture_area = np.array(
+        [
+            a.area_overlap(calibrated_data, mask=mask)
+            for a in
+            [
+                CircularAperture(
+                    centroid_coords,
+                    r=r,
+                )
+                for r in apertures_radii
+            ]
+        ]
+    ).T
 
     bkg, bkg_std = annulus_sigma_clip_stats(
-        calibrated_data, centroid_coords, *annulus_radii,
+        calibrated_data, centroid_coords, *annulus_radii, input_mask=mask,
     )
     total_bkg = bkg[:, None] * aperture_area
 
