@@ -1,0 +1,29 @@
+\documentclass[12pt]{article}
+\usepackage{amsmath}
+\begin{document}
+\title{Photometry and images from smart telescopes}
+
+\section{Introduction}
+
+Smart telescopes, such as the SeeStar S50 (etc...) are very popular and eliminate
+most of the barriers to entry into astrophotography. For a relatively modest price
+a smart "telescope" is the optical componenets of a telescope, a one-shot-color
+CMOS sensor, a housing, and a basic trtipod. The device takes regular, short
+exposures, e.g. 10 seconds for the SeeStar S50, plate solves each exposure and
+builds a stacked color image on the fly. Image taking continues until the user
+stops it. The user has the option of saving only the stacked color image or the
+stacked image and also of the subframes that went into the stack.
+
+While manufacturers of these devices have focused on their use for
+astrophotography, the CMOS sensors in them are adequate for performing aperture
+photometry on the stars in the image. The devices typically have a wide field
+of view so as to maximize the visual impact of the images they take. That implies
+a fairly large pixel scale of 1-2 arcsec/pixel with a stellar full-width at half maximum (FWHM) of 3-5 pixels.
+
+The combination of under-resolved stars and a Bayer array on the image sensor is a challenge. The traditional approach of separating the one-shot color image into
+three separate lower-resolutions images, one for each each of the three color channels, will lead to severely under-resolved stars. In this paper we present an alternative method based on applying masks to the image to select one color at
+a time.
+
+In Section \ref{sec:method} we describe our methods for performing photometry on
+both individual subframes and stacked images. Section \ref{sec:results} presents the application of these methods to a few variable stars and smart telescopes. Finally, Section \ref{sec:conclusions}
+\end{document}
