@@ -36,17 +36,37 @@ aperture photometry. The latter is fairly straightforward once source locations 
 the former requires some care because of the presence of the Bayer array.
 
 \subsection{Source detection and centroid location}
+Source detection and location of the centroid is performed on the full resolution image rather
+than on the separate color channels. The advantages of this approach is that the stars are
+better resolved than if the image were separated into three lower-resolution images.
+
 The presence of the Bayer array means that the background level in each color may not be uniform
 across colors. An example is shown in the left column of Figure \ref{fig:color-cutout}. The image is
 of the variable star T CrB taken with a SeeStar S50, relatively early in the evening when the sky
-still had a significant blue cast.
+still had a significant blue cast. This image will be used extensively in the paper to illustrate our
+methods because it is an extreme example of the effect of the Bayer array on the background level.
 
-Attempting to perform source detection on the raw image will lead to large number of spurious detections because the blue pixels are so much brighter than the red and green pixels. To mitigate this problem, we apply what we call Bayer balancing to the image. To Bayer balance the image, we scale each color channel's data so that the standard deviation of each color channel to match the standard deviation of the entire image, ignoring color, and then adjust the mean of each color channel to match the mean of the entire image. The result is shown in the right column of Figure \ref{fig:color-cutout}. The background level is now more uniform across colors, and source detection can be performed on the Bayer balanced image without a large number of spurious detections. TODO: DOES THIS NEED A PLOT?
+Attempting to perform source detection on the raw image will lead to large number of spurious
+detections because the blue pixels are so much brighter than the red and green pixels. To
+mitigate this problem, we apply what we call Bayer balancing to the image. To Bayer balance
+the image, we scale each color channel's data so that the standard deviation of each color
+channel to match the standard deviation of the entire image, ignoring color, and then
+adjust the mean of each color channel to match the mean of the entire image. The result is
+shown in the right column of Figure \ref{fig:color-cutout}. The background level is now
+more uniform across colors, and source detection can be performed on the Bayer balanced
+image without many spurious detections.
+
+TODO: ADD PLOT SHOWING DETECTIONS ON RAW And BAYER BALANCED IMAGES.
 
 \begin{figure}
     \centering
     \includegraphics[width=0.8\textwidth]{color-cutout.png}
-    \caption{Cutout around T CrB showing the effect of the Bayer array on the background level. The left column shows the raw image, while the right column shows the result of applying a Bayer balance to the image. The top row shows a wide cutout, while the bottom row shows a zoomed-in cutout.}
+    \caption{
+        Cutout around T CrB showing the effect of the Bayer array on the background level.
+        The left column shows the raw image, while the right column shows the result of applying
+        a Bayer balance to the image. The top row shows a wide cutout, while the bottom row
+        shows a zoomed-in cutout.
+    }
     \label{fig:color-cutout}
 \end{figure}
 \end{document}
