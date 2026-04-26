@@ -248,6 +248,7 @@ def align_and_centroid(calibrated_data, coords, ref, photometry_coords=None):
         aligned_coords = this_wcs.world_to_pixel(ref.sky_coords)
         aligned_coords = np.array(aligned_coords).T
     centroid_coords = centroid.ballet_centroid(calibrated_data, aligned_coords, ref.cnn)
+    print((((aligned_coords - centroid_coords)**2).sum(axis=1)**0.5).max())
     return centroid_coords, aligned_coords, this_wcs
 
 
@@ -359,12 +360,14 @@ def measure_photometry(  # noqa: PLR0913
         "tot_count": net_count[:, 0],
         "count_err": tot_noise[:, 0],
         "bkgd_count": bkg,
+        "bkgd_std": bkg_std,
         "peak_count": peaks,
         "snr": snr,
         "total_bkg": total_bkg,
         "fluxes": flux,
         "aperture_radii": float(apertures_radii[0]),
         "annulus_radii": annulus_radii,
+        "aperture_area": aperture_area[:, 0],
     }
 
 
@@ -445,6 +448,7 @@ def build_photometry_table(img, mask):
     Table
         Photometry table for this image and mask.
     """
+    # Maybe check here or somewhere else that the centroid hasn't moved too much?
     phot = measure_photometry(
         img.calibrated_data, img.centroid_coords, img.aligned_coords,
         img.fwhm, img.metadata["egain"], mask,
@@ -458,6 +462,7 @@ def build_photometry_table(img, mask):
     data["tot_count"] = phot["tot_count"]
     data["total_bkg"] = phot["total_bkg"]
     data["bkgd_count"] = phot["bkgd_count"]
+    data["bkgd_std"] = phot["bkgd_std"]
     data["count_err"] = phot["count_err"]
     data["snr"] = phot["snr"]
     data["fluxes"] = phot["fluxes"]
@@ -472,6 +477,7 @@ def build_photometry_table(img, mask):
     data["dec"] = centroid_ra_dec.dec.degree
     data["x"] = img.centroid_coords[..., 0]
     data["y"] = img.centroid_coords[..., 1]
+    data["aperture_area"] = phot["aperture_area"]
     data.meta["fwhm"] = float(img.fwhm)
     data.meta["aperture_radii"] = phot["aperture_radii"]
     data.meta["annulus_radii"] = phot["annulus_radii"]
