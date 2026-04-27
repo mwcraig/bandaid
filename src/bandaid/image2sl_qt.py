@@ -90,13 +90,6 @@ def bayer_balance_image(image):
     temp3 = image[1::2,0::2]
     temp4 = image[1::2,1::2]
 
-    def print_img_stats(data):
-        data = data
-        print("        Min = ", min(data),
-                ", Max = ", max(data),
-                ", Avg = ", statistics.mean(data),
-                ", Stdev = ", statistics.stdev(data))
-
     raw_avg = image.mean()
     raw_stdev = image.std()
     cutoff = raw_avg + 5*raw_stdev
@@ -107,7 +100,6 @@ def bayer_balance_image(image):
     temp3x = temp3[(0 <= temp3) &  (temp3 < cutoff)]
     temp4x = temp4[(0 <= temp4) &  (temp4 < cutoff)]
 
-    print(" -------------- balancing ---------------")
     tempexes = [temp1x, temp2x, temp3x, temp4x]
     # adjust everything based on the overall mean
     target_stdev = np.mean([temp.std() for temp in tempexes])
@@ -117,15 +109,12 @@ def bayer_balance_image(image):
     summed_numbers = sum(len(temp) for temp in tempexes)
     target_mean = summed_temps / summed_numbers
 
-    print("Overall mean is ", target_mean, ", overall stdev = ", target_stdev)
-
     m = temp1x.std()
     factor = target_stdev/m
     temp1 = temp1 * factor
     temp1x = temp1x * factor
     m = temp1x.mean()
     temp1 = temp1 - (m-target_mean)
-    print("Bayer 1 factor = ", factor)
 
     m = temp2x.std()
     factor = target_stdev/m
@@ -133,7 +122,6 @@ def bayer_balance_image(image):
     temp2x = temp2x * factor
     m = temp2x.mean()
     temp2 = temp2 - (m-target_mean)
-    print("Bayer 2 factor = ", factor)
 
     m = temp3x.std()
     factor = target_stdev/m
@@ -141,7 +129,6 @@ def bayer_balance_image(image):
     temp3x = temp3x * factor
     m = temp3x.mean()
     temp3 = temp3 - (m-target_mean)
-    print("Bayer 3 factor = ", factor)
 
     m = temp4x.std()
     factor = target_stdev/m
@@ -149,7 +136,6 @@ def bayer_balance_image(image):
     temp4x = temp4x * factor
     m = temp4x.mean()
     temp4 = temp4 - (m-target_mean)
-    print("Bayer 4 factor = ", factor)
 
     image[0::2,0::2] = temp1
     image[0::2,1::2] = temp2
