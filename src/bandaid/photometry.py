@@ -71,20 +71,27 @@ def min_separation_fwhm(delta_mag, tolerance=CONTAMINATION_TOLERANCE, beta=MOFFA
     return np.sqrt(np.maximum((rhs - 1.0) / a_factor, 0.0))
 
 
-def bright_neighbor_flag(
-    coords, fluxes, fwhm,
+def neighbor_contamination_flag(
+    coords, mags, fwhm,
     tolerance=CONTAMINATION_TOLERANCE,
     beta=MOFFAT_BETA,
 ):
     """
-    Flag stars with a brighter neighbor too close for accurate aperture photometry.
+    Flag stars whose 1*FWHM aperture is contaminated by a too-close neighbor.
+
+    Contamination is checked symmetrically: each pair (target, neighbor) is
+    evaluated as fractional spillover into the *target's* aperture, so the
+    same physical pair can flag the fainter star at a larger separation than
+    the brighter one. Equal-brightness pairs are flagged inside ~2.18 FWHM.
 
     Parameters
     ----------
     coords : array-like, shape (N, 2)
         Pixel coordinates of the stars.
-    fluxes : array-like, shape (N,)
-        Per-star flux. Only ratios matter.
+    mags : array-like, shape (N,)
+        Per-star magnitude (zero-point arbitrary; only differences matter).
+        Non-finite values are treated as "no contamination" for that star's
+        role in the pair.
     fwhm : float
         PSF FWHM in pixels.
     tolerance, beta : see `min_separation_fwhm`.
@@ -92,10 +99,10 @@ def bright_neighbor_flag(
     Returns
     -------
     ndarray of bool, shape (N,)
-        True where a brighter neighbor sits inside the contamination radius.
+        True where any neighbor sits inside this star's contamination radius.
     """
     coords = np.asarray(coords)
-    fluxes = np.asarray(fluxes, dtype=float)
+    mags = np.asarray(mags, dtype=float)
     n = len(coords)
     if n < 2:
         return np.zeros(n, dtype=bool)
@@ -103,11 +110,10 @@ def bright_neighbor_flag(
     diff = coords[:, None, :] - coords[None, :, :]
     dist = np.linalg.norm(diff, axis=-1)
 
-    with np.errstate(divide="ignore", invalid="ignore"):
-        ratio = fluxes[None, :] / fluxes[:, None]
-        delta_mag = 2.5 * np.log10(ratio)
+    delta_mag = mags[:, None] - mags[None, :]
 
-    valid = (delta_mag > 0) & np.isfinite(delta_mag)
+    finite = np.isfinite(mags)
+    valid = finite[:, None] & finite[None, :]
     np.fill_diagonal(valid, False)
 
     min_sep_pix = np.zeros_like(dist)
@@ -264,8 +270,8 @@ def eloy_to_starlist(eloy_table, metadata):
         & (eloy_table["y"] > 0)
         & (eloy_table["y"] < metadata["height"])
     )
-    if "bright_neighbor" in eloy_table.colnames:
-        good &= ~eloy_table["bright_neighbor"]
+    if "contaminated" in eloy_table.colnames:
+        good &= ~eloy_table["contaminated"]
     return StarList.from_table(eloy_table[good], metadata=metadata)
 
 
@@ -566,8 +572,10 @@ def build_photometry_table(img, mask):
     data["x"] = img.centroid_coords[..., 0]
     data["y"] = img.centroid_coords[..., 1]
     data["aperture_area"] = phot["aperture_area"]
-    data["bright_neighbor"] = bright_neighbor_flag(
-        img.centroid_coords, phot["tot_count"], img.fwhm,
+    with np.errstate(divide="ignore", invalid="ignore"):
+        instr_mag = -2.5 * np.log10(phot["tot_count"])
+    data["contaminated"] = neighbor_contamination_flag(
+        img.centroid_coords, instr_mag, img.fwhm,
     )
     data.meta["fwhm"] = float(img.fwhm)
     data.meta["aperture_radii"] = phot["aperture_radii"]
