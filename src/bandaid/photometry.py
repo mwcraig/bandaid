@@ -33,6 +33,92 @@ ANNULUS = (5, 8)
 # Size of cutout for centroiding
 CUTOUT_SHAPE = (21, 21)
 
+# Bright-neighbor rejection. A star is flagged if any brighter neighbor's PSF
+# wings would contribute more than CONTAMINATION_TOLERANCE of the target flux
+# inside the 1*FWHM aperture, modeled as a Moffat profile of index MOFFAT_BETA.
+CONTAMINATION_TOLERANCE = 0.01
+MOFFAT_BETA = 3.0
+
+
+def min_separation_fwhm(delta_mag, tolerance=CONTAMINATION_TOLERANCE, beta=MOFFAT_BETA):
+    """
+    Minimum target/neighbor separation (in FWHM) for clean 1*FWHM aperture photometry.
+
+    Models the neighbor as a Moffat PSF and approximates its intensity as
+    constant across the target aperture (good for d >~ 2*FWHM). Returns the
+    separation at which the neighbor's spillover into the aperture equals
+    `tolerance` times the target flux.
+
+    Parameters
+    ----------
+    delta_mag : float or array-like
+        How many magnitudes brighter the neighbor is than the target.
+    tolerance : float, optional
+        Maximum tolerated fractional flux contamination.
+    beta : float, optional
+        Moffat wing index. Smaller beta -> wider wings -> larger separation.
+
+    Returns
+    -------
+    ndarray
+        Required separation in units of FWHM. Zero where the neighbor is
+        not bright enough to require any separation.
+    """
+    a_factor = 4.0 * (2.0 ** (1.0 / beta) - 1.0)  # (FWHM / alpha)^2 for Moffat
+    prefactor = a_factor * (beta - 1.0)
+    flux_ratio = 10.0 ** (0.4 * np.asarray(delta_mag))
+    rhs = (prefactor * flux_ratio / tolerance) ** (1.0 / beta)
+    return np.sqrt(np.maximum((rhs - 1.0) / a_factor, 0.0))
+
+
+def bright_neighbor_flag(
+    coords, fluxes, fwhm,
+    tolerance=CONTAMINATION_TOLERANCE,
+    beta=MOFFAT_BETA,
+):
+    """
+    Flag stars with a brighter neighbor too close for accurate aperture photometry.
+
+    Parameters
+    ----------
+    coords : array-like, shape (N, 2)
+        Pixel coordinates of the stars.
+    fluxes : array-like, shape (N,)
+        Per-star flux. Only ratios matter.
+    fwhm : float
+        PSF FWHM in pixels.
+    tolerance, beta : see `min_separation_fwhm`.
+
+    Returns
+    -------
+    ndarray of bool, shape (N,)
+        True where a brighter neighbor sits inside the contamination radius.
+    """
+    coords = np.asarray(coords)
+    fluxes = np.asarray(fluxes, dtype=float)
+    n = len(coords)
+    if n < 2:
+        return np.zeros(n, dtype=bool)
+
+    diff = coords[:, None, :] - coords[None, :, :]
+    dist = np.linalg.norm(diff, axis=-1)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = fluxes[None, :] / fluxes[:, None]
+        delta_mag = 2.5 * np.log10(ratio)
+
+    valid = (delta_mag > 0) & np.isfinite(delta_mag)
+    np.fill_diagonal(valid, False)
+
+    min_sep_pix = np.zeros_like(dist)
+    if valid.any():
+        min_sep_pix[valid] = min_separation_fwhm(
+            delta_mag[valid], tolerance=tolerance, beta=beta,
+        ) * fwhm
+
+    too_close = valid & (dist < min_sep_pix)
+    return too_close.any(axis=1)
+
 
 def calibration_sequence(file: str, threshold: float = 1) -> tuple:
     """
@@ -178,6 +264,8 @@ def eloy_to_starlist(eloy_table, metadata):
         & (eloy_table["y"] > 0)
         & (eloy_table["y"] < metadata["height"])
     )
+    if "bright_neighbor" in eloy_table.colnames:
+        good &= ~eloy_table["bright_neighbor"]
     return StarList.from_table(eloy_table[good], metadata=metadata)
 
 
@@ -478,6 +566,9 @@ def build_photometry_table(img, mask):
     data["x"] = img.centroid_coords[..., 0]
     data["y"] = img.centroid_coords[..., 1]
     data["aperture_area"] = phot["aperture_area"]
+    data["bright_neighbor"] = bright_neighbor_flag(
+        img.centroid_coords, phot["tot_count"], img.fwhm,
+    )
     data.meta["fwhm"] = float(img.fwhm)
     data.meta["aperture_radii"] = phot["aperture_radii"]
     data.meta["annulus_radii"] = phot["annulus_radii"]
