@@ -69,4 +69,101 @@ TODO: ADD PLOT SHOWING DETECTIONS ON RAW And BAYER BALANCED IMAGES.
     }
     \label{fig:color-cutout}
 \end{figure}
+
+\subsection{Handling the Bayer array for photometry}
+
+\subsubsection{Background estimation for color channels}
+
+The background estimation that is done for the individual filters (`TR`,
+`TG`, `TB`) is based on the following formula:
+\begin{equation}
+C_{pp, X} = \frac{C_{tot, X}}{N_{pix, X}}
+\end{equation}
+Where:
+\begin{itemize}
+    \item $C_{pp, X}$ is the per-pixel background count for filter $X$.
+    \item $C_{tot, X}$ is the total background count for filter $X$.
+    \item $N_{pix, X}$ is the number of pixels used in the background estimation for filter $X$.
+\end{itemize}
+
+To be a little more explicit, these are, for the red, blue and green
+ channels, respectively:
+\begin{align}
+C_{pp, R} &= \frac{C_{tot, R}}{N_{pix, R}}\\
+C_{pp, G} &= \frac{C_{tot, G}}{N_{pix, G}}\\
+C_{pp, B} &= \frac{C_{tot, B}}{N_{pix, B}}
+\end{align}
+
+\subsubsection{Background estimation for the `L4` channel}
+
+For the `L4` count/magnitude the pixels are treated as though they are all
+the same color, i.e. filter information is completely ignored. The
+background estimation for the `L4` channel is based on the following formula:
+\begin{equation}
+C_{pp, L4} = \frac{C_{tot, R} + C_{tot, G} + C_{tot, B}}{N_{pix, R} + N_{pix, G} + N_{pix, B}} = \frac{C_{tot}}{N_{pix}}
+\end{equation}
+Where:
+\begin{itemize}
+    \item $C_{pp, L4}$ is the per-pixel background count for the `L4` channel.
+    \item $C_{tot, R}$, $C_{tot, G}$, and $C_{tot, B}$ are the total background
+      counts for the red, green, and blue filters, respectively.
+    \item $N_{pix, R}$, $N_{pix, G}$, and $N_{pix, B}$ are the number of pixels used in the background estimation for the red, green, and blue filters, respectively.
+\end{itemize}
+
+The number of blue, green and red pixels in the background have a straightforward relationship to the total number of pixels, $N_{pix}$, that are in the background. As long as the annulus is reasonably large, $N_{pix,R} \approx N_{pix, B} \approx \frac{N_{pix}}{4}$ and $N_{pix, G} \approx \frac{N_{pix}}{2}$. This means that the `L4` background estimation can be rewritten as:
+\begin{equation}
+C_{pp, L4} = \frac{C_{tot, R} + C_{tot, G} + C_{tot, B}}{\frac{N_{pix}}{4} + \frac{N_{pix}}{2} + \frac{N_{pix}}{4}} = \frac{C_{tot, R} + C_{tot, G} + C_{tot, B}}{N_{pix}}.
+\end{equation}
+
+Meanwhile, the individual color channel background estimates can be rewritten in terms of the total number of pixels as:
+\begin{align}
+C_{pp, R} &= \frac{C_{tot, R}}{\frac{N_{pix}}{4}} = \frac{4C_{tot, R}}{N_{pix}}\\
+C_{pp, G} &= \frac{C_{tot, G}}{\frac{N_{pix}}{2}} = \frac{2C_{tot, G}}{N_{pix}}\\
+C_{pp, B} &= \frac{C_{tot, B}}{\frac{N_{pix}}{4}} = \frac{4C_{tot, B}}{N_{pix}}
+\end{align}
+
+Note well that $C_{pp, L4}$ will not be the same numerical value as the individual color channel background estimates. It is instead
+
+\begin{align}
+C_{pp, L4} &=    \frac{C_{tot, R} + C_{tot, G} + C_{tot, B}}{N_{pix}} \\
+            &= \frac{C_{tot,R}}{N_{pix}} + \frac{C_{tot, G}}{N_{pix}} + \frac{C_{tot, B}}{N_{pix}} \\
+            &= \frac{1}{4}C_{pp, R} + \frac{1}{2}C_{pp, G} + \frac{1}{4}C_{pp, B}. \label{eq:L4-background-weighted-average}
+\end{align}
+
+In other words, the `L4` background estimate is a weighted average of the individual color channel background estimates, with the weights being determined by the number of pixels used in the background estimation for each filter.
+
+\subsubsection{Net counts in aperture}
+
+Current calculation in `L4` channel
+
+The net counts in the aperture for the `L4` channel are, for an aperture with $N_{ap}$ pixels, calculated as:
+\begin{equation}
+C_{net, L4} = C_{ap, L4} - N_{ap} \cdot C_{pp, L4}
+\end{equation}
+Where:
+\begin{itemize}
+    \item $C_{net, L4}$ is the net counts in the aperture for the `L4` channel.
+    \item $C_{ap, L4}$ is the total counts in the aperture for the `L4` channel.
+    \item $N_{ap}$ is the number of pixels in the aperture.
+    \item $C_{pp, L4}$ is the per-pixel background count for the `L4` channel.
+\end{itemize}
+
+The net counts in the aperture for the individual color channels are calculated as:
+
+\begin{align}
+C_{net, R} &= C_{ap, R} - N_{ap, R} \cdot C_{pp, R}\\
+C_{net, G} &= C_{ap, G} - N_{ap, G} \cdot C_{pp, G}\\
+C_{net, B} &= C_{ap, B} - N_{ap, B} \cdot C_{pp, B},
+\end{align}
+where $N_{ap, R}$, $N_{ap, G}$, and $N_{ap, B}$ are the number of pixels in the aperture for the red, green, and blue filters, respectively, and their sum is equal to the total number of pixels in the aperture, $N_{ap}$.
+
+Using the relationship  between `L4` background counts and single-channel background counts (Equation \ref{eq:L4-background-weighted-average}), the `L4` net counts can be rewritten as:
+\begin{align}
+C_{net, L4} &= C_{ap, L4} - N_{ap} \cdot C_{pp, L4} \\
+            &= C_{ap, R} + C_{ap, G} + C_{ap, B} - N_{ap} \cdot \left( \frac{1}{4}C_{pp, R} + \frac{1}{2}C_{pp, G} + \frac{1}{4}C_{pp, B} \right) \\
+            &= (C_{ap,R} -  \frac{N_{ap}}{4}C_{pp, R}) + (C_{ap, G} -  \frac{N_{ap}}{2}C_{pp, G}) + (C_{ap, B} -  \frac{N_{ap}}{4}C_{pp, B}) \\
+            &= C_{net, R} + C_{net, G} + C_{net, B}.
+\end{align}
+
+
 \end{document}
