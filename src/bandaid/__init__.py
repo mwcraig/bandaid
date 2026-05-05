@@ -38,5 +38,6 @@ from .photometry import (
     eloy_to_starlist,
     measure_photometry,
     metadata_from_header,
+    neighbor_contamination_flag,
     prepare_image,
 )

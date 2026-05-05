@@ -13,7 +13,7 @@ from astropy.stats import gaussian_fwhm_to_sigma, sigma_clipped_stats
 from astropy.table import Table
 
 from bandaid import measure_photometry
-from bandaid.photometry import ANNULUS, RELATIVE_RADII
+from bandaid.photometry import ANNULUS, RELATIVE_RADII, min_separation_fwhm
 
 # Make the tests reproducible by using a fixed random seed for noise generation in
 # the test images.
@@ -103,3 +103,20 @@ def test_measure_photometry_single_source(make_test_image, include_noise, noise_
     assert snr == pytest.approx(
         expected_snr, rel=0.06, abs=snr_tol,
     )
+
+
+def test_min_separation_fwhm():
+    """Check a few extreme cases for a reasonable minimum separation between sources."""
+    tenk_flux_ratio = 10
+    # first check for a target with a much, much dimmer companion.
+    # In that case the minimum separation should be roughly zero.
+    assert min_separation_fwhm(-tenk_flux_ratio, tolerance=0.01) == pytest.approx(0)
+
+    # Now assume the neighbor is much brighter than the target. THen the minimum
+    # separation should be large.
+    assert min_separation_fwhm(tenk_flux_ratio, tolerance=0.01) == pytest.approx(
+        11.036, rel=0.01,
+    )
+
+    # Now a case where the neighbor is the same brightness as the target.
+    assert min_separation_fwhm(0, tolerance=0.01) == pytest.approx(2.176, rel=0.01)
