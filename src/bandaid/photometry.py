@@ -572,11 +572,11 @@ def build_photometry_table(img, mask):
     data["x"] = img.centroid_coords[..., 0]
     data["y"] = img.centroid_coords[..., 1]
     data["aperture_area"] = phot["aperture_area"]
-    with np.errstate(divide="ignore", invalid="ignore"):
-        instr_mag = -2.5 * np.log10(phot["tot_count"])
-    data["contaminated"] = neighbor_contamination_flag(
-        img.centroid_coords, instr_mag, img.fwhm,
-    )
+    # with np.errstate(divide="ignore", invalid="ignore"):
+    #     instr_mag = -2.5 * np.log10(phot["tot_count"])
+    # data["contaminated"] = neighbor_contamination_flag(
+    #     img.centroid_coords, instr_mag, img.fwhm,
+    # )
     data.meta["fwhm"] = float(img.fwhm)
     data.meta["aperture_radii"] = phot["aperture_radii"]
     data.meta["annulus_radii"] = phot["annulus_radii"]
