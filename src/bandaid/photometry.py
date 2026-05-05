@@ -30,9 +30,6 @@ THRESH = 0.5
 RELATIVE_RADII = np.array([1.0])  # np.linspace(0.1, 5, 30)
 ANNULUS = (5, 8)
 
-# Size of cutout for centroiding
-CUTOUT_SHAPE = (21, 21)
-
 # Bright-neighbor rejection. A star is flagged if any brighter neighbor's PSF
 # wings would contribute more than CONTAMINATION_TOLERANCE of the target flux
 # inside the 1*FWHM aperture, modeled as a Moffat profile of index MOFFAT_BETA.
