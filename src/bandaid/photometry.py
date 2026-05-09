@@ -20,7 +20,7 @@ from .image2sl_qt import bayer_balance_image
 
 CUTOUT = 500 # 120
 
-N_STARS_ALIGN = 15
+N_STARS_ALIGN = 3
 THRESH = 0.5
 
 # Relative radii and annulus are defined here. These radii are multiplied by
@@ -156,8 +156,9 @@ def calibration_sequence(file: str, threshold: float = 1) -> tuple:
 
     # in case we detect fewer than 3 stars
     if len(regions) < 3:
+        print(f"Only {len(regions)} stars detected in {file}, skipping.")
         return None, [], None, None, None
-
+    print(f"Only {len(regions)} stars detected in {file}")
     region_coords_xy = np.array([(r.centroid[1], r.centroid[0]) for r in regions])
     cutouts = utils.cutout(calibrated_data, region_coords_xy, (50, 50))
 
@@ -301,7 +302,7 @@ class ImageData:
     metadata: dict = None
 
 
-def align_and_centroid(calibrated_data, coords, ref, photometry_coords=None):
+def align_and_centroid(calibrated_data, coords, ref, photometry_coords=None, wcs=None):
     """
     Compute per-image WCS, align reference coordinates, and centroid.
 
@@ -329,17 +330,19 @@ def align_and_centroid(calibrated_data, coords, ref, photometry_coords=None):
         this_wcs : astropy.wcs.WCS
             World Coordinate System for the image.
     """
-    this_wcs = compute_wcs(
-        coords[0:N_STARS_ALIGN], ref.radecs[0:N_STARS_ALIGN], tolerance=1,
-    )
+    if wcs is None:
+        this_wcs = compute_wcs(
+            coords[0:N_STARS_ALIGN], ref.radecs[0:N_STARS_ALIGN], tolerance=1,
+        )
+    else:
+        this_wcs = wcs
     if photometry_coords is not None:
         aligned_coords = this_wcs.world_to_pixel(photometry_coords)
         aligned_coords = np.array(aligned_coords).T
     else:
-        aligned_coords = this_wcs.world_to_pixel(ref.sky_coords)
-        aligned_coords = np.array(aligned_coords).T
+        aligned_coords = coords
     centroid_coords = centroid.ballet_centroid(calibrated_data, aligned_coords, ref.cnn)
-    print((((aligned_coords - centroid_coords)**2).sum(axis=1)**0.5).max())
+
     return centroid_coords, aligned_coords, this_wcs
 
 
@@ -462,7 +465,7 @@ def measure_photometry(  # noqa: PLR0913
     }
 
 
-def prepare_image(file, ref, *, detect_on_bayer_balanced=False, photometry_coords=None, user_specific_metadata=None):
+def prepare_image(file, ref, *, detect_on_bayer_balanced=False, photometry_coords=None, user_specific_metadata=None, wcs=None):
     """
     Detect sources, align, and centroid for a single image.
 
@@ -505,8 +508,11 @@ def prepare_image(file, ref, *, detect_on_bayer_balanced=False, photometry_coord
     else:
         working_image = calibrated_data
 
+    # TODO look at ref -- I do NOT think this is doing the correct thing, since the WCS
+    # for this image is not the one used to convert coordinates to sky coordinates
+    # in the reference data.
     centroid_coords, aligned_coords, this_wcs = align_and_centroid(
-        working_image, coords, ref, photometry_coords=photometry_coords,
+        working_image, coords, ref, photometry_coords=photometry_coords, wcs=wcs,
     )
 
     header = fits.getheader(file)
