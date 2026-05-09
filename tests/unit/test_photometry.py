@@ -9,12 +9,15 @@ module.
 """
 import numpy as np
 import pytest
+from astropy.nddata import CCDData
 from astropy.stats import gaussian_fwhm_to_sigma, sigma_clipped_stats
 from astropy.table import Table
+from astropy.wcs import WCS
+from eloy.centroid import Ballet
 
 from bandaid import measure_photometry
-from bandaid.photometry import ANNULUS, RELATIVE_RADII, min_separation_fwhm
 
+from bandaid.photometry import ANNULUS, RELATIVE_RADII, min_separation_fwhm, prepare_image, ReferenceData
 # Make the tests reproducible by using a fixed random seed for noise generation in
 # the test images.
 SEED = 843032
@@ -120,3 +123,60 @@ def test_min_separation_fwhm():
 
     # Now a case where the neighbor is the same brightness as the target.
     assert min_separation_fwhm(0, tolerance=0.01) == pytest.approx(2.176, rel=0.01)
+
+
+class TestPrepareImage:
+    def test_no_photometry_coord_input(self, make_test_image, tmp_path):
+        """Test that the function raises an error if no photometry coordinates are provided."""
+        image_size = (500, 500)
+
+        source_properties = Table(
+            {
+                "amplitude": [100, 200, 300, 400],
+                "x_mean": [50, 100, 150, 200],
+                "y_mean": [50, 100, 150, 400],
+                "x_stddev": [3, 3, 3, 3],
+                "y_stddev": [3, 3, 3, 3],
+            },
+        )
+        test_image = make_test_image(
+            image_size=image_size,
+            source_properties=source_properties,
+            include_noise=False,
+            noise_mean=0,
+            noise_stddev=0,
+            seed=SEED,
+        )
+        coords_xy = np.array(
+            [
+                [row["x_mean"], row["y_mean"]] for row in source_properties
+            ],
+        )
+        wcs = WCS(naxis=2)
+        wcs.wcs.crpix = [image_size[1] / 2, image_size[0] / 2]
+        wcs.wcs.crval = [0.0, 0.0]
+        wcs.wcs.cdelt = [-2.4 / 3600, 2.4 / 3600]
+        wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+        radecs = np.array(
+            wcs.pixel_to_world_values(coords_xy[:, 0], coords_xy[:, 1])
+        ).T
+        radecs = radecs + np.array([[0.01, 0.01]])  # Add a small offset to ensure coords are not exactly on the sources
+        ref = ReferenceData.from_pixel_coords(
+            coords_xy,
+            wcs,
+            radecs,
+            Ballet(),
+        )
+        ccd = CCDData(test_image, wcs=wcs, unit="adu")
+        ccd.header["creator"] = "test_prepare_image"
+        path = tmp_path / "test_image.fits"
+        ccd.write(path)
+        img = prepare_image(
+            path,
+            ref,
+            photometry_coords=None,
+            wcs=wcs,
+        )
+
+        assert np.array_equal(img.coords, img.aligned_coords)
