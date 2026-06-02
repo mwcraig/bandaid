@@ -6,11 +6,10 @@ turned on (a fraction of samples get a per-CFA-channel star+sky color, then the 
 `bandaid.bayer_balance_image` is run on the padded frame and the center is cropped), so
 the CNN learns to ignore the residual checkerboard that limits bright-star centroids.
 
-This script *reuses* eloy's existing training functions (it does not modify eloy beyond
-the additive bayer support in `Moffat2D.random_realistic_label`). The eloy train_step /
-eval_step close over a module-global `model`, so we bind it here before training -- the
-same pattern the timing probe used. The plain half of each batch keeps bright sharpness;
-the bayer half teaches checkerboard invariance.
+This script uses bandaid's `ballet_training` module (the realistic + bayer generator
+plus the re-exported eloy training utilities). The jitted train_step / eval_step close
+over a module-global `model`, so `bind_model` sets it before training. The plain half of
+each batch keeps bright sharpness; the bayer half teaches checkerboard invariance.
 
 Env knobs: BALLET_WARM, BALLET_OUT, BALLET_EPOCHS, BALLET_TRAIN_SIZE, BALLET_TEST_SIZE,
 BALLET_BAYER_FRAC.
@@ -19,13 +18,21 @@ BALLET_BAYER_FRAC.
 import os
 import time
 
-import eloy.ballet.training as train
 import jax.numpy as jnp
 import numpy as np
 import optax
 from eloy.ballet.model import CNN, load_weights_file
 
 from bandaid import bayer_balance_image
+from bandaid.ballet_training import (
+    Moffat2D,
+    TrainState,
+    bind_model,
+    eval_step,
+    get_batches,
+    params_to_flat_dict,
+    train_step,
+)
 
 SIZE = 15
 WARM = os.environ.get(
@@ -42,10 +49,9 @@ TEST_SIZE = int(os.environ.get("BALLET_TEST_SIZE", "5000"))
 BAYER_FRAC = float(os.environ.get("BALLET_BAYER_FRAC", "0.5"))
 BATCH = 100
 
-# Bind the module-global model that eloy's jitted train_step/eval_step close over.
-train.model = CNN()
-model = train.model
-gen = train.Moffat2D(SIZE)
+# Bind the module-global model that the jitted train_step/eval_step close over.
+model = bind_model(CNN())
+gen = Moffat2D(SIZE)
 
 
 def gen_fn(n: int):
@@ -93,14 +99,14 @@ def main():
     ``TRAIN_SIZE``, ``TEST_SIZE``, ``BAYER_FRAC``). Progress and the final bias
     metric are printed to stdout.
     """
-    print(f"warm-start from {WARM}")  # noqa: T201
+    print(f"warm-start from {WARM}")
     params = load_weights_file(WARM)
 
     x_test, y_test = gen_fn(TEST_SIZE)
     test_batch = (jnp.array(x_test), jnp.array(y_test))
 
     lr = 1e-4
-    state = train.TrainState.create(
+    state = TrainState.create(
         apply_fn=model.apply,
         params=params,
         tx=optax.adamw(lr),
@@ -108,44 +114,44 @@ def main():
     x_train, y_train = gen_fn(TRAIN_SIZE)
     lr_drops = {EPOCHS * 3 // 5: 1e-5}  # one drop at 60% through
 
-    print(  # noqa: T201
+    print(
         f"fine-tune {EPOCHS} epochs, bayer_frac={BAYER_FRAC}, "
         f"LR {lr:.0e} -> {list(lr_drops.values())}",
     )
     t0 = time.time()
     for epoch in range(EPOCHS):
-        for batch in train.get_batches(x_train, y_train, BATCH):
-            state, loss = train.train_step(state, batch)
+        for batch in get_batches(x_train, y_train, BATCH):
+            state, loss = train_step(state, batch)
         if epoch in lr_drops:
             lr = lr_drops[epoch]
-            state = train.TrainState.create(
+            state = TrainState.create(
                 apply_fn=model.apply,
                 params=state.params,
                 tx=optax.adamw(lr),
             )
         if epoch % 10 == 0:
-            rmse = train.eval_step(state.params, test_batch)
-            print(  # noqa: T201
+            rmse = eval_step(state.params, test_batch)
+            print(
                 f"epoch {epoch}: loss={float(loss):.4f} test_rmse={float(rmse):.4f} "
                 f"lr={lr:.0e} elapsed={time.time() - t0:.0f}s",
             )
             x_train, y_train = gen_fn(TRAIN_SIZE)  # fresh draw for variety
 
     # Bias-adjust: a few more passes, keep the params with smallest mean (x,y) residual.
-    print("bias adjust")  # noqa: T201
+    print("bias adjust")
     xa, ya = gen_fn(min(4 * TRAIN_SIZE, 20000))
     best, best_dev = state.params, np.inf
     for i in range(10):
-        for batch in train.get_batches(xa, ya, BATCH):
-            state, loss = train.train_step(state, batch)
+        for batch in get_batches(xa, ya, BATCH):
+            state, loss = train_step(state, batch)
         preds = np.asarray(model.apply({"params": state.params}, xa))
         dev = float(np.max(np.abs(np.mean(preds - ya, axis=0))))
-        print(f"  {i}: max|mean (x,y) residual| = {dev:.4f}")  # noqa: T201
+        print(f"  {i}: max|mean (x,y) residual| = {dev:.4f}")
         if dev < best_dev:
             best_dev, best = dev, state.params
 
-    np.savez(OUT, **train.params_to_flat_dict(best))
-    print(f"saved {OUT}  (bias max|mean residual| = {best_dev:.4f})")  # noqa: T201
+    np.savez(OUT, **params_to_flat_dict(best))
+    print(f"saved {OUT}  (bias max|mean residual| = {best_dev:.4f})")
 
 
 if __name__ == "__main__":

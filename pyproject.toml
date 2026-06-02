@@ -45,6 +45,17 @@ dependencies = [
     "twirl"
 ]
 
+[project.optional-dependencies]
+# Extras needed to run the Ballet CNN training scripts (src/bandaid/train_ballet_*.py).
+# These come in transitively via eloy[jax], but are declared here so the training
+# scripts are reproducible on their own.
+train = [
+    "jax",
+    "flax",
+    "optax",
+    "tqdm",
+]
+
 [project.urls]
 Documentation = "https://bandaid.readthedocs.io"
 Download = "https://pypi.org/project/bandaid/#files"
@@ -165,6 +176,26 @@ exclude = [
     "S101",  # 'Use of assert detected' ignored because we are using pytest.
     "INP001",  # 'Insecure input' ignored because we are testing.
     "ANN201",  # 'Missing type annotation for {return}' ignored because all tests return `None`.
+]
+# Ballet CNN generator + training scripts. The generator (ballet_training.py) is kept
+# byte-for-byte aligned with eloy's; the train_ballet_*.py are research entry-point
+# scripts. Both lean on conventions ruff's ALL set flags but that are normal here.
+"src/bandaid/*ballet*.py" = [
+    "NPY002",  # legacy np.random kept identical to eloy's generator.
+    "N803",  # ML array naming (`N`, `X_train`) is the established convention.
+    "N806",  # ditto for locals (`X_test`, `X_train`).
+    "T201",  # `print` is the progress reporting for these CLI scripts.
+    "PLR0913",  # the generator intentionally exposes many tuning knobs.
+    "FBT002",  # boolean positional defaults mirror eloy's signature.
+    "EM101",  # inline exception message string is fine for a guard clause.
+    "TRY003",  # ditto -- short, local message.
+    "RUF046",  # explicit int() casts kept for clarity.
+    "DTZ005",  # naive timestamp is fine for an output filename.
+    "ANN202",  # private helper return annotations omitted.
+    "E501",  # long lines in the verbatim generator docstring/comments.
+    "D205",  # verbatim generator docstring summary wraps onto a second line.
+    "D400",  # ditto -- verbatim docstring first line lacks a period.
+    "D415",  # ditto.
 ]
 
 [tool.ruff.lint.isort]
