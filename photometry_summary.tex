@@ -8,8 +8,8 @@
 
 Smart telescopes, such as the SeeStar S50 (etc...) are very popular and eliminate
 most of the barriers to entry into astrophotography. For a relatively modest price
-a smart "telescope" is the optical componenets of a telescope, a one-shot-color
-CMOS sensor, a housing, and a basic trtipod. The device takes regular, short
+a smart "telescope" is the optical components of a telescope, a one-shot-color
+CMOS sensor, a housing, and a basic tripod. The device takes regular, short
 exposures, e.g. 10 seconds for the SeeStar S50, plate solves each exposure and
 builds a stacked color image on the fly. Image taking continues until the user
 stops it. The user has the option of saving only the stacked color image or the
@@ -39,7 +39,11 @@ the former requires some care because of the presence of the Bayer array.
 Source detection and location of the centroid is performed on the full resolution image rather
 than on the separate color channels. The advantages of this approach is that the stars are
 better resolved than if the image were separated into three lower-resolution images.
+In the end we chose to generate a source list from the Gaia catalog rather than from
+the image itself, but the method described here is still relevant for centroiding
+the sources in the image, which is necessary for performing aperture photometry.
 
+\subsubsection{Handling the Bayer array for centroiding and source detection}
 The presence of the Bayer array means that the background level in each color may not be uniform
 across colors. An example is shown in the left column of Figure \ref{fig:color-cutout}. The image is
 of the variable star T CrB taken with a SeeStar S50, relatively early in the evening when the sky
@@ -50,7 +54,7 @@ Attempting to perform source detection on the raw image will lead to large numbe
 detections because the blue pixels are so much brighter than the red and green pixels. To
 mitigate this problem, we apply what we call Bayer balancing to the image. To Bayer balance
 the image, we scale each color channel's data so that the standard deviation of each color
-channel to match the standard deviation of the entire image, ignoring color, and then
+channel matches the standard deviation of the entire image, ignoring color, and then
 adjust the mean of each color channel to match the mean of the entire image. The result is
 shown in the right column of Figure \ref{fig:color-cutout}. The background level is now
 more uniform across colors, and source detection can be performed on the Bayer balanced
@@ -70,7 +74,14 @@ TODO: ADD PLOT SHOWING DETECTIONS ON RAW And BAYER BALANCED IMAGES.
     \label{fig:color-cutout}
 \end{figure}
 
-\subsection{Handling the Bayer array for photometry}
+\subsection{Photometry on the Bayer array}
+
+We take two new approaches to performing photometry on a Bayer array image. The first is to perform photometry
+on the individual color channels by applying masks to the image to select one color at a time. The second is to
+calculate a single count/magnitude for the three colors combined, which we call the `L4` channel. There are some subtleties to
+correctly calculating the background and noise for the `L4` channel, which we discuss in detail below. Simply ignoring
+the color information altogether and treating the image as though it were a single-channel image will lead to incorrect
+results for the net counts and magnitudes.
 
 \subsubsection{Background estimation for color channels}
 
