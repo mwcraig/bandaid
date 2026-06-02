@@ -275,15 +275,13 @@ def eloy_to_starlist(eloy_table, metadata):
 class ReferenceData:
     """Reference image data used to process each science image."""
 
-    sky_coords: SkyCoord
     radecs: np.ndarray
     cnn: Ballet
 
     @classmethod
     def from_pixel_coords(cls, coords, wcs, radecs, cnn):
         """Create from pixel coordinates, converting to sky coordinates."""
-        sky_coords = wcs.pixel_to_world(coords[..., 0], coords[..., 1])
-        return cls(sky_coords=sky_coords, radecs=radecs, cnn=cnn)
+        return cls(radecs=radecs, cnn=cnn)
 
 
 @dataclass
