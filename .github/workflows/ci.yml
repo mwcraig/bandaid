@@ -30,6 +30,11 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+      - name: Configure git auth for private dependency
+        run: |
+          git config --global \
+            url."https://x-access-token:${{ secrets.ST_PIPELINE_TOKEN }}@github.com/".insteadOf \
+            "https://github.com/"
       - name: Install dependencies
         run: uv sync --group tests --python ${{ matrix.python-version }}
       - name: Run pytest
