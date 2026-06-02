@@ -199,7 +199,7 @@ types = [
 [package.metadata]
 requires-dist = [
     { name = "astropy" },
-    { name = "eloy" },
+    { name = "eloy", git = "https://github.com/mwcraig/eloy?rev=a056c91a945772e0520a89695f8fcd16fda36870" },
     { name = "twirl" },
 ]
 
@@ -680,8 +680,8 @@ wheels = [
 
 [[package]]
 name = "eloy"
-version = "0.0.11b0"
-source = { registry = "https://pypi.org/simple" }
+version = "0.0.12b0"
+source = { git = "https://github.com/mwcraig/eloy?rev=a056c91a945772e0520a89695f8fcd16fda36870#a056c91a945772e0520a89695f8fcd16fda36870" }
 dependencies = [
     { name = "astropy" },
     { name = "numpy" },
@@ -689,10 +689,6 @@ dependencies = [
     { name = "scikit-image" },
     { name = "scipy" },
     { name = "twirl" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/61/d9/d1c757cd28885737f440fa3560941a6514e7cabb70cbf66b09f7fe3432f4/eloy-0.0.11b0.tar.gz", hash = "sha256:f741d891ec4d64fdd76c2eeaf5387a8f62eead25045678f0bb32cc154a0fc050", size = 5832466, upload-time = "2025-07-04T21:33:51.522Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/cc/5f/3e87ed58b57fa593102c9b888f48b6e58622af7d7fc69fa7edb88b12a35b/eloy-0.0.11b0-py3-none-any.whl", hash = "sha256:207e4b0c1a1b00ac3d1e4689d938b4c622123d9469bc3df027308ec63caa273e", size = 20634, upload-time = "2025-07-04T21:33:49.611Z" },
 ]
 
 [[package]]
@@ -770,6 +766,7 @@ wheels = [
 name = "griffelib"
 version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ad/06/eccbd311c9e2b3ca45dbc063b93134c57a1ccc7607c5e545264ad092c4a9/griffelib-2.0.0.tar.gz", hash = "sha256:e504d637a089f5cab9b5daf18f7645970509bf4f53eda8d79ed71cce8bd97934", size = 166312, upload-time = "2026-03-23T21:06:55.954Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4d/51/c936033e16d12b627ea334aaaaf42229c37620d0f15593456ab69ab48161/griffelib-2.0.0-py3-none-any.whl", hash = "sha256:01284878c966508b6d6f1dbff9b6fa607bc062d8261c5c7253cb285b06422a7f", size = 142004, upload-time = "2026-02-09T19:09:40.561Z" },
 ]
