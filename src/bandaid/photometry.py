@@ -4,7 +4,6 @@ from importlib.resources import files as package_files
 from pathlib import Path
 
 import numpy as np
-from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.stats import SigmaClip
 from astropy.table import Table
@@ -20,7 +19,7 @@ from .image2sl_qt import bayer_balance_image
 
 CUTOUT = 500 # 120
 
-N_STARS_ALIGN = 3
+N_STARS_ALIGN = 15
 THRESH = 0.5
 
 # Relative radii and annulus are defined here. These radii are multiplied by
@@ -156,9 +155,8 @@ def calibration_sequence(file: str, threshold: float = 1) -> tuple:
 
     # in case we detect fewer than 3 stars
     if len(regions) < 3:
-        print(f"Only {len(regions)} stars detected in {file}, skipping.")
         return None, [], None, None, None
-    print(f"Only {len(regions)} stars detected in {file}")
+
     region_coords_xy = np.array([(r.centroid[1], r.centroid[0]) for r in regions])
     cutouts = utils.cutout(calibrated_data, region_coords_xy, (50, 50))
 
@@ -302,33 +300,32 @@ class ImageData:
     metadata: dict = None
 
 
-def align_and_centroid(calibrated_data, coords, ref, photometry_coords=None, wcs=None):
+def align(coords, ref, photometry_coords=None, wcs=None):
     """
-    Compute per-image WCS, align reference coordinates, and centroid.
+    Compute per-image WCS and align reference coordinates into pixel space.
 
     Parameters
     ----------
-    calibrated_data : numpy.ndarray
-        Calibrated image data.
     coords : numpy.ndarray
-        Detected star coordinates in this image. This is used for WCS alignment and, if
-        photometry_coords is None, for centroiding as well.
+        Detected star coordinates in this image. Used for WCS alignment and, if
+        photometry_coords is None, returned as the aligned coordinates as well.
     ref : ReferenceData
-        Reference image data (coords, WCS, Gaia RA/Decs, CNN model).
+        Reference image data (Gaia RA/Decs, CNN model).
     photometry_coords : `astropy.coordinates.SkyCoord` or None, optional
-        If provided, these are the coordinates used for centroiding instead of `coords`.
-        This allows for centroiding on a different set of coordinates than those used
-        for WCS alignment. By default None (centroiding is done on `coords`).
+        If provided, these sky coordinates are projected through the WCS to
+        produce the aligned pixel coordinates. By default None (aligned
+        coordinates are just `coords`).
+    wcs : astropy.wcs.WCS or None, optional
+        If provided, this WCS is used instead of computing a new one from
+        `coords` and `ref.radecs`. By default None (WCS is computed from
+        `coords` and `ref.radecs`).
 
     Returns
     -------
-    centroid_coords, aligned_coords, this_wcs
-        centroid_coords : numpy.ndarray
-            Centroided star coordinates in pixel space.
-        aligned_coords : numpy.ndarray
-            Aligned star coordinates in pixel space.
-        this_wcs : astropy.wcs.WCS
-            World Coordinate System for the image.
+    aligned_coords : numpy.ndarray
+        Aligned star coordinates in pixel space.
+    this_wcs : astropy.wcs.WCS
+        World Coordinate System for the image.
     """
     if wcs is None:
         this_wcs = compute_wcs(
@@ -336,14 +333,35 @@ def align_and_centroid(calibrated_data, coords, ref, photometry_coords=None, wcs
         )
     else:
         this_wcs = wcs
+
     if photometry_coords is not None:
         aligned_coords = this_wcs.world_to_pixel(photometry_coords)
         aligned_coords = np.array(aligned_coords).T
     else:
         aligned_coords = coords
-    centroid_coords = centroid.ballet_centroid(calibrated_data, aligned_coords, ref.cnn)
 
-    return centroid_coords, aligned_coords, this_wcs
+    return aligned_coords, this_wcs
+
+
+def centroid_stars(calibrated_data, aligned_coords, cnn):
+    """
+    Centroid stars at the given pixel coordinates.
+
+    Parameters
+    ----------
+    calibrated_data : numpy.ndarray
+        Calibrated image data.
+    aligned_coords : numpy.ndarray
+        Pixel coordinates at which to centroid.
+    cnn : eloy.centroid.Ballet
+        Centroiding CNN model.
+
+    Returns
+    -------
+    centroid_coords : numpy.ndarray
+        Centroided star coordinates in pixel space.
+    """
+    return centroid.ballet_centroid(calibrated_data, aligned_coords, cnn)
 
 
 def annulus_sigma_clip_stats(data, coords, r_in, r_out, input_mask=None, sigma=3):
@@ -499,9 +517,6 @@ def prepare_image(file, ref, *, detect_on_bayer_balanced=False, photometry_coord
     if user_specific_metadata is not None:
         metadata.update(user_specific_metadata)
 
-    if len(coords) < N_STARS_ALIGN:
-        return None
-
     if detect_on_bayer_balanced:
         working_image = calibrated_data.copy()
         bayer_balance_image(working_image)
@@ -511,9 +526,10 @@ def prepare_image(file, ref, *, detect_on_bayer_balanced=False, photometry_coord
     # TODO look at ref -- I do NOT think this is doing the correct thing, since the WCS
     # for this image is not the one used to convert coordinates to sky coordinates
     # in the reference data.
-    centroid_coords, aligned_coords, this_wcs = align_and_centroid(
-        working_image, coords, ref, photometry_coords=photometry_coords, wcs=wcs,
+    aligned_coords, this_wcs = align(
+        coords, ref, photometry_coords=photometry_coords, wcs=wcs,
     )
+    centroid_coords = centroid_stars(working_image, aligned_coords, ref.cnn)
 
     header = fits.getheader(file)
 

@@ -32,9 +32,10 @@ from .image2sl_qt import bayer_balance_image, generate_bayer_masks
 from .photometry import (
     ImageData,
     ReferenceData,
-    align_and_centroid,
+    align,
     build_photometry_table,
     calibration_sequence,
+    centroid_stars,
     eloy_to_starlist,
     measure_photometry,
     metadata_from_header,
