@@ -12,15 +12,15 @@ We build to that from what is collected, in this order:
 - FITS header
     Read in the whole header. Note that these keys are upper case.
 - JSON sidecar file, if it exists
-    Some mfg provide a json sidecar file along with the FITS file. Others like 
+    Some mfg provide a json sidecar file along with the FITS file. Others like
     the Seestar do not have this extra json: the fits header is complete enough.
     There can be more than one file in this metadata group of files.
-    Note that one of the files in the metadata group of files can be flagged as 
+    Note that one of the files in the metadata group of files can be flagged as
        as being the "personal.json" file. That means it is processed last.
        The flag is to include in the file the string "DoLast""
        eg:  "_DoLast": "treat as a personal.json file and process last",
 - add the raw file name as meta["filename"]
-    There may be useful information in the file name    
+    There may be useful information in the file name
 
 - Now we begin the process of building the meta dict. The data above is all grist for the mill.
 
@@ -41,22 +41,22 @@ We build to that from what is collected, in this order:
            - change from the existing format to the std  "%Y-%m-%dT%H:%M:%S"
            - to keep the format field as one token, use B to replace any spaces
            - perform the conversion to UTC if last token is not 0
-      The index function splits the referenced field on spaces and returns the nth field     
+      The index function splits the referenced field on spaces and returns the nth field
       eg   "tel_firmware" : "!CREATOR index 1"
-           get the second field from  CREATOR 	= 'Origin 1.1.4233 '   
-      In some cases the the RA are in hours and we want degrees      
-      eg   "ra": "!RA hr2deg" 
-           convert from decimal hours to degrees   
+           get the second field from  CREATOR 	= 'Origin 1.1.4233 '
+      In some cases the the RA are in hours and we want degrees
+      eg   "ra": "!RA hr2deg"
+           convert from decimal hours to degrees
    - prefix the key with a # to indicate that this value should not replace an existing value,
       only provide the data if its not there yet.
       eg  #SITEELEV  don't overwrite the value if the FITS provided it
-   
+
 After the basic.json there may be a second json file specific to the image type.
    eg the Dwarf's need an adjustment if the image is bayered, so a bayered.json file is sought.
-   In this case the largest_useable_adu_value has been set to 60000 by the basic.json, but 
+   In this case the largest_useable_adu_value has been set to 60000 by the basic.json, but
        the case of the bayered image this must be reset to 4070.
 
-And finally, there might be a personal.json file to be processed last. See the 
+And finally, there might be a personal.json file to be processed last. See the
    instructions above how a metadata json file can be flagged to be the personal.json file.
 
 
@@ -75,9 +75,9 @@ Advice to the user:
    - and remember what directory you last selected from.
    - Note that you can also directly enter, delete and move the filenames in the box.
 - Most of the meta data parsing is automatic, based on the mfg and image type.
-   - for the few cases where the mfg has not provided enough information in the fits 
+   - for the few cases where the mfg has not provided enough information in the fits
      header and a companion json file (refered to as a sidecar file) you should have
-     a "personal.json" added as last in the meta file list. Here is what you will need, 
+     a "personal.json" added as last in the meta file list. Here is what you will need,
      prepared in a text editor:
        {
             "observer" : "UNKN",
@@ -89,19 +89,19 @@ Advice to the user:
    they are appropriate.
 
 - Working with the different telescopes:
-   - Dwarf3/Dwarf2  does have a sidecar json file named "shotsInfo.json" that will be included in 
+   - Dwarf3/Dwarf2  does have a sidecar json file named "shotsInfo.json" that will be included in
        the directory with the image files. There are 2 types of images: fits files prefixed
-       with the target name which are the raw bayered images. There are also images prefixed 
-       by "stacked-" where the Light images have been stacked. 
+       with the target name which are the raw bayered images. There are also images prefixed
+       by "stacked-" where the Light images have been stacked.
 
    - Seestar S50 does not have a sidecar json file. The raw images are prefixed with "Light" and
       the stacked images are prefixed with "Stacked".
 
    - The Origin scope has a sidecar json called "info.json". Raw images are prefixed by "Light".
-       The stacked image is called FinalStackedMaster.tiff. This needs to be converted to a FITS 
-       by loading the tiff into MaximDL and saving it as a FITS file. 
+       The stacked image is called FinalStackedMaster.tiff. This needs to be converted to a FITS
+       by loading the tiff into MaximDL and saving it as a FITS file.
 
-- The debayering of raw images has been tested for S50 and Dwarf. Should work on the Origin, but 
+- The debayering of raw images has been tested for S50 and Dwarf. Should work on the Origin, but
       trust but verify.
 
 
