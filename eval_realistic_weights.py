@@ -9,6 +9,7 @@ Usage:
 
 import sys
 import warnings
+from pathlib import Path
 
 import numpy as np
 from astropy.modeling.fitting import TRFLSQFitter
@@ -115,14 +116,12 @@ def show(title, res):
 if __name__ == "__main__":
     # Usage: python eval_realistic_weights.py [label=]path ...
     # The HuggingFace default weights are always included as "old".
-    import os
-
     models = {"old": Ballet(download_weights())}
     for arg in sys.argv[1:]:
         if "=" in arg:
             label, path = arg.split("=", 1)
         else:
-            label, path = os.path.splitext(os.path.basename(arg))[0], arg
+            label, path = Path(arg).stem, arg
         models[label] = Ballet(path)
     for bayer in (False, True):
         show("bayer" if bayer else "plain", sweep(models, bayer=bayer))
