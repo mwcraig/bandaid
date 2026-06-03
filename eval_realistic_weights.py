@@ -80,7 +80,7 @@ def moffat_recover(data, sx, sy):
 
 def sweep(models, bayer=False, seed=42):
     rng = np.random.default_rng(seed)
-    out = {name: {s: [] for s in SNR_GRID} for name in list(models) + ["Moffat"]}
+    out = {name: {s: [] for s in SNR_GRID} for name in [*list(models), "Moffat"]}
     for snr in SNR_GRID:
         amp = snr * NOISE_FLOOR
         for _ in range(N_PER):
