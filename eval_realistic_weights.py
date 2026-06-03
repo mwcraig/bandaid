@@ -1,7 +1,8 @@
 """
-Phase 2 evaluation: compare the original Ballet weights against the realistic-noise
-retrain on a ground-truth synthetic SNR sweep (same model as centroid_comparison.ipynb
-section 17). Purely synthetic -- no image, no network.
+Compare original Ballet weights against the realistic-noise retrain.
+
+Phase 2 evaluation on a ground-truth synthetic SNR sweep (same model as
+centroid_comparison.ipynb section 17). Purely synthetic -- no image, no network.
 
 Usage:
     python eval_realistic_weights.py /path/to/new_weights.npz
