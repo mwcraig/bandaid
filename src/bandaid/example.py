@@ -6,6 +6,7 @@ It's generally good practice to have a docstring
 that explains the purpose of the module, at the top.
 """
 
+
 def add_numbers(a, b):
     """
     Add two numbers together and return the result.

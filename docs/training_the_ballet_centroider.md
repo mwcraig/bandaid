@@ -26,11 +26,11 @@ The scripts also import `bandaid` itself, which pulls in the photometry stack
 `import eloy` succeed.
 
 !!! note "Output paths default to the author's machine"
-    `BALLET_WARM` / `BALLET_OUT` default to absolute paths under
-    `/Users/.../astronomy/eloy/`. Always set them explicitly (as below) so each phase
-    reads the previous phase's output and writes where you expect — the defaults do
-    **not** chain (Phase 2's default output is a *timestamped* filename, which Phase 3's
-    default `BALLET_WARM` does not point at).
+`BALLET_WARM` / `BALLET_OUT` default to absolute paths under
+`/Users/.../astronomy/eloy/`. Always set them explicitly (as below) so each phase
+reads the previous phase's output and writes where you expect — the defaults do
+**not** chain (Phase 2's default output is a *timestamped* filename, which Phase 3's
+default `BALLET_WARM` does not point at).
 
 All phases use a `15x15` cutout, batch size 100, and finish with a short bias-adjustment
 pass that keeps the parameters with the smallest mean `(x, y)` residual.
@@ -61,10 +61,10 @@ Each phase reads the previous phase's `.npz` via `BALLET_WARM` and writes a **ne
 via `BALLET_OUT`; nothing is overwritten in place. Phase 3's weights are the endpoint.
 
 !!! note "Why there is no bright-end phase"
-    A third "bright-boost" phase (oversampling high-SNR stars to lower the bright-end
-    recovery floor) was tried and dropped — it didn't improve the fit enough to justify
-    keeping it. The brightest stars are better served by a direct Moffat fit, which is
-    deferred and not yet implemented here.
+A third "bright-boost" phase (oversampling high-SNR stars to lower the bright-end
+recovery floor) was tried and dropped — it didn't improve the fit enough to justify
+keeping it. The brightest stars are better served by a direct Moffat fit, which is
+deferred and not yet implemented here.
 
 ### Starting from scratch (no HuggingFace)
 
@@ -80,17 +80,16 @@ never an input to this pipeline.
 
 ### Environment knobs
 
-All sizes can be reduced for a quick CPU smoke test (e.g. `BALLET_EPOCHS=1
-BALLET_TRAIN_SIZE=200 BALLET_TEST_SIZE=200`).
+All sizes can be reduced for a quick CPU smoke test (e.g. `BALLET_EPOCHS=1 BALLET_TRAIN_SIZE=200 BALLET_TEST_SIZE=200`).
 
-| Variable | Phases | Default | Meaning |
-| --- | --- | --- | --- |
-| `BALLET_WARM` | 3 | author path | `.npz` weights to warm-start from |
-| `BALLET_OUT` | 2, 3 | author path (2: timestamped) | where to write the trained weights |
-| `BALLET_EPOCHS` | all | 300 (P2), 100 (P3) | training epochs |
-| `BALLET_TRAIN_SIZE` | all | 5000 | samples drawn per training refresh |
-| `BALLET_TEST_SIZE` | all | 5000 | held-out evaluation samples |
-| `BALLET_BAYER_FRAC` | 3 | 0.5 | fraction of samples carrying the bayer residual |
+| Variable            | Phases | Default                      | Meaning                                         |
+| ------------------- | ------ | ---------------------------- | ----------------------------------------------- |
+| `BALLET_WARM`       | 3      | author path                  | `.npz` weights to warm-start from               |
+| `BALLET_OUT`        | 2, 3   | author path (2: timestamped) | where to write the trained weights              |
+| `BALLET_EPOCHS`     | all    | 300 (P2), 100 (P3)           | training epochs                                 |
+| `BALLET_TRAIN_SIZE` | all    | 5000                         | samples drawn per training refresh              |
+| `BALLET_TEST_SIZE`  | all    | 5000                         | held-out evaluation samples                     |
+| `BALLET_BAYER_FRAC` | 3      | 0.5                          | fraction of samples carrying the bayer residual |
 
 ## Evaluating weights
 
@@ -109,14 +108,16 @@ Compare the rows: the retrain should lower the faint-SNR error (Phase 2) and the
 rows (Phase 3) without regressing the others.
 
 !!! note "The one HuggingFace touch"
-    The `old` baseline makes this script the *only* step in the workflow that reaches out
-    to HuggingFace (it downloads the stock weights, cached after the first run). Training
-    itself never does. A fully offline run therefore needs that cache already present, or
-    a small tweak to drop the `old` entry from `eval_realistic_weights.py`.
+The `old` baseline makes this script the *only* step in the workflow that reaches out
+to HuggingFace (it downloads the stock weights, cached after the first run). Training
+itself never does. A fully offline run therefore needs that cache already present, or
+a small tweak to drop the `old` entry from `eval_realistic_weights.py`.
 
 ## Using new weights in the pipeline
 
 The photometry pipeline loads centroid weights through eloy's `Ballet` wrapper
 (`eloy.centroid.Ballet`), which accepts a path to an `.npz` file. Point it at your trained
 weights instead of the downloaded default to use the retrained centroider.
+
+```
 ```

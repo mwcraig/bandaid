@@ -25,6 +25,7 @@ def make_test_image():
     seed : int, optional
         Random seed for reproducibility of the noise.
     """
+
     def _make_test_image(
         image_size,
         source_properties,

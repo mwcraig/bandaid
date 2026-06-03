@@ -88,7 +88,9 @@ def main():
 
     learning_rate = 1e-3
     state = TrainState.create(
-        apply_fn=model.apply, params=params, tx=optax.adamw(learning_rate),
+        apply_fn=model.apply,
+        params=params,
+        tx=optax.adamw(learning_rate),
     )
 
     print(
@@ -103,12 +105,16 @@ def main():
         if epoch == LR_MILESTONES[0]:
             learning_rate = 1e-4
             state = TrainState.create(
-                apply_fn=model.apply, params=state.params, tx=optax.adamw(learning_rate),
+                apply_fn=model.apply,
+                params=state.params,
+                tx=optax.adamw(learning_rate),
             )
         elif epoch == LR_MILESTONES[1]:
             learning_rate = 1e-5
             state = TrainState.create(
-                apply_fn=model.apply, params=state.params, tx=optax.adamw(learning_rate),
+                apply_fn=model.apply,
+                params=state.params,
+                tx=optax.adamw(learning_rate),
             )
         if epoch % 10 == 0:
             test_rmse = eval_step(state.params, (jnp.array(X_test), jnp.array(y_test)))

@@ -6,9 +6,9 @@ If you look at your project, you will see that a `pyproject.toml` file. This fil
 
 This file is written using a `.toml` format. [You can learn more about toml here.](https://www.pyopensci.org/python-package-guide/package-structure-code/pyproject-toml-python-package-metadata.html) Here's the TL&DR:
 
-* Each `[]` section in the toml file is called a table.
-* You can nest tables with double brackets like this`[[]]`
-* Tables contain information about a element that you want to configure.
+- Each `[]` section in the toml file is called a table.
+- You can nest tables with double brackets like this`[[]]`
+- Tables contain information about a element that you want to configure.
 
 We are using Hatch as the default packaging tool.
 Hatch allows you to configure and run environments and scripts similar to workflow tools like tox or nox.
@@ -58,7 +58,7 @@ If you run `pip list`, in the environment, **twine** will be there:
 $ pip list
 ```
 
-Hatch by default, installs your package in **editable mode (`-e`)** into its  virtual environments. But if `detached=True` is set, then it will skip installing your package into the virtual enviornment.
+Hatch by default, installs your package in **editable mode (`-e`)** into its virtual environments. But if `detached=True` is set, then it will skip installing your package into the virtual enviornment.
 
 ### Hatch and matrix environments
 
@@ -137,8 +137,8 @@ To run this script , use:
 
 `hatch run test:run`
 
-* `hatch run`: calls Hatch and tells it that it will be running a command
-* `test:run`: defines the environment you want it to run (`test`) and defines the name of the "script" to be`run`.
+- `hatch run`: calls Hatch and tells it that it will be running a command
+- `test:run`: defines the environment you want it to run (`test`) and defines the name of the "script" to be`run`.
 
 If you have a Hatch matrix setup for tests, it will both install the necessary Python version using UV and run your tests on each version of the Python versions that you declare in the matrix table. In this case, there are 4 Python versions in the environment, so your tests will run 4 times, once in each Python version listed in the matrix table.
 
@@ -221,9 +221,10 @@ check = [
     "twine check dist/*",
 ]
 ```
+
 This uses the above environment and tells hatch to run
 
-* `pip check`,  # verifies your dependencies
-* `hatch build --clean`
-* `twine check dist/*` # this checks your distribution for metadata and other potential issues.
-to build and test your package.
+- `pip check`, # verifies your dependencies
+- `hatch build --clean`
+- `twine check dist/*` # this checks your distribution for metadata and other potential issues.
+  to build and test your package.
