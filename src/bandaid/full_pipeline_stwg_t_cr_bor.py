@@ -3,7 +3,6 @@ from pathlib import Path
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
-from eloy import alignment
 from eloy.centroid import Ballet
 from st_pipeline.schema_definition import StarListSet
 from tqdm.auto import tqdm
@@ -19,7 +18,7 @@ from . import (
     metadata_from_header,
     prepare_image,
 )
-from .photometry import N_STARS_ALIGN, THRESH
+from .photometry import THRESH
 
 # ## Reference Selection and Calibration
 #
@@ -39,7 +38,9 @@ metadata = metadata_from_header(ref_header)
 # reference image. This is done using the twirl package for astrometric calibration
 # and eloy for source detection
 _, ref_img_coords_xy, _, _ = calibration_sequence(
-    reference_image, threshold=THRESH, max_adu=metadata["largest_usable_adu_value"],
+    reference_image,
+    threshold=THRESH,
+    max_adu=metadata["largest_usable_adu_value"],
 )
 
 # size of the field-of-view in degrees -- only used to query Gaia

@@ -173,12 +173,17 @@ class Moffat2D(_EloyMoffat2D):
         theta = np.random.uniform(0, np.pi / 8, size=N)
         beta = np.random.uniform(1, 8, size=N)
         sx = np.array(
-            [np.random.uniform(1.5, 20.5) / self.sigma_to_fwhm(_beta) for _beta in beta],
+            [
+                np.random.uniform(1.5, 20.5) / self.sigma_to_fwhm(_beta)
+                for _beta in beta
+            ],
         )
         sy = np.random.uniform(0.5, 1.5, size=N) * sx
 
         log_snr = np.random.uniform(
-            np.log10(snr_range[0]), np.log10(snr_range[1]), size=N,
+            np.log10(snr_range[0]),
+            np.log10(snr_range[1]),
+            size=N,
         )
         snr = 10.0**log_snr
         sky = np.random.uniform(sky_range[0], sky_range[1], size=N)
@@ -204,7 +209,14 @@ class Moffat2D(_EloyMoffat2D):
         for i in range(N):
             if not do_bayer[i]:
                 clean = self.moffat2D_model(
-                    amp[i], x0[i], y0[i], sx[i], sy[i], theta[i], sky[i], beta[i],
+                    amp[i],
+                    x0[i],
+                    y0[i],
+                    sx[i],
+                    sy[i],
+                    theta[i],
+                    sky[i],
+                    beta[i],
                 )
                 images[i] = np.random.poisson(np.clip(clean, 0, None)).astype(
                     float,
@@ -216,8 +228,15 @@ class Moffat2D(_EloyMoffat2D):
             # production), add noise, balance the full frame, then crop the center.
             F = cs + 2 * gen_pad
             clean = self._moffat_frame(
-                F, amp[i], x0[i] + gen_pad, y0[i] + gen_pad,
-                sx[i], sy[i], theta[i], sky[i], beta[i],
+                F,
+                amp[i],
+                x0[i] + gen_pad,
+                y0[i] + gen_pad,
+                sx[i],
+                sy[i],
+                theta[i],
+                sky[i],
+                beta[i],
             )
             cidx = np.roll(base_cidx, (phase[i, 0], phase[i, 1]), axis=(0, 1))
             tile = np.tile(cidx, (F // 2 + 1, F // 2 + 1))[:F, :F]
@@ -226,7 +245,7 @@ class Moffat2D(_EloyMoffat2D):
                 float,
             ) + np.random.normal(0.0, read_noise[i], (F, F))
             balance_fn(noisy)  # in place, on the full frame, exactly as production
-            images[i] = noisy[gen_pad:gen_pad + cs, gen_pad:gen_pad + cs]
+            images[i] = noisy[gen_pad : gen_pad + cs, gen_pad : gen_pad + cs]
         images = images[:, :, :, None]
 
         if return_all:

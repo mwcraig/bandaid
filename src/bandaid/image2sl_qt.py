@@ -30,49 +30,50 @@ checkerboard-free image.
 
 import numpy as np
 
+
 def generate_bayer_masks(shape, metadata):
-        """
-        Generate mask for each color in a Bayer array.
+    """
+    Generate mask for each color in a Bayer array.
 
-        Parameters
-        ----------
-        shape : tuple
-            The image data array
-        metadata : dict
-            The image metadata dictionary
+    Parameters
+    ----------
+    shape : tuple
+        The image data array
+    metadata : dict
+        The image metadata dictionary
 
-        Returns
-        -------
-        list of tuples
-            A list of tuples, where each tuple contains a color filter name and its
-            corresponding mask.
-        """
-        pattern = metadata['bayerpat']
+    Returns
+    -------
+    list of tuples
+        A list of tuples, where each tuple contains a color filter name and its
+        corresponding mask.
+    """
+    pattern = metadata["bayerpat"]
 
-        # now re-jumble based on roworder and ybaryoff
-        if metadata['roworder'] == 'bottom-up':
-            pattern = pattern[2:4] + pattern[0:2]
-        if metadata['ybayroff'] != 0:
-            pattern = pattern[1] + pattern[0] + pattern[3] + pattern[2]
+    # now re-jumble based on roworder and ybaryoff
+    if metadata["roworder"] == "bottom-up":
+        pattern = pattern[2:4] + pattern[0:2]
+    if metadata["ybayroff"] != 0:
+        pattern = pattern[1] + pattern[0] + pattern[3] + pattern[2]
 
-        img_slice = {}
-        img_slice[0] = (0, 0)
-        img_slice[1] = (0, 1)
-        img_slice[2] = (1, 0)
-        img_slice[3] = (1, 1)
+    img_slice = {}
+    img_slice[0] = (0, 0)
+    img_slice[1] = (0, 1)
+    img_slice[2] = (1, 0)
+    img_slice[3] = (1, 1)
 
-        bayer_info = [] # list of tuples (filter, img_mask)
+    bayer_info = []  # list of tuples (filter, img_mask)
 
-        for color in ['R', 'B', 'G']:
-            # In the mask, True means masked/ignore; False means yes/use/valid
-            img_mask = np.ones(shape, dtype=bool)
-            for channel in range(4):
-                if pattern[channel] == color:
-                    slicer = img_slice[channel]
-                    img_mask[slicer[0]::2, slicer[1]::2] = False
+    for color in ["R", "B", "G"]:
+        # In the mask, True means masked/ignore; False means yes/use/valid
+        img_mask = np.ones(shape, dtype=bool)
+        for channel in range(4):
+            if pattern[channel] == color:
+                slicer = img_slice[channel]
+                img_mask[slicer[0] :: 2, slicer[1] :: 2] = False
 
-            bayer_info.append(('T' + color, img_mask))
-        return bayer_info
+        bayer_info.append(("T" + color, img_mask))
+    return bayer_info
 
 
 def bayer_balance_image(image):
@@ -93,20 +94,20 @@ def bayer_balance_image(image):
         The image to be modified
     """
     # Drop the casts to float -- this has already been done
-    temp1 = image[0::2,0::2]
-    temp2 = image[0::2,1::2]
-    temp3 = image[1::2,0::2]
-    temp4 = image[1::2,1::2]
+    temp1 = image[0::2, 0::2]
+    temp2 = image[0::2, 1::2]
+    temp3 = image[1::2, 0::2]
+    temp4 = image[1::2, 1::2]
 
     raw_avg = image.mean()
     raw_stdev = image.std()
-    cutoff = raw_avg + 5*raw_stdev
+    cutoff = raw_avg + 5 * raw_stdev
 
     ## sample the image into tempnx, to be used to generate statistics
-    temp1x = temp1[(0 <= temp1) &  (temp1 < cutoff)]
-    temp2x = temp2[(0 <= temp2) &  (temp2 < cutoff)]
-    temp3x = temp3[(0 <= temp3) &  (temp3 < cutoff)]
-    temp4x = temp4[(0 <= temp4) &  (temp4 < cutoff)]
+    temp1x = temp1[(temp1 >= 0) & (temp1 < cutoff)]
+    temp2x = temp2[(temp2 >= 0) & (temp2 < cutoff)]
+    temp3x = temp3[(temp3 >= 0) & (temp3 < cutoff)]
+    temp4x = temp4[(temp4 >= 0) & (temp4 < cutoff)]
 
     tempexes = [temp1x, temp2x, temp3x, temp4x]
     # adjust everything based on the overall mean
@@ -118,37 +119,37 @@ def bayer_balance_image(image):
     target_mean = summed_temps / summed_numbers
 
     m = temp1x.std()
-    factor = target_stdev/m
+    factor = target_stdev / m
     temp1 = temp1 * factor
     temp1x = temp1x * factor
     m = temp1x.mean()
-    temp1 = temp1 - (m-target_mean)
+    temp1 = temp1 - (m - target_mean)
 
     m = temp2x.std()
-    factor = target_stdev/m
+    factor = target_stdev / m
     temp2 = temp2 * factor
     temp2x = temp2x * factor
     m = temp2x.mean()
-    temp2 = temp2 - (m-target_mean)
+    temp2 = temp2 - (m - target_mean)
 
     m = temp3x.std()
-    factor = target_stdev/m
+    factor = target_stdev / m
     temp3 = temp3 * factor
     temp3x = temp3x * factor
     m = temp3x.mean()
-    temp3 = temp3 - (m-target_mean)
+    temp3 = temp3 - (m - target_mean)
 
     m = temp4x.std()
-    factor = target_stdev/m
+    factor = target_stdev / m
     temp4 = temp4 * factor
     temp4x = temp4x * factor
     m = temp4x.mean()
-    temp4 = temp4 - (m-target_mean)
+    temp4 = temp4 - (m - target_mean)
 
-    image[0::2,0::2] = temp1
-    image[0::2,1::2] = temp2
-    image[1::2,0::2] = temp3
-    image[1::2,1::2] = temp4
+    image[0::2, 0::2] = temp1
+    image[0::2, 1::2] = temp2
+    image[1::2, 0::2] = temp3
+    image[1::2, 1::2] = temp4
 
 
 # def remove_background(image, metadata, do_color_balance=False):

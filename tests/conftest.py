@@ -8,23 +8,12 @@ def make_test_image():
     """
     Factory fixture to create test images with Gaussian sources and optional noise.
 
-    Returns a callable with the following parameters:
-
-    Parameters
-    ----------
-    image_size : tuple
-        Size of the test image (ny, nx).
-    source_properties : astropy.table.Table
-        Table containing properties of the Gaussian source (amplitude, x_mean, y_mean, x_stddev, y_stddev).
-    include_noise : bool
-        Whether to include Gaussian noise in the test image.
-    noise_mean : float
-        Mean of the Gaussian noise to be added to the image.
-    noise_stddev : float
-        Standard deviation of the Gaussian noise to be added to the image.
-    seed : int, optional
-        Random seed for reproducibility of the noise.
+    Returns
+    -------
+    callable
+        A function that builds a test image; see its docstring for parameters.
     """
+
     def _make_test_image(
         image_size,
         source_properties,
@@ -34,6 +23,30 @@ def make_test_image():
         noise_stddev=1,
         seed=None,
     ):
+        """
+        Create a test image with Gaussian sources and optional noise.
+
+        Parameters
+        ----------
+        image_size : tuple
+            Size of the test image (ny, nx).
+        source_properties : astropy.table.Table
+            Table containing properties of the Gaussian source (amplitude, x_mean,
+            y_mean, x_stddev, y_stddev).
+        include_noise : bool
+            Whether to include Gaussian noise in the test image.
+        noise_mean : float
+            Mean of the Gaussian noise to be added to the image.
+        noise_stddev : float
+            Standard deviation of the Gaussian noise to be added to the image.
+        seed : int, optional
+            Random seed for reproducibility of the noise.
+
+        Returns
+        -------
+        numpy.ndarray
+            The generated test image.
+        """
         # Create a Gaussian2D model for the source; photutils will scale
         # this appropriately based on source properties.
         model = Gaussian2D(

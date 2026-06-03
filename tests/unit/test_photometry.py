@@ -1,10 +1,12 @@
-"""Unit tests for the photometry pipeline in :mod:`bandaid.photometry`.
+"""
+Unit tests for the photometry pipeline in :mod:`bandaid.photometry`.
 
 Covers aperture photometry on synthetic single-source images
 (``measure_photometry``), the bright-neighbor minimum-separation model
 (``min_separation_fwhm``), and the detect/align/centroid path
 (``prepare_image``), using the synthetic-image fixtures from ``conftest.py``.
 """
+
 import numpy as np
 import pytest
 from astropy.nddata import CCDData
@@ -13,13 +15,22 @@ from astropy.table import Table
 from astropy.wcs import WCS
 
 from bandaid import measure_photometry
+from bandaid.photometry import (
+    ANNULUS,
+    RELATIVE_RADII,
+    ReferenceData,
+    min_separation_fwhm,
+    prepare_image,
+)
 
-from bandaid.photometry import ANNULUS, RELATIVE_RADII, min_separation_fwhm, prepare_image, ReferenceData
 # Make the tests reproducible by using a fixed random seed for noise generation in
 # the test images.
 SEED = 843032
 
-@pytest.mark.parametrize(("include_noise", "noise_stddev"), [(True, 10), (True, 5), (False, 0)])
+
+@pytest.mark.parametrize(
+    ("include_noise", "noise_stddev"), [(True, 10), (True, 5), (False, 0)]
+)
 def test_measure_photometry_single_source(make_test_image, include_noise, noise_stddev):
     """Ensure measure_photometry works as expected when we pass in a single source."""
     fwhm = 2.3
@@ -66,8 +77,13 @@ def test_measure_photometry_single_source(make_test_image, include_noise, noise_
         source_properties["amplitude"][0]
         * 2
         * np.pi
-        * source_properties["x_stddev"][0]**2
-        * (1 - np.exp(-(aperture_radius**2) / (2 * source_properties["x_stddev"][0]**2)))
+        * source_properties["x_stddev"][0] ** 2
+        * (
+            1
+            - np.exp(
+                -(aperture_radius**2) / (2 * source_properties["x_stddev"][0] ** 2)
+            )
+        )
     )
     # Yes, this could be simplified but this is more explicit
     poisson_error_source = np.sqrt(expected_counts * egain) / egain
@@ -78,12 +94,16 @@ def test_measure_photometry_single_source(make_test_image, include_noise, noise_
     # There is no Poisson distributed sky background in this case, just a constant
     # offset from zero, so the sky background error is zero.
     sky_background_error = 0
-    expected_error = np.sqrt(poisson_error_source**2 + noise_error**2 + sky_background_error**2)
+    expected_error = np.sqrt(
+        poisson_error_source**2 + noise_error**2 + sky_background_error**2
+    )
 
     # The uncertainties are fairly large because the aperture is the size of the
     # star FWHM, so pixelation matters. Allow 2 sigma: with a single fixed-seed noise
     # realization the measured count can sit ~1.5 sigma from the analytic expectation.
-    assert photom["tot_count"][0] == pytest.approx(expected_counts, abs=2 * expected_error)
+    assert photom["tot_count"][0] == pytest.approx(
+        expected_counts, abs=2 * expected_error
+    )
 
     # The background std estimate from the annulus has statistical scatter
     # proportional to noise_stddev, so absolute tolerances scale with
@@ -91,7 +111,9 @@ def test_measure_photometry_single_source(make_test_image, include_noise, noise_
     # The factor 0.06 accounts for the finite annulus size and sigma-clipping.
     count_err_tol = 0.06 * noise_error
     assert photom["count_err"][0] == pytest.approx(
-        expected_error, rel=0.04, abs=count_err_tol,
+        expected_error,
+        rel=0.04,
+        abs=count_err_tol,
     )
     snr = photom["tot_count"][0] / photom["count_err"][0]
     expected_snr = expected_counts / expected_error
@@ -102,7 +124,9 @@ def test_measure_photometry_single_source(make_test_image, include_noise, noise_
     # and denominator.
     snr_tol = 2 * noise_error / expected_error
     assert snr == pytest.approx(
-        expected_snr, rel=0.06, abs=snr_tol,
+        expected_snr,
+        rel=0.06,
+        abs=snr_tol,
     )
 
 
@@ -116,7 +140,8 @@ def test_min_separation_fwhm():
     # Now assume the neighbor is much brighter than the target. Then the minimum
     # separation should be large.
     assert min_separation_fwhm(tenk_flux_ratio, tolerance=0.01) == pytest.approx(
-        11.036, rel=0.01,
+        11.036,
+        rel=0.01,
     )
 
     # Now a case where the neighbor is the same brightness as the target.
@@ -125,10 +150,11 @@ def test_min_separation_fwhm():
 
 class TestPrepareImage:
     def test_no_photometry_coord_input(self, make_test_image, tmp_path, monkeypatch):
-        """Test that aligned coords fall back to detected coords when none are provided."""
+        """Aligned coords fall back to detected coords when none are provided."""
         # This test only checks the alignment fallback, not centroiding, so stub
         # centroid_stars to avoid constructing the real Ballet CNN (which would pull
-        # model weights from HuggingFace). The stub returns the aligned coords unchanged.
+        # model weights from HuggingFace). The stub returns the aligned coords
+        # unchanged.
         monkeypatch.setattr(
             "bandaid.photometry.centroid_stars",
             lambda data, coords, cnn: coords,
@@ -153,9 +179,7 @@ class TestPrepareImage:
             seed=SEED,
         )
         coords_xy = np.array(
-            [
-                [row["x_mean"], row["y_mean"]] for row in source_properties
-            ],
+            [[row["x_mean"], row["y_mean"]] for row in source_properties],
         )
         wcs = WCS(naxis=2)
         wcs.wcs.crpix = [image_size[1] / 2, image_size[0] / 2]
@@ -163,10 +187,10 @@ class TestPrepareImage:
         wcs.wcs.cdelt = [-2.4 / 3600, 2.4 / 3600]
         wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
 
-        radecs = np.array(
-            wcs.pixel_to_world_values(coords_xy[:, 0], coords_xy[:, 1])
-        ).T
-        radecs = radecs + np.array([[0.01, 0.01]])  # Add a small offset to ensure coords are not exactly on the sources
+        radecs = np.array(wcs.pixel_to_world_values(coords_xy[:, 0], coords_xy[:, 1])).T
+        radecs = radecs + np.array(
+            [[0.01, 0.01]]
+        )  # Add a small offset to ensure coords are not exactly on the sources
         ref = ReferenceData.from_pixel_coords(
             coords_xy,
             wcs,

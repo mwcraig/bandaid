@@ -7,6 +7,7 @@ centroiding, aperture photometry with annulus background subtraction and error
 estimation, bright-neighbor contamination flagging, and conversion of the
 resulting tables into a ``StarList``.
 """
+
 import json
 from dataclasses import dataclass
 from importlib.resources import files as package_files
@@ -36,6 +37,9 @@ N_STARS_ALIGN = 15
 # `detection.stars_detection`.
 THRESH = 0.5
 
+# Minimum number of detected stars required before an image can be processed.
+MIN_DETECTED_STARS = 3
+
 # Relative radii and annulus are defined here. These radii are multiplied by
 # each image's FWHM to determine the actual aperture sizes.
 
@@ -48,6 +52,8 @@ ANNULUS = (5, 8)
 # inside the 1*FWHM aperture, modeled as a Moffat profile of index MOFFAT_BETA.
 CONTAMINATION_TOLERANCE = 0.01
 MOFFAT_BETA = 3.0
+# At least two stars are needed before any neighbor pair can exist.
+MIN_STARS_FOR_PAIRS = 2
 
 
 def min_separation_fwhm(delta_mag, tolerance=CONTAMINATION_TOLERANCE, beta=MOFFAT_BETA):
@@ -88,7 +94,9 @@ def min_separation_fwhm(delta_mag, tolerance=CONTAMINATION_TOLERANCE, beta=MOFFA
 
 
 def neighbor_contamination_flag(
-    coords, mags, fwhm,
+    coords,
+    mags,
+    fwhm,
     tolerance=CONTAMINATION_TOLERANCE,
     beta=MOFFAT_BETA,
 ):
@@ -110,7 +118,10 @@ def neighbor_contamination_flag(
         role in the pair.
     fwhm : float
         PSF FWHM in pixels.
-    tolerance, beta : see `min_separation_fwhm`.
+    tolerance : float, optional
+        See `min_separation_fwhm`.
+    beta : float, optional
+        See `min_separation_fwhm`.
 
     Returns
     -------
@@ -120,7 +131,7 @@ def neighbor_contamination_flag(
     coords = np.asarray(coords)
     mags = np.asarray(mags, dtype=float)
     n = len(coords)
-    if n < 2:
+    if n < MIN_STARS_FOR_PAIRS:
         return np.zeros(n, dtype=bool)
 
     # Build all pairwise (target i, neighbor j) quantities by broadcasting the
@@ -137,19 +148,24 @@ def neighbor_contamination_flag(
 
     finite = np.isfinite(mags)
     valid = finite[:, None] & finite[None, :]
-    np.fill_diagonal(valid, False)
+    np.fill_diagonal(valid, val=False)
 
     min_sep_pix = np.zeros_like(dist)
     if valid.any():
-        min_sep_pix[valid] = min_separation_fwhm(
-            delta_mag[valid], tolerance=tolerance, beta=beta,
-        ) * fwhm
+        min_sep_pix[valid] = (
+            min_separation_fwhm(
+                delta_mag[valid],
+                tolerance=tolerance,
+                beta=beta,
+            )
+            * fwhm
+        )
 
     too_close = valid & (dist < min_sep_pix)
     return too_close.any(axis=1)
 
 
-def calibration_sequence(file: str, threshold: float = 1) -> tuple:
+def calibration_sequence(file, threshold=1) -> tuple:
     """
     Find sources and compute FWHM for an image.
 
@@ -177,14 +193,15 @@ def calibration_sequence(file: str, threshold: float = 1) -> tuple:
     calibrated_data = 1.0 * data
     regions = detection.stars_detection(calibrated_data, threshold=threshold)
 
-    # in case we detect fewer than 3 stars
-    if len(regions) < 3:
+    # in case we detect fewer than the minimum number of stars
+    if len(regions) < MIN_DETECTED_STARS:
         return None, [], None, None, None
 
     region_coords_xy = np.array([(r.centroid[1], r.centroid[0]) for r in regions])
     cutouts = utils.cutout(calibrated_data, region_coords_xy, (50, 50))
 
-    # Drop any cutouts that are saturated -- NOTE THAT THIS LEAVES BEHIND SATURATED REGIONS
+    # Drop any cutouts that are saturated -- NOTE THAT THIS LEAVES BEHIND
+    # SATURATED REGIONS
     cutouts = np.array(list(filter(lambda data: np.max(data) < max_adu, cutouts)))
 
     # If every detected source was saturated there is nothing left to fit a PSF to
@@ -230,7 +247,9 @@ def metadata_from_header(header):
         Metadata dictionary with header lookups resolved.
     """
     json_path = package_files("bandaid").joinpath(
-       "meta_json_files", "Seestar50", "basic.json",
+        "meta_json_files",
+        "Seestar50",
+        "basic.json",
     )
     with json_path.open() as f:
         template = json.load(f)
@@ -308,7 +327,7 @@ class ReferenceData:
     cnn: Ballet
 
     @classmethod
-    def from_pixel_coords(cls, coords, wcs, radecs, cnn):
+    def from_pixel_coords(cls, coords, wcs, radecs, cnn):  # noqa: ARG003
         """Create from pixel coordinates, converting to sky coordinates."""
         # `coords` and `wcs` are accepted for API symmetry (and so callers that
         # already have the reference pixel coords + WCS can pass them) but are
@@ -368,7 +387,9 @@ def align(coords, ref, photometry_coords=None, wcs=None):
         # which would make compute_wcs fail -- callers must supply enough
         # matched detections.
         this_wcs = compute_wcs(
-            coords[0:N_STARS_ALIGN], ref.radecs[0:N_STARS_ALIGN], tolerance=1,
+            coords[0:N_STARS_ALIGN],
+            ref.radecs[0:N_STARS_ALIGN],
+            tolerance=1,
         )
     else:
         this_wcs = wcs
@@ -436,14 +457,14 @@ def annulus_sigma_clip_stats(data, coords, r_in, r_out, input_mask=None, sigma=3
     return aperstats.median, aperstats.std
 
 
-def measure_photometry(  # noqa: PLR0913
-        calibrated_data,
-        centroid_coords,
-        aligned_coords,
-        fwhm,
-        egain,
-        mask,
-    ):
+def measure_photometry(
+    calibrated_data,
+    centroid_coords,
+    aligned_coords,
+    fwhm,
+    egain,
+    mask,
+):
     """
     Perform aperture photometry, background subtraction, and error calculation.
 
@@ -470,7 +491,10 @@ def measure_photometry(  # noqa: PLR0913
     """
     apertures_radii = RELATIVE_RADII * fwhm
     flux = photometry.aperture_photometry(
-        calibrated_data, centroid_coords, apertures_radii, mask=mask,
+        calibrated_data,
+        centroid_coords,
+        apertures_radii,
+        mask=mask,
     )
     annulus_radii = (
         np.max([np.max(apertures_radii), ANNULUS[0] * fwhm]),
@@ -479,8 +503,7 @@ def measure_photometry(  # noqa: PLR0913
     aperture_area = np.array(
         [
             a.area_overlap(calibrated_data, mask=mask)
-            for a in
-            [
+            for a in [
                 CircularAperture(
                     centroid_coords,
                     r=r,
@@ -491,7 +514,10 @@ def measure_photometry(  # noqa: PLR0913
     ).T
 
     bkg, bkg_std = annulus_sigma_clip_stats(
-        calibrated_data, centroid_coords, *annulus_radii, input_mask=mask,
+        calibrated_data,
+        centroid_coords,
+        *annulus_radii,
+        input_mask=mask,
     )
     total_bkg = bkg[:, None] * aperture_area
 
@@ -549,6 +575,9 @@ def prepare_image(
         done on detected coords).
     user_specific_metadata : dict or None, optional
         User-specific metadata to include in the output. By default None.
+    wcs : `astropy.wcs.WCS` or None, optional
+        Precomputed WCS to reuse instead of solving one for this image; passed
+        through to `align`. By default None.
 
     Returns
     -------
@@ -558,7 +587,8 @@ def prepare_image(
     # "calibrate" the data and get initial detections for WCS alignment and
     # FWHM estimation
     calibrated_data, metadata, coords, fwhm, _ = calibration_sequence(
-        file, threshold=THRESH,
+        file,
+        threshold=THRESH,
     )
 
     # calibration_sequence returns the (None, [], None, None, None) sentinel when too
@@ -579,7 +609,10 @@ def prepare_image(
     # for this image is not the one used to convert coordinates to sky coordinates
     # in the reference data.
     aligned_coords, this_wcs = align(
-        coords, ref, photometry_coords=photometry_coords, wcs=wcs,
+        coords,
+        ref,
+        photometry_coords=photometry_coords,
+        wcs=wcs,
     )
     centroid_coords = centroid_stars(working_image, aligned_coords, ref.cnn)
 
@@ -615,8 +648,12 @@ def build_photometry_table(img, mask):
     """
     # Maybe check here or somewhere else that the centroid hasn't moved too much?
     phot = measure_photometry(
-        img.calibrated_data, img.centroid_coords, img.aligned_coords,
-        img.fwhm, img.metadata["egain"], mask,
+        img.calibrated_data,
+        img.centroid_coords,
+        img.aligned_coords,
+        img.fwhm,
+        img.metadata["egain"],
+        mask,
     )
     centroid_ra_dec = img.wcs.pixel_to_world(
         img.centroid_coords[..., 0],
