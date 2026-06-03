@@ -11,7 +11,6 @@ from astropy.nddata import CCDData
 from astropy.stats import gaussian_fwhm_to_sigma, sigma_clipped_stats
 from astropy.table import Table
 from astropy.wcs import WCS
-from eloy.centroid import Ballet
 
 from bandaid import measure_photometry
 
@@ -125,8 +124,15 @@ def test_min_separation_fwhm():
 
 
 class TestPrepareImage:
-    def test_no_photometry_coord_input(self, make_test_image, tmp_path):
+    def test_no_photometry_coord_input(self, make_test_image, tmp_path, monkeypatch):
         """Test that aligned coords fall back to detected coords when none are provided."""
+        # This test only checks the alignment fallback, not centroiding, so stub
+        # centroid_stars to avoid constructing the real Ballet CNN (which would pull
+        # model weights from HuggingFace). The stub returns the aligned coords unchanged.
+        monkeypatch.setattr(
+            "bandaid.photometry.centroid_stars",
+            lambda data, coords, cnn: coords,
+        )
         image_size = (500, 500)
 
         source_properties = Table(
@@ -165,7 +171,7 @@ class TestPrepareImage:
             coords_xy,
             wcs,
             radecs,
-            Ballet(),
+            None,
         )
         ccd = CCDData(test_image, wcs=wcs, unit="adu")
         ccd.header["creator"] = "test_prepare_image"
