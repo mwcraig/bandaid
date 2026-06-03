@@ -201,6 +201,9 @@ ignore = [
     "S101",  # 'Use of assert detected' ignored because we are using pytest.
     "INP001",  # 'Insecure input' ignored because we are testing.
     "ANN201",  # 'Missing type annotation for {return}' ignored because all tests return `None`.
+    "D100",  # undocumented test module -- not required.
+    "D101",  # undocumented test class -- not required.
+    "ARG005",  # stub lambdas keep unused args to match the patched signature.
 ]
 # Ballet CNN generator + training scripts. The generator (ballet_training.py) is kept
 # byte-for-byte aligned with eloy's; the train_ballet_*.py are research entry-point
