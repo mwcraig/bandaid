@@ -37,6 +37,9 @@ N_STARS_ALIGN = 15
 # `detection.stars_detection`.
 THRESH = 0.5
 
+# Minimum number of detected stars required before an image can be processed.
+MIN_DETECTED_STARS = 3
+
 # Relative radii and annulus are defined here. These radii are multiplied by
 # each image's FWHM to determine the actual aperture sizes.
 
@@ -49,6 +52,8 @@ ANNULUS = (5, 8)
 # inside the 1*FWHM aperture, modeled as a Moffat profile of index MOFFAT_BETA.
 CONTAMINATION_TOLERANCE = 0.01
 MOFFAT_BETA = 3.0
+# At least two stars are needed before any neighbor pair can exist.
+MIN_STARS_FOR_PAIRS = 2
 
 
 def min_separation_fwhm(delta_mag, tolerance=CONTAMINATION_TOLERANCE, beta=MOFFAT_BETA):
@@ -126,7 +131,7 @@ def neighbor_contamination_flag(
     coords = np.asarray(coords)
     mags = np.asarray(mags, dtype=float)
     n = len(coords)
-    if n < 2:
+    if n < MIN_STARS_FOR_PAIRS:
         return np.zeros(n, dtype=bool)
 
     # Build all pairwise (target i, neighbor j) quantities by broadcasting the
@@ -188,8 +193,8 @@ def calibration_sequence(file: str, threshold: float = 1) -> tuple:
     calibrated_data = 1.0 * data
     regions = detection.stars_detection(calibrated_data, threshold=threshold)
 
-    # in case we detect fewer than 3 stars
-    if len(regions) < 3:
+    # in case we detect fewer than the minimum number of stars
+    if len(regions) < MIN_DETECTED_STARS:
         return None, [], None, None, None
 
     region_coords_xy = np.array([(r.centroid[1], r.centroid[0]) for r in regions])
