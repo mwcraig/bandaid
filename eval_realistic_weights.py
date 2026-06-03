@@ -36,8 +36,10 @@ def make_star(rng, amp, cx, cy, bayer=False):
     clean = Moffat2D(amplitude=amp, x_0=cx, y_0=cy, gamma=GAMMA, alpha=BETA)(_xx, _yy) + SKY
     if bayer:
         clean = clean.copy()
-        clean[0::2, 0::2] *= BAYER_GAINS[0]; clean[0::2, 1::2] *= BAYER_GAINS[1]
-        clean[1::2, 0::2] *= BAYER_GAINS[2]; clean[1::2, 1::2] *= BAYER_GAINS[3]
+        clean[0::2, 0::2] *= BAYER_GAINS[0]
+        clean[0::2, 1::2] *= BAYER_GAINS[1]
+        clean[1::2, 0::2] *= BAYER_GAINS[2]
+        clean[1::2, 1::2] *= BAYER_GAINS[3]
     noisy = (rng.poisson(np.clip(clean, 0, None)).astype(float)
              + rng.normal(0.0, READ_NOISE, clean.shape))
     if bayer:
@@ -51,11 +53,15 @@ def moffat_recover(data, sx, sy):
     if not np.isfinite(arr).all():
         return np.nan, np.nan
     yy, xx = np.mgrid[: arr.shape[0], : arr.shape[1]]
-    bkg = float(np.nanmedian(arr)); amp = float(np.nanmax(arr) - bkg)
+    bkg = float(np.nanmedian(arr))
+    amp = float(np.nanmax(arr) - bkg)
     g = FWHM / (2.0 * np.sqrt(2.0 ** (1.0 / 3.0) - 1.0))
     m = Moffat2D(amplitude=amp, x_0=arr.shape[1] / 2, y_0=arr.shape[0] / 2, gamma=g, alpha=3.0)
-    m.x_0.bounds = (0, arr.shape[1] - 1); m.y_0.bounds = (0, arr.shape[0] - 1)
-    m.gamma.bounds = (0.1, 3 * FWHM); m.alpha.bounds = (0.5, 10); m.amplitude.bounds = (0, None)
+    m.x_0.bounds = (0, arr.shape[1] - 1)
+    m.y_0.bounds = (0, arr.shape[0] - 1)
+    m.gamma.bounds = (0.1, 3 * FWHM)
+    m.alpha.bounds = (0.5, 10)
+    m.amplitude.bounds = (0, None)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         try:

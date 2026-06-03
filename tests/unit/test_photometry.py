@@ -1,11 +1,9 @@
+"""Unit tests for the photometry pipeline in :mod:`bandaid.photometry`.
 
-"""
-A test module that tests your example module.
-
-Some people prefer to write tests in a test file for each function or
-method/ class. Others prefer to write tests for each module. That decision
-is up to you. This test example provides a single test for the example.py
-module.
+Covers aperture photometry on synthetic single-source images
+(``measure_photometry``), the bright-neighbor minimum-separation model
+(``min_separation_fwhm``), and the detect/align/centroid path
+(``prepare_image``), using the synthetic-image fixtures from ``conftest.py``.
 """
 import numpy as np
 import pytest

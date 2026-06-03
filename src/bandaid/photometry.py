@@ -25,9 +25,15 @@ from twirl import compute_wcs
 
 from .image2sl_qt import bayer_balance_image
 
+# Half-width (in pixels) of the cutout taken around each star for per-star
+# processing.
 CUTOUT = 500  # 120
 
+# Number of (brightest) detected stars used to compute the per-image WCS in
+# `align`. Only the first N_STARS_ALIGN detections/reference coords are paired up.
 N_STARS_ALIGN = 15
+# Source-detection threshold (in units of the background sigma) passed to
+# `detection.stars_detection`.
 THRESH = 0.5
 
 # Relative radii and annulus are defined here. These radii are multiplied by
@@ -56,7 +62,13 @@ def min_separation_fwhm(delta_mag, tolerance=CONTAMINATION_TOLERANCE, beta=MOFFA
     Parameters
     ----------
     delta_mag : float or array-like
-        How many magnitudes brighter the neighbor is than the target.
+        How many magnitudes brighter the neighbor is than the target, i.e.
+        ``mag_target - mag_neighbor``. This is *positive* when the neighbor is
+        brighter than the target, so a dim star with a bright neighbor has a
+        positive ``delta_mag`` and requires a large separation; a faint neighbor
+        gives a negative ``delta_mag`` and requires essentially none. For
+        example, ``delta_mag=10`` (neighbor 10 mag brighter) needs ~11 FWHM of
+        separation, while ``delta_mag=-10`` needs zero.
     tolerance : float, optional
         Maximum tolerated fractional flux contamination.
     beta : float, optional
@@ -111,6 +123,13 @@ def neighbor_contamination_flag(
     if n < 2:
         return np.zeros(n, dtype=bool)
 
+    # Build all pairwise (target i, neighbor j) quantities by broadcasting the
+    # (N,) / (N, 2) arrays into (N, N) matrices: indexing axis 0 with [:, None]
+    # is the "target" i and axis 1 with [None, :] is the "neighbor" j.
+    # diff/dist are the (N, N) pairwise pixel separations; delta_mag[i, j] is how
+    # much brighter neighbor j is than target i; valid[i, j] marks pairs where
+    # both magnitudes are finite (with the diagonal i==j removed so a star is
+    # never its own neighbor).
     diff = coords[:, None, :] - coords[None, :, :]
     dist = np.linalg.norm(diff, axis=-1)
 
@@ -268,6 +287,7 @@ def eloy_to_starlist(eloy_table, metadata):
     # REPLACE THIS WITH FILTERING FROM IMAGE2SL_QT
     good = ~np.isnan(eloy_table["tot_count"])
     good &= eloy_table["tot_count"] > 0
+    good &= np.isfinite(eloy_table["count_err"])
     good &= eloy_table["count_err"] > 0
     good &= (
         (eloy_table["x"] > 0)
@@ -290,6 +310,11 @@ class ReferenceData:
     @classmethod
     def from_pixel_coords(cls, coords, wcs, radecs, cnn):
         """Create from pixel coordinates, converting to sky coordinates."""
+        # `coords` and `wcs` are accepted for API symmetry (and so callers that
+        # already have the reference pixel coords + WCS can pass them) but are
+        # intentionally unused for now: the reference sky coordinates `radecs`
+        # are supplied directly. They are kept for a future path that derives
+        # `radecs` from `coords` via `wcs`.
         return cls(radecs=radecs, cnn=cnn)
 
 
@@ -314,8 +339,9 @@ def align(coords, ref, photometry_coords=None, wcs=None):
     Parameters
     ----------
     coords : numpy.ndarray
-        Detected star coordinates in this image. Used for WCS alignment and, if
-        photometry_coords is None, returned as the aligned coordinates as well.
+        Detected star **pixel** coordinates (x, y) in this image. Used for WCS
+        alignment and, if photometry_coords is None, returned as the aligned
+        coordinates as well.
     ref : ReferenceData
         Reference image data (Gaia RA/Decs, CNN model).
     photometry_coords : `astropy.coordinates.SkyCoord` or None, optional
@@ -335,6 +361,12 @@ def align(coords, ref, photometry_coords=None, wcs=None):
         World Coordinate System for the image.
     """
     if wcs is None:
+        # Pair the first N_STARS_ALIGN detections with the first N_STARS_ALIGN
+        # reference RA/Decs. This assumes `coords` and `ref.radecs` are already
+        # ordered/aligned (same star at the same index). If fewer than
+        # N_STARS_ALIGN stars are detected the two slices can differ in length,
+        # which would make compute_wcs fail -- callers must supply enough
+        # matched detections.
         this_wcs = compute_wcs(
             coords[0:N_STARS_ALIGN], ref.radecs[0:N_STARS_ALIGN], tolerance=1,
         )
@@ -490,7 +522,15 @@ def measure_photometry(  # noqa: PLR0913
     }
 
 
-def prepare_image(file, ref, *, detect_on_bayer_balanced=False, photometry_coords=None, user_specific_metadata=None, wcs=None):
+def prepare_image(
+    file,
+    ref,
+    *,
+    detect_on_bayer_balanced=False,
+    photometry_coords=None,
+    user_specific_metadata=None,
+    wcs=None,
+):
     """
     Detect sources, align, and centroid for a single image.
 
@@ -603,11 +643,6 @@ def build_photometry_table(img, mask):
     data["x"] = img.centroid_coords[..., 0]
     data["y"] = img.centroid_coords[..., 1]
     data["aperture_area"] = phot["aperture_area"]
-    # with np.errstate(divide="ignore", invalid="ignore"):
-    #     instr_mag = -2.5 * np.log10(phot["tot_count"])
-    # data["contaminated"] = neighbor_contamination_flag(
-    #     img.centroid_coords, instr_mag, img.fwhm,
-    # )
     data.meta["fwhm"] = float(img.fwhm)
     data.meta["aperture_radii"] = phot["aperture_radii"]
     data.meta["annulus_radii"] = phot["annulus_radii"]

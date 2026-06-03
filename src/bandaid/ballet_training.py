@@ -104,34 +104,6 @@ class Moffat2D(_EloyMoffat2D):
         """
         Generate Moffat cutouts with a realistic noise model (+ optional bayer residual).
 
-        Unlike ``random_model_label`` (amplitude fixed at 1, background 0, uniform
-        noise <= 0.1, so every star has peak SNR >~ 10), this adds a sky pedestal,
-        Poisson shot noise, and Gaussian read noise, with peak SNR sampled
-        log-uniformly across ``snr_range``. That populates the faint, noise-dominated
-        regime the clean generator never reaches.
-
-        The CNN min-max normalizes each cutout internally (see ``model.CNN.__call__``),
-        so absolute counts are irrelevant -- only the relative noise (sigma/peak) and
-        PSF shape matter. SNR is therefore the controlling axis and is sampled in log
-        space so faint and bright stars are represented evenly. Sky level and read
-        noise are randomized per sample so the network sees a range of background
-        regimes rather than one fixed pedestal.
-
-        Bayer augmentation (``bayer_frac`` > 0): a fraction of samples reproduce the
-        residual 2-px checkerboard a one-shot-colour sensor leaves after balancing,
-        matching production. Per sample one per-CFA-channel gain (a colour latent: R up /
-        B down, neutral included) multiplies the *whole* clean frame (Moffat + sky)
-        together -- i.e. star and sky share the channel response, exactly the model the
-        production/eval path uses; the residual then arises from `balance_fn`'s
-        per-channel (sky-derived) noise normalization. The raw frame is built on a padded
-        grid, `balance_fn` (e.g. `bandaid.bayer_balance_image`) is run on the *full* frame
-        as in production, then the central cutout is cropped so balance statistics are not
-        dominated by the star. The CFA corner phase is randomized per sample for
-        invariance to the actual pattern. The neutral case (gains ~ 1, no residual) is
-        included so white stars / clean data are not hurt. (The measured background
-        imbalance on real frames is transient *sky colour*, not a fixed gain, so the gain
-        amplitude is sampled, never hardcoded.)
-
         Parameters
         ----------
         N : int, optional
@@ -161,6 +133,36 @@ class Moffat2D(_EloyMoffat2D):
         -------
         tuple
             (images, labels) with images of shape (N, cutout_size, cutout_size, 1).
+
+        Notes
+        -----
+        Unlike ``random_model_label`` (amplitude fixed at 1, background 0, uniform
+        noise <= 0.1, so every star has peak SNR >~ 10), this adds a sky pedestal,
+        Poisson shot noise, and Gaussian read noise, with peak SNR sampled
+        log-uniformly across ``snr_range``. That populates the faint, noise-dominated
+        regime the clean generator never reaches.
+
+        The CNN min-max normalizes each cutout internally (see ``model.CNN.__call__``),
+        so absolute counts are irrelevant -- only the relative noise (sigma/peak) and
+        PSF shape matter. SNR is therefore the controlling axis and is sampled in log
+        space so faint and bright stars are represented evenly. Sky level and read
+        noise are randomized per sample so the network sees a range of background
+        regimes rather than one fixed pedestal.
+
+        Bayer augmentation (``bayer_frac`` > 0): a fraction of samples reproduce the
+        residual 2-px checkerboard a one-shot-colour sensor leaves after balancing,
+        matching production. Per sample one per-CFA-channel gain (a colour latent: R up /
+        B down, neutral included) multiplies the *whole* clean frame (Moffat + sky)
+        together -- i.e. star and sky share the channel response, exactly the model the
+        production/eval path uses; the residual then arises from `balance_fn`'s
+        per-channel (sky-derived) noise normalization. The raw frame is built on a padded
+        grid, `balance_fn` (e.g. `bandaid.bayer_balance_image`) is run on the *full* frame
+        as in production, then the central cutout is cropped so balance statistics are not
+        dominated by the star. The CFA corner phase is randomized per sample for
+        invariance to the actual pattern. The neutral case (gains ~ 1, no residual) is
+        included so white stars / clean data are not hurt. (The measured background
+        imbalance on real frames is transient *sky colour*, not a fixed gain, so the gain
+        amplitude is sampled, never hardcoded.)
         """
         if bayer_frac > 0 and balance_fn is None:
             raise ValueError(

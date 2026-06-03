@@ -35,14 +35,8 @@ from bandaid.ballet_training import (
 )
 
 SIZE = 15
-WARM = os.environ.get(
-    "BALLET_WARM",
-    "/Users/mattcraig/development/astronomy/eloy/ballet_realistic_15x15.npz",
-)
-OUT = os.environ.get(
-    "BALLET_OUT",
-    "/Users/mattcraig/development/astronomy/eloy/ballet_realistic_bayer_15x15.npz",
-)
+WARM = os.environ.get("BALLET_WARM", "ballet_realistic_15x15.npz")
+OUT = os.environ.get("BALLET_OUT", "ballet_realistic_bayer_15x15.npz")
 EPOCHS = int(os.environ.get("BALLET_EPOCHS", "100"))
 TRAIN_SIZE = int(os.environ.get("BALLET_TRAIN_SIZE", "5000"))
 TEST_SIZE = int(os.environ.get("BALLET_TEST_SIZE", "5000"))
@@ -102,8 +96,8 @@ def main():
     print(f"warm-start from {WARM}")
     params = load_weights_file(WARM)
 
-    x_test, y_test = gen_fn(TEST_SIZE)
-    test_batch = (jnp.array(x_test), jnp.array(y_test))
+    X_test, y_test = gen_fn(TEST_SIZE)
+    test_batch = (jnp.array(X_test), jnp.array(y_test))
 
     lr = 1e-4
     state = TrainState.create(
@@ -111,7 +105,7 @@ def main():
         params=params,
         tx=optax.adamw(lr),
     )
-    x_train, y_train = gen_fn(TRAIN_SIZE)
+    X_train, y_train = gen_fn(TRAIN_SIZE)
     lr_drops = {EPOCHS * 3 // 5: 1e-5}  # one drop at 60% through
 
     print(
@@ -120,7 +114,7 @@ def main():
     )
     t0 = time.time()
     for epoch in range(EPOCHS):
-        for batch in get_batches(x_train, y_train, BATCH):
+        for batch in get_batches(X_train, y_train, BATCH):
             state, loss = train_step(state, batch)
         if epoch in lr_drops:
             lr = lr_drops[epoch]
@@ -135,7 +129,7 @@ def main():
                 f"epoch {epoch}: loss={float(loss):.4f} test_rmse={float(rmse):.4f} "
                 f"lr={lr:.0e} elapsed={time.time() - t0:.0f}s",
             )
-            x_train, y_train = gen_fn(TRAIN_SIZE)  # fresh draw for variety
+            X_train, y_train = gen_fn(TRAIN_SIZE)  # fresh draw for variety
 
     # Bias-adjust: a few more passes, keep the params with smallest mean (x,y) residual.
     print("bias adjust")

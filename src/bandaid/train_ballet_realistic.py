@@ -48,7 +48,24 @@ gen = Moffat2D(SIZE)
 
 
 def gen_fn(n):
-    """Draw a realistic-noise (no bayer) training batch of ``n`` cutouts."""
+    """
+    Draw a realistic-noise (no bayer) training batch.
+
+    Thin wrapper over the module-level ``gen.random_realistic_label`` with bayer
+    augmentation left off (Phase-2 baseline).
+
+    Parameters
+    ----------
+    n : int
+        Number of cutouts to generate.
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        ``(images, labels)`` where ``images`` has shape ``(n, SIZE, SIZE, 1)``
+        and ``labels`` has shape ``(n, 2)`` holding the ``(x0, y0)`` centroid
+        offsets about the cutout center.
+    """
     return gen.random_realistic_label(n)
 
 
@@ -121,7 +138,10 @@ def main():
     print(f"Best model: {j} - (x,y) = {adjust_params[j]}")
 
     print("Saving model file")
-    file_name = OUT or f"{SIZE}x{SIZE}_realistic_{datetime.now().isoformat()}.npz"
+    # Use a filesystem-safe timestamp (no ":") so the fallback name is valid on
+    # Windows as well as POSIX.
+    timestamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    file_name = OUT or f"{SIZE}x{SIZE}_realistic_{timestamp}.npz"
     np.savez(file_name, **params_to_flat_dict(final_model))
     print(f"Model saved to {file_name}")
 

@@ -2,6 +2,7 @@ import pytest
 from astropy.modeling.models import Gaussian2D
 from photutils.datasets import make_model_image, make_noise_image
 
+
 @pytest.fixture
 def make_test_image():
     """
@@ -57,7 +58,7 @@ def make_test_image():
             image_size,
             mean=noise_mean,
             stddev=noise_stddev,
-            seed=seed
+            seed=seed,
         )
 
         # Combine the source and noise to create the final test image
