@@ -227,4 +227,4 @@ This uses the above environment and tells hatch to run
 - `pip check`, # verifies your dependencies
 - `hatch build --clean`
 - `twine check dist/*` # this checks your distribution for metadata and other potential issues.
-  to build and test your package.
+    to build and test your package.

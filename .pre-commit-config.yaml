@@ -36,4 +36,4 @@ repos:
     hooks:
       - id: mdformat
         additional_dependencies:
-          [mdformat-gfm, mdformat-frontmatter, mdformat-footnote]
+          [mdformat-gfm, mdformat-frontmatter, mdformat-footnote, mdformat-mkdocs]

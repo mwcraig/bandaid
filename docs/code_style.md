@@ -34,17 +34,17 @@ uvx pydoclint --config=pyproject.toml src/ tests/
 ## Linting policy
 
 - **ruff** selects the full rule set (`select = ["ALL"]`) and then ignores a
-  curated list, configured under `[tool.ruff.lint]` in `pyproject.toml`.
+    curated list, configured under `[tool.ruff.lint]` in `pyproject.toml`.
 - **Type annotations are optional.** The missing-annotation rules
-  (`ANN001`, `ANN201`, `ANN202`, `ANN206`) are ignored, and pydoclint is configured
-  with `arg-type-hints-in-signature = false`; parameter types live in the
-  numpy-style docstrings instead.
+    (`ANN001`, `ANN201`, `ANN202`, `ANN206`) are ignored, and pydoclint is configured
+    with `arg-type-hints-in-signature = false`; parameter types live in the
+    numpy-style docstrings instead.
 - **The formatter owns quotes and trailing commas** (`Q000`–`Q004`, `COM812`,
-  `COM819` are ignored), per the
-  [ruff formatter guidance](https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules).
+    `COM819` are ignored), per the
+    [ruff formatter guidance](https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules).
 - **Research notebooks (`*.ipynb`) are not linted or formatted** — they are excluded
-  in `[tool.ruff]`.
+    in `[tool.ruff]`.
 - **Standalone research / CLI scripts** (the eloy ballet generator and training
-  scripts, plus `eval_realistic_weights.py`, `full_pipeline_stwg_t_cr_bor.py`, and
-  `image2sl_qt.py`) carry targeted per-file-ignores for conventions that are normal
-  there: progress `print`s, lazy imports, and commented-out reference code.
+    scripts, plus `eval_realistic_weights.py`, `full_pipeline_stwg_t_cr_bor.py`, and
+    `image2sl_qt.py`) carry targeted per-file-ignores for conventions that are normal
+    there: progress `print`s, lazy imports, and commented-out reference code.
