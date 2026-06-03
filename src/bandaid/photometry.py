@@ -25,7 +25,7 @@ from twirl import compute_wcs
 
 from .image2sl_qt import bayer_balance_image
 
-CUTOUT = 500 # 120
+CUTOUT = 500  # 120
 
 N_STARS_ALIGN = 15
 THRESH = 0.5
