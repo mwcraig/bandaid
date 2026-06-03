@@ -165,7 +165,7 @@ def neighbor_contamination_flag(
     return too_close.any(axis=1)
 
 
-def calibration_sequence(file: str, threshold: float = 1) -> tuple:
+def calibration_sequence(file, threshold=1) -> tuple:
     """
     Find sources and compute FWHM for an image.
 
