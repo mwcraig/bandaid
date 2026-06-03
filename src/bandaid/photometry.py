@@ -327,7 +327,7 @@ class ReferenceData:
     cnn: Ballet
 
     @classmethod
-    def from_pixel_coords(cls, coords, wcs, radecs, cnn):
+    def from_pixel_coords(cls, coords, wcs, radecs, cnn):  # noqa: ARG003
         """Create from pixel coordinates, converting to sky coordinates."""
         # `coords` and `wcs` are accepted for API symmetry (and so callers that
         # already have the reference pixel coords + WCS can pass them) but are
