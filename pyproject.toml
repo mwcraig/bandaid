@@ -222,6 +222,22 @@ ignore = [
     "D400",  # ditto -- verbatim docstring first line lacks a period.
     "D415",  # ditto.
 ]
+# Standalone research / CLI entry-point scripts. Like the *ballet* carve-out
+# above, these lean on conventions ruff's ALL set flags but that are normal for
+# one-off analysis scripts.
+"eval_realistic_weights.py" = [
+    "T201",  # `print` is the progress/results output for this CLI script.
+    "D103",  # undocumented helpers are fine in a one-off analysis script.
+    "FBT002",  # boolean positional defaults (bayer=False) mirror the eloy API.
+    "BLE001",  # broad `except` is acceptable in a best-effort analysis loop.
+    "PLC0415",  # lazy `from bandaid import ...` inside a helper is intentional.
+]
+"src/bandaid/full_pipeline_stwg_t_cr_bor.py" = [
+    "D100",  # research entry-point script; no module docstring required.
+]
+"src/bandaid/image2sl_qt.py" = [
+    "ERA001",  # commented-out code kept as reference in this GUI script.
+]
 
 [tool.ruff.lint.isort]
 case-sensitive = true
