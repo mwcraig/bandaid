@@ -179,6 +179,12 @@ ignore = [
     "Q004",  # unnecessary-escaped-quote.
     "COM812",  # missing-trailing-comma (formatter manages trailing commas).
     "COM819",  # prohibited-trailing-comma.
+    # TODO/FIX family: we keep TODO comments as in-code notes and don't enforce
+    # author/issue-link/colon formatting on them. Conventionally disabled.
+    "FIX002",  # line-contains-todo.
+    "TD002",  # missing-todo-author.
+    "TD003",  # missing-todo-issue-link.
+    "TD004",  # missing-todo-colon.
 ]
 
 [tool.ruff.lint.extend-per-file-ignores]
