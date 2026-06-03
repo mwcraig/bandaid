@@ -27,6 +27,20 @@ To use bandaid in your code:
 >>> bandaid.hello_world()
 ```
 
+## Development
+
+Code style is enforced with [ruff](https://docs.astral.sh/ruff/) and
+[pydoclint](https://jsh9.github.io/pydoclint/), pinned in `.pre-commit-config.yaml`
+and the `style` dependency group. The CI `pre-commit` job runs:
+
+```bash
+uvx pre-commit run --all-files
+```
+
+Run the same command locally before pushing, or `uvx pre-commit install` to run it
+automatically on every commit. See the [code style guide](docs/code_style.md) for the
+linting policy and the individual commands.
+
 ## Copyright
 
 - Copyright © 2026 AAVSO.

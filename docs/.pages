@@ -1,3 +1,4 @@
 nav:
   - index.md
   - Training the Ballet centroider: training_the_ballet_centroider.md
+  - Code style: code_style.md
