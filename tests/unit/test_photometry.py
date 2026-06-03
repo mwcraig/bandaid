@@ -150,10 +150,11 @@ def test_min_separation_fwhm():
 
 class TestPrepareImage:
     def test_no_photometry_coord_input(self, make_test_image, tmp_path, monkeypatch):
-        """Test that aligned coords fall back to detected coords when none are provided."""
+        """Aligned coords fall back to detected coords when none are provided."""
         # This test only checks the alignment fallback, not centroiding, so stub
         # centroid_stars to avoid constructing the real Ballet CNN (which would pull
-        # model weights from HuggingFace). The stub returns the aligned coords unchanged.
+        # model weights from HuggingFace). The stub returns the aligned coords
+        # unchanged.
         monkeypatch.setattr(
             "bandaid.photometry.centroid_stars",
             lambda data, coords, cnn: coords,

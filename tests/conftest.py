@@ -15,7 +15,8 @@ def make_test_image():
     image_size : tuple
         Size of the test image (ny, nx).
     source_properties : astropy.table.Table
-        Table containing properties of the Gaussian source (amplitude, x_mean, y_mean, x_stddev, y_stddev).
+        Table containing properties of the Gaussian source (amplitude, x_mean,
+        y_mean, x_stddev, y_stddev).
     include_noise : bool
         Whether to include Gaussian noise in the test image.
     noise_mean : float

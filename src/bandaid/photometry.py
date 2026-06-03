@@ -200,7 +200,8 @@ def calibration_sequence(file: str, threshold: float = 1) -> tuple:
     region_coords_xy = np.array([(r.centroid[1], r.centroid[0]) for r in regions])
     cutouts = utils.cutout(calibrated_data, region_coords_xy, (50, 50))
 
-    # Drop any cutouts that are saturated -- NOTE THAT THIS LEAVES BEHIND SATURATED REGIONS
+    # Drop any cutouts that are saturated -- NOTE THAT THIS LEAVES BEHIND
+    # SATURATED REGIONS
     cutouts = np.array(list(filter(lambda data: np.max(data) < max_adu, cutouts)))
 
     # If every detected source was saturated there is nothing left to fit a PSF to
