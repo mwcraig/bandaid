@@ -113,7 +113,10 @@ def neighbor_contamination_flag(
         role in the pair.
     fwhm : float
         PSF FWHM in pixels.
-    tolerance, beta : see `min_separation_fwhm`.
+    tolerance : float, optional
+        See `min_separation_fwhm`.
+    beta : float, optional
+        See `min_separation_fwhm`.
 
     Returns
     -------
@@ -566,6 +569,9 @@ def prepare_image(
         done on detected coords).
     user_specific_metadata : dict or None, optional
         User-specific metadata to include in the output. By default None.
+    wcs : `astropy.wcs.WCS` or None, optional
+        Precomputed WCS to reuse instead of solving one for this image; passed
+        through to `align`. By default None.
 
     Returns
     -------
