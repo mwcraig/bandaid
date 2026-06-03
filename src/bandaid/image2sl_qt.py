@@ -20,6 +20,14 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+"""
+Bayer (CFA) utilities for Smart Telescope images.
+
+Builds per-color Bayer masks from the image metadata and balances the four CFA
+channels of a raw frame so that downstream detection and centroiding see a
+checkerboard-free image.
+"""
+
 import numpy as np
 
 def generate_bayer_masks(shape, metadata):
@@ -43,7 +51,7 @@ def generate_bayer_masks(shape, metadata):
 
         # now re-jumble based on roworder and ybaryoff
         if metadata['roworder'] == 'bottom-up':
-            pattern = pattern[2:3] + pattern[0:1]
+            pattern = pattern[2:4] + pattern[0:2]
         if metadata['ybayroff'] != 0:
             pattern = pattern[1] + pattern[0] + pattern[3] + pattern[2]
 

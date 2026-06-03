@@ -84,8 +84,9 @@ def test_measure_photometry_single_source(make_test_image, include_noise, noise_
     expected_error = np.sqrt(poisson_error_source**2 + noise_error**2 + sky_background_error**2)
 
     # The uncertainties are fairly large because the aperture is the size of the
-    # star FWHM, so pixelation matters.
-    assert photom["tot_count"][0] == pytest.approx(expected_counts, expected_error)
+    # star FWHM, so pixelation matters. Allow 2 sigma: with a single fixed-seed noise
+    # realization the measured count can sit ~1.5 sigma from the analytic expectation.
+    assert photom["tot_count"][0] == pytest.approx(expected_counts, abs=2 * expected_error)
 
     # The background std estimate from the annulus has statistical scatter
     # proportional to noise_stddev, so absolute tolerances scale with
@@ -115,7 +116,7 @@ def test_min_separation_fwhm():
     # In that case the minimum separation should be roughly zero.
     assert min_separation_fwhm(-tenk_flux_ratio, tolerance=0.01) == pytest.approx(0)
 
-    # Now assume the neighbor is much brighter than the target. THen the minimum
+    # Now assume the neighbor is much brighter than the target. Then the minimum
     # separation should be large.
     assert min_separation_fwhm(tenk_flux_ratio, tolerance=0.01) == pytest.approx(
         11.036, rel=0.01,
@@ -127,7 +128,7 @@ def test_min_separation_fwhm():
 
 class TestPrepareImage:
     def test_no_photometry_coord_input(self, make_test_image, tmp_path):
-        """Test that the function raises an error if no photometry coordinates are provided."""
+        """Test that aligned coords fall back to detected coords when none are provided."""
         image_size = (500, 500)
 
         source_properties = Table(

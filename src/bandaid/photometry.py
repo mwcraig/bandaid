@@ -1,7 +1,15 @@
+"""
+Photometry pipeline for Smart Telescope images.
+
+Provides the per-image processing steps used by the bandaid pipeline: source
+detection and FWHM estimation, WCS alignment against a Gaia reference, CNN
+centroiding, aperture photometry with annulus background subtraction and error
+estimation, bright-neighbor contamination flagging, and conversion of the
+resulting tables into a ``StarList``.
+"""
 import json
 from dataclasses import dataclass
 from importlib.resources import files as package_files
-from pathlib import Path
 
 import numpy as np
 from astropy.io import fits
@@ -132,9 +140,6 @@ def calibration_sequence(file: str, threshold: float = 1) -> tuple:
         Path to the FITS file.
     threshold : float, optional
         Detection threshold for star finding, by default 1
-    max_adu : int, optional
-        Maximum ADU value to consider for detections (used to filter out saturated
-        stars), by default 0 (no filtering)
 
     Returns
     -------
@@ -162,6 +167,10 @@ def calibration_sequence(file: str, threshold: float = 1) -> tuple:
 
     # Drop any cutouts that are saturated -- NOTE THAT THIS LEAVES BEHIND SATURATED REGIONS
     cutouts = np.array(list(filter(lambda data: np.max(data) < max_adu, cutouts)))
+
+    # If every detected source was saturated there is nothing left to fit a PSF to
+    if len(cutouts) == 0:
+        return None, [], None, None, None
 
     # Drop any regions that are saturated for calculating the FWHM
     cutouts_normalized = cutouts / np.nanmax(cutouts, (1, 2))[:, None, None]
@@ -204,7 +213,7 @@ def metadata_from_header(header):
     json_path = package_files("bandaid").joinpath(
        "meta_json_files", "Seestar50", "basic.json",
     )
-    with Path(json_path).open() as f:
+    with json_path.open() as f:
         template = json.load(f)
 
     # Collect fallback values from "#key" entries
@@ -472,7 +481,7 @@ def measure_photometry(  # noqa: PLR0913
         "bkgd_count": bkg,
         "bkgd_std": bkg_std,
         "peak_count": peaks,
-        "snr": snr,
+        "snr": snr[:, 0],
         "total_bkg": total_bkg,
         "fluxes": flux,
         "aperture_radii": float(apertures_radii[0]),
@@ -511,6 +520,11 @@ def prepare_image(file, ref, *, detect_on_bayer_balanced=False, photometry_coord
     calibrated_data, metadata, coords, fwhm, _ = calibration_sequence(
         file, threshold=THRESH,
     )
+
+    # calibration_sequence returns the (None, [], None, None, None) sentinel when too
+    # few usable stars were detected; honor the documented "return None" contract.
+    if calibrated_data is None:
+        return None
 
     if user_specific_metadata is not None:
         metadata.update(user_specific_metadata)
