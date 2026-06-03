@@ -173,6 +173,7 @@ ignore = [
     "ANN201",  # 'Missing type annotation for {return}'.
     "ANN202",  # 'Missing return type for private function' -- annotations optional.
     "ANN206",  # 'Missing return type for classmethod' -- annotations optional.
+    "PLR0913",  # 'Too many arguments' -- photometry/research entry points expose many tuning knobs.
     # Rules the formatter owns; ignored per https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules
     "Q000",  # bad-quotes-inline-string (formatter normalizes quotes).
     "Q001",  # bad-quotes-multiline-string.

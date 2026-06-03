@@ -457,7 +457,7 @@ def annulus_sigma_clip_stats(data, coords, r_in, r_out, input_mask=None, sigma=3
     return aperstats.median, aperstats.std
 
 
-def measure_photometry(  # noqa: PLR0913
+def measure_photometry(
     calibrated_data,
     centroid_coords,
     aligned_coords,
