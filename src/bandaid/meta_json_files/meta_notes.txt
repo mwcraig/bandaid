@@ -1,0 +1,144 @@
+Working with the meta data
+
+The meta data required is defined in the code:
+   valid_meta_keys=  (about line 547)
+   Note that meta keys are lower case.
+
+We build to that from what is collected, in this order:
+- probe for the mfg and image type using header keywords
+    probe_file_for_type() identifies the mfg and the options selected
+    eg mfg: "Unistellar", "Seestar", "Origin", "Dwarf2", "Dwarf3", "other"
+    eg types: "bayered", "mono", "3Dstacked", "3Hstacked", "unknown"
+- FITS header
+    Read in the whole header. Note that these keys are upper case.
+- JSON sidecar file, if it exists
+    Some mfg provide a json sidecar file along with the FITS file. Others like
+    the Seestar do not have this extra json: the fits header is complete enough.
+    There can be more than one file in this metadata group of files.
+    Note that one of the files in the metadata group of files can be flagged as
+       as being the "personal.json" file. That means it is processed last.
+       The flag is to include in the file the string "DoLast""
+       eg:  "_DoLast": "treat as a personal.json file and process last",
+- add the raw file name as meta["filename"]
+    There may be useful information in the file name
+
+- Now we begin the process of building the meta dict. The data above is all grist for the mill.
+
+-  A "basic.json" exists for each mfg type.
+   These are json files but with special flags to actively adjust the values.
+   - prefix the key with a _ to indicate a comment, line to be ignored
+      eg  "_comment": "this is a comment"
+   - prefix the value with a @ to indicate a value to be used as a key already in the meta dict
+      ie The data is in the meta already, but not keyed as needed. Here you pay attention to the
+      order of the steps building the meta. Reading in the files FITS header comes first and all
+      those keys will be in upper case. Note that the meta dict is all lower case.
+      eg  "exposure": "@EXPTIME"
+      Note that the some of the sidecare json files had nested keys
+      eg  the Origin we would use: "exposure": "@StackedInfo.captureParams.exposure"
+   - prefix the value with a ! to indicate a function is to be called to adjust the value
+      eg  "obs_time": "!DATE-OBS Local2UTC" means look for the DATE-OBS key and convert it to UTC
+      eg  "obs_time": "!StackedInfo.dateTime refmtDate %m-%d-%yB%H_%M_%S"  1
+           - change from the existing format to the std  "%Y-%m-%dT%H:%M:%S"
+           - to keep the format field as one token, use B to replace any spaces
+           - perform the conversion to UTC if last token is not 0
+      The index function splits the referenced field on spaces and returns the nth field
+      eg   "tel_firmware" : "!CREATOR index 1"
+           get the second field from  CREATOR 	= 'Origin 1.1.4233 '
+      In some cases the the RA are in hours and we want degrees
+      eg   "ra": "!RA hr2deg"
+           convert from decimal hours to degrees
+   - prefix the key with a # to indicate that this value should not replace an existing value,
+      only provide the data if its not there yet.
+      eg  #SITEELEV  don't overwrite the value if the FITS provided it
+
+After the basic.json there may be a second json file specific to the image type.
+   eg the Dwarf's need an adjustment if the image is bayered, so a bayered.json file is sought.
+   In this case the largest_useable_adu_value has been set to 60000 by the basic.json, but
+       the case of the bayered image this must be reset to 4070.
+
+And finally, there might be a personal.json file to be processed last. See the
+   instructions above how a metadata json file can be flagged to be the personal.json file.
+
+
+These json files are all from the mfg or from the code. There is one last json file
+   that is created by the user. This has been called the personal.json file. This is
+   is to fill in missing data.
+   eg.  #obscode" : "UNKN"
+      note the # sign to indicate that this value should not replace an existing value.
+
+
+
+Advice to the user:
+
+- The image2sl gui has some features that will help you:
+   - the 5 image file boxes will remember entries between runs
+   - and remember what directory you last selected from.
+   - Note that you can also directly enter, delete and move the filenames in the box.
+- Most of the meta data parsing is automatic, based on the mfg and image type.
+   - for the few cases where the mfg has not provided enough information in the fits
+     header and a companion json file (refered to as a sidecar file) you should have
+     a "personal.json" added as last in the meta file list. Here is what you will need,
+     prepared in a text editor:
+       {
+            "observer" : "UNKN",
+            "#site_elev" : 100
+       }
+         - this will provide an observer name and a site_elev if it is missing.
+
+- bias, dark and flat files are not generally available. Select them if you know
+   they are appropriate.
+
+- Working with the different telescopes:
+   - Dwarf3/Dwarf2  does have a sidecar json file named "shotsInfo.json" that will be included in
+       the directory with the image files. There are 2 types of images: fits files prefixed
+       with the target name which are the raw bayered images. There are also images prefixed
+       by "stacked-" where the Light images have been stacked.
+
+   - Seestar S50 does not have a sidecar json file. The raw images are prefixed with "Light" and
+      the stacked images are prefixed with "Stacked".
+
+   - The Origin scope has a sidecar json called "info.json". Raw images are prefixed by "Light".
+       The stacked image is called FinalStackedMaster.tiff. This needs to be converted to a FITS
+       by loading the tiff into MaximDL and saving it as a FITS file.
+
+- The debayering of raw images has been tested for S50 and Dwarf. Should work on the Origin, but
+      trust but verify.
+
+
+                 - You can examine how the meta has been built by examining the console output. Look for:
+The following metadata key(s) are missing:
+[]
+
+ Validation Table
+Key                       Reqd Found JSON      Found FITS      Final
+schema_version            Opt
+obs_time                  Req                                  2025-02-15T00:17:24
+site_lat                  Req  @SITELAT                        42
+site_lon                  Req  @SITELONG                       -71
+site_elev                 Req  @SITEELEV                       3
+observer                  Req  @obscode                        UNKN
+filter                    Opt
+block_filter              Req  @ir                             Astro
+exposure                  Req  @EXPTIME                        60.0
+tel_manufac               Req  @ORIGIN                         DWARFLAB
+tel_model                 Req  @TELESCOP                       DWARFIII
+tel_firmware              Opt
+adc_depth                 Req                                  12
+largest_usable_adu_value  Req                                  64000
+egain                     Req                                  0.3116
+bayerpat                  Req  @BAYERPAT                       RGGB
+pixscale                  Req                                  2.8
+epoch                     Req                                  J2000
+refframe                  Req                                  ICRS
+dec                       Req  @DEC                            24.256663
+ra                        Req                                  56.613959
+fov_rad                   Req                                  1.7
+telescope_probe           Req                                  ('Dwarf3', '3Dstacked')
+roworder                  Req                                  top-down
+ybayroff                  Req                                  1
+
+You will be halted if there is anything missing.
+Check that the Final column is correct.
+If there is a problem, you might be able to force a value by adding it to the
+   to the personal.json file.
+Report any problems via the STWG Slack channel to @George Silvis
