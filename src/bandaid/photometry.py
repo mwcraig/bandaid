@@ -143,7 +143,7 @@ def neighbor_contamination_flag(
 
     finite = np.isfinite(mags)
     valid = finite[:, None] & finite[None, :]
-    np.fill_diagonal(valid, False)
+    np.fill_diagonal(valid, val=False)
 
     min_sep_pix = np.zeros_like(dist)
     if valid.any():
