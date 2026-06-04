@@ -292,6 +292,7 @@ def test_measure_photometry_accepts_scalar_relative_radii(make_test_image):
 @pytest.mark.parametrize(
     "bad_annulus",
     [
+        5.0,  # not a sequence
         (5,),  # too few elements
         (5, 8, 10),  # too many elements
         (8, 5),  # outer smaller than inner

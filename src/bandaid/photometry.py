@@ -46,8 +46,6 @@ MIN_DETECTED_STARS = 3
 # Only need one radius for STWG, but it needs to be in an iterable
 RELATIVE_RADII = np.array([1.0])  # np.linspace(0.1, 5, 30)
 ANNULUS = (5, 8)
-# An annulus is described by exactly two radii: (inner, outer).
-N_ANNULUS_RADII = 2
 
 # Bright-neighbor rejection. A star is flagged if any brighter neighbor's PSF
 # wings would contribute more than CONTAMINATION_TOLERANCE of the target flux
@@ -508,11 +506,17 @@ def measure_photometry(
         If `annulus` is not a 2-element sequence with the outer radius larger
         than the inner radius.
     """
-    if len(annulus) != N_ANNULUS_RADII or annulus[1] <= annulus[0]:
-        msg = (
-            "annulus must be a 2-element (inner, outer) sequence with "
-            f"outer > inner; got {annulus!r}."
-        )
+    msg = (
+        "annulus must be a 2-element (inner, outer) sequence with "
+        f"outer > inner; got {annulus!r}."
+    )
+    # Unpacking turns both non-sequences (TypeError) and wrong-length sequences
+    # (ValueError) into the same actionable ValueError promised in the docstring.
+    try:
+        inner, outer = annulus
+    except (TypeError, ValueError):
+        raise ValueError(msg) from None
+    if outer <= inner:
         raise ValueError(msg)
     # Coerce to at least 1D float so a scalar relative_radii (e.g. 1.0) is
     # treated as a single radius rather than a 0-d array (which is not iterable).
