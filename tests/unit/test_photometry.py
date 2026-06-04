@@ -269,6 +269,52 @@ def test_measure_photometry_accepts_list_relative_radii(make_test_image):
     assert photom["aperture_radii"] == pytest.approx(1.0 * fwhm)
 
 
+def test_measure_photometry_accepts_scalar_relative_radii(make_test_image):
+    """A bare scalar relative_radii is coerced to 1D and works as one aperture."""
+    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    egain = 0.3
+
+    photom = measure_photometry(
+        image,
+        coords,
+        coords,
+        fwhm,
+        egain,
+        mask,
+        relative_radii=1.0,
+    )
+
+    # A scalar behaves like a single-element radius list.
+    assert photom["fluxes"].shape == (len(coords), 1)
+    assert photom["aperture_radii"] == pytest.approx(1.0 * fwhm)
+
+
+@pytest.mark.parametrize(
+    "bad_annulus",
+    [
+        (5,),  # too few elements
+        (5, 8, 10),  # too many elements
+        (8, 5),  # outer smaller than inner
+        (5, 5),  # outer equal to inner
+    ],
+)
+def test_measure_photometry_rejects_invalid_annulus(make_test_image, bad_annulus):
+    """A malformed annulus raises a clear ValueError up front."""
+    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    egain = 0.3
+
+    with pytest.raises(ValueError, match="annulus"):
+        measure_photometry(
+            image,
+            coords,
+            coords,
+            fwhm,
+            egain,
+            mask,
+            annulus=bad_annulus,
+        )
+
+
 def test_min_separation_fwhm():
     """Check a few extreme cases for a reasonable minimum separation between sources."""
     tenk_flux_ratio = 10

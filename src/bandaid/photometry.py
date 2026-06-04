@@ -46,6 +46,8 @@ MIN_DETECTED_STARS = 3
 # Only need one radius for STWG, but it needs to be in an iterable
 RELATIVE_RADII = np.array([1.0])  # np.linspace(0.1, 5, 30)
 ANNULUS = (5, 8)
+# An annulus is described by exactly two radii: (inner, outer).
+N_ANNULUS_RADII = 2
 
 # Bright-neighbor rejection. A star is flagged if any brighter neighbor's PSF
 # wings would contribute more than CONTAMINATION_TOLERANCE of the target flux
@@ -486,20 +488,35 @@ def measure_photometry(
         System gain in e-/adu.
     mask : numpy.ndarray or None
         Bayer mask to apply to the image data.
-    relative_radii : array-like, optional
+    relative_radii : array-like or float, optional
         Aperture radii in units of FWHM; multiplied by `fwhm` to get the actual
-        aperture sizes. Defaults to the module-level `RELATIVE_RADII`.
+        aperture sizes. A scalar is treated as a single radius. Defaults to the
+        module-level `RELATIVE_RADII`.
     annulus : tuple of float, optional
-        Background annulus inner and outer radii in units of FWHM. Defaults to
-        the module-level `ANNULUS`.
+        Background annulus ``(inner, outer)`` radii in units of FWHM, with
+        ``outer > inner``. Defaults to the module-level `ANNULUS`.
 
     Returns
     -------
     dict
         Keys: tot_count, count_err, bkgd_count, peak_count, snr,
         total_bkg, fluxes, aperture_radii, annulus_radii.
+
+    Raises
+    ------
+    ValueError
+        If `annulus` is not a 2-element sequence with the outer radius larger
+        than the inner radius.
     """
-    apertures_radii = np.asarray(relative_radii) * fwhm
+    if len(annulus) != N_ANNULUS_RADII or annulus[1] <= annulus[0]:
+        msg = (
+            "annulus must be a 2-element (inner, outer) sequence with "
+            f"outer > inner; got {annulus!r}."
+        )
+        raise ValueError(msg)
+    # Coerce to at least 1D float so a scalar relative_radii (e.g. 1.0) is
+    # treated as a single radius rather than a 0-d array (which is not iterable).
+    apertures_radii = np.atleast_1d(np.asarray(relative_radii, dtype=float)) * fwhm
     flux = photometry.aperture_photometry(
         calibrated_data,
         centroid_coords,
