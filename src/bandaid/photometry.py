@@ -606,9 +606,6 @@ def prepare_image(
     else:
         working_image = calibrated_data
 
-    # TODO look at ref -- I do NOT think this is doing the correct thing, since the WCS
-    # for this image is not the one used to convert coordinates to sky coordinates
-    # in the reference data.
     aligned_coords, this_wcs = align(
         coords,
         ref,
