@@ -521,15 +521,26 @@ def measure_photometry(
     # Coerce to at least 1D float so a scalar relative_radii (e.g. 1.0) is
     # treated as a single radius rather than a 0-d array (which is not iterable).
     apertures_radii = np.atleast_1d(np.asarray(relative_radii, dtype=float)) * fwhm
+
+    # The inner background radius is pushed out to at least the largest aperture
+    # so the annulus never overlaps the photometry aperture. If that leaves the
+    # outer radius at or inside the inner one, there is no usable annulus.
+    r_in = np.max([np.max(apertures_radii), inner * fwhm])
+    r_out = outer * fwhm
+    if r_out <= r_in:
+        radius_msg = (
+            f"no usable background annulus: outer radius ({r_out}) is not larger "
+            f"than the inner radius ({r_in}) after expanding it to the largest "
+            "aperture. Use a larger annulus or smaller relative_radii."
+        )
+        raise ValueError(radius_msg)
+    annulus_radii = (r_in, r_out)
+
     flux = photometry.aperture_photometry(
         calibrated_data,
         centroid_coords,
         apertures_radii,
         mask=mask,
-    )
-    annulus_radii = (
-        np.max([np.max(apertures_radii), annulus[0] * fwhm]),
-        annulus[1] * fwhm,
     )
     aperture_area = np.array(
         [
@@ -671,9 +682,10 @@ def build_photometry_table(
         Per-image detection/alignment results.
     mask : numpy.ndarray or None
         Bayer mask to apply to the image data.
-    relative_radii : array-like, optional
-        Aperture radii in units of FWHM, passed through to `measure_photometry`.
-        Defaults to the module-level `RELATIVE_RADII`.
+    relative_radii : array-like or float, optional
+        Aperture radii in units of FWHM, passed through to `measure_photometry`
+        (a scalar is treated as a single radius). Defaults to the module-level
+        `RELATIVE_RADII`.
     annulus : tuple of float, optional
         Background annulus inner and outer radii in units of FWHM, passed
         through to `measure_photometry`. Defaults to the module-level `ANNULUS`.

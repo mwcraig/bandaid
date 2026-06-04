@@ -316,6 +316,48 @@ def test_measure_photometry_rejects_invalid_annulus(make_test_image, bad_annulus
         )
 
 
+def test_measure_photometry_rejects_aperture_larger_than_annulus(make_test_image):
+    """A degenerate annulus (outer <= forced inner) raises a clear ValueError."""
+    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    egain = 0.3
+
+    # The largest aperture (20 FWHM) exceeds the outer annulus radius (8 FWHM),
+    # so after forcing the inner radius up to the largest aperture there is no
+    # usable background annulus left.
+    with pytest.raises(ValueError, match="annulus"):
+        measure_photometry(
+            image,
+            coords,
+            coords,
+            fwhm,
+            egain,
+            mask,
+            relative_radii=[20.0],
+            annulus=(5, 8),
+        )
+
+
+def test_measure_photometry_accepts_non_subscriptable_annulus(make_test_image):
+    """A 2-element iterable that unpacks but is not subscriptable still works."""
+    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    egain = 0.3
+
+    # An iterator unpacks into (inner, outer) but cannot be indexed; the function
+    # must use the unpacked values rather than re-indexing the original.
+    photom = measure_photometry(
+        image,
+        coords,
+        coords,
+        fwhm,
+        egain,
+        mask,
+        annulus=iter((6, 10)),
+    )
+
+    expected = (max(np.max(RELATIVE_RADII) * fwhm, 6 * fwhm), 10 * fwhm)
+    assert photom["annulus_radii"] == pytest.approx(expected)
+
+
 def test_min_separation_fwhm():
     """Check a few extreme cases for a reasonable minimum separation between sources."""
     tenk_flux_ratio = 10
