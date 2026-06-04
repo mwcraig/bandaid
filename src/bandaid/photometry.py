@@ -348,6 +348,7 @@ class ImageData:
     aligned_coords: np.ndarray
     wcs: object
     header: fits.Header
+    input_photometry_coords: object = None
     metadata: dict = None
 
 
@@ -626,6 +627,7 @@ def prepare_image(
         aligned_coords=aligned_coords,
         wcs=this_wcs,
         header=header,
+        input_photometry_coords=photometry_coords,
         metadata=metadata,
     )
 
@@ -655,10 +657,19 @@ def build_photometry_table(img, mask):
         img.metadata["egain"],
         mask,
     )
-    centroid_ra_dec = img.wcs.pixel_to_world(
-        img.centroid_coords[..., 0],
-        img.centroid_coords[..., 1],
-    )
+    if img.input_photometry_coords is not None:
+        # The caller supplied known sky coordinates; use them directly rather
+        # than re-deriving RA/Dec from this image's WCS. input_photometry_coords
+        # drives aligned_coords -> centroid_coords one-to-one, so rows line up.
+        ra_deg = img.input_photometry_coords.ra.degree
+        dec_deg = img.input_photometry_coords.dec.degree
+    else:
+        centroid_ra_dec = img.wcs.pixel_to_world(
+            img.centroid_coords[..., 0],
+            img.centroid_coords[..., 1],
+        )
+        ra_deg = centroid_ra_dec.ra.degree
+        dec_deg = centroid_ra_dec.dec.degree
 
     data = Table()
     data["tot_count"] = phot["tot_count"]
@@ -675,8 +686,8 @@ def build_photometry_table(img, mask):
     data["airmass"] = img.header.get("AIRMASS", np.nan)
     data["peak_count"] = phot["peak_count"]
     data["stars_in_exp"] = len(img.coords)
-    data["ra"] = centroid_ra_dec.ra.degree
-    data["dec"] = centroid_ra_dec.dec.degree
+    data["ra"] = ra_deg
+    data["dec"] = dec_deg
     data["x"] = img.centroid_coords[..., 0]
     data["y"] = img.centroid_coords[..., 1]
     data["aperture_area"] = phot["aperture_area"]
