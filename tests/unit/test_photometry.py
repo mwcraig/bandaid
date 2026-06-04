@@ -7,8 +7,11 @@ Covers aperture photometry on synthetic single-source images
 (``prepare_image``), using the synthetic-image fixtures from ``conftest.py``.
 """
 
+import astropy.units as u
 import numpy as np
 import pytest
+from astropy.coordinates import SkyCoord
+from astropy.io import fits
 from astropy.nddata import CCDData
 from astropy.stats import gaussian_fwhm_to_sigma, sigma_clipped_stats
 from astropy.table import Table
@@ -18,7 +21,9 @@ from bandaid import measure_photometry
 from bandaid.photometry import (
     ANNULUS,
     RELATIVE_RADII,
+    ImageData,
     ReferenceData,
+    build_photometry_table,
     min_separation_fwhm,
     prepare_image,
 )
@@ -181,11 +186,7 @@ class TestPrepareImage:
         coords_xy = np.array(
             [[row["x_mean"], row["y_mean"]] for row in source_properties],
         )
-        wcs = WCS(naxis=2)
-        wcs.wcs.crpix = [image_size[1] / 2, image_size[0] / 2]
-        wcs.wcs.crval = [0.0, 0.0]
-        wcs.wcs.cdelt = [-2.4 / 3600, 2.4 / 3600]
-        wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+        wcs = _make_tan_wcs(image_size, crval=(0.0, 0.0))
 
         radecs = np.array(wcs.pixel_to_world_values(coords_xy[:, 0], coords_xy[:, 1])).T
         radecs = radecs + np.array(
@@ -209,3 +210,112 @@ class TestPrepareImage:
         )
 
         assert np.array_equal(img.coords, img.aligned_coords)
+
+
+def _make_tan_wcs(image_size=(500, 500), crval=(10.0, 20.0)):
+    """Build a simple TAN WCS centred at ``crval`` for the given image size."""
+    wcs = WCS(naxis=2)
+    wcs.wcs.crpix = [image_size[1] / 2, image_size[0] / 2]
+    wcs.wcs.crval = list(crval)
+    wcs.wcs.cdelt = [-2.4 / 3600, 2.4 / 3600]
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    return wcs
+
+
+def _fake_phot_factory(n_stars):
+    """
+    Return a stub for ``measure_photometry`` sized for ``n_stars`` sources.
+
+    The stub bypasses the real aperture photometry (which needs realistic image
+    data) so the tests can exercise only the RA/Dec column logic in
+    ``build_photometry_table``. Shapes mirror the real return value: scalar-per-
+    star arrays plus ``(n_stars, len(RELATIVE_RADII))`` arrays for the
+    aperture-resolved quantities.
+    """
+    n_radii = len(RELATIVE_RADII)
+
+    def _fake_measure_photometry(*_args: object, **_kwargs: object) -> dict:
+        return {
+            "tot_count": np.arange(n_stars, dtype=float),
+            "count_err": np.ones(n_stars),
+            "bkgd_count": np.ones(n_stars),
+            "bkgd_std": np.ones(n_stars),
+            "peak_count": np.ones(n_stars),
+            "snr": np.ones(n_stars),
+            "total_bkg": np.ones((n_stars, n_radii)),
+            "fluxes": np.ones((n_stars, n_radii)),
+            "aperture_radii": 1.0,
+            "annulus_radii": (5.0, 8.0),
+            "aperture_area": np.ones(n_stars),
+        }
+
+    return _fake_measure_photometry
+
+
+def _make_image_data(wcs, centroid_coords, input_photometry_coords):
+    """Build an ImageData with just enough fields for build_photometry_table."""
+    header = fits.Header()
+    header["DATE-OBS"] = "2020-01-01T00:00:00"
+    header["AIRMASS"] = 1.2
+    return ImageData(
+        calibrated_data=np.zeros((50, 50)),
+        coords=centroid_coords,
+        fwhm=2.3,
+        centroid_coords=centroid_coords,
+        aligned_coords=centroid_coords,
+        wcs=wcs,
+        header=header,
+        input_photometry_coords=input_photometry_coords,
+        metadata={"egain": 1.0},
+    )
+
+
+class TestBuildPhotometryTable:
+    def test_uses_photometry_coords_when_provided(self, monkeypatch):
+        """RA/Dec come straight from photometry_coords, not the WCS round-trip."""
+        n_stars = 3
+        monkeypatch.setattr(
+            "bandaid.photometry.measure_photometry",
+            _fake_phot_factory(n_stars),
+        )
+        wcs = _make_tan_wcs()
+        # Centroids near the image centre; their WCS sky positions are close to
+        # the WCS crval (10, 20) -- deliberately NOT the photometry_coords below.
+        centroid_coords = np.array([[245.0, 250.0], [255.0, 260.0], [250.0, 240.0]])
+        photometry_coords = SkyCoord(
+            ra=[100.0, 150.0, 200.0] * u.deg,
+            dec=[-30.0, -10.0, 5.0] * u.deg,
+        )
+        img = _make_image_data(wcs, centroid_coords, photometry_coords)
+
+        table = build_photometry_table(img, mask=None)
+
+        # ra/dec equal the supplied sky coordinates exactly...
+        np.testing.assert_allclose(table["ra"], photometry_coords.ra.degree)
+        np.testing.assert_allclose(table["dec"], photometry_coords.dec.degree)
+
+        # ...and are NOT what the WCS round-trip would have produced.
+        wcs_radec = wcs.pixel_to_world(centroid_coords[..., 0], centroid_coords[..., 1])
+        assert not np.allclose(table["ra"], wcs_radec.ra.degree)
+        assert not np.allclose(table["dec"], wcs_radec.dec.degree)
+
+        # Rows line up with the per-star x/y (centroid) columns.
+        assert len(table) == n_stars
+        assert len(table["ra"]) == len(table["x"])
+
+    def test_falls_back_to_wcs_when_no_photometry_coords(self, monkeypatch):
+        """With no photometry_coords, RA/Dec are derived from the image WCS."""
+        n_stars = 3
+        monkeypatch.setattr(
+            "bandaid.photometry.measure_photometry",
+            _fake_phot_factory(n_stars),
+        )
+        wcs = _make_tan_wcs()
+        centroid_coords = np.array([[245.0, 250.0], [255.0, 260.0], [250.0, 240.0]])
+        img = _make_image_data(wcs, centroid_coords, input_photometry_coords=None)
+
+        table = build_photometry_table(img, mask=None)
+
+        wcs_radec = wcs.pixel_to_world(centroid_coords[..., 0], centroid_coords[..., 1])
+        np.testing.assert_allclose(table["ra"], wcs_radec.ra.degree)
+        np.testing.assert_allclose(table["dec"], wcs_radec.dec.degree)
