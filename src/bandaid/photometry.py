@@ -465,6 +465,9 @@ def measure_photometry(
     fwhm,
     egain,
     mask,
+    *,
+    relative_radii=RELATIVE_RADII,
+    annulus=ANNULUS,
 ):
     """
     Perform aperture photometry, background subtraction, and error calculation.
@@ -483,6 +486,12 @@ def measure_photometry(
         System gain in e-/adu.
     mask : numpy.ndarray or None
         Bayer mask to apply to the image data.
+    relative_radii : array-like, optional
+        Aperture radii in units of FWHM; multiplied by `fwhm` to get the actual
+        aperture sizes. Defaults to the module-level `RELATIVE_RADII`.
+    annulus : tuple of float, optional
+        Background annulus inner and outer radii in units of FWHM. Defaults to
+        the module-level `ANNULUS`.
 
     Returns
     -------
@@ -490,7 +499,7 @@ def measure_photometry(
         Keys: tot_count, count_err, bkgd_count, peak_count, snr,
         total_bkg, fluxes, aperture_radii, annulus_radii.
     """
-    apertures_radii = RELATIVE_RADII * fwhm
+    apertures_radii = np.asarray(relative_radii) * fwhm
     flux = photometry.aperture_photometry(
         calibrated_data,
         centroid_coords,
@@ -498,8 +507,8 @@ def measure_photometry(
         mask=mask,
     )
     annulus_radii = (
-        np.max([np.max(apertures_radii), ANNULUS[0] * fwhm]),
-        ANNULUS[1] * fwhm,
+        np.max([np.max(apertures_radii), annulus[0] * fwhm]),
+        annulus[1] * fwhm,
     )
     aperture_area = np.array(
         [
@@ -629,7 +638,9 @@ def prepare_image(
     )
 
 
-def build_photometry_table(img, mask):
+def build_photometry_table(
+    img, mask, *, relative_radii=RELATIVE_RADII, annulus=ANNULUS
+):
     """
     Run photometry with a given mask and build an output table.
 
@@ -639,6 +650,12 @@ def build_photometry_table(img, mask):
         Per-image detection/alignment results.
     mask : numpy.ndarray or None
         Bayer mask to apply to the image data.
+    relative_radii : array-like, optional
+        Aperture radii in units of FWHM, passed through to `measure_photometry`.
+        Defaults to the module-level `RELATIVE_RADII`.
+    annulus : tuple of float, optional
+        Background annulus inner and outer radii in units of FWHM, passed
+        through to `measure_photometry`. Defaults to the module-level `ANNULUS`.
 
     Returns
     -------
@@ -653,6 +670,8 @@ def build_photometry_table(img, mask):
         img.fwhm,
         img.metadata["egain"],
         mask,
+        relative_radii=relative_radii,
+        annulus=annulus,
     )
     if img.input_photometry_coords is not None:
         # The caller supplied known sky coordinates; use them directly rather
@@ -678,7 +697,7 @@ def build_photometry_table(img, mask):
     data["fluxes"] = phot["fluxes"]
     data["time"] = Time(parser.parse(img.header["DATE-OBS"])).jd
     data["sky"] = np.mean(
-        phot["total_bkg"] / (np.pi * (RELATIVE_RADII * img.fwhm) ** 2),
+        phot["total_bkg"] / (np.pi * (np.asarray(relative_radii) * img.fwhm) ** 2),
     )
     data["airmass"] = img.header.get("AIRMASS", np.nan)
     data["peak_count"] = phot["peak_count"]

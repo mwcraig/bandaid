@@ -33,6 +33,50 @@ from bandaid.photometry import (
 SEED = 843032
 
 
+def _single_source_photometry_inputs(make_test_image, fwhm=2.3, annulus=ANNULUS):
+    """
+    Build a noiseless single-source image and the ``measure_photometry`` inputs.
+
+    Parameters
+    ----------
+    make_test_image : callable
+        The ``make_test_image`` fixture factory.
+    fwhm : float, optional
+        FWHM (pixels) of the Gaussian source.
+    annulus : tuple, optional
+        Annulus (in FWHM) the image must be large enough to contain.
+
+    Returns
+    -------
+    tuple
+        ``(image, coords, fwhm, mask)`` ready to pass to ``measure_photometry``.
+    """
+    image_side = max(max(annulus) * fwhm * 2, 100)
+    image_size = (image_side, image_side)
+    source_x = image_size[1] / 2
+    source_y = image_size[0] / 2
+    source_properties = Table(
+        {
+            "amplitude": [100],
+            "x_mean": [source_x],
+            "y_mean": [source_y],
+            "x_stddev": [fwhm * gaussian_fwhm_to_sigma],
+            "y_stddev": [fwhm * gaussian_fwhm_to_sigma],
+        },
+    )
+    image = make_test_image(
+        image_size=image_size,
+        source_properties=source_properties,
+        include_noise=False,
+        noise_mean=0,
+        noise_stddev=0,
+        seed=SEED,
+    )
+    coords = np.array([[source_x, source_y]])
+    mask = np.zeros(image_size, dtype=bool)
+    return image, coords, fwhm, mask
+
+
 @pytest.mark.parametrize(
     ("include_noise", "noise_stddev"), [(True, 10), (True, 5), (False, 0)]
 )
@@ -133,6 +177,96 @@ def test_measure_photometry_single_source(make_test_image, include_noise, noise_
         rel=0.06,
         abs=snr_tol,
     )
+
+
+def test_measure_photometry_default_matches_explicit_constants(make_test_image):
+    """Omitting relative_radii/annulus matches passing the module constants."""
+    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    egain = 0.3
+
+    default = measure_photometry(image, coords, coords, fwhm, egain, mask)
+    explicit = measure_photometry(
+        image,
+        coords,
+        coords,
+        fwhm,
+        egain,
+        mask,
+        relative_radii=RELATIVE_RADII,
+        annulus=ANNULUS,
+    )
+
+    np.testing.assert_array_equal(default["tot_count"], explicit["tot_count"])
+    np.testing.assert_array_equal(default["count_err"], explicit["count_err"])
+    assert default["aperture_radii"] == explicit["aperture_radii"]
+    assert default["annulus_radii"] == explicit["annulus_radii"]
+
+
+def test_measure_photometry_custom_relative_radii(make_test_image):
+    """A custom relative_radii drives the output shapes and aperture radius."""
+    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    egain = 0.3
+    relative_radii = [1.0, 2.0]
+
+    photom = measure_photometry(
+        image,
+        coords,
+        coords,
+        fwhm,
+        egain,
+        mask,
+        relative_radii=relative_radii,
+    )
+
+    # One column per requested radius.
+    assert photom["fluxes"].shape == (1, len(relative_radii))
+    assert photom["total_bkg"].shape == (1, len(relative_radii))
+    # A larger aperture captures more flux for a Gaussian source.
+    assert photom["fluxes"][0, 1] > photom["fluxes"][0, 0]
+    # The reported aperture radius is the first requested radius times the FWHM.
+    assert photom["aperture_radii"] == pytest.approx(relative_radii[0] * fwhm)
+
+
+def test_measure_photometry_custom_annulus(make_test_image):
+    """A custom annulus is honored in the returned annulus_radii."""
+    annulus = (6, 10)
+    image, coords, fwhm, mask = _single_source_photometry_inputs(
+        make_test_image,
+        annulus=annulus,
+    )
+    egain = 0.3
+
+    photom = measure_photometry(
+        image,
+        coords,
+        coords,
+        fwhm,
+        egain,
+        mask,
+        annulus=annulus,
+    )
+
+    max_aper = np.max(RELATIVE_RADII) * fwhm
+    expected = (max(max_aper, annulus[0] * fwhm), annulus[1] * fwhm)
+    assert photom["annulus_radii"] == pytest.approx(expected)
+
+
+def test_measure_photometry_accepts_list_relative_radii(make_test_image):
+    """A plain list (not just ndarray) works for relative_radii."""
+    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    egain = 0.3
+
+    photom = measure_photometry(
+        image,
+        coords,
+        coords,
+        fwhm,
+        egain,
+        mask,
+        relative_radii=[1.0],
+    )
+
+    assert photom["aperture_radii"] == pytest.approx(1.0 * fwhm)
 
 
 def test_min_separation_fwhm():
@@ -319,3 +453,44 @@ class TestBuildPhotometryTable:
         wcs_radec = wcs.pixel_to_world(centroid_coords[..., 0], centroid_coords[..., 1])
         np.testing.assert_allclose(table["ra"], wcs_radec.ra.degree)
         np.testing.assert_allclose(table["dec"], wcs_radec.dec.degree)
+
+    def test_overrides_reach_photometry_and_show_in_output(self, make_test_image):
+        """Custom relative_radii/annulus flow through to the real photometry output."""
+        # Drive build_photometry_table end-to-end on a real single-source image
+        # (no monkeypatching): the overrides only reach the output table meta if
+        # build_photometry_table actually forwarded them to measure_photometry.
+        relative_radii = [1.0, 2.0]
+        annulus = (6, 10)
+        image, coords, fwhm, _ = _single_source_photometry_inputs(
+            make_test_image,
+            annulus=annulus,
+        )
+        img = _make_image_data(_make_tan_wcs(image.shape), coords, None)
+        img.calibrated_data = image
+
+        table = build_photometry_table(
+            img,
+            mask=None,
+            relative_radii=relative_radii,
+            annulus=annulus,
+        )
+
+        # One flux column per requested radius, and the meta echoes the overrides.
+        assert table["fluxes"].shape == (len(coords), len(relative_radii))
+        assert table.meta["aperture_radii"] == pytest.approx(relative_radii[0] * fwhm)
+        max_aper = max(relative_radii) * fwhm
+        expected_annulus = (max(max_aper, annulus[0] * fwhm), annulus[1] * fwhm)
+        assert table.meta["annulus_radii"] == pytest.approx(expected_annulus)
+
+    def test_defaults_show_module_constants_in_output(self, make_test_image):
+        """With no overrides, the output reflects the module-level constants."""
+        image, coords, fwhm, _ = _single_source_photometry_inputs(make_test_image)
+        img = _make_image_data(_make_tan_wcs(image.shape), coords, None)
+        img.calibrated_data = image
+
+        table = build_photometry_table(img, mask=None)
+
+        assert table.meta["aperture_radii"] == pytest.approx(RELATIVE_RADII[0] * fwhm)
+        max_aper = np.max(RELATIVE_RADII) * fwhm
+        expected_annulus = (max(max_aper, ANNULUS[0] * fwhm), ANNULUS[1] * fwhm)
+        assert table.meta["annulus_radii"] == pytest.approx(expected_annulus)
