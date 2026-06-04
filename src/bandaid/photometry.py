@@ -465,6 +465,9 @@ def measure_photometry(
     fwhm,
     egain,
     mask,
+    *,
+    relative_radii=RELATIVE_RADII,
+    annulus=ANNULUS,
 ):
     """
     Perform aperture photometry, background subtraction, and error calculation.
@@ -483,23 +486,61 @@ def measure_photometry(
         System gain in e-/adu.
     mask : numpy.ndarray or None
         Bayer mask to apply to the image data.
+    relative_radii : array-like or float, optional
+        Aperture radii in units of FWHM; multiplied by `fwhm` to get the actual
+        aperture sizes. A scalar is treated as a single radius. Defaults to the
+        module-level `RELATIVE_RADII`.
+    annulus : tuple of float, optional
+        Background annulus ``(inner, outer)`` radii in units of FWHM, with
+        ``outer > inner``. Defaults to the module-level `ANNULUS`.
 
     Returns
     -------
     dict
         Keys: tot_count, count_err, bkgd_count, peak_count, snr,
         total_bkg, fluxes, aperture_radii, annulus_radii.
+
+    Raises
+    ------
+    ValueError
+        If `annulus` is not a 2-element sequence with the outer radius larger
+        than the inner radius.
     """
-    apertures_radii = RELATIVE_RADII * fwhm
+    msg = (
+        "annulus must be a 2-element (inner, outer) sequence with "
+        f"outer > inner; got {annulus!r}."
+    )
+    # Unpacking turns both non-sequences (TypeError) and wrong-length sequences
+    # (ValueError) into the same actionable ValueError promised in the docstring.
+    try:
+        inner, outer = annulus
+    except (TypeError, ValueError):
+        raise ValueError(msg) from None
+    if outer <= inner:
+        raise ValueError(msg)
+    # Coerce to at least 1D float so a scalar relative_radii (e.g. 1.0) is
+    # treated as a single radius rather than a 0-d array (which is not iterable).
+    apertures_radii = np.atleast_1d(np.asarray(relative_radii, dtype=float)) * fwhm
+
+    # The inner background radius is pushed out to at least the largest aperture
+    # so the annulus never overlaps the photometry aperture. If that leaves the
+    # outer radius at or inside the inner one, there is no usable annulus.
+    r_in = np.max([np.max(apertures_radii), inner * fwhm])
+    r_out = outer * fwhm
+    if r_out <= r_in:
+        radius_msg = (
+            f"no usable background annulus: outer radius ({r_out}) is not larger "
+            f"than the inner radius ({r_in}) after expanding it to the largest "
+            "aperture. Use a larger annulus or smaller relative_radii."
+        )
+        raise ValueError(radius_msg)
+    annulus_radii = (r_in, r_out)
+
     flux = photometry.aperture_photometry(
         calibrated_data,
         centroid_coords,
         apertures_radii,
         mask=mask,
-    )
-    annulus_radii = (
-        np.max([np.max(apertures_radii), ANNULUS[0] * fwhm]),
-        ANNULUS[1] * fwhm,
     )
     aperture_area = np.array(
         [
@@ -629,7 +670,9 @@ def prepare_image(
     )
 
 
-def build_photometry_table(img, mask):
+def build_photometry_table(
+    img, mask, *, relative_radii=RELATIVE_RADII, annulus=ANNULUS
+):
     """
     Run photometry with a given mask and build an output table.
 
@@ -639,6 +682,13 @@ def build_photometry_table(img, mask):
         Per-image detection/alignment results.
     mask : numpy.ndarray or None
         Bayer mask to apply to the image data.
+    relative_radii : array-like or float, optional
+        Aperture radii in units of FWHM, passed through to `measure_photometry`
+        (a scalar is treated as a single radius). Defaults to the module-level
+        `RELATIVE_RADII`.
+    annulus : tuple of float, optional
+        Background annulus inner and outer radii in units of FWHM, passed
+        through to `measure_photometry`. Defaults to the module-level `ANNULUS`.
 
     Returns
     -------
@@ -653,6 +703,8 @@ def build_photometry_table(img, mask):
         img.fwhm,
         img.metadata["egain"],
         mask,
+        relative_radii=relative_radii,
+        annulus=annulus,
     )
     if img.input_photometry_coords is not None:
         # The caller supplied known sky coordinates; use them directly rather
@@ -678,7 +730,7 @@ def build_photometry_table(img, mask):
     data["fluxes"] = phot["fluxes"]
     data["time"] = Time(parser.parse(img.header["DATE-OBS"])).jd
     data["sky"] = np.mean(
-        phot["total_bkg"] / (np.pi * (RELATIVE_RADII * img.fwhm) ** 2),
+        phot["total_bkg"] / (np.pi * (np.asarray(relative_radii) * img.fwhm) ** 2),
     )
     data["airmass"] = img.header.get("AIRMASS", np.nan)
     data["peak_count"] = phot["peak_count"]
