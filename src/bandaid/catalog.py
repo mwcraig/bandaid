@@ -114,6 +114,14 @@ def cached_gaia_radecs(center, fov, *, limit=10000, magnitude=True, obs_epoch=No
     result = vizier.query_region(
         center, radius=radius * u.deg, catalog=GAIA_DR2_VIZIER_CATALOG
     )
+
+    # VizieR returns an empty TableList when nothing matches (or the server
+    # returns no tables); guard so an empty/sparse field yields correctly shaped
+    # empties instead of an IndexError on result[0].
+    if len(result) == 0 or len(result[0]) == 0:
+        radecs = np.empty((0, 2))
+        return (radecs, np.empty(0)) if magnitude else radecs
+
     table = result[0]
 
     if obs_epoch is None:
