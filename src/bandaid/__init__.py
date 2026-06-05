@@ -28,6 +28,7 @@ This might include a very brief description of the package,
 its purpose, and any important notes.
 """
 
+from .catalog import cached_gaia_radecs
 from .image2sl_qt import bayer_balance_image, generate_bayer_masks
 from .photometry import (
     ImageData,
