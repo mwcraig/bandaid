@@ -1,4 +1,4 @@
-# Centroid-drift sanity check
+# Centroid-drift check
 
 Photometry in bandaid is measured at *aligned* positions: a Gaia reference
 catalog is projected into each image's pixel frame, and a CNN centroider refines
@@ -60,10 +60,12 @@ flagged = centroid_drift_flag(centroid_coords, aligned_coords, fwhm)
 
 ## Flag, don't drop
 
-The check is currently **flag-only**: the `centroid_drift` column is written but
-no rows are removed from the resulting `StarList`. This is non-destructive, so
-you can inspect the flag and tune the thresholds against real data before letting
-it affect pipeline output. To start dropping flagged stars later, extend
+The check is currently **flag-only**: the `centroid_drift` column is written to
+the table `build_photometry_table` returns, but no rows are dropped. Downstream,
+`eloy_to_starlist` (which produces the `StarList`) does not currently drop rows
+on `centroid_drift` either. This is non-destructive, so you can inspect the flag
+and tune the thresholds against real data before letting it affect pipeline
+output. To start dropping flagged stars later, extend
 `eloy_to_starlist` with the same one-line pattern already used for the
 `contaminated` column:
 

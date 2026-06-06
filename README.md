@@ -34,10 +34,12 @@ be identified downstream:
 
 - `centroid_drift` — the star's measured centroid wandered too far from its
     aligned/expected position (bad WCS, too-faint star, or an obstruction). See the
-    [centroid-drift sanity check](docs/centroid_drift_check.md). Currently
-    flag-only (no rows are dropped).
-- `contaminated` — a bright neighbor's PSF wings spill into the aperture; dropped
-    by `eloy_to_starlist` when present.
+    [centroid-drift check](docs/centroid_drift_check.md). Currently flag-only (no
+    rows are dropped).
+- `contaminated` — a bright neighbor's PSF wings spill into the aperture;
+    `eloy_to_starlist` drops it when present. Not yet wired in: the helper
+    `neighbor_contamination_flag` exists but is not called anywhere yet, so no
+    `contaminated` column is currently written.
 
 ## Development
 

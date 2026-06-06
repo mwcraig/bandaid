@@ -55,7 +55,7 @@ MOFFAT_BETA = 3.0
 # At least two stars are needed before any neighbor pair can exist.
 MIN_STARS_FOR_PAIRS = 2
 
-# Centroid-drift sanity check. A star is flagged if its measured centroid wandered
+# Centroid-drift check. A star is flagged if its measured centroid wandered
 # more than `min(DRIFT_TOLERANCE_FWHM * fwhm, DRIFT_CAP_PIX)` pixels from its
 # aligned/expected position. The FWHM-relative term lets the allowance scale with
 # seeing, while the absolute pixel cap keeps a pathologically large FWHM from
@@ -185,15 +185,6 @@ def centroid_drift_flag(
     """
     Flag stars whose centroid drifted too far from its aligned position.
 
-    The drift is the pixel-space displacement between the measured centroid and
-    the aligned/expected position; both inputs are already in pixel space, so no
-    WCS round-trip is needed and the metric isolates centroid wander from WCS
-    quality. A star is flagged when its drift exceeds
-    ``min(tolerance * fwhm, cap)`` pixels. A large drift usually means the WCS is
-    wrong, the star was too faint to centroid, or it was blocked by cloud or an
-    obstruction. Non-finite centroids (e.g. failed faint-star centroids) are
-    treated as drifted.
-
     Parameters
     ----------
     centroid_coords : array-like, shape (N, 2)
@@ -214,6 +205,17 @@ def centroid_drift_flag(
     ndarray of bool, shape (N,)
         True where the centroid drifted past the allowed threshold or is
         non-finite.
+
+    Notes
+    -----
+    The drift is the pixel-space displacement between the measured centroid and
+    the aligned/expected position; both inputs are already in pixel space, so no
+    WCS round-trip is needed and the metric isolates centroid wander from WCS
+    quality. A star is flagged when its drift exceeds
+    ``min(tolerance * fwhm, cap)`` pixels. A large drift usually means the WCS is
+    wrong, the star was too faint to centroid, or it was blocked by cloud or an
+    obstruction. Non-finite centroids (e.g. failed faint-star centroids) are
+    treated as drifted.
     """
     drift = np.linalg.norm(
         np.asarray(centroid_coords, dtype=float)
