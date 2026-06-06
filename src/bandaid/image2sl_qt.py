@@ -31,7 +31,7 @@ checkerboard-free image.
 import numpy as np
 
 
-def generate_bayer_masks(shape, metadata):
+def generate_bayer_masks(shape, metadata, append_L4=False):
     """
     Generate mask for each color in a Bayer array.
 
@@ -73,6 +73,9 @@ def generate_bayer_masks(shape, metadata):
                 img_mask[slicer[0] :: 2, slicer[1] :: 2] = False
 
         bayer_info.append(("T" + color, img_mask))
+    if append_L4:
+        bayer_info.append(("L4", None))
+
     return bayer_info
 
 
