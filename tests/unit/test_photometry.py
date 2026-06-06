@@ -24,6 +24,7 @@ from bandaid.photometry import (
     ImageData,
     ReferenceData,
     build_photometry_table,
+    centroid_drift_flag,
     min_separation_fwhm,
     prepare_image,
 )
@@ -376,6 +377,79 @@ def test_min_separation_fwhm():
     assert min_separation_fwhm(0, tolerance=0.01) == pytest.approx(2.176, rel=0.01)
 
 
+class TestCentroidDriftFlag:
+    """Unit tests for the centroid-drift sanity check ``centroid_drift_flag``."""
+
+    def test_zero_drift_not_flagged(self):
+        """A centroid sitting exactly on its aligned position is not flagged."""
+        coords = np.array([[100.0, 100.0], [200.0, 250.0], [10.0, 400.0]])
+        flag = centroid_drift_flag(coords, coords, fwhm=2.3)
+        assert not flag.any()
+        assert flag.dtype == bool
+
+    def test_drift_just_over_and_under_fwhm_tolerance(self):
+        """Drift just past ``tolerance * fwhm`` flags; just under does not."""
+        fwhm = 2.0
+        # max_allowed = min(1.0 * 2.0, cap=4.0) = 2.0 pixels
+        aligned = np.array([[100.0, 100.0], [100.0, 100.0]])
+        centroid = np.array(
+            [
+                [100.0 + 2.0 + 1e-6, 100.0],  # just over -> flagged
+                [100.0 + 2.0 - 1e-6, 100.0],  # just under -> not flagged
+            ],
+        )
+        flag = centroid_drift_flag(centroid, aligned, fwhm=fwhm)
+        assert flag[0]
+        assert not flag[1]
+
+    def test_pixel_cap_binds_for_large_fwhm(self):
+        """When ``tolerance * fwhm`` exceeds the cap, the cap governs the flag."""
+        # tolerance * fwhm = 1.0 * 100 = 100 px, but cap is 4 px, so anything
+        # beyond 4 px should flag even though it is well under 100 px.
+        fwhm = 100.0
+        aligned = np.array([[0.0, 0.0], [0.0, 0.0]])
+        centroid = np.array(
+            [
+                [4.0 + 1e-6, 0.0],  # just past the cap -> flagged
+                [4.0 - 1e-6, 0.0],  # just under the cap -> not flagged
+            ],
+        )
+        flag = centroid_drift_flag(centroid, aligned, fwhm=fwhm)
+        assert flag[0]
+        assert not flag[1]
+
+    def test_custom_tolerance_and_cap_respected(self):
+        """Explicit ``tolerance`` and ``cap`` override the module defaults."""
+        aligned = np.array([[0.0, 0.0]])
+        centroid = np.array([[3.0, 0.0]])  # 3 px drift
+        # Default (tol=1.0, fwhm=2.0 -> 2.0 px allowed): flagged.
+        assert centroid_drift_flag(centroid, aligned, fwhm=2.0)[0]
+        # Loosened tolerance (4.0 * 2.0 = 8 px allowed, cap 10): not flagged.
+        assert not centroid_drift_flag(
+            centroid,
+            aligned,
+            fwhm=2.0,
+            tolerance=4.0,
+            cap=10.0,
+        )[0]
+        # Tight cap (1 px) overrides a generous tolerance: flagged.
+        assert centroid_drift_flag(
+            centroid,
+            aligned,
+            fwhm=2.0,
+            tolerance=4.0,
+            cap=1.0,
+        )[0]
+
+    def test_nan_centroid_flagged_as_drifted(self):
+        """A non-finite centroid is treated as drifted (flagged True)."""
+        aligned = np.array([[100.0, 100.0], [200.0, 200.0]])
+        centroid = np.array([[np.nan, 100.0], [200.0, 200.0]])
+        flag = centroid_drift_flag(centroid, aligned, fwhm=2.3)
+        assert flag[0]
+        assert not flag[1]
+
+
 class TestPrepareImage:
     def test_no_photometry_coord_input(self, make_test_image, tmp_path, monkeypatch):
         """Aligned coords fall back to detected coords when none are provided."""
@@ -475,8 +549,17 @@ def _fake_phot_factory(n_stars):
     return _fake_measure_photometry
 
 
-def _make_image_data(wcs, centroid_coords, input_photometry_coords):
-    """Build an ImageData with just enough fields for build_photometry_table."""
+def _make_image_data(
+    wcs, centroid_coords, input_photometry_coords, aligned_coords=None
+):
+    """
+    Build an ImageData with just enough fields for build_photometry_table.
+
+    ``aligned_coords`` defaults to ``centroid_coords`` (zero drift) but can be
+    supplied to exercise the centroid-drift flag.
+    """
+    if aligned_coords is None:
+        aligned_coords = centroid_coords
     header = fits.Header()
     header["DATE-OBS"] = "2020-01-01T00:00:00"
     header["AIRMASS"] = 1.2
@@ -485,7 +568,7 @@ def _make_image_data(wcs, centroid_coords, input_photometry_coords):
         coords=centroid_coords,
         fwhm=2.3,
         centroid_coords=centroid_coords,
-        aligned_coords=centroid_coords,
+        aligned_coords=aligned_coords,
         wcs=wcs,
         header=header,
         input_photometry_coords=input_photometry_coords,
@@ -583,3 +666,38 @@ class TestBuildPhotometryTable:
         max_aper = np.max(RELATIVE_RADII) * fwhm
         expected_annulus = (max(max_aper, ANNULUS[0] * fwhm), ANNULUS[1] * fwhm)
         assert table.meta["annulus_radii"] == pytest.approx(expected_annulus)
+
+    def test_centroid_drift_column(self, monkeypatch):
+        """Output has a bool ``centroid_drift`` column reflecting per-star drift."""
+        n_stars = 3
+        monkeypatch.setattr(
+            "bandaid.photometry.measure_photometry",
+            _fake_phot_factory(n_stars),
+        )
+        wcs = _make_tan_wcs()
+        # fwhm in _make_image_data is 2.3, so max_allowed = min(1.0 * 2.3, 4.0)
+        # = 2.3 px. Build aligned vs centroid pairs straddling that threshold.
+        aligned_coords = np.array([[250.0, 250.0], [250.0, 250.0], [250.0, 250.0]])
+        centroid_coords = np.array(
+            [
+                [250.0, 250.0],  # zero drift -> not flagged
+                [250.0 + 1.0, 250.0],  # 1 px drift -> not flagged
+                [250.0 + 5.0, 250.0],  # 5 px drift (> 2.3 and > cap) -> flagged
+            ],
+        )
+        img = _make_image_data(
+            wcs,
+            centroid_coords,
+            input_photometry_coords=None,
+            aligned_coords=aligned_coords,
+        )
+
+        table = build_photometry_table(img, mask=None)
+
+        assert "centroid_drift" in table.colnames
+        assert table["centroid_drift"].dtype == bool
+        assert len(table["centroid_drift"]) == n_stars
+        np.testing.assert_array_equal(
+            table["centroid_drift"],
+            [False, False, True],
+        )

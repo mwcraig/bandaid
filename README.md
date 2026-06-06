@@ -27,6 +27,20 @@ To use bandaid in your code:
 >>> bandaid.hello_world()
 ```
 
+## Data-quality flags
+
+Photometry tables carry per-star boolean flags so untrustworthy measurements can
+be identified downstream:
+
+- `centroid_drift` — the star's measured centroid wandered too far from its
+    aligned/expected position (bad WCS, too-faint star, or an obstruction). See the
+    [centroid-drift check](docs/centroid_drift_check.md). Currently flag-only (no
+    rows are dropped).
+- `contaminated` — a bright neighbor's PSF wings spill into the aperture;
+    `eloy_to_starlist` drops it when present. Not yet wired in: the helper
+    `neighbor_contamination_flag` exists but is not called anywhere yet, so no
+    `contaminated` column is currently written.
+
 ## Development
 
 Code style is enforced with [ruff](https://docs.astral.sh/ruff/) and

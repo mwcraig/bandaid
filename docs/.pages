@@ -1,4 +1,5 @@
 nav:
   - index.md
   - Training the Ballet centroider: training_the_ballet_centroider.md
+  - Centroid-drift check: centroid_drift_check.md
   - Code style: code_style.md
