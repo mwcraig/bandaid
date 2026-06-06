@@ -381,12 +381,14 @@ def align(coords, ref, photometry_coords=None, wcs=None):
         World Coordinate System for the image.
     """
     if wcs is None:
-        # Pair the first N_STARS_ALIGN detections with the first N_STARS_ALIGN
-        # reference RA/Decs. This assumes `coords` and `ref.radecs` are already
-        # ordered/aligned (same star at the same index). If fewer than
-        # N_STARS_ALIGN stars are detected the two slices can differ in length,
-        # which would make compute_wcs fail -- callers must supply enough
-        # matched detections.
+        # Feed the brightest N_STARS_ALIGN detections and Gaia reference
+        # RA/Decs to twirl's asterism (quad) matcher. twirl matches by
+        # geometric shape, so the two lists need NOT be in the same order or
+        # even the same length -- there is no per-index correspondence. The
+        # slicing just limits the matcher to the brightest, most reliable
+        # stars. compute_wcs returns None if too few stars overlap to satisfy
+        # its min_match threshold, so callers must supply enough stars (not
+        # enough *matched* stars).
         this_wcs = compute_wcs(
             coords[0:N_STARS_ALIGN],
             ref.radecs[0:N_STARS_ALIGN],
