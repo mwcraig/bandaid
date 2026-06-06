@@ -31,16 +31,19 @@ checkerboard-free image.
 import numpy as np
 
 
-def generate_bayer_masks(shape, metadata):
+def generate_bayer_masks(shape, metadata, *, append_l4=False):
     """
     Generate mask for each color in a Bayer array.
 
     Parameters
     ----------
     shape : tuple
-        The image data array
+        The (ny, nx) shape of the image data array.
     metadata : dict
         The image metadata dictionary
+    append_l4 : bool, optional
+        If True, append an ("L4", None) entry to the returned list. The None
+        mask signals a full-frame (unmasked) luminance channel. Default False.
 
     Returns
     -------
@@ -73,6 +76,9 @@ def generate_bayer_masks(shape, metadata):
                 img_mask[slicer[0] :: 2, slicer[1] :: 2] = False
 
         bayer_info.append(("T" + color, img_mask))
+    if append_l4:
+        bayer_info.append(("L4", None))
+
     return bayer_info
 
 

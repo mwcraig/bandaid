@@ -546,6 +546,7 @@ name = "bandaid"
 source = { editable = "." }
 dependencies = [
     { name = "astropy" },
+    { name = "astroquery" },
     { name = "eloy", extra = ["jax"] },
     { name = "photutils" },
     { name = "python-dateutil" },
@@ -606,6 +607,7 @@ types = [
 [package.metadata]
 requires-dist = [
     { name = "astropy" },
+    { name = "astroquery" },
     { name = "eloy", extras = ["jax"], git = "https://github.com/mwcraig/eloy?rev=a056c91a945772e0520a89695f8fcd16fda36870" },
     { name = "flax", marker = "extra == 'train'" },
     { name = "jax", marker = "extra == 'train'" },
