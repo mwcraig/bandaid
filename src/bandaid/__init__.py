@@ -36,6 +36,7 @@ from .photometry import (
     align,
     build_photometry_table,
     calibration_sequence,
+    centroid_drift_flag,
     centroid_stars,
     eloy_to_starlist,
     measure_photometry,

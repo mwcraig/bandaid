@@ -55,6 +55,16 @@ MOFFAT_BETA = 3.0
 # At least two stars are needed before any neighbor pair can exist.
 MIN_STARS_FOR_PAIRS = 2
 
+# Centroid-drift sanity check. A star is flagged if its measured centroid wandered
+# more than `min(DRIFT_TOLERANCE_FWHM * fwhm, DRIFT_CAP_PIX)` pixels from its
+# aligned/expected position. The FWHM-relative term lets the allowance scale with
+# seeing, while the absolute pixel cap keeps a pathologically large FWHM from
+# licensing an enormous shift. These defaults are empirical starting points and are
+# meant to be tuned against real frames (override via the kwargs on
+# `centroid_drift_flag` / `build_photometry_table`).
+DRIFT_TOLERANCE_FWHM = 1.0  # max centroid drift, in units of FWHM
+DRIFT_CAP_PIX = 4.0  # absolute pixel cap on allowed drift
+
 
 def min_separation_fwhm(delta_mag, tolerance=CONTAMINATION_TOLERANCE, beta=MOFFAT_BETA):
     """
@@ -163,6 +173,56 @@ def neighbor_contamination_flag(
 
     too_close = valid & (dist < min_sep_pix)
     return too_close.any(axis=1)
+
+
+def centroid_drift_flag(
+    centroid_coords,
+    aligned_coords,
+    fwhm,
+    tolerance=DRIFT_TOLERANCE_FWHM,
+    cap=DRIFT_CAP_PIX,
+):
+    """
+    Flag stars whose centroid drifted too far from its aligned position.
+
+    The drift is the pixel-space displacement between the measured centroid and
+    the aligned/expected position; both inputs are already in pixel space, so no
+    WCS round-trip is needed and the metric isolates centroid wander from WCS
+    quality. A star is flagged when its drift exceeds
+    ``min(tolerance * fwhm, cap)`` pixels. A large drift usually means the WCS is
+    wrong, the star was too faint to centroid, or it was blocked by cloud or an
+    obstruction. Non-finite centroids (e.g. failed faint-star centroids) are
+    treated as drifted.
+
+    Parameters
+    ----------
+    centroid_coords : array-like, shape (N, 2)
+        Measured centroid pixel coordinates.
+    aligned_coords : array-like, shape (N, 2)
+        Aligned/expected pixel coordinates the centroids are compared against.
+    fwhm : float
+        PSF FWHM in pixels.
+    tolerance : float, optional
+        Maximum allowed drift in units of FWHM. Defaults to
+        `DRIFT_TOLERANCE_FWHM`.
+    cap : float, optional
+        Absolute pixel cap on the allowed drift, applied as
+        ``min(tolerance * fwhm, cap)``. Defaults to `DRIFT_CAP_PIX`.
+
+    Returns
+    -------
+    ndarray of bool, shape (N,)
+        True where the centroid drifted past the allowed threshold or is
+        non-finite.
+    """
+    drift = np.linalg.norm(
+        np.asarray(centroid_coords, dtype=float)
+        - np.asarray(aligned_coords, dtype=float),
+        axis=-1,
+    )
+    max_allowed = min(tolerance * fwhm, cap)
+    # `nan > max_allowed` is False, so flag non-finite drift explicitly.
+    return (drift > max_allowed) | ~np.isfinite(drift)
 
 
 def calibration_sequence(file, threshold=1) -> tuple:
@@ -671,7 +731,13 @@ def prepare_image(
 
 
 def build_photometry_table(
-    img, mask, *, relative_radii=RELATIVE_RADII, annulus=ANNULUS
+    img,
+    mask,
+    *,
+    relative_radii=RELATIVE_RADII,
+    annulus=ANNULUS,
+    drift_tolerance=DRIFT_TOLERANCE_FWHM,
+    drift_cap=DRIFT_CAP_PIX,
 ):
     """
     Run photometry with a given mask and build an output table.
@@ -689,13 +755,20 @@ def build_photometry_table(
     annulus : tuple of float, optional
         Background annulus inner and outer radii in units of FWHM, passed
         through to `measure_photometry`. Defaults to the module-level `ANNULUS`.
+    drift_tolerance : float, optional
+        Maximum allowed centroid drift in units of FWHM, passed to
+        `centroid_drift_flag`. Defaults to `DRIFT_TOLERANCE_FWHM`.
+    drift_cap : float, optional
+        Absolute pixel cap on the allowed centroid drift, passed to
+        `centroid_drift_flag`. Defaults to `DRIFT_CAP_PIX`.
 
     Returns
     -------
     Table
-        Photometry table for this image and mask.
+        Photometry table for this image and mask. Includes a boolean
+        ``centroid_drift`` column flagging stars whose centroid wandered too far
+        from its aligned position (see `centroid_drift_flag`).
     """
-    # Maybe check here or somewhere else that the centroid hasn't moved too much?
     phot = measure_photometry(
         img.calibrated_data,
         img.centroid_coords,
@@ -739,6 +812,13 @@ def build_photometry_table(
     data["dec"] = dec_deg
     data["x"] = img.centroid_coords[..., 0]
     data["y"] = img.centroid_coords[..., 1]
+    data["centroid_drift"] = centroid_drift_flag(
+        img.centroid_coords,
+        img.aligned_coords,
+        img.fwhm,
+        tolerance=drift_tolerance,
+        cap=drift_cap,
+    )
     data["aperture_area"] = phot["aperture_area"]
     data.meta["fwhm"] = float(img.fwhm)
     data.meta["aperture_radii"] = phot["aperture_radii"]
