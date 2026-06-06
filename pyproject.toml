@@ -105,6 +105,14 @@ types = [
 # Tool Configuration
 ################################################################################
 
+# twirl <=0.5.1 caps numpy <2 (lgrcia/twirl#38, #43). That cap holds the whole
+# environment at numpy 1.26.4, which has no Python 3.13 wheel, so `uv sync`
+# compiles numpy from source on 3.13 (~5.5 min) and makes the 3.13 CI job ~5x
+# slower than 3.12. Override to numpy >=2.1 so a prebuilt cp313 wheel is used.
+# Remove once twirl ships numpy-2 support.
+[tool.uv]
+override-dependencies = ["numpy>=2.1"]
+
 # Hatch is building your package's wheel and sdist
 # This tells hatch to only include Python packages (i.e., folders with __init__.py) in the build.
 # read more about package building, here:
