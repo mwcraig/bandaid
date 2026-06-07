@@ -42,14 +42,15 @@ def generate_bayer_masks(shape, metadata, *, append_l4=False):
     metadata : dict
         The image metadata dictionary
     append_l4 : bool, optional
-        If True, append an ("L4", None) entry to the returned list. The None
+        If True, add an "L4" key mapped to None to the returned dict. The None
         mask signals a full-frame (unmasked) luminance channel. Default False.
 
     Returns
     -------
-    list of tuples
-        A list of tuples, where each tuple contains a color filter name and its
-        corresponding mask.
+    dict
+        A dictionary mapping each color filter name to its corresponding mask.
+        For the optional "L4" luminance channel the value is None, signalling a
+        full-frame (unmasked) channel.
     """
     pattern = metadata["bayerpat"]
 
@@ -65,7 +66,7 @@ def generate_bayer_masks(shape, metadata, *, append_l4=False):
     img_slice[2] = (1, 0)
     img_slice[3] = (1, 1)
 
-    bayer_info = []  # list of tuples (filter, img_mask)
+    bayer_info = {}  # maps filter -> img_mask, in insertion order
 
     for color in ["R", "B", "G"]:
         # In the mask, True means masked/ignore; False means yes/use/valid
@@ -75,9 +76,9 @@ def generate_bayer_masks(shape, metadata, *, append_l4=False):
                 slicer = img_slice[channel]
                 img_mask[slicer[0] :: 2, slicer[1] :: 2] = False
 
-        bayer_info.append(("T" + color, img_mask))
+        bayer_info["T" + color] = img_mask
     if append_l4:
-        bayer_info.append(("L4", None))
+        bayer_info["L4"] = None
 
     return bayer_info
 
