@@ -19,7 +19,6 @@ from astropy.table import Table
 from astropy.time import Time
 from dateutil import parser
 from eloy import centroid, detection, photometry, psf, utils
-from eloy.centroid import Ballet
 from photutils.aperture import ApertureStats, CircularAnnulus, CircularAperture
 from st_pipeline.schema_definition import StarList
 from twirl import compute_wcs
@@ -382,24 +381,6 @@ def eloy_to_starlist(eloy_table, metadata):
 
 
 @dataclass
-class ReferenceData:
-    """Reference image data used to process each science image."""
-
-    radecs: np.ndarray
-    cnn: Ballet
-
-    @classmethod
-    def from_pixel_coords(cls, coords, wcs, radecs, cnn):  # noqa: ARG003
-        """Create from pixel coordinates, converting to sky coordinates."""
-        # `coords` and `wcs` are accepted for API symmetry (and so callers that
-        # already have the reference pixel coords + WCS can pass them) but are
-        # intentionally unused for now: the reference sky coordinates `radecs`
-        # are supplied directly. They are kept for a future path that derives
-        # `radecs` from `coords` via `wcs`.
-        return cls(radecs=radecs, cnn=cnn)
-
-
-@dataclass
 class ImageData:
     """Per-image detection, alignment, and centroiding results."""
 
@@ -414,7 +395,7 @@ class ImageData:
     metadata: dict = None
 
 
-def align(coords, ref, photometry_coords=None, wcs=None):
+def align(coords, radecs, photometry_coords=None, wcs=None):
     """
     Compute per-image WCS and align reference coordinates into pixel space.
 
@@ -424,16 +405,17 @@ def align(coords, ref, photometry_coords=None, wcs=None):
         Detected star **pixel** coordinates (x, y) in this image. Used for WCS
         alignment and, if photometry_coords is None, returned as the aligned
         coordinates as well.
-    ref : ReferenceData
-        Reference image data (Gaia RA/Decs, CNN model).
+    radecs : numpy.ndarray
+        Gaia reference sky coordinates (RA/Dec), paired against `coords` by
+        twirl's asterism matcher to solve the WCS.
     photometry_coords : `astropy.coordinates.SkyCoord` or None, optional
         If provided, these sky coordinates are projected through the WCS to
         produce the aligned pixel coordinates. By default None (aligned
         coordinates are just `coords`).
     wcs : astropy.wcs.WCS or None, optional
         If provided, this WCS is used instead of computing a new one from
-        `coords` and `ref.radecs`. By default None (WCS is computed from
-        `coords` and `ref.radecs`).
+        `coords` and `radecs`. By default None (WCS is computed from
+        `coords` and `radecs`).
 
     Returns
     -------
@@ -453,7 +435,7 @@ def align(coords, ref, photometry_coords=None, wcs=None):
         # enough *matched* stars).
         this_wcs = compute_wcs(
             coords[0:N_STARS_ALIGN],
-            ref.radecs[0:N_STARS_ALIGN],
+            radecs[0:N_STARS_ALIGN],
             tolerance=1,
         )
     else:
@@ -656,7 +638,8 @@ def measure_photometry(
 
 def prepare_image(
     file,
-    ref,
+    radecs,
+    cnn,
     *,
     detect_on_bayer_balanced=False,
     photometry_coords=None,
@@ -670,8 +653,10 @@ def prepare_image(
     ----------
     file : str or Path
         Path to the FITS file.
-    ref : ReferenceData
-        Reference image data (sky coords, Gaia RA/Decs, CNN model).
+    radecs : numpy.ndarray
+        Gaia reference sky coordinates (RA/Dec) used for WCS alignment.
+    cnn : eloy.centroid.Ballet
+        Centroiding CNN model.
     detect_on_bayer_balanced : bool, optional
         Whether to detect sources on Bayer balanced data (default is False).
     photometry_coords : `astropy.coordinates.SkyCoord` or None, optional
@@ -713,11 +698,11 @@ def prepare_image(
 
     aligned_coords, this_wcs = align(
         coords,
-        ref,
+        radecs,
         photometry_coords=photometry_coords,
         wcs=wcs,
     )
-    centroid_coords = centroid_stars(working_image, aligned_coords, ref.cnn)
+    centroid_coords = centroid_stars(working_image, aligned_coords, cnn)
 
     header = fits.getheader(file)
 

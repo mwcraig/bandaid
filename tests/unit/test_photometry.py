@@ -22,7 +22,6 @@ from bandaid.photometry import (
     ANNULUS,
     RELATIVE_RADII,
     ImageData,
-    ReferenceData,
     build_photometry_table,
     centroid_drift_flag,
     min_separation_fwhm,
@@ -489,19 +488,14 @@ class TestPrepareImage:
         radecs = radecs + np.array(
             [[0.01, 0.01]]
         )  # Add a small offset to ensure coords are not exactly on the sources
-        ref = ReferenceData.from_pixel_coords(
-            coords_xy,
-            wcs,
-            radecs,
-            None,
-        )
         ccd = CCDData(test_image, wcs=wcs, unit="adu")
         ccd.header["creator"] = "test_prepare_image"
         path = tmp_path / "test_image.fits"
         ccd.write(path)
         img = prepare_image(
             path,
-            ref,
+            radecs,
+            None,
             photometry_coords=None,
             wcs=wcs,
         )
