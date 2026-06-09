@@ -244,9 +244,6 @@ ignore = [
     "BLE001",  # broad `except` is acceptable in a best-effort analysis loop.
     "PLC0415",  # lazy `from bandaid import ...` inside a helper is intentional.
 ]
-"src/bandaid/full_pipeline_stwg_t_cr_bor.py" = [
-    "D100",  # research entry-point script; no module docstring required.
-]
 "src/bandaid/image2sl_qt.py" = [
     "ERA001",  # commented-out code kept as reference in this GUI script.
 ]
