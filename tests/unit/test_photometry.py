@@ -1129,7 +1129,13 @@ _REF_RADECS = np.array(
 )
 
 
-def _stub_wcs_and_centroid(monkeypatch, *, record_centroid_data=None):
+def _stub_wcs_and_centroid(
+    monkeypatch,
+    *,
+    record_centroid_data=None,
+    wcs_image_size=(500, 500),
+    wcs_crval=(10.0, 20.0),
+):
     """
     Stub the slow/networked externals reached via ``prepare_image``.
 
@@ -1137,10 +1143,15 @@ def _stub_wcs_and_centroid(monkeypatch, *, record_centroid_data=None):
     and ``centroid_stars`` (the HuggingFace-backed Ballet CNN) returns its input
     coordinates unchanged. If ``record_centroid_data`` is a list, the image
     actually handed to centroiding is appended to it so tests can inspect it.
+
+    ``wcs_image_size``/``wcs_crval`` size and center the stubbed TAN WCS; the
+    defaults match the synthetic-FITS callers, while the real-frame smoke test
+    passes the actual frame shape and field center so the cosmetic RA/Dec columns
+    land near the real field.
     """
     monkeypatch.setattr(
         "bandaid.photometry.compute_wcs",
-        lambda coords, radecs, tolerance: _make_tan_wcs(),
+        lambda coords, radecs, tolerance: _make_tan_wcs(wcs_image_size, wcs_crval),
     )
 
     def fake_centroid_stars(data, coords, _cnn):
@@ -1297,3 +1308,106 @@ class TestProcessOneImage:
             + result["TB"]["tot_count"]
         )
         np.testing.assert_allclose(result["L4"]["tot_count"], rgb_sum)
+
+
+# --- Real-frame smoke test -------------------------------------------------
+
+# A genuine (full-size, uncropped) Seestar S50 frame committed under tests/data/
+# as a bzip2-compressed FITS. astropy reads ``.fits.bz2``/``.fit.bz2``
+# transparently, so the pipeline loads it with no special handling. Discover it
+# by glob rather than a fixed name so whatever the user commits is picked up; the
+# suite stays green (skipped) until the fixture lands.
+_DATA_DIR = Path(__file__).parent.parent / "data"
+_REAL_FRAMES = sorted(_DATA_DIR.glob("*.fits.bz2")) + sorted(
+    _DATA_DIR.glob("*.fit.bz2"),
+)
+_REAL_FRAME = _REAL_FRAMES[0] if _REAL_FRAMES else None
+
+_real_frame_required = pytest.mark.skipif(
+    _REAL_FRAME is None,
+    reason=f"no real Seestar fixture (*.fits.bz2) in {_DATA_DIR}",
+)
+
+
+@_real_frame_required
+class TestSmokeRealFrame:
+    """
+    Smoke test: drive the real pipeline on a genuine Seestar frame.
+
+    The two heavy externals (twirl's WCS solve, the Ballet CNN) are stubbed so
+    the test is offline and deterministic; everything else -- real header parse,
+    source detection, the median-PSF FWHM fit on real cutouts, the saturation
+    cap, Bayer masks, and aperture photometry -- runs against genuine pixels.
+    This is the realistic counterpart to the synthetic-FITS tests above and
+    catches integration breakage they cannot.
+    """
+
+    def test_calibration_sequence_recovers_real_sources(self):
+        """Detection + FWHM fit succeed and the real header resolves the template."""
+        expected_max_adu = 50000  # from basic.json, keyed off the real header
+
+        # calibration_sequence reaches neither twirl nor the Ballet CNN, so this
+        # path needs no stubbing.
+        calibrated, metadata, coords, fwhm, regions = calibration_sequence(
+            str(_REAL_FRAME),
+            threshold=THRESH,
+        )
+
+        assert calibrated is not None
+        assert len(regions) >= MIN_DETECTED_STARS
+        assert coords.shape == (len(regions), 2)
+        assert np.isfinite(fwhm)
+        assert fwhm > 0
+        assert metadata["largest_usable_adu_value"] == expected_max_adu
+        assert metadata["width"] == calibrated.shape[1]
+        assert metadata["height"] == calibrated.shape[0]
+
+    def test_process_one_image_builds_per_filter_tables(self, monkeypatch):
+        """Every Bayer filter gets a non-empty table and L4 sums the RGB counts."""
+        header = fits.getheader(str(_REAL_FRAME))
+        data = fits.getdata(str(_REAL_FRAME))
+        metadata = metadata_from_header(header)
+
+        # Center the stubbed WCS on the real field so the cosmetic ra/dec columns
+        # are plausible in a failure dump.
+        _stub_wcs_and_centroid(
+            monkeypatch,
+            wcs_image_size=data.shape,
+            wcs_crval=(header["RA"], header["DEC"]),
+        )
+
+        masks = generate_bayer_masks(
+            data.shape,
+            {
+                "bayerpat": metadata["bayerpat"],
+                "roworder": metadata["roworder"],
+                "ybayroff": metadata["ybayroff"],
+            },
+            append_l4=True,
+        )
+
+        # twirl is stubbed, so radecs is never matched; it only needs >=
+        # N_STARS_ALIGN plausibly shaped rows (align slices the first
+        # N_STARS_ALIGN). photometry_coords=None means aligned == detections.
+        radecs = np.column_stack(
+            [
+                np.full(N_STARS_ALIGN, header["RA"]),
+                np.full(N_STARS_ALIGN, header["DEC"]),
+            ],
+        )
+
+        result = process_one_image(str(_REAL_FRAME), {}, radecs, None, masks)
+
+        assert set(result) == {"TR", "TG", "TB", "L4"}
+        for table in result.values():
+            assert len(table) > 0
+            assert np.isfinite(table.meta["fwhm"])
+
+        # L4 total count is the per-row RGB sum (same invariant as the synthetic
+        # test; equal_nan handles any edge apertures that come back non-finite).
+        rgb_sum = (
+            result["TR"]["tot_count"]
+            + result["TG"]["tot_count"]
+            + result["TB"]["tot_count"]
+        )
+        np.testing.assert_allclose(result["L4"]["tot_count"], rgb_sum, equal_nan=True)
