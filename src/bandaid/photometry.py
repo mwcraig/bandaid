@@ -860,11 +860,11 @@ def process_one_image(
         Dictionary mapping each filter name to the photometry table for that
         filter, or None if the image could not be processed.
 
-    Raises
-    ------
-    ValueError
-        If the "L4" filter is included in `bayer_masks` but any of "TR", "TG", or "TB"
-        are missing or ordered after "L4".
+    Notes
+    -----
+    When `bayer_masks` includes "L4", the "TR", "TG", and "TB" channels must be
+    present and ordered before it; otherwise `calculate_l4_quantities` raises a
+    `ValueError`.
     """
     # Calculate everything we need for all filters at once.
     img = prepare_image(
@@ -887,15 +887,9 @@ def process_one_image(
         if filter_name == "L4":
             # L4 is the channel sum of TR/TG/TB, so those must already have been
             # processed. generate_bayer_masks orders L4 last to guarantee this;
-            # fail loudly rather than KeyError deep inside the combination if a
-            # caller passes a mask dict that violates the ordering.
-            missing = {"TR", "TG", "TB"} - by_filter_data.keys()
-            if missing:
-                msg = (
-                    f"L4 channel requires {sorted(missing)} to be processed first; "
-                    "order the RGB masks before 'L4' in bayer_masks."
-                )
-                raise ValueError(msg)
+            # calculate_l4_quantities validates that the RGB channels are present
+            # and raises a clear ValueError if a caller passes a mask dict that
+            # violates the ordering.
             calculate_l4_quantities(data, by_filter_data, img.metadata["egain"])
         by_filter_data[filter_name] = data
     return by_filter_data
@@ -909,13 +903,30 @@ def calculate_l4_quantities(final_data, by_filter_data, egain):
 
     Parameters
     ----------
-    final_data : dict
-        The final photometry data for the L4 filter.
+    final_data : astropy.table.Table
+        The final photometry table for the L4 filter, modified in place.
     by_filter_data : dict
         A dictionary containing the photometry data for each individual filter.
     egain : float
         The gain of the image.
+
+    Raises
+    ------
+    ValueError
+        If any of the "TR", "TG", or "TB" channels are missing from
+        ``by_filter_data``; the L4 channel is built from all three.
     """
+    # L4 is the channel sum of TR/TG/TB, so each must already be present. Fail
+    # loudly with an actionable message rather than a bare KeyError raised deep
+    # inside the combination below.
+    missing = {"TR", "TG", "TB"} - by_filter_data.keys()
+    if missing:
+        msg = (
+            f"calculate_l4_quantities requires {sorted(missing)} in by_filter_data "
+            "before the L4 channel can be combined."
+        )
+        raise ValueError(msg)
+
     # L4 total count is sum of the individual filter total counts
     final_data["tot_count"] = (
         by_filter_data["TR"]["tot_count"]
