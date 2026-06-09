@@ -859,6 +859,12 @@ def process_one_image(
     dict of {str: Table} or None
         Dictionary mapping each filter name to the photometry table for that
         filter, or None if the image could not be processed.
+
+    Raises
+    ------
+    ValueError
+        If the "L4" filter is included in `bayer_masks` but any of "TR", "TG", or "TB"
+        are missing or ordered after "L4".
     """
     # Calculate everything we need for all filters at once.
     img = prepare_image(
