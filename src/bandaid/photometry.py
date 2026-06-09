@@ -973,3 +973,8 @@ def calculate_l4_quantities(final_data, by_filter_data, egain):
         )
         + final_data["tot_count"] / egain  # Poisson error from total count
     )
+
+    # Recompute SNR from the recombined L4 count and error. The table arrives
+    # here from a full-frame photometry pass, so its snr column otherwise still
+    # reflects the discarded full-frame measurement instead of the channel sum.
+    final_data["snr"] = final_data["tot_count"] / final_data["count_err"]

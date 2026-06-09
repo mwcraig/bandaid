@@ -1061,12 +1061,14 @@ class TestCalculateL4Quantities:
             )
             + expected_tot / egain
         )
+        expected_snr = expected_tot / expected_err
 
         np.testing.assert_allclose(final_data["tot_count"], expected_tot)
         np.testing.assert_allclose(final_data["aperture_area"], expected_area)
         np.testing.assert_allclose(final_data["bkgd_count"], expected_bkgd)
         np.testing.assert_allclose(final_data["peak_count"], expected_peak)
         np.testing.assert_allclose(final_data["count_err"], expected_err)
+        np.testing.assert_allclose(final_data["snr"], expected_snr)
 
 
 # --- Synthetic-FITS helpers for the detect/align/centroid pipeline tests ---
