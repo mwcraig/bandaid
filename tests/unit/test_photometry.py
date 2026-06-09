@@ -18,6 +18,7 @@ from astropy.table import Table
 from astropy.wcs import WCS
 
 from bandaid import measure_photometry
+from bandaid.image2sl_qt import generate_bayer_masks
 from bandaid.photometry import (
     ANNULUS,
     N_STARS_ALIGN,
@@ -26,6 +27,7 @@ from bandaid.photometry import (
     align,
     build_photometry_table,
     calculate_l4_quantities,
+    calibration_sequence,
     centroid_drift_flag,
     centroid_stars,
     eloy_to_starlist,
@@ -33,6 +35,7 @@ from bandaid.photometry import (
     min_separation_fwhm,
     neighbor_contamination_flag,
     prepare_image,
+    process_one_image,
 )
 
 # Make the tests reproducible by using a fixed random seed for noise generation in
@@ -1060,3 +1063,237 @@ class TestCalculateL4Quantities:
         np.testing.assert_allclose(final_data["bkgd_count"], expected_bkgd)
         np.testing.assert_allclose(final_data["peak_count"], expected_peak)
         np.testing.assert_allclose(final_data["count_err"], expected_err)
+
+
+# --- Synthetic-FITS helpers for the detect/align/centroid pipeline tests ---
+
+# Well-separated source positions (x, y) for a 480x480 frame; the first two also
+# serve the small "too few stars" frames.
+_SOURCE_POSITIONS = [(60, 60), (160, 160), (260, 260), (360, 360), (200, 400)]
+
+
+def _detectable_image(
+    make_test_image,
+    *,
+    n_sources=5,
+    fwhm=4.0,
+    amplitude=600.0,
+    image_size=(480, 480),
+    noise_mean=100.0,
+    noise_stddev=2.0,
+):
+    """
+    Build a noisy multi-Gaussian frame that eloy's detection can resolve.
+
+    ``amplitude`` far above ``noise_stddev`` keeps detection reliable; an
+    ``amplitude`` above the 50000 ADU saturation cap exercises the saturated
+    path in ``calibration_sequence``.
+    """
+    sigma = fwhm * gaussian_fwhm_to_sigma
+    positions = _SOURCE_POSITIONS[:n_sources]
+    source_properties = Table(
+        {
+            "amplitude": [amplitude] * n_sources,
+            "x_mean": [x for x, _ in positions],
+            "y_mean": [y for _, y in positions],
+            "x_stddev": [sigma] * n_sources,
+            "y_stddev": [sigma] * n_sources,
+        },
+    )
+    return make_test_image(
+        image_size=image_size,
+        source_properties=source_properties,
+        include_noise=True,
+        noise_mean=noise_mean,
+        noise_stddev=noise_stddev,
+        seed=SEED,
+    )
+
+
+def _write_seestar_fits(path, image):
+    """Write ``image`` to ``path`` with the header keys the pipeline reads."""
+    ccd = CCDData(image, unit="adu")
+    # metadata_from_header indexes CREATOR directly ("!CREATOR index 0"), so it
+    # must be present; the others feed "@KEY" lookups used downstream.
+    ccd.header["CREATOR"] = "ZWO Seestar S50"
+    ccd.header["DATE-OBS"] = "2024-01-01T00:00:00"
+    ccd.header["BAYERPAT"] = "RGGB"
+    ccd.write(path)
+    return path
+
+
+# A few reference RA/Decs; align is always stubbed in these tests so the exact
+# values only need to be a plausibly shaped array.
+_REF_RADECS = np.array(
+    [[10.0, 20.0], [10.01, 20.0], [10.0, 20.01], [10.02, 20.02], [10.03, 20.0]],
+)
+
+
+def _stub_wcs_and_centroid(monkeypatch, *, record_centroid_data=None):
+    """
+    Stub the slow/networked externals reached via ``prepare_image``.
+
+    ``compute_wcs`` (twirl's stochastic asterism solver) returns a fixed TAN WCS
+    and ``centroid_stars`` (the HuggingFace-backed Ballet CNN) returns its input
+    coordinates unchanged. If ``record_centroid_data`` is a list, the image
+    actually handed to centroiding is appended to it so tests can inspect it.
+    """
+    monkeypatch.setattr(
+        "bandaid.photometry.compute_wcs",
+        lambda coords, radecs, tolerance: _make_tan_wcs(),
+    )
+
+    def fake_centroid_stars(data, coords, _cnn):
+        if record_centroid_data is not None:
+            record_centroid_data.append(data)
+        return coords
+
+    monkeypatch.setattr("bandaid.photometry.centroid_stars", fake_centroid_stars)
+
+
+class TestCalibrationSequence:
+    """Unit tests for detection + FWHM estimation in ``calibration_sequence``."""
+
+    def test_main_path_recovers_fwhm_and_sources(self, make_test_image, tmp_path):
+        """A clean multi-source frame yields the sources and the injected FWHM."""
+        fwhm = 4.0
+        n_sources = 5
+        expected_max_adu = 50000
+        image = _detectable_image(make_test_image, n_sources=n_sources, fwhm=fwhm)
+        path = _write_seestar_fits(tmp_path / "calib.fits", image)
+
+        calibrated, metadata, coords, measured_fwhm, regions = calibration_sequence(
+            path,
+            threshold=1,
+        )
+
+        assert calibrated is not None
+        assert len(regions) == n_sources
+        assert coords.shape == (n_sources, 2)
+        # The PSF fit recovers the injected FWHM to within ~5%.
+        assert measured_fwhm == pytest.approx(fwhm, rel=0.05)
+        assert metadata["largest_usable_adu_value"] == expected_max_adu
+
+    def test_too_few_stars_returns_sentinel(self, make_test_image, tmp_path):
+        """Fewer than MIN_DETECTED_STARS detections returns the None sentinel."""
+        image = _detectable_image(
+            make_test_image,
+            n_sources=2,
+            image_size=(200, 200),
+        )
+        path = _write_seestar_fits(tmp_path / "few.fits", image)
+
+        result = calibration_sequence(path, threshold=1)
+        assert result == (None, [], None, None, None)
+
+    def test_all_saturated_returns_sentinel(self, make_test_image, tmp_path):
+        """When every source saturates, no PSF can be fit and the sentinel returns."""
+        # Amplitude above the 50000 ADU cap means every cutout is dropped as
+        # saturated, leaving nothing to fit.
+        image = _detectable_image(make_test_image, n_sources=5, amplitude=60000.0)
+        path = _write_seestar_fits(tmp_path / "sat.fits", image)
+
+        calibrated, coords_meta, _, _, _ = calibration_sequence(path, threshold=1)
+        assert calibrated is None
+        assert coords_meta == []
+
+
+class TestPrepareImageBranches:
+    """Branch coverage for ``prepare_image`` beyond the alignment fallback."""
+
+    def test_returns_none_when_too_few_stars(self, make_test_image, tmp_path):
+        """prepare_image propagates the calibration_sequence None sentinel."""
+        image = _detectable_image(
+            make_test_image,
+            n_sources=2,
+            image_size=(200, 200),
+        )
+        path = _write_seestar_fits(tmp_path / "few.fits", image)
+
+        # No external stubbing needed: prepare_image returns before align/centroid.
+        assert prepare_image(path, _REF_RADECS, None) is None
+
+    def test_merges_user_specific_metadata(
+        self, make_test_image, tmp_path, monkeypatch
+    ):
+        """user_specific_metadata overrides values pulled from the header."""
+        _stub_wcs_and_centroid(monkeypatch)
+        image = _detectable_image(make_test_image)
+        path = _write_seestar_fits(tmp_path / "meta.fits", image)
+
+        override_egain = 1.23
+        img = prepare_image(
+            path,
+            _REF_RADECS,
+            None,
+            user_specific_metadata={"observer": "XYZ", "egain": override_egain},
+        )
+
+        assert img.metadata["observer"] == "XYZ"
+        assert img.metadata["egain"] == override_egain
+
+    def test_detect_on_bayer_balanced_uses_working_copy(
+        self, make_test_image, tmp_path, monkeypatch
+    ):
+        """Bayer balancing feeds a balanced copy to centroiding, not the original."""
+        centroid_inputs = []
+        _stub_wcs_and_centroid(monkeypatch, record_centroid_data=centroid_inputs)
+        image = _detectable_image(make_test_image)
+        path = _write_seestar_fits(tmp_path / "bayer.fits", image)
+
+        img = prepare_image(
+            path,
+            _REF_RADECS,
+            None,
+            detect_on_bayer_balanced=True,
+        )
+
+        # calibrated_data is left untouched...
+        np.testing.assert_allclose(img.calibrated_data, image)
+        # ...while the image handed to centroiding was balanced in place (so it
+        # differs from the untouched calibrated frame).
+        assert len(centroid_inputs) == 1
+        assert not np.allclose(centroid_inputs[0], img.calibrated_data)
+
+
+class TestProcessOneImage:
+    """End-to-end (stubbed-externals) coverage for ``process_one_image``."""
+
+    def test_returns_none_when_image_rejected(self, make_test_image, tmp_path):
+        """A frame with too few stars yields None for every filter."""
+        image = _detectable_image(
+            make_test_image,
+            n_sources=2,
+            image_size=(200, 200),
+        )
+        path = _write_seestar_fits(tmp_path / "few.fits", image)
+        masks = generate_bayer_masks(
+            image.shape,
+            {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0},
+            append_l4=True,
+        )
+
+        assert process_one_image(path, {}, _REF_RADECS, None, masks) is None
+
+    def test_full_path_builds_per_filter_tables_with_l4(
+        self, make_test_image, tmp_path, monkeypatch
+    ):
+        """Every filter gets a table and the L4 channel sums the RGB counts."""
+        _stub_wcs_and_centroid(monkeypatch)
+        image = _detectable_image(make_test_image)
+        path = _write_seestar_fits(tmp_path / "proc.fits", image)
+        masks = generate_bayer_masks(
+            image.shape,
+            {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0},
+            append_l4=True,
+        )
+
+        result = process_one_image(path, {}, _REF_RADECS, None, masks)
+
+        assert set(result) == {"TR", "TG", "TB", "L4"}
+        rgb_sum = (
+            result["TR"]["tot_count"]
+            + result["TG"]["tot_count"]
+            + result["TB"]["tot_count"]
+        )
+        np.testing.assert_allclose(result["L4"]["tot_count"], rgb_sum)
