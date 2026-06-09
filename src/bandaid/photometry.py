@@ -877,7 +877,19 @@ def process_one_image(
     for filter_name, mask in bayer_masks.items():
         img.metadata["filter"] = filter_name
         data = build_photometry_table(img, mask)
+        data.meta["filter"] = filter_name
         if filter_name == "L4":
+            # L4 is the channel sum of TR/TG/TB, so those must already have been
+            # processed. generate_bayer_masks orders L4 last to guarantee this;
+            # fail loudly rather than KeyError deep inside the combination if a
+            # caller passes a mask dict that violates the ordering.
+            missing = {"TR", "TG", "TB"} - by_filter_data.keys()
+            if missing:
+                msg = (
+                    f"L4 channel requires {sorted(missing)} to be processed first; "
+                    "order the RGB masks before 'L4' in bayer_masks."
+                )
+                raise ValueError(msg)
             calculate_l4_quantities(data, by_filter_data, img.metadata["egain"])
         by_filter_data[filter_name] = data
     return by_filter_data
