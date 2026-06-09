@@ -1,0 +1,203 @@
+"""
+Unit tests for the batch photometry driver in :mod:`bandaid.scripts`.
+
+Covers the once-per-batch preparation (``prepare_batch`` building a
+``BatchPrep`` from the first frame) and the per-frame loop (``process_batch``),
+with the heavy/network dependencies (``calibration_sequence``,
+``cached_gaia_radecs``, ``process_one_image``) monkeypatched out.
+"""
+
+import numpy as np
+import pytest
+from astropy.coordinates import SkyCoord
+from astropy.table import Table
+
+from bandaid import scripts
+from bandaid.photometry import neighbor_contamination_flag_sky
+
+
+def _batch_metadata():
+    """Return a metadata dict like the one ``calibration_sequence`` produces."""
+    return {
+        "ra": 10.0,
+        "dec": 0.0,
+        "fov_rad": 0.74,
+        "pixscale": 2.4,
+        "width": 1080,
+        "height": 1920,
+        "bayerpat": "GRBG",
+        "roworder": "top-down",
+        "ybayroff": 0,
+        "egain": 0.3116,
+    }
+
+
+def _batch_radecs_mags():
+    """
+    Sky positions + mags with one tight equal-brightness pair to be dropped.
+
+    The first two stars sit ~1 arcsec apart at equal magnitude, so both are
+    contaminated; the remaining two are degrees away and survive.
+    """
+    radecs = np.array(
+        [
+            [10.0, 0.0],
+            [10.0 + 1.0 / 3600.0, 0.0],
+            [10.1, 0.0],
+            [10.2, 0.0],
+        ],
+    )
+    mags = np.array([12.0, 12.0, 10.0, 11.0])
+    return radecs, mags
+
+
+def _patch_prep(monkeypatch, *, metadata=None, radecs_mags=None, fwhm_pix=2.0):
+    """Monkeypatch the heavy prep dependencies and return the spied call args."""
+    metadata = metadata if metadata is not None else _batch_metadata()
+    radecs, mags = radecs_mags if radecs_mags is not None else _batch_radecs_mags()
+
+    calls = {}
+
+    def fake_calibration_sequence(file):
+        calls["calibration_file"] = file
+        return np.zeros((4, 4)), metadata, np.zeros((3, 2)), fwhm_pix, object()
+
+    def fake_cached_gaia_radecs(center, fov):
+        calls["center"] = center
+        calls["fov"] = fov
+        return radecs, mags
+
+    monkeypatch.setattr(scripts, "calibration_sequence", fake_calibration_sequence)
+    monkeypatch.setattr(scripts, "cached_gaia_radecs", fake_cached_gaia_radecs)
+    return calls, metadata, radecs, mags, fwhm_pix
+
+
+class TestPrepareBatch:
+    """Unit tests for ``prepare_batch``."""
+
+    def test_returns_batchprep_with_expected_fields(self, monkeypatch):
+        """The bundle carries the Gaia list, the cnn, and the three CFA masks."""
+        _, _, radecs, _, _ = _patch_prep(monkeypatch)
+        cnn = object()
+
+        prep = scripts.prepare_batch("frame1.fits", cnn=cnn)
+
+        assert isinstance(prep, scripts.BatchPrep)
+        np.testing.assert_array_equal(prep.radecs, radecs)
+        assert prep.cnn is cnn
+        assert set(prep.bayer_masks) == {"TR", "TB", "TG"}
+
+    def test_append_l4_adds_luminance_channel(self, monkeypatch):
+        """``append_l4`` adds the full-frame "L4" channel as a None mask."""
+        _patch_prep(monkeypatch)
+        prep = scripts.prepare_batch("frame1.fits", cnn=object(), append_l4=True)
+        assert set(prep.bayer_masks) == {"TR", "TB", "TG", "L4"}
+        assert prep.bayer_masks["L4"] is None
+
+    def test_gaia_queried_at_metadata_center_and_doubled_fov_rad(self, monkeypatch):
+        """Gaia is queried at the frame pointing over twice the field radius."""
+        calls, metadata, _, _, _ = _patch_prep(monkeypatch)
+        scripts.prepare_batch("frame1.fits", cnn=object())
+
+        assert calls["center"] == (metadata["ra"], metadata["dec"])
+        # fov_rad is a field *radius*; the query takes the full field (2 * radius).
+        assert calls["fov"] == pytest.approx(2 * metadata["fov_rad"])
+
+    def test_contaminated_stars_dropped_from_photometry_coords(self, monkeypatch):
+        """The contaminated pair is removed from ``photometry_coords``."""
+        _, metadata, radecs, mags, fwhm_pix = _patch_prep(monkeypatch)
+
+        prep = scripts.prepare_batch("frame1.fits", cnn=object())
+
+        fwhm_arcsec = fwhm_pix * metadata["pixscale"]
+        flagged = neighbor_contamination_flag_sky(radecs, mags, fwhm_arcsec)
+        expected = SkyCoord(radecs[~flagged], unit="deg")
+
+        # The tight equal-mag pair is dropped; the two isolated stars remain.
+        assert flagged.tolist() == [True, True, False, False]
+        np.testing.assert_allclose(prep.photometry_coords.ra.deg, expected.ra.deg)
+        np.testing.assert_allclose(prep.photometry_coords.dec.deg, expected.dec.deg)
+
+    def test_raises_when_too_few_stars_detected(self, monkeypatch):
+        """The all-None sentinel from ``calibration_sequence`` raises clearly."""
+        # calibration_sequence returns the documented all-None/empty sentinel.
+        monkeypatch.setattr(
+            scripts,
+            "calibration_sequence",
+            lambda file: (None, [], None, None, None),
+        )
+        monkeypatch.setattr(
+            scripts,
+            "cached_gaia_radecs",
+            lambda center, fov: (np.zeros((0, 2)), np.zeros(0)),
+        )
+        with pytest.raises(ValueError, match="too few stars"):
+            scripts.prepare_batch("frame1.fits", cnn=object())
+
+
+def _dummy_prep():
+    """Return a BatchPrep with recognizable sentinel fields for identity checks."""
+    return scripts.BatchPrep(
+        radecs=np.array([[10.0, 0.0], [10.1, 0.0]]),
+        photometry_coords=SkyCoord([10.0, 10.1], [0.0, 0.0], unit="deg"),
+        cnn=object(),
+        bayer_masks={"TR": np.zeros((2, 2), dtype=bool)},
+    )
+
+
+class TestProcessBatch:
+    """Unit tests for ``process_batch``."""
+
+    def test_one_result_per_frame_with_shared_prep(self, monkeypatch):
+        """Each frame is processed once with the same shared prep objects."""
+        prep = _dummy_prep()
+        user_meta = {"observer": "abc"}
+        calls = []
+
+        def fake_process_one_image(
+            file,
+            meta,
+            radecs,
+            cnn,
+            masks,
+            *,
+            input_photometry_coords,
+        ):
+            calls.append((file, meta, radecs, cnn, masks, input_photometry_coords))
+            return {"TR": Table({"tot_count": [1.0]})}
+
+        monkeypatch.setattr(scripts, "process_one_image", fake_process_one_image)
+
+        files = ["a.fits", "b.fits"]
+        results = scripts.process_batch(files, prep, user_specific_metadata=user_meta)
+
+        assert list(results) == files
+        assert len(calls) == len(files)
+        for file, call in zip(files, calls, strict=True):
+            cfile, meta, radecs, cnn, masks, phot_coords = call
+            assert cfile == file
+            assert meta is user_meta
+            assert radecs is prep.radecs
+            assert cnn is prep.cnn
+            assert masks is prep.bayer_masks
+            assert phot_coords is prep.photometry_coords
+
+    def test_failed_frames_are_skipped(self, monkeypatch):
+        """A frame whose ``process_one_image`` returns None is omitted."""
+        prep = _dummy_prep()
+
+        monkeypatch.setattr(
+            scripts,
+            "process_one_image",
+            lambda file, *a, **k: (
+                None if file == "bad.fits" else {"TR": Table({"tot_count": [1.0]})}
+            ),
+        )
+
+        results = scripts.process_batch(
+            ["good.fits", "bad.fits"],
+            prep,
+            user_specific_metadata={},
+        )
+
+        assert list(results) == ["good.fits"]

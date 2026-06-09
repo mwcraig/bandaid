@@ -38,6 +38,7 @@ from bandaid.photometry import (
     metadata_from_header,
     min_separation_fwhm,
     neighbor_contamination_flag,
+    neighbor_contamination_flag_sky,
     prepare_image,
     process_one_image,
 )
@@ -759,6 +760,60 @@ class TestNeighborContaminationFlag:
         mags = np.array([10.0, np.nan])
         flag = neighbor_contamination_flag(coords, mags, fwhm=fwhm)
         assert not flag.any()
+
+
+class TestNeighborContaminationFlagSky:
+    """Unit tests for the sky-space flag ``neighbor_contamination_flag_sky``."""
+
+    @pytest.mark.parametrize("n", [0, 1])
+    def test_fewer_than_two_stars_never_flagged(self, n):
+        """With <2 stars no pair can exist, so the early return is all-False."""
+        radecs = np.zeros((n, 2))
+        mags = np.zeros(n)
+        flag = neighbor_contamination_flag_sky(radecs, mags, fwhm_arcsec=2.0)
+        assert flag.shape == (n,)
+        assert flag.dtype == bool
+        assert not flag.any()
+
+    def test_non_finite_magnitude_contributes_no_contamination(self):
+        """A NaN-magnitude star neither flags nor is flagged."""
+        # The two stars are ~0.5 arcsec apart -- essentially on top of one another.
+        radecs = np.array([[10.0, 0.0], [10.0 + 0.5 / 3600.0, 0.0]])
+        mags = np.array([10.0, np.nan])
+        flag = neighbor_contamination_flag_sky(radecs, mags, fwhm_arcsec=2.0)
+        assert not flag.any()
+
+    def test_matches_pixel_front_end_on_equator(self):
+        """
+        Sky and pixel front ends agree star-for-star.
+
+        Stars are placed along the celestial equator, where the great-circle
+        separation between ``(ra, 0)`` points is exactly the RA difference. The
+        equivalent pixel layout is those angular separations divided by the plate
+        scale, and ``fwhm_arcsec == fwhm_pix * pixscale``; the two front ends scale
+        identically, so they must flag the same stars.
+        """
+        pixscale = 2.4  # arcsec / pixel
+        fwhm_pix = 2.0
+        fwhm_arcsec = fwhm_pix * pixscale
+
+        ra0 = 10.0
+        offsets_arcsec = np.array([0.0, 3.0, 7.0, 30.0])
+        ras = ra0 + offsets_arcsec / 3600.0
+        decs = np.zeros_like(ras)
+        radecs = np.column_stack([ras, decs])
+        mags = np.array([12.0, 12.0, 9.0, 13.0])
+
+        coords_pix = np.column_stack(
+            [offsets_arcsec / pixscale, np.zeros_like(ras)],
+        )
+
+        sky_flag = neighbor_contamination_flag_sky(radecs, mags, fwhm_arcsec)
+        pix_flag = neighbor_contamination_flag(coords_pix, mags, fwhm_pix)
+        np.testing.assert_array_equal(sky_flag, pix_flag)
+        # Sanity: the case is non-trivial -- some flagged, some not.
+        assert sky_flag.any()
+        assert not sky_flag.all()
 
 
 def _seestar_header(*, with_stackcnt=True):
