@@ -827,7 +827,7 @@ def process_one_image(
     input_photometry_coords=None,
 ):
     """
-    Process a single image file and return a list of StarLists, one per input mask.
+    Process a single image file and return one photometry table per input mask.
 
     Parameters
     ----------
@@ -841,21 +841,24 @@ def process_one_image(
         Centroiding CNN model.
     bayer_masks : dict of {str: numpy.ndarray or None}
         Dictionary mapping each filter name to the Bayer mask to apply to the
-        image. The filter name is added to the metadata for each star and can be
-        used to group the results by filter. The Bayer mask is should have the same
-        shape as the image data.
+        image. The filter name is stamped into each returned table's metadata so
+        the results can be grouped by filter. Each Bayer mask should have the same
+        shape as the image data. To include the synthetic full-frame "L4"
+        luminance channel, map "L4" to None; it must be ordered after the RGB
+        channels (TR/TG/TB) it is built from.
     bayer_balance_detection : bool, optional
         Whether to perform source detection on Bayer balanced data. This is usually
         desirable for data with a bayer pattern.
     input_photometry_coords : `astropy.coordinates.SkyCoord` or None, optional
         If provided, these sky coordinates are used for centroiding instead of those
-        detected in this image. THe sjy coordinates passed in are recorded as the sky
-        coordinates in the output.
+        detected in this image. The sky coordinates passed in are recorded as the
+        sky coordinates in the output.
 
     Returns
     -------
     dict of {str: Table} or None
-        Dictionary mapping each filter name to the photometry table for that filter.
+        Dictionary mapping each filter name to the photometry table for that
+        filter, or None if the image could not be processed.
     """
     # Calculate everything we need for all filters at once.
     img = prepare_image(
@@ -895,7 +898,7 @@ def calculate_l4_quantities(final_data, by_filter_data, egain):
     egain : float
         The gain of the image.
     """
-    # L4 total count is sum of the indivdual filter total counts
+    # L4 total count is sum of the individual filter total counts
     final_data["tot_count"] = (
         by_filter_data["TR"]["tot_count"]
         + by_filter_data["TG"]["tot_count"]
