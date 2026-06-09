@@ -814,3 +814,131 @@ def build_photometry_table(
     data.meta["annulus_radii"] = phot["annulus_radii"]
 
     return data
+
+
+def process_one_image(
+        file,
+        user_specific_metadata,
+        radecs,
+        cnn,
+        bayer_masks,
+        *,
+        bayer_balance_detection=True,
+        input_photometry_coords=None,
+    ):
+    """
+    Process a single image file and return a list of StarLists, one per input mask.
+
+    Parameters
+    ----------
+    file : str or Path
+        Path to the FITS file.
+    user_specific_metadata : dict
+        User-specific metadata to include in the output.
+    radecs : numpy.ndarray
+        Gaia reference sky coordinates (RA/Dec) used for WCS alignment.
+    cnn : eloy.centroid.Ballet
+        Centroiding CNN model.
+    bayer_masks : dict of {str: numpy.ndarray or None}
+        Dictionary mapping each filter name to the Bayer mask to apply to the
+        image. The filter name is added to the metadata for each star and can be
+        used to group the results by filter. The Bayer mask is should have the same
+        shape as the image data.
+    bayer_balance_detection : bool, optional
+        Whether to perform source detection on Bayer balanced data. This is usually
+        desirable for data with a bayer pattern.
+    input_photometry_coords : `astropy.coordinates.SkyCoord` or None, optional
+        If provided, these sky coordinates are used for centroiding instead of those
+        detected in this image. THe sjy coordinates passed in are recorded as the sky
+        coordinates in the output.
+
+    Returns
+    -------
+    dict of {str: Table} or None
+        Dictionary mapping each filter name to the photometry table for that filter.
+    """
+    # Calculate everything we need for all filters at once.
+    img = prepare_image(
+        file,
+        radecs,
+        cnn,
+        detect_on_bayer_balanced=bayer_balance_detection,
+        photometry_coords=input_photometry_coords,
+        user_specific_metadata=user_specific_metadata,
+    )
+
+    if img is None:
+        return None
+
+    by_filter_data = {}
+    for filter_name, mask in bayer_masks.items():
+        img.metadata["filter"] = filter_name
+        data = build_photometry_table(img, mask)
+        if filter_name == "L4":
+            calculate_l4_quantities(data, by_filter_data, img.metadata["egain"])
+        by_filter_data[filter_name] = data
+    return by_filter_data
+
+
+def calculate_l4_quantities(final_data, by_filter_data, egain):
+    """
+    Calculate the "L4" photometry given RGB photometry on a Bayer array.
+
+    Parameters
+    ----------
+    final_data : dict
+        The final photometry data for the L4 filter.
+    by_filter_data : dict
+        A dictionary containing the photometry data for each individual filter.
+    egain : float
+        The gain of the image.
+
+    Returns
+    -------
+    None
+        final_data is modified in place.
+    """
+    # L4 total count is sum of the indivdual filter total counts
+    final_data["tot_count"] = (
+        by_filter_data["TR"]["tot_count"]
+        + by_filter_data["TG"]["tot_count"]
+        + by_filter_data["TB"]["tot_count"]
+    )
+
+    # L4 aperture area is the sum of the individual filter aperture areas
+    final_data["aperture_area"] = (
+        by_filter_data["TR"]["aperture_area"]
+        + by_filter_data["TG"]["aperture_area"]
+        + by_filter_data["TB"]["aperture_area"]
+    )
+
+    # Background is the weighted average of the individual filter backgrounds
+    final_data["bkgd_count"] = (
+        by_filter_data["TR"]["bkgd_count"] * by_filter_data["TR"]["aperture_area"]
+        + by_filter_data["TG"]["bkgd_count"] * by_filter_data["TG"]["aperture_area"]
+        + by_filter_data["TB"]["bkgd_count"] * by_filter_data["TB"]["aperture_area"]
+    ) / final_data["aperture_area"]
+
+    # For peak count, create a numpy array of the individual filter peak counts
+    # and take the max along the filter axis
+    final_data["peak_count"] = np.max(
+        [
+            by_filter_data["TR"]["peak_count"],
+            by_filter_data["TG"]["peak_count"],
+            by_filter_data["TB"]["peak_count"]
+        ],
+        axis=0,
+    )
+
+    # For error, add the individual filter background errors in quadrature, multiplied by
+    # the aperture areas, and then add in quadrature to the Poisson error from the total count
+    final_data["count_err"] = np.sqrt(
+        (
+            (
+                by_filter_data["TR"]["bkgd_std"] ** 2 * by_filter_data["TR"]["aperture_area"]
+                + by_filter_data["TG"]["bkgd_std"] ** 2 * by_filter_data["TG"]["aperture_area"]
+                + by_filter_data["TB"]["bkgd_std"] ** 2 * by_filter_data["TB"]["aperture_area"]
+            )
+        )
+        + final_data["tot_count"] / egain  # Poisson error from total count
+    )
