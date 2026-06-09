@@ -20,11 +20,18 @@ from astropy.wcs import WCS
 from bandaid import measure_photometry
 from bandaid.photometry import (
     ANNULUS,
+    N_STARS_ALIGN,
     RELATIVE_RADII,
     ImageData,
+    align,
     build_photometry_table,
+    calculate_l4_quantities,
     centroid_drift_flag,
+    centroid_stars,
+    eloy_to_starlist,
+    metadata_from_header,
     min_separation_fwhm,
+    neighbor_contamination_flag,
     prepare_image,
 )
 
@@ -695,3 +702,361 @@ class TestBuildPhotometryTable:
             table["centroid_drift"],
             [False, False, True],
         )
+
+
+class TestNeighborContaminationFlag:
+    """Unit tests for the bright-neighbor flag ``neighbor_contamination_flag``."""
+
+    @pytest.mark.parametrize("n", [0, 1])
+    def test_fewer_than_two_stars_never_flagged(self, n):
+        """With <2 stars no pair can exist, so the early return is all-False."""
+        coords = np.zeros((n, 2))
+        mags = np.zeros(n)
+        flag = neighbor_contamination_flag(coords, mags, fwhm=2.0)
+        assert flag.shape == (n,)
+        assert flag.dtype == bool
+        assert not flag.any()
+
+    def test_equal_brightness_pair_flagged_inside_threshold(self):
+        """Equal-mag neighbors flag both stars inside ~2.18 FWHM, neither outside."""
+        fwhm = 2.0
+        # min_separation_fwhm(0) ~ 2.176 FWHM -> ~4.35 px at fwhm=2.
+        threshold_px = min_separation_fwhm(0.0) * fwhm
+
+        close = np.array([[0.0, 0.0], [threshold_px - 0.5, 0.0]])
+        far = np.array([[0.0, 0.0], [threshold_px + 0.5, 0.0]])
+        mags = np.array([12.0, 12.0])
+
+        np.testing.assert_array_equal(
+            neighbor_contamination_flag(close, mags, fwhm=fwhm),
+            [True, True],
+        )
+        assert not neighbor_contamination_flag(far, mags, fwhm=fwhm).any()
+
+    def test_flag_is_asymmetric_for_unequal_brightness(self):
+        """A faint star is flagged by a bright neighbor that it does not flag back."""
+        fwhm = 2.0
+        # delta_mag=6 needs ~5.9 FWHM (~11.8 px); delta_mag=-6 needs 0. At 6 px the
+        # faint star (bright neighbor) is flagged; the bright star is not.
+        mags = np.array([8.0, 14.0])  # star 0 bright, star 1 faint
+        coords = np.array([[0.0, 0.0], [6.0, 0.0]])
+
+        flag = neighbor_contamination_flag(coords, mags, fwhm=fwhm)
+        assert not flag[0]  # bright star: faint neighbor spills negligibly
+        assert flag[1]  # faint star: bright neighbor contaminates it
+
+    def test_non_finite_magnitude_contributes_no_contamination(self):
+        """A NaN-magnitude star neither flags nor is flagged."""
+        fwhm = 2.0
+        coords = np.array([[0.0, 0.0], [1.0, 0.0]])  # essentially on top of one another
+        mags = np.array([10.0, np.nan])
+        flag = neighbor_contamination_flag(coords, mags, fwhm=fwhm)
+        assert not flag.any()
+
+
+def _seestar_header(*, with_stackcnt=True):
+    """Build a FITS header carrying the keys referenced by ``basic.json``."""
+    header = fits.Header()
+    header["DATE-OBS"] = "2024-01-01T00:00:00"
+    header["SITELAT"] = 40.0
+    header["SITELONG"] = -105.0
+    header["SITEELEV"] = 1600.0
+    header["obscode"] = "ABC"
+    header["FILTER"] = "L"
+    header["EXPTIME"] = 10.0
+    header["CREATOR"] = "ZWO Seestar S50"
+    header["INSTRUME"] = "Seestar S50"
+    header["PROGRAM"] = "SeestarApp"
+    header["BAYERPAT"] = "RGGB"
+    header["DEC"] = 20.0
+    header["RA"] = 10.0
+    header["OBJECT"] = "WASP-12"
+    header["TELESCOP"] = "Seestar"
+    header["NAXIS1"] = 1080
+    header["NAXIS2"] = 1920
+    if with_stackcnt:
+        header["STACKCNT"] = 7
+    return header
+
+
+class TestMetadataFromHeader:
+    """Unit tests for ``metadata_from_header`` against the Seestar template."""
+
+    def test_resolves_template_directives(self):
+        """@/!/literal directives and NAXIS sizing all resolve as documented."""
+        # These literals live in basic.json (not the header), so they are pinned
+        # here rather than read back from the input.
+        expected_adc_depth = 12
+        expected_max_adu = 50000
+
+        header = _seestar_header()
+        metadata = metadata_from_header(header)
+
+        # "@KEY" -> header lookup.
+        assert metadata["obs_time"] == "2024-01-01T00:00:00"
+        assert metadata["block_filter"] == "L"
+        # "!CREATOR index 0" -> first whitespace token of CREATOR.
+        assert metadata["tel_manufac"] == "ZWO"
+        # Plain literals pass through untouched.
+        assert metadata["adc_depth"] == expected_adc_depth
+        assert metadata["largest_usable_adu_value"] == expected_max_adu
+        assert metadata["egain"] == pytest.approx(0.3116)
+        assert metadata["roworder"] == "top-down"
+        assert metadata["refframe"] == "ICRS"
+        # width/height come straight from NAXIS1/NAXIS2.
+        assert metadata["width"] == header["NAXIS1"]
+        assert metadata["height"] == header["NAXIS2"]
+        # Comment/internal keys are dropped, not surfaced.
+        assert "_note" not in metadata
+        assert "_filter" not in metadata
+        assert "#stack" not in metadata
+
+    def test_present_stackcnt_used(self):
+        """When STACKCNT is present its value flows into ``stack``."""
+        header = _seestar_header(with_stackcnt=True)
+        metadata = metadata_from_header(header)
+        assert metadata["stack"] == header["STACKCNT"]
+
+    def test_missing_stackcnt_falls_back_to_default(self):
+        """A missing STACKCNT falls back to the ``#stack`` default of 1."""
+        default_stack = 1
+        metadata = metadata_from_header(_seestar_header(with_stackcnt=False))
+        assert metadata["stack"] == default_stack
+
+
+def _starlist_metadata():
+    """A metadata dict covering every StarList field except fwhm (set on meta)."""
+    return {
+        "obs_time": "2024-01-01T00:00:00",
+        "site_lat": 40.0,
+        "site_lon": -105.0,
+        "site_elev": 1600.0,
+        "observer": "ABC",
+        "filter": "TG",
+        "block_filter": "L",
+        "exposure": 10.0,
+        "tel_manufac": "ZWO",
+        "width": 100,
+        "height": 100,
+        "stack": 1,
+        "tel_model": "S50",
+        "tel_firmware": "1.0",
+        "adc_depth": 12,
+        "largest_usable_adu_value": 50000,
+        "egain": 0.3,
+        "refframe": "ICRS",
+    }
+
+
+def _eloy_table(rows, *, contaminated=None):
+    """Build an eloy-style photometry table from per-row StarItem dicts."""
+    table = Table(rows)
+    if contaminated is not None:
+        table["contaminated"] = contaminated
+    table.meta["fwhm"] = 2.5
+    return table
+
+
+class TestEloyToStarlist:
+    """Unit tests for the table->StarList conversion ``eloy_to_starlist``."""
+
+    def test_filters_bad_rows(self):
+        """Only finite, positive, in-bounds rows survive into the StarList."""
+        good_a = {
+            "x": 20.0,
+            "y": 30.0,
+            "ra": 10.0,
+            "dec": 20.0,
+            "tot_count": 100.0,
+            "count_err": 5.0,
+            "bkgd_count": 1.0,
+            "peak_count": 200.0,
+        }
+        good_b = {
+            "x": 70.0,
+            "y": 60.0,
+            "ra": 11.0,
+            "dec": 21.0,
+            "tot_count": 300.0,
+            "count_err": 7.0,
+            "bkgd_count": 1.0,
+            "peak_count": 400.0,
+        }
+        # Each bad row trips exactly one filter condition.
+        bad_nan_count = {**good_a, "tot_count": np.nan}
+        bad_zero_count = {**good_a, "tot_count": 0.0}
+        bad_inf_err = {**good_a, "count_err": np.inf}
+        bad_zero_err = {**good_a, "count_err": 0.0}
+        bad_x_out = {**good_a, "x": 150.0}
+        bad_y_out = {**good_a, "y": -5.0}
+
+        table = _eloy_table(
+            [
+                good_a,
+                good_b,
+                bad_nan_count,
+                bad_zero_count,
+                bad_inf_err,
+                bad_zero_err,
+                bad_x_out,
+                bad_y_out,
+            ],
+        )
+        starlist = eloy_to_starlist(table, _starlist_metadata())
+
+        kept_x = sorted(item.x for item in starlist.staritems)
+        assert kept_x == [20.0, 70.0]
+
+    def test_contaminated_rows_excluded(self):
+        """A ``contaminated`` column drops flagged rows even when otherwise good."""
+        good = {
+            "x": 20.0,
+            "y": 30.0,
+            "ra": 10.0,
+            "dec": 20.0,
+            "tot_count": 100.0,
+            "count_err": 5.0,
+            "bkgd_count": 1.0,
+            "peak_count": 200.0,
+        }
+        contaminated_good = {**good, "x": 70.0}
+        table = _eloy_table([good, contaminated_good], contaminated=[False, True])
+
+        starlist = eloy_to_starlist(table, _starlist_metadata())
+
+        kept_x = [item.x for item in starlist.staritems]
+        assert kept_x == [20.0]
+
+
+class TestAlign:
+    """Unit tests for the WCS-solve/projection helper ``align``."""
+
+    def test_projects_photometry_coords_through_supplied_wcs(self):
+        """photometry_coords are projected to pixels via the provided WCS."""
+        wcs = _make_tan_wcs(crval=(10.0, 20.0))
+        sky = SkyCoord(ra=[10.0, 10.01] * u.deg, dec=[20.0, 20.01] * u.deg)
+        coords = np.array([[250.0, 250.0], [260.0, 260.0]])
+
+        aligned, returned_wcs = align(
+            coords, radecs=None, photometry_coords=sky, wcs=wcs
+        )
+
+        assert returned_wcs is wcs
+        expected = np.array(wcs.world_to_pixel(sky)).T
+        np.testing.assert_allclose(aligned, expected)
+        assert aligned.shape == (2, 2)
+
+    def test_solves_wcs_from_detections_when_none_supplied(self, monkeypatch):
+        """
+        With wcs=None, align calls compute_wcs on the first N_STARS_ALIGN stars.
+
+        twirl.compute_wcs is a slow, stochastic asterism solver and the unit
+        under test is align's orchestration (input slicing + branch selection),
+        not twirl's matching -- so it is stubbed with a sentinel WCS.
+        """
+        sentinel_wcs = _make_tan_wcs()
+        calls = {}
+
+        def fake_compute_wcs(coords, radecs, tolerance):
+            calls["coords"] = coords
+            calls["radecs"] = radecs
+            calls["tolerance"] = tolerance
+            return sentinel_wcs
+
+        monkeypatch.setattr("bandaid.photometry.compute_wcs", fake_compute_wcs)
+
+        n_detected = N_STARS_ALIGN + 5
+        coords = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
+        radecs = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
+
+        aligned, returned_wcs = align(coords, radecs, photometry_coords=None)
+
+        assert returned_wcs is sentinel_wcs
+        # Only the brightest N_STARS_ALIGN detections/refs reach the solver.
+        assert len(calls["coords"]) == N_STARS_ALIGN
+        assert len(calls["radecs"]) == N_STARS_ALIGN
+        # With no photometry_coords, aligned coords are the detections themselves.
+        np.testing.assert_array_equal(aligned, coords)
+
+
+def test_centroid_stars_delegates_to_ballet(monkeypatch):
+    """
+    centroid_stars forwards (data, coords, cnn) to centroid.ballet_centroid.
+
+    The wrapper has no logic of its own and the real call loads a Ballet CNN
+    from HuggingFace, so ballet_centroid is stubbed and call-through verified.
+    """
+    recorded = {}
+    result_sentinel = np.array([[1.0, 2.0]])
+
+    def fake_ballet_centroid(data, coords, cnn):
+        recorded["args"] = (data, coords, cnn)
+        return result_sentinel
+
+    monkeypatch.setattr(
+        "bandaid.photometry.centroid.ballet_centroid",
+        fake_ballet_centroid,
+    )
+
+    data = np.zeros((10, 10))
+    coords = np.array([[5.0, 5.0]])
+    cnn = object()
+    out = centroid_stars(data, coords, cnn)
+
+    assert out is result_sentinel
+    assert recorded["args"][0] is data
+    assert recorded["args"][1] is coords
+    assert recorded["args"][2] is cnn
+
+
+class TestCalculateL4Quantities:
+    """Unit tests for the RGB->L4 combination ``calculate_l4_quantities``."""
+
+    def test_combines_rgb_filters(self):
+        """L4 columns are the documented combinations of the TR/TG/TB tables."""
+        egain = 0.5
+
+        def _filter_table(tot, area, bkgd, bkgd_std, peak):
+            t = Table()
+            t["tot_count"] = np.array(tot, dtype=float)
+            t["aperture_area"] = np.array(area, dtype=float)
+            t["bkgd_count"] = np.array(bkgd, dtype=float)
+            t["bkgd_std"] = np.array(bkgd_std, dtype=float)
+            t["peak_count"] = np.array(peak, dtype=float)
+            return t
+
+        by_filter = {
+            "TR": _filter_table([100, 200], [10, 12], [5, 6], [2, 3], [50, 90]),
+            "TG": _filter_table([110, 210], [11, 13], [4, 7], [1, 2], [70, 80]),
+            "TB": _filter_table([120, 220], [9, 14], [6, 5], [3, 1], [60, 95]),
+        }
+        final_data = Table()
+
+        calculate_l4_quantities(final_data, by_filter, egain)
+
+        tr, tg, tb = by_filter["TR"], by_filter["TG"], by_filter["TB"]
+        expected_tot = tr["tot_count"] + tg["tot_count"] + tb["tot_count"]
+        expected_area = tr["aperture_area"] + tg["aperture_area"] + tb["aperture_area"]
+        expected_bkgd = (
+            tr["bkgd_count"] * tr["aperture_area"]
+            + tg["bkgd_count"] * tg["aperture_area"]
+            + tb["bkgd_count"] * tb["aperture_area"]
+        ) / expected_area
+        expected_peak = np.max(
+            [tr["peak_count"], tg["peak_count"], tb["peak_count"]],
+            axis=0,
+        )
+        expected_err = np.sqrt(
+            (
+                tr["bkgd_std"] ** 2 * tr["aperture_area"]
+                + tg["bkgd_std"] ** 2 * tg["aperture_area"]
+                + tb["bkgd_std"] ** 2 * tb["aperture_area"]
+            )
+            + expected_tot / egain
+        )
+
+        np.testing.assert_allclose(final_data["tot_count"], expected_tot)
+        np.testing.assert_allclose(final_data["aperture_area"], expected_area)
+        np.testing.assert_allclose(final_data["bkgd_count"], expected_bkgd)
+        np.testing.assert_allclose(final_data["peak_count"], expected_peak)
+        np.testing.assert_allclose(final_data["count_err"], expected_err)
