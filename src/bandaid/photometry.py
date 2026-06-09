@@ -817,15 +817,15 @@ def build_photometry_table(
 
 
 def process_one_image(
-        file,
-        user_specific_metadata,
-        radecs,
-        cnn,
-        bayer_masks,
-        *,
-        bayer_balance_detection=True,
-        input_photometry_coords=None,
-    ):
+    file,
+    user_specific_metadata,
+    radecs,
+    cnn,
+    bayer_masks,
+    *,
+    bayer_balance_detection=True,
+    input_photometry_coords=None,
+):
     """
     Process a single image file and return a list of StarLists, one per input mask.
 
@@ -884,6 +884,8 @@ def calculate_l4_quantities(final_data, by_filter_data, egain):
     """
     Calculate the "L4" photometry given RGB photometry on a Bayer array.
 
+    Note that ``final_data`` is modified in place.
+
     Parameters
     ----------
     final_data : dict
@@ -892,11 +894,6 @@ def calculate_l4_quantities(final_data, by_filter_data, egain):
         A dictionary containing the photometry data for each individual filter.
     egain : float
         The gain of the image.
-
-    Returns
-    -------
-    None
-        final_data is modified in place.
     """
     # L4 total count is sum of the indivdual filter total counts
     final_data["tot_count"] = (
@@ -925,20 +922,22 @@ def calculate_l4_quantities(final_data, by_filter_data, egain):
         [
             by_filter_data["TR"]["peak_count"],
             by_filter_data["TG"]["peak_count"],
-            by_filter_data["TB"]["peak_count"]
+            by_filter_data["TB"]["peak_count"],
         ],
         axis=0,
     )
 
-    # For error, add the individual filter background errors in quadrature, multiplied by
-    # the aperture areas, and then add in quadrature to the Poisson error from the total count
+    # For error, add the individual filter background errors in quadrature, multiplied
+    # by the aperture areas, and then add in quadrature to the Poisson error from the
+    # total count
     final_data["count_err"] = np.sqrt(
         (
-            (
-                by_filter_data["TR"]["bkgd_std"] ** 2 * by_filter_data["TR"]["aperture_area"]
-                + by_filter_data["TG"]["bkgd_std"] ** 2 * by_filter_data["TG"]["aperture_area"]
-                + by_filter_data["TB"]["bkgd_std"] ** 2 * by_filter_data["TB"]["aperture_area"]
-            )
+            by_filter_data["TR"]["bkgd_std"] ** 2
+            * by_filter_data["TR"]["aperture_area"]
+            + by_filter_data["TG"]["bkgd_std"] ** 2
+            * by_filter_data["TG"]["aperture_area"]
+            + by_filter_data["TB"]["bkgd_std"] ** 2
+            * by_filter_data["TB"]["aperture_area"]
         )
         + final_data["tot_count"] / egain  # Poisson error from total count
     )

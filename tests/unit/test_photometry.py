@@ -7,6 +7,8 @@ Covers aperture photometry on synthetic single-source images
 (``prepare_image``), using the synthetic-image fixtures from ``conftest.py``.
 """
 
+from pathlib import Path
+
 import astropy.units as u
 import numpy as np
 import pytest
@@ -21,8 +23,10 @@ from bandaid import measure_photometry
 from bandaid.image2sl_qt import generate_bayer_masks
 from bandaid.photometry import (
     ANNULUS,
+    MIN_DETECTED_STARS,
     N_STARS_ALIGN,
     RELATIVE_RADII,
+    THRESH,
     ImageData,
     align,
     build_photometry_table,
