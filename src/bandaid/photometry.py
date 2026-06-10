@@ -12,8 +12,9 @@ import json
 from dataclasses import dataclass
 from importlib.resources import files as package_files
 
+import astropy.units as u
 import numpy as np
-from astropy.coordinates import SkyCoord
+from astropy.coordinates import SkyCoord, search_around_sky
 from astropy.io import fits
 from astropy.stats import SigmaClip
 from astropy.table import Table
@@ -229,10 +230,13 @@ def neighbor_contamination_flag_sky(
     """
     Flag contaminated stars directly from sky coordinates and an angular FWHM.
 
-    Sky-space front end over `_contamination_flag`: pairwise separations are
+    Sky-space front end of the contamination model: pairwise separations are
     great-circle angular separations (arcsec) and the FWHM is in arcsec, so no
     WCS or pixel projection is needed. Same contamination model and result
-    convention as `neighbor_contamination_flag`.
+    convention as `neighbor_contamination_flag`, but instead of the dense
+    ``N x N`` separation matrix it uses a neighbor search capped at the largest
+    separation any pair could require, so it stays fast on full Gaia fields
+    (~10,000 sources).
 
     Parameters
     ----------
@@ -255,18 +259,51 @@ def neighbor_contamination_flag_sky(
         True where any neighbor sits inside this star's contamination radius.
     """
     radecs = np.asarray(radecs, dtype=float)
+    mags = np.asarray(mags, dtype=float)
+    flagged = np.zeros(len(radecs), dtype=bool)
     if len(radecs) < MIN_STARS_FOR_PAIRS:
-        return np.zeros(len(radecs), dtype=bool)
+        return flagged
+
+    finite = np.isfinite(mags)
+    if not finite.any():
+        return flagged
+
+    # The largest separation any pair can require is the faintest target with
+    # the brightest neighbor; `min_separation_fwhm` is monotonic in delta_mag,
+    # so capping the neighbor search there finds every pair the dense N x N
+    # separation matrix would flag at a fraction of the time and memory.
+    max_delta_mag = np.max(mags[finite]) - np.min(mags[finite])
+    max_sep_arcsec = (
+        min_separation_fwhm(max_delta_mag, tolerance=tolerance, beta=beta) * fwhm_arcsec
+    )
+    if max_sep_arcsec <= 0:
+        return flagged
 
     coords = SkyCoord(radecs[:, 0], radecs[:, 1], unit="deg")
-    sep_arcsec = coords[:, None].separation(coords[None, :]).arcsec
-    return _contamination_flag(
-        sep_arcsec,
-        mags,
-        fwhm_arcsec,
-        tolerance=tolerance,
-        beta=beta,
+    idx_target, idx_neighbor, sep2d, _ = search_around_sky(
+        coords,
+        coords,
+        max_sep_arcsec * u.arcsec,
     )
+
+    # Same pair convention as `_contamination_flag`: a star is never its own
+    # neighbor (but distinct stars at zero separation are), and a pair only
+    # counts when both magnitudes are finite.
+    keep = (idx_target != idx_neighbor) & finite[idx_target] & finite[idx_neighbor]
+    idx_target = idx_target[keep]
+    idx_neighbor = idx_neighbor[keep]
+    sep_arcsec = sep2d.arcsec[keep]
+
+    min_sep = (
+        min_separation_fwhm(
+            mags[idx_target] - mags[idx_neighbor],
+            tolerance=tolerance,
+            beta=beta,
+        )
+        * fwhm_arcsec
+    )
+    flagged[idx_target[sep_arcsec < min_sep]] = True
+    return flagged
 
 
 def centroid_drift_flag(

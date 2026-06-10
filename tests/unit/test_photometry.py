@@ -815,6 +815,58 @@ class TestNeighborContaminationFlagSky:
         assert sky_flag.any()
         assert not sky_flag.all()
 
+    def test_all_non_finite_magnitudes_never_flagged(self):
+        """With no finite magnitude there is no valid pair, so nothing is flagged."""
+        radecs = np.array([[10.0, 0.0], [10.0 + 0.5 / 3600.0, 0.0]])
+        mags = np.array([np.nan, np.nan])
+        flag = neighbor_contamination_flag_sky(radecs, mags, fwhm_arcsec=2.0)
+        assert flag.shape == (2,)
+        assert not flag.any()
+
+    def test_zero_fwhm_never_flags(self):
+        """A zero FWHM makes every required separation zero, so nothing is flagged."""
+        radecs = np.array([[10.0, 0.0], [10.0 + 0.5 / 3600.0, 0.0]])
+        mags = np.array([10.0, 12.0])
+        flag = neighbor_contamination_flag_sky(radecs, mags, fwhm_arcsec=0.0)
+        assert not flag.any()
+
+    def test_matches_dense_all_pairs_reference_on_random_field(self):
+        """
+        The sky flag reproduces a brute-force all-pairs reference.
+
+        The reference applies the documented contamination rule directly to an
+        explicit N x N great-circle separation matrix: target i is flagged when
+        any other star j with finite magnitudes sits closer than
+        ``min_separation_fwhm(mag_i - mag_j) * fwhm``. This pins the sky front
+        end (whatever its internal pair search) to the dense model on a
+        realistic random field, including NaN magnitudes and an exact-duplicate
+        position (a zero-separation pair, which the rule flags).
+        """
+        rng = np.random.default_rng(SEED)
+        n = 800
+        radecs = np.column_stack(
+            [rng.uniform(10.0, 10.5, n), rng.uniform(19.75, 20.25, n)],
+        )
+        mags = rng.uniform(8.0, 18.0, n)
+        mags[rng.choice(n, 20, replace=False)] = np.nan
+        radecs[5] = radecs[4]
+        fwhm_arcsec = 5.0
+
+        coords = SkyCoord(radecs[:, 0], radecs[:, 1], unit="deg")
+        sep_arcsec = coords[:, None].separation(coords[None, :]).arcsec
+        required = min_separation_fwhm(mags[:, None] - mags[None, :]) * fwhm_arcsec
+        finite = np.isfinite(mags)
+        valid = finite[:, None] & finite[None, :]
+        np.fill_diagonal(valid, val=False)
+        expected = (valid & (sep_arcsec < required)).any(axis=1)
+
+        flag = neighbor_contamination_flag_sky(radecs, mags, fwhm_arcsec)
+
+        np.testing.assert_array_equal(flag, expected)
+        # Sanity: the case is non-trivial -- some flagged, some not.
+        assert expected.any()
+        assert not expected.all()
+
 
 def _seestar_header(*, with_stackcnt=True):
     """Build a FITS header carrying the keys referenced by ``basic.json``."""
@@ -1073,6 +1125,12 @@ def test_centroid_stars_delegates_to_ballet(monkeypatch):
 
 class TestCalculateL4Quantities:
     """Unit tests for the RGB->L4 combination ``calculate_l4_quantities``."""
+
+    def test_missing_channel_raises(self):
+        """A missing TR/TG/TB channel raises an actionable ValueError."""
+        by_filter = {"TR": Table(), "TG": Table()}
+        with pytest.raises(ValueError, match=r"\['TB'\]"):
+            calculate_l4_quantities(Table(), by_filter, 0.5)
 
     def test_combines_rgb_filters(self):
         """L4 columns are the documented combinations of the TR/TG/TB tables."""
