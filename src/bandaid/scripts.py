@@ -16,7 +16,7 @@ functions: no shared mutable state, no "is it done yet?" bookkeeping.
 
 import logging
 from dataclasses import dataclass
-from zipfile import Path
+from pathlib import Path
 
 import numpy as np
 from astropy.coordinates import SkyCoord
@@ -148,9 +148,12 @@ def process_batch(
     Returns
     -------
     dict
-        Mapping of each input file to its ``{filter: Table}`` photometry result.
+        Mapping of each successfully-processed input file to its result. In
+        in-memory mode (``output_dir`` is None) the value is the
+        ``{filter: Table}`` photometry result; in write-to-disk mode the value
+        is the written output ``Path`` (the tables are not held in memory).
         Frames that fail (``process_one_image`` returns None) are skipped with a
-        logged warning and omitted from the result.
+        logged warning and omitted from the result in both modes.
     """
     results = {}
     for file in files:
@@ -173,6 +176,7 @@ def process_batch(
             ]
             star_list_set = StarListSet(star_lists=star_lists)
             output_path.write_text(star_list_set.model_dump_json(indent=2))
+            results[file] = output_path
         else:
             results[file] = by_filter
     return results

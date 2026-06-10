@@ -938,43 +938,15 @@ class TestMetadataFromHeader:
         assert metadata["stack"] == default_stack
 
 
-def _starlist_metadata():
-    """A metadata dict covering every StarList field except fwhm (set on meta)."""
-    return {
-        "obs_time": "2024-01-01T00:00:00",
-        "site_lat": 40.0,
-        "site_lon": -105.0,
-        "site_elev": 1600.0,
-        "observer": "ABC",
-        "filter": "TG",
-        "block_filter": "L",
-        "exposure": 10.0,
-        "tel_manufac": "ZWO",
-        "width": 100,
-        "height": 100,
-        "stack": 1,
-        "tel_model": "S50",
-        "tel_firmware": "1.0",
-        "adc_depth": 12,
-        "largest_usable_adu_value": 50000,
-        "egain": 0.3,
-        "refframe": "ICRS",
-    }
-
-
-def _eloy_table(rows, *, contaminated=None):
-    """Build an eloy-style photometry table from per-row StarItem dicts."""
-    table = Table(rows)
-    if contaminated is not None:
-        table["contaminated"] = contaminated
-    table.meta["fwhm"] = 2.5
-    return table
-
-
 class TestEloyToStarlist:
-    """Unit tests for the table->StarList conversion ``eloy_to_starlist``."""
+    """
+    Unit tests for the table->StarList conversion ``eloy_to_starlist``.
 
-    def test_filters_bad_rows(self):
+    The ``starlist_metadata`` and ``eloy_table`` fixtures live in ``conftest.py``
+    so they can be shared with ``test_scripts.py``.
+    """
+
+    def test_filters_bad_rows(self, eloy_table, starlist_metadata):
         """Only finite, positive, in-bounds rows survive into the StarList."""
         good_a = {
             "x": 20.0,
@@ -1004,7 +976,7 @@ class TestEloyToStarlist:
         bad_x_out = {**good_a, "x": 150.0}
         bad_y_out = {**good_a, "y": -5.0}
 
-        table = _eloy_table(
+        table = eloy_table(
             [
                 good_a,
                 good_b,
@@ -1016,12 +988,12 @@ class TestEloyToStarlist:
                 bad_y_out,
             ],
         )
-        starlist = eloy_to_starlist(table, _starlist_metadata())
+        starlist = eloy_to_starlist(table, starlist_metadata)
 
         kept_x = sorted(item.x for item in starlist.staritems)
         assert kept_x == [20.0, 70.0]
 
-    def test_contaminated_rows_excluded(self):
+    def test_contaminated_rows_excluded(self, eloy_table, starlist_metadata):
         """A ``contaminated`` column drops flagged rows even when otherwise good."""
         good = {
             "x": 20.0,
@@ -1034,9 +1006,9 @@ class TestEloyToStarlist:
             "peak_count": 200.0,
         }
         contaminated_good = {**good, "x": 70.0}
-        table = _eloy_table([good, contaminated_good], contaminated=[False, True])
+        table = eloy_table([good, contaminated_good], contaminated=[False, True])
 
-        starlist = eloy_to_starlist(table, _starlist_metadata())
+        starlist = eloy_to_starlist(table, starlist_metadata)
 
         kept_x = [item.x for item in starlist.staritems]
         assert kept_x == [20.0]
