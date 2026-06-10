@@ -7,6 +7,8 @@ Covers aperture photometry on synthetic single-source images
 (``prepare_image``), using the synthetic-image fixtures from ``conftest.py``.
 """
 
+from pathlib import Path
+
 import astropy.units as u
 import numpy as np
 import pytest
@@ -18,15 +20,26 @@ from astropy.table import Table
 from astropy.wcs import WCS
 
 from bandaid import measure_photometry
+from bandaid.image2sl_qt import generate_bayer_masks
 from bandaid.photometry import (
     ANNULUS,
+    MIN_DETECTED_STARS,
+    N_STARS_ALIGN,
     RELATIVE_RADII,
+    THRESH,
     ImageData,
-    ReferenceData,
+    align,
     build_photometry_table,
+    calculate_l4_quantities,
+    calibration_sequence,
     centroid_drift_flag,
+    centroid_stars,
+    eloy_to_starlist,
+    metadata_from_header,
     min_separation_fwhm,
+    neighbor_contamination_flag,
     prepare_image,
+    process_one_image,
 )
 
 # Make the tests reproducible by using a fixed random seed for noise generation in
@@ -489,19 +502,14 @@ class TestPrepareImage:
         radecs = radecs + np.array(
             [[0.01, 0.01]]
         )  # Add a small offset to ensure coords are not exactly on the sources
-        ref = ReferenceData.from_pixel_coords(
-            coords_xy,
-            wcs,
-            radecs,
-            None,
-        )
         ccd = CCDData(test_image, wcs=wcs, unit="adu")
         ccd.header["creator"] = "test_prepare_image"
         path = tmp_path / "test_image.fits"
         ccd.write(path)
         img = prepare_image(
             path,
-            ref,
+            radecs,
+            None,
             photometry_coords=None,
             wcs=wcs,
         )
@@ -701,3 +709,711 @@ class TestBuildPhotometryTable:
             table["centroid_drift"],
             [False, False, True],
         )
+
+
+class TestNeighborContaminationFlag:
+    """Unit tests for the bright-neighbor flag ``neighbor_contamination_flag``."""
+
+    @pytest.mark.parametrize("n", [0, 1])
+    def test_fewer_than_two_stars_never_flagged(self, n):
+        """With <2 stars no pair can exist, so the early return is all-False."""
+        coords = np.zeros((n, 2))
+        mags = np.zeros(n)
+        flag = neighbor_contamination_flag(coords, mags, fwhm=2.0)
+        assert flag.shape == (n,)
+        assert flag.dtype == bool
+        assert not flag.any()
+
+    def test_equal_brightness_pair_flagged_inside_threshold(self):
+        """Equal-mag neighbors flag both stars inside ~2.18 FWHM, neither outside."""
+        fwhm = 2.0
+        # min_separation_fwhm(0) ~ 2.176 FWHM -> ~4.35 px at fwhm=2.
+        threshold_px = min_separation_fwhm(0.0) * fwhm
+
+        close = np.array([[0.0, 0.0], [threshold_px - 0.5, 0.0]])
+        far = np.array([[0.0, 0.0], [threshold_px + 0.5, 0.0]])
+        mags = np.array([12.0, 12.0])
+
+        np.testing.assert_array_equal(
+            neighbor_contamination_flag(close, mags, fwhm=fwhm),
+            [True, True],
+        )
+        assert not neighbor_contamination_flag(far, mags, fwhm=fwhm).any()
+
+    def test_flag_is_asymmetric_for_unequal_brightness(self):
+        """A faint star is flagged by a bright neighbor that it does not flag back."""
+        fwhm = 2.0
+        # delta_mag=6 needs ~5.9 FWHM (~11.8 px); delta_mag=-6 needs 0. At 6 px the
+        # faint star (bright neighbor) is flagged; the bright star is not.
+        mags = np.array([8.0, 14.0])  # star 0 bright, star 1 faint
+        coords = np.array([[0.0, 0.0], [6.0, 0.0]])
+
+        flag = neighbor_contamination_flag(coords, mags, fwhm=fwhm)
+        assert not flag[0]  # bright star: faint neighbor spills negligibly
+        assert flag[1]  # faint star: bright neighbor contaminates it
+
+    def test_non_finite_magnitude_contributes_no_contamination(self):
+        """A NaN-magnitude star neither flags nor is flagged."""
+        fwhm = 2.0
+        coords = np.array([[0.0, 0.0], [1.0, 0.0]])  # essentially on top of one another
+        mags = np.array([10.0, np.nan])
+        flag = neighbor_contamination_flag(coords, mags, fwhm=fwhm)
+        assert not flag.any()
+
+
+def _seestar_header(*, with_stackcnt=True):
+    """Build a FITS header carrying the keys referenced by ``basic.json``."""
+    header = fits.Header()
+    header["DATE-OBS"] = "2024-01-01T00:00:00"
+    header["SITELAT"] = 40.0
+    header["SITELONG"] = -105.0
+    header["SITEELEV"] = 1600.0
+    header["obscode"] = "ABC"
+    header["FILTER"] = "L"
+    header["EXPTIME"] = 10.0
+    header["CREATOR"] = "ZWO Seestar S50"
+    header["INSTRUME"] = "Seestar S50"
+    header["PROGRAM"] = "SeestarApp"
+    header["BAYERPAT"] = "RGGB"
+    header["DEC"] = 20.0
+    header["RA"] = 10.0
+    header["OBJECT"] = "WASP-12"
+    header["TELESCOP"] = "Seestar"
+    header["NAXIS1"] = 1080
+    header["NAXIS2"] = 1920
+    if with_stackcnt:
+        header["STACKCNT"] = 7
+    return header
+
+
+class TestMetadataFromHeader:
+    """Unit tests for ``metadata_from_header`` against the Seestar template."""
+
+    def test_resolves_template_directives(self):
+        """@/!/literal directives and NAXIS sizing all resolve as documented."""
+        # These literals live in basic.json (not the header), so they are pinned
+        # here rather than read back from the input.
+        expected_adc_depth = 12
+        expected_max_adu = 50000
+
+        header = _seestar_header()
+        metadata = metadata_from_header(header)
+
+        # "@KEY" -> header lookup.
+        assert metadata["obs_time"] == "2024-01-01T00:00:00"
+        assert metadata["block_filter"] == "L"
+        # "!CREATOR index 0" -> first whitespace token of CREATOR.
+        assert metadata["tel_manufac"] == "ZWO"
+        # Plain literals pass through untouched.
+        assert metadata["adc_depth"] == expected_adc_depth
+        assert metadata["largest_usable_adu_value"] == expected_max_adu
+        assert metadata["egain"] == pytest.approx(0.3116)
+        assert metadata["roworder"] == "top-down"
+        assert metadata["refframe"] == "ICRS"
+        # width/height come straight from NAXIS1/NAXIS2.
+        assert metadata["width"] == header["NAXIS1"]
+        assert metadata["height"] == header["NAXIS2"]
+        # Comment/internal keys are dropped, not surfaced.
+        assert "_note" not in metadata
+        assert "_filter" not in metadata
+        assert "#stack" not in metadata
+
+    def test_present_stackcnt_used(self):
+        """When STACKCNT is present its value flows into ``stack``."""
+        header = _seestar_header(with_stackcnt=True)
+        metadata = metadata_from_header(header)
+        assert metadata["stack"] == header["STACKCNT"]
+
+    def test_missing_stackcnt_falls_back_to_default(self):
+        """A missing STACKCNT falls back to the ``#stack`` default of 1."""
+        default_stack = 1
+        metadata = metadata_from_header(_seestar_header(with_stackcnt=False))
+        assert metadata["stack"] == default_stack
+
+
+def _starlist_metadata():
+    """A metadata dict covering every StarList field except fwhm (set on meta)."""
+    return {
+        "obs_time": "2024-01-01T00:00:00",
+        "site_lat": 40.0,
+        "site_lon": -105.0,
+        "site_elev": 1600.0,
+        "observer": "ABC",
+        "filter": "TG",
+        "block_filter": "L",
+        "exposure": 10.0,
+        "tel_manufac": "ZWO",
+        "width": 100,
+        "height": 100,
+        "stack": 1,
+        "tel_model": "S50",
+        "tel_firmware": "1.0",
+        "adc_depth": 12,
+        "largest_usable_adu_value": 50000,
+        "egain": 0.3,
+        "refframe": "ICRS",
+    }
+
+
+def _eloy_table(rows, *, contaminated=None):
+    """Build an eloy-style photometry table from per-row StarItem dicts."""
+    table = Table(rows)
+    if contaminated is not None:
+        table["contaminated"] = contaminated
+    table.meta["fwhm"] = 2.5
+    return table
+
+
+class TestEloyToStarlist:
+    """Unit tests for the table->StarList conversion ``eloy_to_starlist``."""
+
+    def test_filters_bad_rows(self):
+        """Only finite, positive, in-bounds rows survive into the StarList."""
+        good_a = {
+            "x": 20.0,
+            "y": 30.0,
+            "ra": 10.0,
+            "dec": 20.0,
+            "tot_count": 100.0,
+            "count_err": 5.0,
+            "bkgd_count": 1.0,
+            "peak_count": 200.0,
+        }
+        good_b = {
+            "x": 70.0,
+            "y": 60.0,
+            "ra": 11.0,
+            "dec": 21.0,
+            "tot_count": 300.0,
+            "count_err": 7.0,
+            "bkgd_count": 1.0,
+            "peak_count": 400.0,
+        }
+        # Each bad row trips exactly one filter condition.
+        bad_nan_count = {**good_a, "tot_count": np.nan}
+        bad_zero_count = {**good_a, "tot_count": 0.0}
+        bad_inf_err = {**good_a, "count_err": np.inf}
+        bad_zero_err = {**good_a, "count_err": 0.0}
+        bad_x_out = {**good_a, "x": 150.0}
+        bad_y_out = {**good_a, "y": -5.0}
+
+        table = _eloy_table(
+            [
+                good_a,
+                good_b,
+                bad_nan_count,
+                bad_zero_count,
+                bad_inf_err,
+                bad_zero_err,
+                bad_x_out,
+                bad_y_out,
+            ],
+        )
+        starlist = eloy_to_starlist(table, _starlist_metadata())
+
+        kept_x = sorted(item.x for item in starlist.staritems)
+        assert kept_x == [20.0, 70.0]
+
+    def test_contaminated_rows_excluded(self):
+        """A ``contaminated`` column drops flagged rows even when otherwise good."""
+        good = {
+            "x": 20.0,
+            "y": 30.0,
+            "ra": 10.0,
+            "dec": 20.0,
+            "tot_count": 100.0,
+            "count_err": 5.0,
+            "bkgd_count": 1.0,
+            "peak_count": 200.0,
+        }
+        contaminated_good = {**good, "x": 70.0}
+        table = _eloy_table([good, contaminated_good], contaminated=[False, True])
+
+        starlist = eloy_to_starlist(table, _starlist_metadata())
+
+        kept_x = [item.x for item in starlist.staritems]
+        assert kept_x == [20.0]
+
+
+class TestAlign:
+    """Unit tests for the WCS-solve/projection helper ``align``."""
+
+    def test_projects_photometry_coords_through_supplied_wcs(self):
+        """photometry_coords are projected to pixels via the provided WCS."""
+        wcs = _make_tan_wcs(crval=(10.0, 20.0))
+        sky = SkyCoord(ra=[10.0, 10.01] * u.deg, dec=[20.0, 20.01] * u.deg)
+        coords = np.array([[250.0, 250.0], [260.0, 260.0]])
+
+        aligned, returned_wcs = align(
+            coords, radecs=None, photometry_coords=sky, wcs=wcs
+        )
+
+        assert returned_wcs is wcs
+        expected = np.array(wcs.world_to_pixel(sky)).T
+        np.testing.assert_allclose(aligned, expected)
+        assert aligned.shape == (2, 2)
+
+    def test_solves_wcs_from_detections_when_none_supplied(self, monkeypatch):
+        """
+        With wcs=None, align calls compute_wcs on the first N_STARS_ALIGN stars.
+
+        twirl.compute_wcs is a slow, stochastic asterism solver and the unit
+        under test is align's orchestration (input slicing + branch selection),
+        not twirl's matching -- so it is stubbed with a sentinel WCS.
+        """
+        sentinel_wcs = _make_tan_wcs()
+        calls = {}
+
+        def fake_compute_wcs(coords, radecs, tolerance):
+            calls["coords"] = coords
+            calls["radecs"] = radecs
+            calls["tolerance"] = tolerance
+            return sentinel_wcs
+
+        monkeypatch.setattr("bandaid.photometry.compute_wcs", fake_compute_wcs)
+
+        n_detected = N_STARS_ALIGN + 5
+        coords = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
+        radecs = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
+
+        aligned, returned_wcs = align(coords, radecs, photometry_coords=None)
+
+        assert returned_wcs is sentinel_wcs
+        # Only the brightest N_STARS_ALIGN detections/refs reach the solver.
+        assert len(calls["coords"]) == N_STARS_ALIGN
+        assert len(calls["radecs"]) == N_STARS_ALIGN
+        # With no photometry_coords, aligned coords are the detections themselves.
+        np.testing.assert_array_equal(aligned, coords)
+
+
+def test_centroid_stars_delegates_to_ballet(monkeypatch):
+    """
+    centroid_stars forwards (data, coords, cnn) to centroid.ballet_centroid.
+
+    The wrapper has no logic of its own and the real call loads a Ballet CNN
+    from HuggingFace, so ballet_centroid is stubbed and call-through verified.
+    """
+    recorded = {}
+    result_sentinel = np.array([[1.0, 2.0]])
+
+    def fake_ballet_centroid(data, coords, cnn):
+        recorded["args"] = (data, coords, cnn)
+        return result_sentinel
+
+    monkeypatch.setattr(
+        "bandaid.photometry.centroid.ballet_centroid",
+        fake_ballet_centroid,
+    )
+
+    data = np.zeros((10, 10))
+    coords = np.array([[5.0, 5.0]])
+    cnn = object()
+    out = centroid_stars(data, coords, cnn)
+
+    assert out is result_sentinel
+    assert recorded["args"][0] is data
+    assert recorded["args"][1] is coords
+    assert recorded["args"][2] is cnn
+
+
+class TestCalculateL4Quantities:
+    """Unit tests for the RGB->L4 combination ``calculate_l4_quantities``."""
+
+    def test_combines_rgb_filters(self):
+        """L4 columns are the documented combinations of the TR/TG/TB tables."""
+        egain = 0.5
+
+        def _filter_table(tot, area, bkgd, bkgd_std, peak):
+            t = Table()
+            t["tot_count"] = np.array(tot, dtype=float)
+            t["aperture_area"] = np.array(area, dtype=float)
+            t["bkgd_count"] = np.array(bkgd, dtype=float)
+            t["bkgd_std"] = np.array(bkgd_std, dtype=float)
+            t["peak_count"] = np.array(peak, dtype=float)
+            return t
+
+        by_filter = {
+            "TR": _filter_table([100, 200], [10, 12], [5, 6], [2, 3], [50, 90]),
+            "TG": _filter_table([110, 210], [11, 13], [4, 7], [1, 2], [70, 80]),
+            "TB": _filter_table([120, 220], [9, 14], [6, 5], [3, 1], [60, 95]),
+        }
+        final_data = Table()
+
+        calculate_l4_quantities(final_data, by_filter, egain)
+
+        tr, tg, tb = by_filter["TR"], by_filter["TG"], by_filter["TB"]
+        expected_tot = tr["tot_count"] + tg["tot_count"] + tb["tot_count"]
+        expected_area = tr["aperture_area"] + tg["aperture_area"] + tb["aperture_area"]
+        expected_bkgd = (
+            tr["bkgd_count"] * tr["aperture_area"]
+            + tg["bkgd_count"] * tg["aperture_area"]
+            + tb["bkgd_count"] * tb["aperture_area"]
+        ) / expected_area
+        expected_peak = np.max(
+            [tr["peak_count"], tg["peak_count"], tb["peak_count"]],
+            axis=0,
+        )
+        expected_err = np.sqrt(
+            (
+                tr["bkgd_std"] ** 2 * tr["aperture_area"]
+                + tg["bkgd_std"] ** 2 * tg["aperture_area"]
+                + tb["bkgd_std"] ** 2 * tb["aperture_area"]
+            )
+            + expected_tot / egain
+        )
+        expected_snr = expected_tot / expected_err
+
+        np.testing.assert_allclose(final_data["tot_count"], expected_tot)
+        np.testing.assert_allclose(final_data["aperture_area"], expected_area)
+        np.testing.assert_allclose(final_data["bkgd_count"], expected_bkgd)
+        np.testing.assert_allclose(final_data["peak_count"], expected_peak)
+        np.testing.assert_allclose(final_data["count_err"], expected_err)
+        np.testing.assert_allclose(final_data["snr"], expected_snr)
+
+
+# --- Synthetic-FITS helpers for the detect/align/centroid pipeline tests ---
+
+# Well-separated source positions (x, y) for a 480x480 frame; the first two also
+# serve the small "too few stars" frames.
+_SOURCE_POSITIONS = [(60, 60), (160, 160), (260, 260), (360, 360), (200, 400)]
+
+
+def _detectable_image(
+    make_test_image,
+    *,
+    n_sources=5,
+    fwhm=4.0,
+    amplitude=600.0,
+    image_size=(480, 480),
+    noise_mean=100.0,
+    noise_stddev=2.0,
+):
+    """
+    Build a noisy multi-Gaussian frame that eloy's detection can resolve.
+
+    ``amplitude`` far above ``noise_stddev`` keeps detection reliable; an
+    ``amplitude`` above the 50000 ADU saturation cap exercises the saturated
+    path in ``calibration_sequence``.
+    """
+    sigma = fwhm * gaussian_fwhm_to_sigma
+    positions = _SOURCE_POSITIONS[:n_sources]
+    source_properties = Table(
+        {
+            "amplitude": [amplitude] * n_sources,
+            "x_mean": [x for x, _ in positions],
+            "y_mean": [y for _, y in positions],
+            "x_stddev": [sigma] * n_sources,
+            "y_stddev": [sigma] * n_sources,
+        },
+    )
+    return make_test_image(
+        image_size=image_size,
+        source_properties=source_properties,
+        include_noise=True,
+        noise_mean=noise_mean,
+        noise_stddev=noise_stddev,
+        seed=SEED,
+    )
+
+
+def _write_seestar_fits(path, image):
+    """Write ``image`` to ``path`` with the header keys the pipeline reads."""
+    ccd = CCDData(image, unit="adu")
+    # metadata_from_header indexes CREATOR directly ("!CREATOR index 0"), so it
+    # must be present; the others feed "@KEY" lookups used downstream.
+    ccd.header["CREATOR"] = "ZWO Seestar S50"
+    ccd.header["DATE-OBS"] = "2024-01-01T00:00:00"
+    ccd.header["BAYERPAT"] = "RGGB"
+    ccd.write(path)
+    return path
+
+
+# A few reference RA/Decs; align is always stubbed in these tests so the exact
+# values only need to be a plausibly shaped array.
+_REF_RADECS = np.array(
+    [[10.0, 20.0], [10.01, 20.0], [10.0, 20.01], [10.02, 20.02], [10.03, 20.0]],
+)
+
+
+def _stub_wcs_and_centroid(
+    monkeypatch,
+    *,
+    record_centroid_data=None,
+    wcs_image_size=(500, 500),
+    wcs_crval=(10.0, 20.0),
+):
+    """
+    Stub the slow/networked externals reached via ``prepare_image``.
+
+    ``compute_wcs`` (twirl's stochastic asterism solver) returns a fixed TAN WCS
+    and ``centroid_stars`` (the HuggingFace-backed Ballet CNN) returns its input
+    coordinates unchanged. If ``record_centroid_data`` is a list, the image
+    actually handed to centroiding is appended to it so tests can inspect it.
+
+    ``wcs_image_size``/``wcs_crval`` size and center the stubbed TAN WCS; the
+    defaults match the synthetic-FITS callers, while the real-frame smoke test
+    passes the actual frame shape and field center so the cosmetic RA/Dec columns
+    land near the real field.
+    """
+    monkeypatch.setattr(
+        "bandaid.photometry.compute_wcs",
+        lambda coords, radecs, tolerance: _make_tan_wcs(wcs_image_size, wcs_crval),
+    )
+
+    def fake_centroid_stars(data, coords, _cnn):
+        if record_centroid_data is not None:
+            record_centroid_data.append(data)
+        return coords
+
+    monkeypatch.setattr("bandaid.photometry.centroid_stars", fake_centroid_stars)
+
+
+class TestCalibrationSequence:
+    """Unit tests for detection + FWHM estimation in ``calibration_sequence``."""
+
+    def test_main_path_recovers_fwhm_and_sources(self, make_test_image, tmp_path):
+        """A clean multi-source frame yields the sources and the injected FWHM."""
+        fwhm = 4.0
+        n_sources = 5
+        expected_max_adu = 50000
+        image = _detectable_image(make_test_image, n_sources=n_sources, fwhm=fwhm)
+        path = _write_seestar_fits(tmp_path / "calib.fits", image)
+
+        calibrated, metadata, coords, measured_fwhm, regions = calibration_sequence(
+            path,
+            threshold=1,
+        )
+
+        assert calibrated is not None
+        assert len(regions) == n_sources
+        assert coords.shape == (n_sources, 2)
+        # The PSF fit recovers the injected FWHM to within ~5%.
+        assert measured_fwhm == pytest.approx(fwhm, rel=0.05)
+        assert metadata["largest_usable_adu_value"] == expected_max_adu
+
+    def test_too_few_stars_returns_sentinel(self, make_test_image, tmp_path):
+        """Fewer than MIN_DETECTED_STARS detections returns the None sentinel."""
+        image = _detectable_image(
+            make_test_image,
+            n_sources=2,
+            image_size=(200, 200),
+        )
+        path = _write_seestar_fits(tmp_path / "few.fits", image)
+
+        result = calibration_sequence(path, threshold=1)
+        assert result == (None, [], None, None, None)
+
+    def test_all_saturated_returns_sentinel(self, make_test_image, tmp_path):
+        """When every source saturates, no PSF can be fit and the sentinel returns."""
+        # Amplitude above the 50000 ADU cap means every cutout is dropped as
+        # saturated, leaving nothing to fit.
+        image = _detectable_image(make_test_image, n_sources=5, amplitude=60000.0)
+        path = _write_seestar_fits(tmp_path / "sat.fits", image)
+
+        calibrated, coords_meta, _, _, _ = calibration_sequence(path, threshold=1)
+        assert calibrated is None
+        assert coords_meta == []
+
+
+class TestPrepareImageBranches:
+    """Branch coverage for ``prepare_image`` beyond the alignment fallback."""
+
+    def test_returns_none_when_too_few_stars(self, make_test_image, tmp_path):
+        """prepare_image propagates the calibration_sequence None sentinel."""
+        image = _detectable_image(
+            make_test_image,
+            n_sources=2,
+            image_size=(200, 200),
+        )
+        path = _write_seestar_fits(tmp_path / "few.fits", image)
+
+        # No external stubbing needed: prepare_image returns before align/centroid.
+        assert prepare_image(path, _REF_RADECS, None) is None
+
+    def test_merges_user_specific_metadata(
+        self, make_test_image, tmp_path, monkeypatch
+    ):
+        """user_specific_metadata overrides values pulled from the header."""
+        _stub_wcs_and_centroid(monkeypatch)
+        image = _detectable_image(make_test_image)
+        path = _write_seestar_fits(tmp_path / "meta.fits", image)
+
+        override_egain = 1.23
+        img = prepare_image(
+            path,
+            _REF_RADECS,
+            None,
+            user_specific_metadata={"observer": "XYZ", "egain": override_egain},
+        )
+
+        assert img.metadata["observer"] == "XYZ"
+        assert img.metadata["egain"] == override_egain
+
+    def test_detect_on_bayer_balanced_uses_working_copy(
+        self, make_test_image, tmp_path, monkeypatch
+    ):
+        """Bayer balancing feeds a balanced copy to centroiding, not the original."""
+        centroid_inputs = []
+        _stub_wcs_and_centroid(monkeypatch, record_centroid_data=centroid_inputs)
+        image = _detectable_image(make_test_image)
+        path = _write_seestar_fits(tmp_path / "bayer.fits", image)
+
+        img = prepare_image(
+            path,
+            _REF_RADECS,
+            None,
+            detect_on_bayer_balanced=True,
+        )
+
+        # calibrated_data is left untouched...
+        np.testing.assert_allclose(img.calibrated_data, image)
+        # ...while the image handed to centroiding was balanced in place (so it
+        # differs from the untouched calibrated frame).
+        assert len(centroid_inputs) == 1
+        assert not np.allclose(centroid_inputs[0], img.calibrated_data)
+
+
+class TestProcessOneImage:
+    """End-to-end (stubbed-externals) coverage for ``process_one_image``."""
+
+    def test_returns_none_when_image_rejected(self, make_test_image, tmp_path):
+        """A frame with too few stars yields None for every filter."""
+        image = _detectable_image(
+            make_test_image,
+            n_sources=2,
+            image_size=(200, 200),
+        )
+        path = _write_seestar_fits(tmp_path / "few.fits", image)
+        masks = generate_bayer_masks(
+            image.shape,
+            {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0},
+            append_l4=True,
+        )
+
+        assert process_one_image(path, {}, _REF_RADECS, None, masks) is None
+
+    def test_full_path_builds_per_filter_tables_with_l4(
+        self, make_test_image, tmp_path, monkeypatch
+    ):
+        """Every filter gets a table and the L4 channel sums the RGB counts."""
+        _stub_wcs_and_centroid(monkeypatch)
+        image = _detectable_image(make_test_image)
+        path = _write_seestar_fits(tmp_path / "proc.fits", image)
+        masks = generate_bayer_masks(
+            image.shape,
+            {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0},
+            append_l4=True,
+        )
+
+        result = process_one_image(path, {}, _REF_RADECS, None, masks)
+
+        assert set(result) == {"TR", "TG", "TB", "L4"}
+        rgb_sum = (
+            result["TR"]["tot_count"]
+            + result["TG"]["tot_count"]
+            + result["TB"]["tot_count"]
+        )
+        np.testing.assert_allclose(result["L4"]["tot_count"], rgb_sum)
+
+
+# --- Real-frame smoke test -------------------------------------------------
+
+# A genuine (full-size, uncropped) Seestar S50 frame committed under tests/data/
+# as a bzip2-compressed FITS. astropy reads ``.fits.bz2``/``.fit.bz2``
+# transparently, so the pipeline loads it with no special handling. Discover it
+# by glob rather than a fixed name so whatever the user commits is picked up; the
+# suite stays green (skipped) until the fixture lands.
+_DATA_DIR = Path(__file__).parent.parent / "data"
+_REAL_FRAMES = sorted(_DATA_DIR.glob("*.fits.bz2")) + sorted(
+    _DATA_DIR.glob("*.fit.bz2"),
+)
+_REAL_FRAME = _REAL_FRAMES[0] if _REAL_FRAMES else None
+
+_real_frame_required = pytest.mark.skipif(
+    _REAL_FRAME is None,
+    reason=f"no real Seestar fixture (*.fits.bz2) in {_DATA_DIR}",
+)
+
+
+@_real_frame_required
+class TestSmokeRealFrame:
+    """
+    Smoke test: drive the real pipeline on a genuine Seestar frame.
+
+    The two heavy externals (twirl's WCS solve, the Ballet CNN) are stubbed so
+    the test is offline and deterministic; everything else -- real header parse,
+    source detection, the median-PSF FWHM fit on real cutouts, the saturation
+    cap, Bayer masks, and aperture photometry -- runs against genuine pixels.
+    This is the realistic counterpart to the synthetic-FITS tests above and
+    catches integration breakage they cannot.
+    """
+
+    def test_calibration_sequence_recovers_real_sources(self):
+        """Detection + FWHM fit succeed and the real header resolves the template."""
+        expected_max_adu = 50000  # from basic.json, keyed off the real header
+
+        # calibration_sequence reaches neither twirl nor the Ballet CNN, so this
+        # path needs no stubbing.
+        calibrated, metadata, coords, fwhm, regions = calibration_sequence(
+            str(_REAL_FRAME),
+            threshold=THRESH,
+        )
+
+        assert calibrated is not None
+        assert len(regions) >= MIN_DETECTED_STARS
+        assert coords.shape == (len(regions), 2)
+        assert np.isfinite(fwhm)
+        assert fwhm > 0
+        assert metadata["largest_usable_adu_value"] == expected_max_adu
+        assert metadata["width"] == calibrated.shape[1]
+        assert metadata["height"] == calibrated.shape[0]
+
+    def test_process_one_image_builds_per_filter_tables(self, monkeypatch):
+        """Every Bayer filter gets a non-empty table and L4 sums the RGB counts."""
+        header = fits.getheader(str(_REAL_FRAME))
+        data = fits.getdata(str(_REAL_FRAME))
+        metadata = metadata_from_header(header)
+
+        # Center the stubbed WCS on the real field so the cosmetic ra/dec columns
+        # are plausible in a failure dump.
+        _stub_wcs_and_centroid(
+            monkeypatch,
+            wcs_image_size=data.shape,
+            wcs_crval=(header["RA"], header["DEC"]),
+        )
+
+        masks = generate_bayer_masks(
+            data.shape,
+            {
+                "bayerpat": metadata["bayerpat"],
+                "roworder": metadata["roworder"],
+                "ybayroff": metadata["ybayroff"],
+            },
+            append_l4=True,
+        )
+
+        # twirl is stubbed, so radecs is never matched; it only needs >=
+        # N_STARS_ALIGN plausibly shaped rows (align slices the first
+        # N_STARS_ALIGN). photometry_coords=None means aligned == detections.
+        radecs = np.column_stack(
+            [
+                np.full(N_STARS_ALIGN, header["RA"]),
+                np.full(N_STARS_ALIGN, header["DEC"]),
+            ],
+        )
+
+        result = process_one_image(str(_REAL_FRAME), {}, radecs, None, masks)
+
+        assert set(result) == {"TR", "TG", "TB", "L4"}
+        for table in result.values():
+            assert len(table) > 0
+            assert np.isfinite(table.meta["fwhm"])
+
+        # L4 total count is the per-row RGB sum (same invariant as the synthetic
+        # test; equal_nan handles any edge apertures that come back non-finite).
+        rgb_sum = (
+            result["TR"]["tot_count"]
+            + result["TG"]["tot_count"]
+            + result["TB"]["tot_count"]
+        )
+        np.testing.assert_allclose(result["L4"]["tot_count"], rgb_sum, equal_nan=True)

@@ -19,7 +19,6 @@ from astropy.table import Table
 from astropy.time import Time
 from dateutil import parser
 from eloy import centroid, detection, photometry, psf, utils
-from eloy.centroid import Ballet
 from photutils.aperture import ApertureStats, CircularAnnulus, CircularAperture
 from st_pipeline.schema_definition import StarList
 from twirl import compute_wcs
@@ -382,24 +381,6 @@ def eloy_to_starlist(eloy_table, metadata):
 
 
 @dataclass
-class ReferenceData:
-    """Reference image data used to process each science image."""
-
-    radecs: np.ndarray
-    cnn: Ballet
-
-    @classmethod
-    def from_pixel_coords(cls, coords, wcs, radecs, cnn):  # noqa: ARG003
-        """Create from pixel coordinates, converting to sky coordinates."""
-        # `coords` and `wcs` are accepted for API symmetry (and so callers that
-        # already have the reference pixel coords + WCS can pass them) but are
-        # intentionally unused for now: the reference sky coordinates `radecs`
-        # are supplied directly. They are kept for a future path that derives
-        # `radecs` from `coords` via `wcs`.
-        return cls(radecs=radecs, cnn=cnn)
-
-
-@dataclass
 class ImageData:
     """Per-image detection, alignment, and centroiding results."""
 
@@ -414,7 +395,7 @@ class ImageData:
     metadata: dict = None
 
 
-def align(coords, ref, photometry_coords=None, wcs=None):
+def align(coords, radecs=None, *, photometry_coords=None, wcs=None):
     """
     Compute per-image WCS and align reference coordinates into pixel space.
 
@@ -424,16 +405,18 @@ def align(coords, ref, photometry_coords=None, wcs=None):
         Detected star **pixel** coordinates (x, y) in this image. Used for WCS
         alignment and, if photometry_coords is None, returned as the aligned
         coordinates as well.
-    ref : ReferenceData
-        Reference image data (Gaia RA/Decs, CNN model).
+    radecs : numpy.ndarray or None, optional
+        Gaia reference sky coordinates (RA/Dec), paired against `coords` by
+        twirl's asterism matcher to solve the WCS. Required only when `wcs` is
+        None; ignored when a precomputed `wcs` is supplied. By default None.
     photometry_coords : `astropy.coordinates.SkyCoord` or None, optional
         If provided, these sky coordinates are projected through the WCS to
         produce the aligned pixel coordinates. By default None (aligned
         coordinates are just `coords`).
     wcs : astropy.wcs.WCS or None, optional
         If provided, this WCS is used instead of computing a new one from
-        `coords` and `ref.radecs`. By default None (WCS is computed from
-        `coords` and `ref.radecs`).
+        `coords` and `radecs`. By default None (WCS is computed from
+        `coords` and `radecs`).
 
     Returns
     -------
@@ -453,7 +436,7 @@ def align(coords, ref, photometry_coords=None, wcs=None):
         # enough *matched* stars).
         this_wcs = compute_wcs(
             coords[0:N_STARS_ALIGN],
-            ref.radecs[0:N_STARS_ALIGN],
+            radecs[0:N_STARS_ALIGN],
             tolerance=1,
         )
     else:
@@ -656,7 +639,8 @@ def measure_photometry(
 
 def prepare_image(
     file,
-    ref,
+    radecs,
+    cnn,
     *,
     detect_on_bayer_balanced=False,
     photometry_coords=None,
@@ -670,8 +654,10 @@ def prepare_image(
     ----------
     file : str or Path
         Path to the FITS file.
-    ref : ReferenceData
-        Reference image data (sky coords, Gaia RA/Decs, CNN model).
+    radecs : numpy.ndarray
+        Gaia reference sky coordinates (RA/Dec) used for WCS alignment.
+    cnn : eloy.centroid.Ballet
+        Centroiding CNN model.
     detect_on_bayer_balanced : bool, optional
         Whether to detect sources on Bayer balanced data (default is False).
     photometry_coords : `astropy.coordinates.SkyCoord` or None, optional
@@ -713,11 +699,11 @@ def prepare_image(
 
     aligned_coords, this_wcs = align(
         coords,
-        ref,
+        radecs,
         photometry_coords=photometry_coords,
         wcs=wcs,
     )
-    centroid_coords = centroid_stars(working_image, aligned_coords, ref.cnn)
+    centroid_coords = centroid_stars(working_image, aligned_coords, cnn)
 
     header = fits.getheader(file)
 
@@ -829,3 +815,166 @@ def build_photometry_table(
     data.meta["annulus_radii"] = phot["annulus_radii"]
 
     return data
+
+
+def process_one_image(
+    file,
+    user_specific_metadata,
+    radecs,
+    cnn,
+    bayer_masks,
+    *,
+    bayer_balance_detection=True,
+    input_photometry_coords=None,
+):
+    """
+    Process a single image file and return one photometry table per input mask.
+
+    Parameters
+    ----------
+    file : str or Path
+        Path to the FITS file.
+    user_specific_metadata : dict
+        User-specific metadata to include in the output.
+    radecs : numpy.ndarray
+        Gaia reference sky coordinates (RA/Dec) used for WCS alignment.
+    cnn : eloy.centroid.Ballet
+        Centroiding CNN model.
+    bayer_masks : dict of {str: numpy.ndarray or None}
+        Dictionary mapping each filter name to the Bayer mask to apply to the
+        image. The filter name is stamped into each returned table's metadata so
+        the results can be grouped by filter. Each Bayer mask should have the same
+        shape as the image data. To include the synthetic full-frame "L4"
+        luminance channel, map "L4" to None; it must be ordered after the RGB
+        channels (TR/TG/TB) it is built from.
+    bayer_balance_detection : bool, optional
+        Whether to perform source detection on Bayer balanced data. This is usually
+        desirable for data with a bayer pattern.
+    input_photometry_coords : `astropy.coordinates.SkyCoord` or None, optional
+        If provided, these sky coordinates are used for centroiding instead of those
+        detected in this image. The sky coordinates passed in are recorded as the
+        sky coordinates in the output.
+
+    Returns
+    -------
+    dict of {str: Table} or None
+        Dictionary mapping each filter name to the photometry table for that
+        filter, or None if the image could not be processed.
+
+    Notes
+    -----
+    When `bayer_masks` includes "L4", the "TR", "TG", and "TB" channels must be
+    present and ordered before it; otherwise `calculate_l4_quantities` raises a
+    `ValueError`.
+    """
+    # Calculate everything we need for all filters at once.
+    img = prepare_image(
+        file,
+        radecs,
+        cnn,
+        detect_on_bayer_balanced=bayer_balance_detection,
+        photometry_coords=input_photometry_coords,
+        user_specific_metadata=user_specific_metadata,
+    )
+
+    if img is None:
+        return None
+
+    by_filter_data = {}
+    for filter_name, mask in bayer_masks.items():
+        data = build_photometry_table(img, mask)
+        data.meta["filter"] = filter_name
+        if filter_name == "L4":
+            # L4 is the channel sum of TR/TG/TB, so those must already have been
+            # processed. generate_bayer_masks orders L4 last to guarantee this;
+            # calculate_l4_quantities validates that the RGB channels are present
+            # and raises a clear ValueError if a caller passes a mask dict that
+            # violates the ordering.
+            calculate_l4_quantities(data, by_filter_data, img.metadata["egain"])
+        by_filter_data[filter_name] = data
+    return by_filter_data
+
+
+def calculate_l4_quantities(final_data, by_filter_data, egain):
+    """
+    Calculate the "L4" photometry given RGB photometry on a Bayer array.
+
+    Note that ``final_data`` is modified in place.
+
+    Parameters
+    ----------
+    final_data : astropy.table.Table
+        The final photometry table for the L4 filter, modified in place.
+    by_filter_data : dict
+        A dictionary containing the photometry data for each individual filter.
+    egain : float
+        The gain of the image.
+
+    Raises
+    ------
+    ValueError
+        If any of the "TR", "TG", or "TB" channels are missing from
+        ``by_filter_data``; the L4 channel is built from all three.
+    """
+    # L4 is the channel sum of TR/TG/TB, so each must already be present. Fail
+    # loudly with an actionable message rather than a bare KeyError raised deep
+    # inside the combination below.
+    missing = {"TR", "TG", "TB"} - by_filter_data.keys()
+    if missing:
+        msg = (
+            f"calculate_l4_quantities requires {sorted(missing)} in by_filter_data "
+            "before the L4 channel can be combined."
+        )
+        raise ValueError(msg)
+
+    # L4 total count is sum of the individual filter total counts
+    final_data["tot_count"] = (
+        by_filter_data["TR"]["tot_count"]
+        + by_filter_data["TG"]["tot_count"]
+        + by_filter_data["TB"]["tot_count"]
+    )
+
+    # L4 aperture area is the sum of the individual filter aperture areas
+    final_data["aperture_area"] = (
+        by_filter_data["TR"]["aperture_area"]
+        + by_filter_data["TG"]["aperture_area"]
+        + by_filter_data["TB"]["aperture_area"]
+    )
+
+    # Background is the weighted average of the individual filter backgrounds
+    final_data["bkgd_count"] = (
+        by_filter_data["TR"]["bkgd_count"] * by_filter_data["TR"]["aperture_area"]
+        + by_filter_data["TG"]["bkgd_count"] * by_filter_data["TG"]["aperture_area"]
+        + by_filter_data["TB"]["bkgd_count"] * by_filter_data["TB"]["aperture_area"]
+    ) / final_data["aperture_area"]
+
+    # For peak count, create a numpy array of the individual filter peak counts
+    # and take the max along the filter axis
+    final_data["peak_count"] = np.max(
+        [
+            by_filter_data["TR"]["peak_count"],
+            by_filter_data["TG"]["peak_count"],
+            by_filter_data["TB"]["peak_count"],
+        ],
+        axis=0,
+    )
+
+    # For error, add the individual filter background errors in quadrature, multiplied
+    # by the aperture areas, and then add in quadrature to the Poisson error from the
+    # total count
+    final_data["count_err"] = np.sqrt(
+        (
+            by_filter_data["TR"]["bkgd_std"] ** 2
+            * by_filter_data["TR"]["aperture_area"]
+            + by_filter_data["TG"]["bkgd_std"] ** 2
+            * by_filter_data["TG"]["aperture_area"]
+            + by_filter_data["TB"]["bkgd_std"] ** 2
+            * by_filter_data["TB"]["aperture_area"]
+        )
+        + final_data["tot_count"] / egain  # Poisson error from total count
+    )
+
+    # Recompute SNR from the recombined L4 count and error. The table arrives
+    # here from a full-frame photometry pass, so its snr column otherwise still
+    # reflects the discarded full-frame measurement instead of the channel sum.
+    final_data["snr"] = final_data["tot_count"] / final_data["count_err"]

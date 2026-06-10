@@ -32,7 +32,6 @@ from .catalog import cached_gaia_radecs
 from .image2sl_qt import bayer_balance_image, generate_bayer_masks
 from .photometry import (
     ImageData,
-    ReferenceData,
     align,
     build_photometry_table,
     calibration_sequence,
