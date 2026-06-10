@@ -118,6 +118,57 @@ class TestPrepareBatch:
         np.testing.assert_allclose(prep.photometry_coords.ra.deg, expected.ra.deg)
         np.testing.assert_allclose(prep.photometry_coords.dec.deg, expected.dec.deg)
 
+    def test_default_gaia_mag_limit_drops_faint_stars(self, monkeypatch):
+        """Stars fainter than the default limit of 15 are cut; 15.0 itself is kept."""
+        radecs = np.array([[10.0, 0.0], [10.1, 0.0], [10.2, 0.0], [10.3, 0.0]])
+        mags = np.array([12.0, 15.0, 15.1, 16.0])
+        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+
+        prep = scripts.prepare_batch("frame1.fits", cnn=object())
+
+        np.testing.assert_array_equal(prep.radecs, radecs[:2])
+        # The kept stars are degrees apart, so none are contamination-flagged.
+        np.testing.assert_allclose(prep.photometry_coords.ra.deg, radecs[:2, 0])
+
+    def test_custom_gaia_mag_limit_is_honored(self, monkeypatch):
+        """An explicit ``gaia_mag_limit`` cuts at that magnitude instead."""
+        radecs = np.array([[10.0, 0.0], [10.1, 0.0], [10.2, 0.0], [10.3, 0.0]])
+        mags = np.array([12.0, 15.0, 15.1, 16.0])
+        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+
+        prep = scripts.prepare_batch("frame1.fits", cnn=object(), gaia_mag_limit=12.0)
+
+        np.testing.assert_array_equal(prep.radecs, radecs[:1])
+
+    def test_mag_limit_applied_before_contamination_flagging(self, monkeypatch):
+        """
+        A too-faint star is cut before it can contamination-flag a neighbor.
+
+        The mag-16 star sits ~1 arcsec from the mag-14 star -- well inside the
+        ~7 arcsec the contamination model requires for that pair at this FWHM --
+        but it is fainter than the default limit of 15, so it is removed before
+        flagging and the mag-14 star survives into ``photometry_coords``. If the
+        flagging ran first, the mag-14 star would be dropped too.
+        """
+        radecs = np.array([[10.0, 0.0], [10.0 + 1.0 / 3600.0, 0.0], [10.2, 0.0]])
+        mags = np.array([14.0, 16.0, 10.0])
+        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+
+        prep = scripts.prepare_batch("frame1.fits", cnn=object())
+
+        np.testing.assert_array_equal(prep.radecs, radecs[[0, 2]])
+        np.testing.assert_allclose(prep.photometry_coords.ra.deg, radecs[[0, 2], 0])
+
+    def test_nan_magnitude_dropped_by_mag_limit(self, monkeypatch):
+        """A star with no Gaia magnitude fails the cut and is dropped entirely."""
+        radecs = np.array([[10.0, 0.0], [10.1, 0.0], [10.2, 0.0]])
+        mags = np.array([12.0, np.nan, 10.0])
+        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+
+        prep = scripts.prepare_batch("frame1.fits", cnn=object())
+
+        np.testing.assert_array_equal(prep.radecs, radecs[[0, 2]])
+
     def test_raises_when_too_few_stars_detected(self, monkeypatch):
         """The all-None sentinel from ``calibration_sequence`` raises clearly."""
         # calibration_sequence returns the documented all-None/empty sentinel.

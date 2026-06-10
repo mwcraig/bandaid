@@ -57,7 +57,7 @@ class BatchPrep:
     bayer_masks: dict
 
 
-def prepare_batch(first_file, *, cnn, append_l4=False):
+def prepare_batch(first_file, *, cnn, append_l4=False, gaia_mag_limit=15):
     """
     Compute the once-per-batch photometry inputs from the first frame.
 
@@ -76,6 +76,8 @@ def prepare_batch(first_file, *, cnn, append_l4=False):
     append_l4 : bool, optional
         Whether to add a full-frame "L4" luminance channel to the Bayer masks.
         Default False.
+    gaia_mag_limit : float, optional
+        Gaia magnitude limit for the initial source list. Default 15.
 
     Returns
     -------
@@ -97,7 +99,9 @@ def prepare_batch(first_file, *, cnn, append_l4=False):
     # halves it internally (matching the established twirl.gaia_radecs usage).
     center = (metadata["ra"], metadata["dec"])
     radecs, mags = cached_gaia_radecs(center, 2 * metadata["fov_rad"])
-
+    bright_gaia = mags <= gaia_mag_limit
+    radecs = radecs[bright_gaia]
+    mags = mags[bright_gaia]
     fwhm_arcsec = fwhm_pix * metadata["pixscale"]
     flagged = neighbor_contamination_flag_sky(radecs, mags, fwhm_arcsec)
     photometry_coords = SkyCoord(radecs[~flagged], unit="deg")
