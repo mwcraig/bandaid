@@ -1016,6 +1016,7 @@ def process_one_image(
     for filter_name, mask in bayer_masks.items():
         data = build_photometry_table(img, mask)
         data.meta["filter"] = filter_name
+        data.meta["full_image_meta"] = img.metadata
         if filter_name == "L4":
             # L4 is the channel sum of TR/TG/TB, so those must already have been
             # processed. generate_bayer_masks orders L4 last to guarantee this;

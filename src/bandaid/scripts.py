@@ -16,14 +16,17 @@ functions: no shared mutable state, no "is it done yet?" bookkeeping.
 
 import logging
 from dataclasses import dataclass
+from zipfile import Path
 
 import numpy as np
 from astropy.coordinates import SkyCoord
+from st_pipeline.schema_definition import StarListSet
 
 from .catalog import cached_gaia_radecs
 from .image2sl_qt import generate_bayer_masks
 from .photometry import (
     calibration_sequence,
+    eloy_to_starlist,
     neighbor_contamination_flag_sky,
     process_one_image,
 )
@@ -120,7 +123,9 @@ def prepare_batch(first_file, *, cnn, append_l4=False, gaia_mag_limit=15):
     )
 
 
-def process_batch(files, prep, *, user_specific_metadata):
+def process_batch(
+    files, prep, *, user_specific_metadata, output_dir=None, output_suffix=".star"
+):
     """
     Photometer every frame in a batch using a shared `BatchPrep`.
 
@@ -134,6 +139,11 @@ def process_batch(files, prep, *, user_specific_metadata):
         The reusable prep bundle from `prepare_batch`.
     user_specific_metadata : dict
         User-specific metadata recorded with the output for each frame.
+    output_dir : str or Path or None, optional
+        Directory to write the per-frame photometry results to. Default ".".
+
+    output_suffix : str, optional
+        Suffix for the output files. Default ".star".
 
     Returns
     -------
@@ -155,5 +165,14 @@ def process_batch(files, prep, *, user_specific_metadata):
         if by_filter is None:
             logger.warning("skipping %s: too few stars detected", file)
             continue
-        results[file] = by_filter
+        if output_dir is not None:
+            output_path = Path(output_dir) / (Path(file).stem + output_suffix)
+            star_lists = [
+                eloy_to_starlist(tab, tab.meta["full_image_meta"])
+                for tab in by_filter.values()
+            ]
+            star_list_set = StarListSet(star_lists=star_lists)
+            output_path.write_text(star_list_set.model_dump_json(indent=2))
+        else:
+            results[file] = by_filter
     return results
