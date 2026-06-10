@@ -395,7 +395,7 @@ class ImageData:
     metadata: dict = None
 
 
-def align(coords, radecs, photometry_coords=None, wcs=None):
+def align(coords, radecs=None, *, photometry_coords=None, wcs=None):
     """
     Compute per-image WCS and align reference coordinates into pixel space.
 
@@ -405,9 +405,10 @@ def align(coords, radecs, photometry_coords=None, wcs=None):
         Detected star **pixel** coordinates (x, y) in this image. Used for WCS
         alignment and, if photometry_coords is None, returned as the aligned
         coordinates as well.
-    radecs : numpy.ndarray
+    radecs : numpy.ndarray or None, optional
         Gaia reference sky coordinates (RA/Dec), paired against `coords` by
-        twirl's asterism matcher to solve the WCS.
+        twirl's asterism matcher to solve the WCS. Required only when `wcs` is
+        None; ignored when a precomputed `wcs` is supplied. By default None.
     photometry_coords : `astropy.coordinates.SkyCoord` or None, optional
         If provided, these sky coordinates are projected through the WCS to
         produce the aligned pixel coordinates. By default None (aligned
@@ -881,7 +882,6 @@ def process_one_image(
 
     by_filter_data = {}
     for filter_name, mask in bayer_masks.items():
-        img.metadata["filter"] = filter_name
         data = build_photometry_table(img, mask)
         data.meta["filter"] = filter_name
         if filter_name == "L4":
