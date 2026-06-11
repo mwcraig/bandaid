@@ -38,6 +38,7 @@ from bandaid.photometry import (
     metadata_from_header,
     min_separation_fwhm,
     neighbor_contamination_flag,
+    neighbor_contamination_flag_sky,
     prepare_image,
     process_one_image,
 )
@@ -391,7 +392,7 @@ def test_min_separation_fwhm():
 
 
 class TestCentroidDriftFlag:
-    """Unit tests for the centroid-drift sanity check ``centroid_drift_flag``."""
+    """Unit tests for the centroid-drift consistency check ``centroid_drift_flag``."""
 
     def test_zero_drift_not_flagged(self):
         """A centroid sitting exactly on its aligned position is not flagged."""
@@ -761,6 +762,119 @@ class TestNeighborContaminationFlag:
         assert not flag.any()
 
 
+class TestNeighborContaminationFlagSky:
+    """Unit tests for the sky-space flag ``neighbor_contamination_flag_sky``."""
+
+    @pytest.mark.parametrize("n", [0, 1])
+    def test_fewer_than_two_stars_never_flagged(self, n):
+        """With <2 stars no pair can exist, so the early return is all-False."""
+        radecs = np.zeros((n, 2))
+        mags = np.zeros(n)
+        flag = neighbor_contamination_flag_sky(radecs, mags, fwhm_arcsec=2.0)
+        assert flag.shape == (n,)
+        assert flag.dtype == bool
+        assert not flag.any()
+
+    def test_non_finite_magnitude_contributes_no_contamination(self):
+        """A NaN-magnitude star neither flags nor is flagged."""
+        # The two stars are ~0.5 arcsec apart -- essentially on top of one another.
+        radecs = np.array([[10.0, 0.0], [10.0 + 0.5 / 3600.0, 0.0]])
+        mags = np.array([10.0, np.nan])
+        flag = neighbor_contamination_flag_sky(radecs, mags, fwhm_arcsec=2.0)
+        assert not flag.any()
+
+    def test_matches_pixel_front_end_on_equator(self):
+        """
+        Sky and pixel front ends agree star-for-star.
+
+        Stars are placed along the celestial equator, where the great-circle
+        separation between ``(ra, 0)`` points is exactly the RA difference. The
+        equivalent pixel layout is those angular separations divided by the plate
+        scale, and ``fwhm_arcsec == fwhm_pix * pixscale``; the two front ends scale
+        identically, so they must flag the same stars.
+        """
+        pixscale = 2.4  # arcsec / pixel
+        fwhm_pix = 2.0
+        fwhm_arcsec = fwhm_pix * pixscale
+
+        ra0 = 10.0
+        offsets_arcsec = np.array([0.0, 3.0, 7.0, 30.0])
+        ras = ra0 + offsets_arcsec / 3600.0
+        decs = np.zeros_like(ras)
+        radecs = np.column_stack([ras, decs])
+        mags = np.array([12.0, 12.0, 9.0, 13.0])
+
+        coords_pix = np.column_stack(
+            [offsets_arcsec / pixscale, np.zeros_like(ras)],
+        )
+
+        sky_flag = neighbor_contamination_flag_sky(radecs, mags, fwhm_arcsec)
+        pix_flag = neighbor_contamination_flag(coords_pix, mags, fwhm_pix)
+        np.testing.assert_array_equal(sky_flag, pix_flag)
+        # Guard: the case is non-trivial -- some flagged, some not.
+        assert sky_flag.any()
+        assert not sky_flag.all()
+
+    def test_all_non_finite_magnitudes_never_flagged(self):
+        """With no finite magnitude there is no valid pair, so nothing is flagged."""
+        radecs = np.array([[10.0, 0.0], [10.0 + 0.5 / 3600.0, 0.0]])
+        mags = np.array([np.nan, np.nan])
+        flag = neighbor_contamination_flag_sky(radecs, mags, fwhm_arcsec=2.0)
+        assert flag.shape == (2,)
+        assert not flag.any()
+
+    def test_zero_fwhm_never_flags(self):
+        """A zero FWHM makes every required separation zero, so nothing is flagged."""
+        radecs = np.array([[10.0, 0.0], [10.0 + 0.5 / 3600.0, 0.0]])
+        mags = np.array([10.0, 12.0])
+        flag = neighbor_contamination_flag_sky(radecs, mags, fwhm_arcsec=0.0)
+        assert not flag.any()
+
+    def test_matches_dense_all_pairs_reference_on_random_field(self):
+        """
+        The sky flag reproduces a brute-force all-pairs reference.
+
+        The reference applies the documented contamination rule directly to an
+        explicit N x N great-circle separation matrix: target i is flagged when
+        any other star j with finite magnitudes sits closer than
+        ``min_separation_fwhm(mag_i - mag_j) * fwhm``. This pins the sky front
+        end (whatever its internal pair search) to the dense model on a
+        realistic random field, including NaN magnitudes and an exact-duplicate
+        position (a zero-separation pair, which the rule flags).
+        """
+        # A dense random field in a small RA/Dec patch, with some NaN
+        # magnitudes and one exact-duplicate position to exercise edge cases.
+        rng = np.random.default_rng(SEED)
+        n = 800
+        radecs = np.column_stack(
+            [rng.uniform(10.0, 10.5, n), rng.uniform(19.75, 20.25, n)],
+        )
+        mags = rng.uniform(8.0, 18.0, n)
+        mags[rng.choice(n, 20, replace=False)] = np.nan
+        radecs[5] = radecs[4]
+        fwhm_arcsec = 5.0
+
+        # Brute-force reference: full N x N great-circle separations.
+        coords = SkyCoord(radecs[:, 0], radecs[:, 1], unit="deg")
+        sep_arcsec = coords[:, None].separation(coords[None, :]).arcsec
+        # Minimum allowed separation for each pair from the magnitude difference.
+        required = min_separation_fwhm(mags[:, None] - mags[None, :]) * fwhm_arcsec
+        # Only pairs with two finite magnitudes count, and never compare a star
+        # with itself (the diagonal).
+        finite = np.isfinite(mags)
+        valid = finite[:, None] & finite[None, :]
+        np.fill_diagonal(valid, val=False)
+        # A target is flagged if any valid neighbor is closer than required.
+        expected = (valid & (sep_arcsec < required)).any(axis=1)
+
+        flag = neighbor_contamination_flag_sky(radecs, mags, fwhm_arcsec)
+
+        np.testing.assert_array_equal(flag, expected)
+        # Guard: the case is non-trivial -- some flagged, some not.
+        assert expected.any()
+        assert not expected.all()
+
+
 def _seestar_header(*, with_stackcnt=True):
     """Build a FITS header carrying the keys referenced by ``basic.json``."""
     header = fits.Header()
@@ -831,43 +945,15 @@ class TestMetadataFromHeader:
         assert metadata["stack"] == default_stack
 
 
-def _starlist_metadata():
-    """A metadata dict covering every StarList field except fwhm (set on meta)."""
-    return {
-        "obs_time": "2024-01-01T00:00:00",
-        "site_lat": 40.0,
-        "site_lon": -105.0,
-        "site_elev": 1600.0,
-        "observer": "ABC",
-        "filter": "TG",
-        "block_filter": "L",
-        "exposure": 10.0,
-        "tel_manufac": "ZWO",
-        "width": 100,
-        "height": 100,
-        "stack": 1,
-        "tel_model": "S50",
-        "tel_firmware": "1.0",
-        "adc_depth": 12,
-        "largest_usable_adu_value": 50000,
-        "egain": 0.3,
-        "refframe": "ICRS",
-    }
-
-
-def _eloy_table(rows, *, contaminated=None):
-    """Build an eloy-style photometry table from per-row StarItem dicts."""
-    table = Table(rows)
-    if contaminated is not None:
-        table["contaminated"] = contaminated
-    table.meta["fwhm"] = 2.5
-    return table
-
-
 class TestEloyToStarlist:
-    """Unit tests for the table->StarList conversion ``eloy_to_starlist``."""
+    """
+    Unit tests for the table->StarList conversion ``eloy_to_starlist``.
 
-    def test_filters_bad_rows(self):
+    The ``starlist_metadata`` and ``eloy_table`` fixtures live in ``conftest.py``
+    so they can be shared with ``test_scripts.py``.
+    """
+
+    def test_filters_bad_rows(self, eloy_table, starlist_metadata):
         """Only finite, positive, in-bounds rows survive into the StarList."""
         good_a = {
             "x": 20.0,
@@ -897,7 +983,7 @@ class TestEloyToStarlist:
         bad_x_out = {**good_a, "x": 150.0}
         bad_y_out = {**good_a, "y": -5.0}
 
-        table = _eloy_table(
+        table = eloy_table(
             [
                 good_a,
                 good_b,
@@ -909,12 +995,12 @@ class TestEloyToStarlist:
                 bad_y_out,
             ],
         )
-        starlist = eloy_to_starlist(table, _starlist_metadata())
+        starlist = eloy_to_starlist(table, starlist_metadata)
 
         kept_x = sorted(item.x for item in starlist.staritems)
         assert kept_x == [20.0, 70.0]
 
-    def test_contaminated_rows_excluded(self):
+    def test_contaminated_rows_excluded(self, eloy_table, starlist_metadata):
         """A ``contaminated`` column drops flagged rows even when otherwise good."""
         good = {
             "x": 20.0,
@@ -927,9 +1013,9 @@ class TestEloyToStarlist:
             "peak_count": 200.0,
         }
         contaminated_good = {**good, "x": 70.0}
-        table = _eloy_table([good, contaminated_good], contaminated=[False, True])
+        table = eloy_table([good, contaminated_good], contaminated=[False, True])
 
-        starlist = eloy_to_starlist(table, _starlist_metadata())
+        starlist = eloy_to_starlist(table, starlist_metadata)
 
         kept_x = [item.x for item in starlist.staritems]
         assert kept_x == [20.0]
@@ -1018,6 +1104,12 @@ def test_centroid_stars_delegates_to_ballet(monkeypatch):
 
 class TestCalculateL4Quantities:
     """Unit tests for the RGB->L4 combination ``calculate_l4_quantities``."""
+
+    def test_missing_channel_raises(self):
+        """A missing TR/TG/TB channel raises an actionable ValueError."""
+        by_filter = {"TR": Table(), "TG": Table()}
+        with pytest.raises(ValueError, match=r"\['TB'\]"):
+            calculate_l4_quantities(Table(), by_filter, 0.5)
 
     def test_combines_rgb_filters(self):
         """L4 columns are the documented combinations of the TR/TG/TB tables."""

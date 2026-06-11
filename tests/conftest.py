@@ -1,6 +1,62 @@
 import pytest
 from astropy.modeling.models import Gaussian2D
+from astropy.table import Table
 from photutils.datasets import make_model_image, make_noise_image
+
+
+@pytest.fixture
+def starlist_metadata():
+    """
+    A metadata dict covering every StarList field except fwhm (set on table meta).
+
+    Returns
+    -------
+    dict
+        Metadata suitable for ``eloy_to_starlist`` / ``StarList.from_table``.
+    """
+    return {
+        "obs_time": "2024-01-01T00:00:00",
+        "site_lat": 40.0,
+        "site_lon": -105.0,
+        "site_elev": 1600.0,
+        "observer": "ABC",
+        "filter": "TG",
+        "block_filter": "L",
+        "exposure": 10.0,
+        "tel_manufac": "ZWO",
+        "width": 100,
+        "height": 100,
+        "stack": 1,
+        "tel_model": "S50",
+        "tel_firmware": "1.0",
+        "adc_depth": 12,
+        "largest_usable_adu_value": 50000,
+        "egain": 0.3,
+        "refframe": "ICRS",
+    }
+
+
+@pytest.fixture
+def eloy_table():
+    """
+    Factory fixture building eloy-style photometry tables for StarList tests.
+
+    Returns
+    -------
+    callable
+        ``_make(rows, *, contaminated=None)`` -> an ``astropy.table.Table`` of the
+        given per-row StarItem dicts, with ``meta["fwhm"]`` set and an optional
+        ``contaminated`` column.
+    """
+
+    def _make(rows, *, contaminated=None):
+        table = Table(rows)
+        if contaminated is not None:
+            table["contaminated"] = contaminated
+        table.meta["fwhm"] = 2.5
+        return table
+
+    return _make
 
 
 @pytest.fixture

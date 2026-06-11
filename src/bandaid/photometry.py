@@ -12,7 +12,9 @@ import json
 from dataclasses import dataclass
 from importlib.resources import files as package_files
 
+import astropy.units as u
 import numpy as np
+from astropy.coordinates import SkyCoord, search_around_sky
 from astropy.io import fits
 from astropy.stats import SigmaClip
 from astropy.table import Table
@@ -102,6 +104,77 @@ def min_separation_fwhm(delta_mag, tolerance=CONTAMINATION_TOLERANCE, beta=MOFFA
     return np.sqrt(np.maximum((rhs - 1.0) / a_factor, 0.0))
 
 
+def _contamination_flag(
+    separations,
+    mags,
+    min_sep_scale,
+    tolerance=CONTAMINATION_TOLERANCE,
+    beta=MOFFAT_BETA,
+):
+    """
+    Flag contaminated stars from a precomputed pairwise separation matrix.
+
+    Shared core of `neighbor_contamination_flag` (pixel separations) and
+    `neighbor_contamination_flag_sky` (angular separations). Contamination is
+    checked symmetrically: each pair (target, neighbor) is evaluated as
+    fractional spillover into the *target's* aperture, so the same physical pair
+    can flag the fainter star at a larger separation than the brighter one.
+
+    Parameters
+    ----------
+    separations : ndarray, shape (N, N)
+        Pairwise separations between stars, in any unit. ``separations[i, j]`` is
+        the separation between target ``i`` and neighbor ``j``.
+    mags : array-like, shape (N,)
+        Per-star magnitude (zero-point arbitrary; only differences matter).
+        Non-finite values are treated as "no contamination" for that star's
+        role in the pair.
+    min_sep_scale : float
+        PSF FWHM expressed in the *same unit as* ``separations`` (pixels for the
+        pixel front end, arcsec for the sky front end). Multiplies the unitless
+        `min_separation_fwhm` result to put the required separation in that unit.
+    tolerance : float, optional
+        See `min_separation_fwhm`.
+    beta : float, optional
+        See `min_separation_fwhm`.
+
+    Returns
+    -------
+    ndarray of bool, shape (N,)
+        True where any neighbor sits inside this star's contamination radius.
+    """
+    mags = np.asarray(mags, dtype=float)
+    n = len(mags)
+    if n < MIN_STARS_FOR_PAIRS:
+        return np.zeros(n, dtype=bool)
+
+    # Build the pairwise (target i, neighbor j) quantities by broadcasting the
+    # (N,) magnitude vector into (N, N) matrices: axis 0 ([:, None]) is the
+    # "target" i and axis 1 ([None, :]) is the "neighbor" j. delta_mag[i, j] is
+    # how much brighter neighbor j is than target i; valid[i, j] marks pairs where
+    # both magnitudes are finite (with the diagonal i==j removed so a star is
+    # never its own neighbor).
+    delta_mag = mags[:, None] - mags[None, :]
+
+    finite = np.isfinite(mags)
+    valid = finite[:, None] & finite[None, :]
+    np.fill_diagonal(valid, val=False)
+
+    min_sep = np.zeros_like(separations, dtype=float)
+    if valid.any():
+        min_sep[valid] = (
+            min_separation_fwhm(
+                delta_mag[valid],
+                tolerance=tolerance,
+                beta=beta,
+            )
+            * min_sep_scale
+        )
+
+    too_close = valid & (separations < min_sep)
+    return too_close.any(axis=1)
+
+
 def neighbor_contamination_flag(
     coords,
     mags,
@@ -112,10 +185,9 @@ def neighbor_contamination_flag(
     """
     Flag stars whose 1*FWHM aperture is contaminated by a too-close neighbor.
 
-    Contamination is checked symmetrically: each pair (target, neighbor) is
-    evaluated as fractional spillover into the *target's* aperture, so the
-    same physical pair can flag the fainter star at a larger separation than
-    the brighter one. Equal-brightness pairs are flagged inside ~2.18 FWHM.
+    Pixel-space front end over `_contamination_flag`: pairwise separations are
+    Euclidean pixel distances and the FWHM is in pixels. Equal-brightness pairs
+    are flagged inside ~2.18 FWHM.
 
     Parameters
     ----------
@@ -138,40 +210,100 @@ def neighbor_contamination_flag(
         True where any neighbor sits inside this star's contamination radius.
     """
     coords = np.asarray(coords)
+    dist = np.linalg.norm(coords[:, None, :] - coords[None, :, :], axis=-1)
+    return _contamination_flag(
+        dist,
+        mags,
+        fwhm,
+        tolerance=tolerance,
+        beta=beta,
+    )
+
+
+def neighbor_contamination_flag_sky(
+    radecs,
+    mags,
+    fwhm_arcsec,
+    tolerance=CONTAMINATION_TOLERANCE,
+    beta=MOFFAT_BETA,
+):
+    """
+    Flag contaminated stars directly from sky coordinates and an angular FWHM.
+
+    Sky-space front end of the contamination model: pairwise separations are
+    great-circle angular separations (arcsec) and the FWHM is in arcsec, so no
+    WCS or pixel projection is needed. Same contamination model and result
+    convention as `neighbor_contamination_flag`, but instead of the dense
+    ``N x N`` separation matrix it uses a neighbor search capped at the largest
+    separation any pair could require, so it stays fast on full Gaia fields
+    (~10,000 sources).
+
+    Parameters
+    ----------
+    radecs : array-like, shape (N, 2)
+        Sky coordinates of the stars as ``(ra, dec)`` pairs in degrees.
+    mags : array-like, shape (N,)
+        Per-star magnitude (zero-point arbitrary; only differences matter).
+        Non-finite values are treated as "no contamination" for that star's
+        role in the pair.
+    fwhm_arcsec : float
+        PSF FWHM in arcsec.
+    tolerance : float, optional
+        See `min_separation_fwhm`.
+    beta : float, optional
+        See `min_separation_fwhm`.
+
+    Returns
+    -------
+    ndarray of bool, shape (N,)
+        True where any neighbor sits inside this star's contamination radius.
+    """
+    radecs = np.asarray(radecs, dtype=float)
     mags = np.asarray(mags, dtype=float)
-    n = len(coords)
-    if n < MIN_STARS_FOR_PAIRS:
-        return np.zeros(n, dtype=bool)
-
-    # Build all pairwise (target i, neighbor j) quantities by broadcasting the
-    # (N,) / (N, 2) arrays into (N, N) matrices: indexing axis 0 with [:, None]
-    # is the "target" i and axis 1 with [None, :] is the "neighbor" j.
-    # diff/dist are the (N, N) pairwise pixel separations; delta_mag[i, j] is how
-    # much brighter neighbor j is than target i; valid[i, j] marks pairs where
-    # both magnitudes are finite (with the diagonal i==j removed so a star is
-    # never its own neighbor).
-    diff = coords[:, None, :] - coords[None, :, :]
-    dist = np.linalg.norm(diff, axis=-1)
-
-    delta_mag = mags[:, None] - mags[None, :]
+    flagged = np.zeros(len(radecs), dtype=bool)
+    if len(radecs) < MIN_STARS_FOR_PAIRS:
+        return flagged
 
     finite = np.isfinite(mags)
-    valid = finite[:, None] & finite[None, :]
-    np.fill_diagonal(valid, val=False)
+    if not finite.any():
+        return flagged
 
-    min_sep_pix = np.zeros_like(dist)
-    if valid.any():
-        min_sep_pix[valid] = (
-            min_separation_fwhm(
-                delta_mag[valid],
-                tolerance=tolerance,
-                beta=beta,
-            )
-            * fwhm
+    # The largest separation any pair can require is the faintest target with
+    # the brightest neighbor; `min_separation_fwhm` is monotonic in delta_mag,
+    # so capping the neighbor search there finds every pair the dense N x N
+    # separation matrix would flag at a fraction of the time and memory.
+    max_delta_mag = np.max(mags[finite]) - np.min(mags[finite])
+    max_sep_arcsec = (
+        min_separation_fwhm(max_delta_mag, tolerance=tolerance, beta=beta) * fwhm_arcsec
+    )
+    if max_sep_arcsec <= 0:
+        return flagged
+
+    coords = SkyCoord(radecs[:, 0], radecs[:, 1], unit="deg")
+    idx_target, idx_neighbor, sep2d, _ = search_around_sky(
+        coords,
+        coords,
+        max_sep_arcsec * u.arcsec,
+    )
+
+    # Same pair convention as `_contamination_flag`: a star is never its own
+    # neighbor (but distinct stars at zero separation are), and a pair only
+    # counts when both magnitudes are finite.
+    keep = (idx_target != idx_neighbor) & finite[idx_target] & finite[idx_neighbor]
+    idx_target = idx_target[keep]
+    idx_neighbor = idx_neighbor[keep]
+    sep_arcsec = sep2d.arcsec[keep]
+
+    min_sep = (
+        min_separation_fwhm(
+            mags[idx_target] - mags[idx_neighbor],
+            tolerance=tolerance,
+            beta=beta,
         )
-
-    too_close = valid & (dist < min_sep_pix)
-    return too_close.any(axis=1)
+        * fwhm_arcsec
+    )
+    flagged[idx_target[sep_arcsec < min_sep]] = True
+    return flagged
 
 
 def centroid_drift_flag(
@@ -884,6 +1016,7 @@ def process_one_image(
     for filter_name, mask in bayer_masks.items():
         data = build_photometry_table(img, mask)
         data.meta["filter"] = filter_name
+        data.meta["full_image_meta"] = img.metadata
         if filter_name == "L4":
             # L4 is the channel sum of TR/TG/TB, so those must already have been
             # processed. generate_bayer_masks orders L4 last to guarantee this;
@@ -959,9 +1092,9 @@ def calculate_l4_quantities(final_data, by_filter_data, egain):
         axis=0,
     )
 
-    # For error, add the individual filter background errors in quadrature, multiplied
-    # by the aperture areas, and then add in quadrature to the Poisson error from the
-    # total count
+    # For error, add the individual filter background errors in quadrature,
+    # multiplied by the aperture areas, then add in quadrature to the Poisson
+    # error from the total count.
     final_data["count_err"] = np.sqrt(
         (
             by_filter_data["TR"]["bkgd_std"] ** 2
