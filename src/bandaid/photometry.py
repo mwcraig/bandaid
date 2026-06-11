@@ -8,6 +8,8 @@ estimation, bright-neighbor contamination flagging, and conversion of the
 resulting tables into a ``StarList``.
 """
 
+import contextlib
+import io
 import json
 from dataclasses import dataclass
 from importlib.resources import files as package_files
@@ -566,11 +568,15 @@ def align(coords, radecs=None, *, photometry_coords=None, wcs=None):
         # stars. compute_wcs returns None if too few stars overlap to satisfy
         # its min_match threshold, so callers must supply enough stars (not
         # enough *matched* stars).
-        this_wcs = compute_wcs(
-            coords[0:N_STARS_ALIGN],
-            radecs[0:N_STARS_ALIGN],
-            tolerance=1,
-        )
+        # twirl's asterism matcher prints timing/diagnostic lines straight to
+        # stdout (e.g. "Match took ... us"); redirect them to /dev/null so the
+        # pipeline and notebooks stay quiet.
+        with contextlib.redirect_stdout(io.StringIO()):
+            this_wcs = compute_wcs(
+                coords[0:N_STARS_ALIGN],
+                radecs[0:N_STARS_ALIGN],
+                tolerance=1,
+            )
     else:
         this_wcs = wcs
 

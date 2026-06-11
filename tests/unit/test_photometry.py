@@ -1071,6 +1071,31 @@ class TestAlign:
         # With no photometry_coords, aligned coords are the detections themselves.
         np.testing.assert_array_equal(aligned, coords)
 
+    def test_suppresses_compute_wcs_stdout(self, monkeypatch, capsys):
+        """
+        Swallow the stdout twirl's asterism matcher prints.
+
+        The matcher prints diagnostics (e.g. "Match took ... us") straight to
+        stdout; align must swallow that noise so callers/notebooks stay clean.
+        The WCS return value is unaffected.
+        """
+        sentinel_wcs = _make_tan_wcs()
+
+        def noisy_compute_wcs(*args: object, **kwargs: object):  # noqa: ARG001
+            print("Match took 12345.000 us")  # noqa: T201
+            print(7)  # noqa: T201
+            return sentinel_wcs
+
+        monkeypatch.setattr("bandaid.photometry.compute_wcs", noisy_compute_wcs)
+
+        coords = np.arange(N_STARS_ALIGN * 2, dtype=float).reshape(N_STARS_ALIGN, 2)
+        radecs = coords.copy()
+
+        _, returned_wcs = align(coords, radecs, photometry_coords=None)
+
+        assert returned_wcs is sentinel_wcs
+        assert capsys.readouterr().out == ""
+
 
 def test_centroid_stars_delegates_to_ballet(monkeypatch):
     """
