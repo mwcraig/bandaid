@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 from astropy.coordinates import SkyCoord
 from astropy.table import Table
+from st_pipeline.schema_definition import StarListSet
 
 from bandaid import scripts
 from bandaid.photometry import neighbor_contamination_flag_sky
@@ -149,6 +150,11 @@ class TestPrepareBatch:
         but it is fainter than the default limit of 15, so it is removed before
         flagging and the mag-14 star survives into ``photometry_coords``. If the
         flagging ran first, the mag-14 star would be dropped too.
+
+        NOTE: this ordering is a known design flaw -- the mag-16 star really is
+        on the sky and really does contaminate the mag-14 star, so we arguably
+        should flag the mag-14 star. Tracked in
+        https://github.com/mwcraig/bandaid/issues/24.
         """
         radecs = np.array([[10.0, 0.0], [10.0 + 1.0 / 3600.0, 0.0], [10.2, 0.0]])
         mags = np.array([14.0, 16.0, 10.0])
@@ -252,3 +258,164 @@ class TestProcessBatch:
         )
 
         assert list(results) == ["good.fits"]
+
+
+@pytest.fixture
+def by_filter(eloy_table, starlist_metadata):
+    """
+    Factory for a ``{filter: Table}`` photometry result like ``process_one_image``.
+
+    Each filter's table carries two good (finite, positive, in-bounds) rows plus
+    the ``meta["fwhm"]`` and ``meta["full_image_meta"]`` that
+    ``process_batch`` -> ``eloy_to_starlist`` requires. Both rows survive the
+    converter's filtering, so each written StarList has two stars.
+
+    Parameters
+    ----------
+    eloy_table : callable
+        Fixture building an eloy-style photometry table from per-row dicts.
+    starlist_metadata : dict
+        Fixture providing the StarList metadata stored on each table.
+
+    Returns
+    -------
+    callable
+        ``_make(filters=("TR", "TG"))`` -> the per-filter table mapping.
+    """
+    rows = [
+        {
+            "x": 20.0,
+            "y": 30.0,
+            "ra": 10.0,
+            "dec": 20.0,
+            "tot_count": 100.0,
+            "count_err": 5.0,
+            "bkgd_count": 1.0,
+            "peak_count": 200.0,
+        },
+        {
+            "x": 70.0,
+            "y": 60.0,
+            "ra": 11.0,
+            "dec": 21.0,
+            "tot_count": 300.0,
+            "count_err": 7.0,
+            "bkgd_count": 1.0,
+            "peak_count": 400.0,
+        },
+    ]
+
+    def _make(filters=("TR", "TG")):
+        result = {}
+        for filter_name in filters:
+            table = eloy_table(rows)
+            table.meta["full_image_meta"] = starlist_metadata
+            result[filter_name] = table
+        return result
+
+    return _make
+
+
+class TestProcessBatchToDisk:
+    """Unit tests for the ``output_dir`` (write starlists to disk) path."""
+
+    def test_writes_one_file_per_frame(self, monkeypatch, tmp_path, by_filter):
+        """Each processed frame produces one ``<stem>.star`` file in output_dir."""
+        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+
+        scripts.process_batch(
+            ["a.fits", "b.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+        )
+
+        written = sorted(p.name for p in tmp_path.iterdir())
+        assert written == ["a.star", "b.star"]
+
+    def test_output_filename_is_stem_plus_default_suffix(
+        self, monkeypatch, tmp_path, by_filter
+    ):
+        """The output name is the input *stem* + ``.star``; the input dir is dropped."""
+        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+
+        scripts.process_batch(
+            ["sub/frame1.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+        )
+
+        assert [p.name for p in tmp_path.iterdir()] == ["frame1.star"]
+
+    def test_custom_output_suffix_is_honored(self, monkeypatch, tmp_path, by_filter):
+        """An explicit ``output_suffix`` replaces the default ``.star``."""
+        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+
+        scripts.process_batch(
+            ["frame1.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+            output_suffix=".starlist",
+        )
+
+        assert [p.name for p in tmp_path.iterdir()] == ["frame1.starlist"]
+
+    def test_written_file_round_trips_through_starlistset(
+        self, monkeypatch, tmp_path, by_filter
+    ):
+        """The file is a valid StarListSet: one StarList per filter, stars intact."""
+        filters = ("TR", "TG", "TB")
+        monkeypatch.setattr(
+            scripts, "process_one_image", lambda *a, **k: by_filter(filters)
+        )
+
+        scripts.process_batch(
+            ["frame1.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+        )
+
+        text = (tmp_path / "frame1.star").read_text()
+        star_list_set = StarListSet.model_validate_json(text)
+
+        assert len(star_list_set.star_lists) == len(filters)
+        for star_list in star_list_set.star_lists:
+            kept_x = sorted(item.x for item in star_list.staritems)
+            assert kept_x == [20.0, 70.0]
+
+    def test_disk_mode_returns_path_mapping(self, monkeypatch, tmp_path, by_filter):
+        """Disk mode returns each input file mapped to its written output path."""
+        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+
+        results = scripts.process_batch(
+            ["a.fits", "b.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+        )
+
+        assert results == {
+            "a.fits": tmp_path / "a.star",
+            "b.fits": tmp_path / "b.star",
+        }
+
+    def test_failed_frames_write_no_file(self, monkeypatch, tmp_path, by_filter):
+        """A frame whose ``process_one_image`` returns None writes nothing."""
+        monkeypatch.setattr(
+            scripts,
+            "process_one_image",
+            lambda file, *a, **k: None if file == "bad.fits" else by_filter(),
+        )
+
+        results = scripts.process_batch(
+            ["good.fits", "bad.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+        )
+
+        assert [p.name for p in tmp_path.iterdir()] == ["good.star"]
+        assert results == {"good.fits": tmp_path / "good.star"}

@@ -140,7 +140,10 @@ def process_batch(
     user_specific_metadata : dict
         User-specific metadata recorded with the output for each frame.
     output_dir : str or Path or None, optional
-        Directory to write the per-frame photometry results to. Default ".".
+        Directory to write the per-frame photometry results to. Default None,
+        which runs in in-memory mode and returns the photometry tables instead
+        of writing files. When a directory is given it is created if it does not
+        already exist.
 
     output_suffix : str, optional
         Suffix for the output files. Default ".star".
@@ -156,6 +159,10 @@ def process_batch(
         logged warning and omitted from the result in both modes.
     """
     results = {}
+    # Create the output directory once, before the loop, so a missing parent
+    # fails fast instead of partway through the batch.
+    if output_dir is not None:
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
     for file in files:
         by_filter = process_one_image(
             file,

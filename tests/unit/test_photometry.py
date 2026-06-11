@@ -392,7 +392,7 @@ def test_min_separation_fwhm():
 
 
 class TestCentroidDriftFlag:
-    """Unit tests for the centroid-drift sanity check ``centroid_drift_flag``."""
+    """Unit tests for the centroid-drift consistency check ``centroid_drift_flag``."""
 
     def test_zero_drift_not_flagged(self):
         """A centroid sitting exactly on its aligned position is not flagged."""
@@ -811,7 +811,7 @@ class TestNeighborContaminationFlagSky:
         sky_flag = neighbor_contamination_flag_sky(radecs, mags, fwhm_arcsec)
         pix_flag = neighbor_contamination_flag(coords_pix, mags, fwhm_pix)
         np.testing.assert_array_equal(sky_flag, pix_flag)
-        # Sanity: the case is non-trivial -- some flagged, some not.
+        # Guard: the case is non-trivial -- some flagged, some not.
         assert sky_flag.any()
         assert not sky_flag.all()
 
@@ -842,6 +842,8 @@ class TestNeighborContaminationFlagSky:
         realistic random field, including NaN magnitudes and an exact-duplicate
         position (a zero-separation pair, which the rule flags).
         """
+        # A dense random field in a small RA/Dec patch, with some NaN
+        # magnitudes and one exact-duplicate position to exercise edge cases.
         rng = np.random.default_rng(SEED)
         n = 800
         radecs = np.column_stack(
@@ -852,18 +854,23 @@ class TestNeighborContaminationFlagSky:
         radecs[5] = radecs[4]
         fwhm_arcsec = 5.0
 
+        # Brute-force reference: full N x N great-circle separations.
         coords = SkyCoord(radecs[:, 0], radecs[:, 1], unit="deg")
         sep_arcsec = coords[:, None].separation(coords[None, :]).arcsec
+        # Minimum allowed separation for each pair from the magnitude difference.
         required = min_separation_fwhm(mags[:, None] - mags[None, :]) * fwhm_arcsec
+        # Only pairs with two finite magnitudes count, and never compare a star
+        # with itself (the diagonal).
         finite = np.isfinite(mags)
         valid = finite[:, None] & finite[None, :]
         np.fill_diagonal(valid, val=False)
+        # A target is flagged if any valid neighbor is closer than required.
         expected = (valid & (sep_arcsec < required)).any(axis=1)
 
         flag = neighbor_contamination_flag_sky(radecs, mags, fwhm_arcsec)
 
         np.testing.assert_array_equal(flag, expected)
-        # Sanity: the case is non-trivial -- some flagged, some not.
+        # Guard: the case is non-trivial -- some flagged, some not.
         assert expected.any()
         assert not expected.all()
 
