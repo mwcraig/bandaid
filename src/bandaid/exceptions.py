@@ -17,6 +17,8 @@ __all__ = [
     "BandaidError",
     "BatchPrepError",
     "FrameError",
+    "FrameMetadataError",
+    "NoUsableStarsError",
     "TooFewStarsError",
     "WCSSolveError",
 ]
@@ -64,6 +66,14 @@ class TooFewStarsError(FrameError):
 
 class WCSSolveError(FrameError):
     """A WCS could not be solved for the frame (twirl failed or found no match)."""
+
+
+class FrameMetadataError(FrameError):
+    """A required FITS header keyword is missing or could not be parsed."""
+
+
+class NoUsableStarsError(FrameError):
+    """No stars survived photometry filtering, so the frame yields no output."""
 
 
 class BatchPrepError(BandaidError):

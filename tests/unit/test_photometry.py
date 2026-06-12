@@ -20,7 +20,12 @@ from astropy.table import Table
 from astropy.wcs import WCS
 
 from bandaid import measure_photometry
-from bandaid.exceptions import TooFewStarsError, WCSSolveError
+from bandaid.exceptions import (
+    FrameMetadataError,
+    NoUsableStarsError,
+    TooFewStarsError,
+    WCSSolveError,
+)
 from bandaid.image2sl_qt import generate_bayer_masks
 from bandaid.photometry import (
     ANNULUS,
@@ -36,6 +41,7 @@ from bandaid.photometry import (
     centroid_drift_flag,
     centroid_stars,
     eloy_to_starlist,
+    flag_partial_obstruction,
     metadata_from_header,
     min_separation_fwhm,
     neighbor_contamination_flag,
@@ -1590,3 +1596,56 @@ class TestSmokeRealFrame:
             + result["TB"]["tot_count"]
         )
         np.testing.assert_allclose(result["L4"]["tot_count"], rgb_sum, equal_nan=True)
+
+
+class TestEloyToStarlistGuard:
+    """``eloy_to_starlist`` rejects frames with no usable stars."""
+
+    def test_raises_when_no_good_stars(self):
+        """A table whose rows all fail filtering raises NoUsableStarsError."""
+        table = Table(
+            {
+                "tot_count": [-1.0, np.nan],
+                "count_err": [1.0, 1.0],
+                "x": [10.0, 20.0],
+                "y": [10.0, 20.0],
+            },
+        )
+        with pytest.raises(NoUsableStarsError):
+            eloy_to_starlist(table, {"width": 100, "height": 100})
+
+
+class TestMetadataFromHeaderGuard:
+    """``metadata_from_header`` turns missing keywords into FrameMetadataError."""
+
+    def test_incomplete_header_raises(self):
+        """A header missing required keywords is a frame metadata error."""
+        with pytest.raises(FrameMetadataError):
+            metadata_from_header(fits.Header())
+
+
+class TestFlagPartialObstruction:
+    """A localized SNR drop is flagged; a uniform one is not."""
+
+    @staticmethod
+    def _grid_table(snr_grid, shape=(400, 400)) -> Table:
+        """Build a table with five stars per cell of a 4x4 SNR grid."""
+        height, width = shape
+        xs, ys, snrs = [], [], []
+        for r in range(4):
+            for c in range(4):
+                xs.extend([(c + 0.5) / 4 * width] * 5)
+                ys.extend([(r + 0.5) / 4 * height] * 5)
+                snrs.extend([snr_grid[r, c]] * 5)
+        return Table({"x": xs, "y": ys, "snr": snrs})
+
+    def test_localized_low_snr_is_flagged(self):
+        """One quadrant of heavily depressed SNR trips the flag."""
+        snr_grid = np.full((4, 4), 50.0)
+        snr_grid[0, 0] = 2.0
+        assert flag_partial_obstruction(self._grid_table(snr_grid), (400, 400))
+
+    def test_uniform_low_snr_is_not_flagged(self):
+        """A uniform SNR drop (transparency loss) does not trip the flag."""
+        table = self._grid_table(np.full((4, 4), 5.0))
+        assert not flag_partial_obstruction(table, (400, 400))

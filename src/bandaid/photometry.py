@@ -28,7 +28,12 @@ from photutils.aperture import ApertureStats, CircularAnnulus, CircularAperture
 from st_pipeline.schema_definition import StarList
 from twirl import compute_wcs
 
-from .exceptions import TooFewStarsError, WCSSolveError
+from .exceptions import (
+    FrameMetadataError,
+    NoUsableStarsError,
+    TooFewStarsError,
+    WCSSolveError,
+)
 from .image2sl_qt import bayer_balance_image
 
 logger = logging.getLogger(__name__)
@@ -71,6 +76,16 @@ MIN_STARS_FOR_PAIRS = 2
 # `centroid_drift_flag` / `build_photometry_table`).
 DRIFT_TOLERANCE_FWHM = 1.0  # max centroid drift, in units of FWHM
 DRIFT_CAP_PIX = 4.0  # absolute pixel cap on allowed drift
+
+# Partial-obstruction detection. The frame is binned into an
+# OBSTRUCTION_GRID x OBSTRUCTION_GRID grid; a cell holding at least
+# OBSTRUCTION_MIN_STARS_PER_CELL expected stars is flagged when its median SNR
+# falls below OBSTRUCTION_SNR_FRACTION of the frame-wide median (a *localized*
+# drop, the signature of something blocking part of the field -- as opposed to
+# transparency loss, which lowers SNR roughly uniformly).
+OBSTRUCTION_GRID = 4
+OBSTRUCTION_SNR_FRACTION = 0.25
+OBSTRUCTION_MIN_STARS_PER_CELL = 3
 
 
 def min_separation_fwhm(delta_mag, tolerance=CONTAMINATION_TOLERANCE, beta=MOFFAT_BETA):
@@ -386,12 +401,20 @@ def calibration_sequence(file, threshold=1) -> tuple:
     TooFewStarsError
         If fewer than ``MIN_DETECTED_STARS`` are detected, or every detected
         source is saturated, so no usable PSF can be fit.
+    FrameMetadataError
+        If the header is missing a required keyword (propagated from
+        `metadata_from_header`, with the source file attached).
 
     """
     data = fits.getdata(file)
     header = fits.getheader(file)
 
-    metadata = metadata_from_header(header)
+    try:
+        metadata = metadata_from_header(header)
+    except FrameMetadataError as exc:
+        # metadata_from_header has only the header, not the path; label it here.
+        exc.file = file
+        raise
     max_adu = metadata["largest_usable_adu_value"]
 
     # Multiplying by 1 should force conversion from int to float data
@@ -452,6 +475,12 @@ def metadata_from_header(header):
     -------
     dict
         Metadata dictionary with header lookups resolved.
+
+    Raises
+    ------
+    FrameMetadataError
+        If a required header keyword is missing or cannot be parsed, or if the
+        system gain (``egain``) is absent with no template default.
     """
     json_path = package_files("bandaid").joinpath(
         "meta_json_files",
@@ -480,12 +509,29 @@ def metadata_from_header(header):
             parts = value[1:].split()
             header_key = parts[0]
             index = int(parts[2])
-            metadata[key] = header[header_key].split()[index]
+            # A missing keyword (KeyError) or an unexpected value shape
+            # (AttributeError/IndexError) is a per-frame metadata problem.
+            try:
+                metadata[key] = header[header_key].split()[index]
+            except (KeyError, AttributeError, IndexError) as exc:
+                msg = f"could not read header keyword {header_key!r} for {key!r}"
+                raise FrameMetadataError(msg) from exc
         else:
             metadata[key] = value
 
-    metadata["width"] = header["NAXIS1"]
-    metadata["height"] = header["NAXIS2"]
+    try:
+        metadata["width"] = header["NAXIS1"]
+        metadata["height"] = header["NAXIS2"]
+    except KeyError as exc:
+        msg = f"missing required header keyword {exc.args[0]!r}"
+        raise FrameMetadataError(msg) from exc
+
+    # egain feeds the photometry noise model; a None value would silently poison
+    # every SNR downstream, so fail the frame here with a clear message.
+    if metadata.get("egain") is None:
+        msg = "system gain (egain) is missing from the header and has no default"
+        raise FrameMetadataError(msg)
+
     return metadata
 
 
@@ -509,6 +555,12 @@ def eloy_to_starlist(eloy_table, metadata):
     Returns
     -------
     StarList
+
+    Raises
+    ------
+    NoUsableStarsError
+        If no rows survive filtering, so the frame would produce an empty
+        StarList. The source file is not known here; the caller attaches it.
     """
     # REPLACE THIS WITH FILTERING FROM IMAGE2SL_QT
     good = ~np.isnan(eloy_table["tot_count"])
@@ -523,7 +575,76 @@ def eloy_to_starlist(eloy_table, metadata):
     )
     if "contaminated" in eloy_table.colnames:
         good &= ~eloy_table["contaminated"]
+    if not np.any(good):
+        msg = "no stars survived photometry filtering"
+        raise NoUsableStarsError(msg)
     return StarList.from_table(eloy_table[good], metadata=metadata)
+
+
+def flag_partial_obstruction(
+    table,
+    shape,
+    *,
+    grid=OBSTRUCTION_GRID,
+    snr_fraction=OBSTRUCTION_SNR_FRACTION,
+    min_stars=OBSTRUCTION_MIN_STARS_PER_CELL,
+):
+    """
+    Detect a partial obstruction from a spatially-localized SNR deficit.
+
+    A chimney, tree, or dome edge can block or attenuate a contiguous block of
+    stars while the plate solve still succeeds, leaving the frame looking healthy
+    but silently incomplete. The blocked stars come back with badly depressed
+    SNR, so binning the per-star SNR onto a coarse grid and comparing each cell
+    to the frame-wide median exposes the obstruction. Because the comparison is
+    *relative to this frame*, a uniform transparency loss (which lowers every
+    cell together) does not trip it.
+
+    Parameters
+    ----------
+    table : astropy.table.Table
+        A per-frame photometry table with ``x``, ``y``, and ``snr`` columns
+        (one row per expected star), e.g. from `build_photometry_table`.
+    shape : tuple of int
+        Image ``(height, width)`` in pixels, used to bin star positions.
+    grid : int, optional
+        Number of bins per axis. Defaults to `OBSTRUCTION_GRID`.
+    snr_fraction : float, optional
+        A cell is flagged when its median SNR is below this fraction of the
+        frame-wide median SNR. Defaults to `OBSTRUCTION_SNR_FRACTION`.
+    min_stars : int, optional
+        Minimum expected stars in a cell before it is judged (cells too sparse
+        to be meaningful are skipped). Defaults to
+        `OBSTRUCTION_MIN_STARS_PER_CELL`.
+
+    Returns
+    -------
+    bool
+        True if at least one populated cell shows a localized SNR deficit.
+    """
+    snr = np.asarray(table["snr"], dtype=float)
+    frame_median = np.nanmedian(snr)
+    if not np.isfinite(frame_median) or frame_median <= 0:
+        return False
+
+    height, width = shape
+    x = np.asarray(table["x"], dtype=float)
+    y = np.asarray(table["y"], dtype=float)
+    col = np.clip((x / width * grid).astype(int), 0, grid - 1)
+    row = np.clip((y / height * grid).astype(int), 0, grid - 1)
+
+    threshold = snr_fraction * frame_median
+    for r in range(grid):
+        for c in range(grid):
+            in_cell = (row == r) & (col == c)
+            if np.count_nonzero(in_cell) < min_stars:
+                continue
+            cell_snr = snr[in_cell]
+            # A cell whose stars are all non-finite (no flux recovered) is the
+            # strongest obstruction signal; otherwise compare the cell median.
+            if np.all(np.isnan(cell_snr)) or np.nanmedian(cell_snr) < threshold:
+                return True
+    return False
 
 
 @dataclass
@@ -936,6 +1057,11 @@ def build_photometry_table(
         Photometry table for this image and mask. Includes a boolean
         ``centroid_drift`` column flagging stars whose centroid wandered too far
         from its aligned position (see `centroid_drift_flag`).
+
+    Raises
+    ------
+    FrameMetadataError
+        If the image header has a missing or unparseable ``DATE-OBS``.
     """
     phot = measure_photometry(
         img.calibrated_data,
@@ -969,7 +1095,11 @@ def build_photometry_table(
     data["count_err"] = phot["count_err"]
     data["snr"] = phot["snr"]
     data["fluxes"] = phot["fluxes"]
-    data["time"] = Time(parser.parse(img.header["DATE-OBS"])).jd
+    try:
+        data["time"] = Time(parser.parse(img.header["DATE-OBS"])).jd
+    except (KeyError, ValueError, TypeError) as exc:
+        msg = "missing or unparseable DATE-OBS header keyword"
+        raise FrameMetadataError(msg) from exc
     data["sky"] = np.mean(
         phot["total_bkg"] / (np.pi * (np.asarray(relative_radii) * img.fwhm) ** 2),
     )
@@ -1072,6 +1202,20 @@ def process_one_image(
             # violates the ordering.
             calculate_l4_quantities(data, by_filter_data, img.metadata["egain"])
         by_filter_data[filter_name] = data
+
+    # Flag (but keep) frames where something blocked part of the field. Use a
+    # representative channel -- L4 if present, else any -- since SNR is only
+    # available after photometry. The flag rides in img.metadata, which every
+    # table references via meta["full_image_meta"], so it reaches the output.
+    representative = by_filter_data.get("L4", next(iter(by_filter_data.values())))
+    obstructed = flag_partial_obstruction(
+        representative,
+        img.calibrated_data.shape,
+    )
+    img.metadata["partial_obstruction"] = obstructed
+    if obstructed:
+        logger.warning("possible partial obstruction in %s", file)
+
     return by_filter_data
 
 
