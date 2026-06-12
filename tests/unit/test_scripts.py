@@ -299,11 +299,31 @@ def _dummy_prep():
         photometry_coords=SkyCoord([10.0, 10.1], [0.0, 0.0], unit="deg"),
         cnn=object(),
         bayer_masks={"TR": np.zeros((2, 2), dtype=bool)},
+        center=(10.0, 0.0),
+        fov_rad=0.74,
+        shape=(1920, 1080),
     )
+
+
+# Header matching _dummy_prep's center/shape, so check_frame_consistency passes.
+_CONSISTENT_HEADER = {"NAXIS1": 1080, "NAXIS2": 1920, "RA": 10.0, "DEC": 0.0}
 
 
 class TestProcessBatch:
     """Unit tests for ``process_batch``."""
+
+    @pytest.fixture(autouse=True)
+    def _consistent_headers(self, monkeypatch):
+        """
+        Stub fits.getheader so every frame passes check_frame_consistency.
+
+        process_batch now reads each frame's header unconditionally; these tests
+        use fake paths and exercise process_one_image, not the consistency
+        check, so return a header that matches _dummy_prep for all of them.
+        """
+        monkeypatch.setattr(
+            scripts.fits, "getheader", lambda _file: dict(_CONSISTENT_HEADER)
+        )
 
     def test_one_result_per_frame_with_shared_prep(self, monkeypatch):
         """Each frame is processed once with the same shared prep objects."""
@@ -454,6 +474,19 @@ def by_filter(eloy_table, starlist_metadata):
 
 class TestProcessBatchToDisk:
     """Unit tests for the ``output_dir`` (write starlists to disk) path."""
+
+    @pytest.fixture(autouse=True)
+    def _consistent_headers(self, monkeypatch):
+        """
+        Stub fits.getheader so every frame passes check_frame_consistency.
+
+        process_batch now reads each frame's header unconditionally; these tests
+        use fake paths and exercise the output-writing path, not the consistency
+        check, so return a header that matches _dummy_prep for all of them.
+        """
+        monkeypatch.setattr(
+            scripts.fits, "getheader", lambda _file: dict(_CONSISTENT_HEADER)
+        )
 
     def test_writes_one_file_per_frame(self, monkeypatch, tmp_path, by_filter):
         """Each processed frame produces one ``<stem>.star`` file in output_dir."""

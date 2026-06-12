@@ -634,16 +634,18 @@ def flag_partial_obstruction(
     row = np.clip((y / height * grid).astype(int), 0, grid - 1)
 
     threshold = snr_fraction * frame_median
-    for r in range(grid):
-        for c in range(grid):
-            in_cell = (row == r) & (col == c)
-            if np.count_nonzero(in_cell) < min_stars:
-                continue
-            cell_snr = snr[in_cell]
-            # A cell whose stars are all non-finite (no flux recovered) is the
-            # strongest obstruction signal; otherwise compare the cell median.
-            if np.all(np.isnan(cell_snr)) or np.nanmedian(cell_snr) < threshold:
-                return True
+    # Bin stars into the grid by a flat cell id (row * grid + col), then judge
+    # only the cells holding enough stars. The grouped nan-median has no
+    # vectorized numpy form, but looping the populated cells (usually a handful)
+    # replaces the full grid x grid sweep and skips empty cells outright.
+    cell = row * grid + col
+    counts = np.bincount(cell, minlength=grid * grid)
+    for cid in np.flatnonzero(counts >= min_stars):
+        cell_snr = snr[cell == cid]
+        # A cell whose stars are all non-finite (no flux recovered) is the
+        # strongest obstruction signal; otherwise compare the cell median.
+        if np.all(np.isnan(cell_snr)) or np.nanmedian(cell_snr) < threshold:
+            return True
     return False
 
 

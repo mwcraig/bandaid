@@ -60,25 +60,23 @@ class BatchPrep:
     bayer_masks : dict
         Mapping of filter name to Bayer mask, as returned by
         `generate_bayer_masks`.
-    center : tuple of float or None
+    center : tuple of float
         ``(ra, dec)`` in degrees of the field the Gaia catalog was queried for,
         used by `check_frame_consistency` to reject frames that drifted off it.
-        None disables the pointing check.
-    fov_rad : float or None
+    fov_rad : float
         Field radius in degrees; the maximum allowed pointing offset from
-        ``center``. None disables the pointing check.
-    shape : tuple of int or None
-        Expected ``(height, width)`` of every frame. None disables the shape
-        check.
+        ``center``.
+    shape : tuple of int
+        Expected ``(height, width)`` of every frame.
     """
 
     radecs: np.ndarray
     photometry_coords: SkyCoord
     cnn: object
     bayer_masks: dict
-    center: tuple | None = None
-    fov_rad: float | None = None
-    shape: tuple | None = None
+    center: tuple
+    fov_rad: float
+    shape: tuple
 
 
 def prepare_batch(first_file, *, cnn, append_l4=False, gaia_mag_limit=15):
@@ -186,7 +184,7 @@ def check_frame_consistency(file, header, prep):
         The frame's FITS header.
     prep : BatchPrep
         The batch prep whose ``center``, ``fov_rad``, and ``shape`` the frame is
-        checked against. Any of these being None disables its check.
+        checked against.
 
     Raises
     ------
@@ -195,30 +193,28 @@ def check_frame_consistency(file, header, prep):
     FrameMetadataError
         If the header lacks the keywords needed to perform the checks.
     """
-    if prep.shape is not None:
-        try:
-            shape = (header["NAXIS2"], header["NAXIS1"])
-        except KeyError as exc:
-            msg = f"missing required header keyword {exc.args[0]!r}"
-            raise FrameMetadataError(msg, file=file) from exc
-        if shape != tuple(prep.shape):
-            msg = f"frame shape {shape} does not match batch shape {tuple(prep.shape)}"
-            raise FrameError(msg, file=file)
+    try:
+        shape = (header["NAXIS2"], header["NAXIS1"])
+    except KeyError as exc:
+        msg = f"missing required header keyword {exc.args[0]!r}"
+        raise FrameMetadataError(msg, file=file) from exc
+    if shape != tuple(prep.shape):
+        msg = f"frame shape {shape} does not match batch shape {tuple(prep.shape)}"
+        raise FrameError(msg, file=file)
 
-    if prep.center is not None and prep.fov_rad is not None:
-        try:
-            frame_center = SkyCoord(header["RA"], header["DEC"], unit="deg")
-        except KeyError as exc:
-            msg = f"missing pointing header keyword {exc.args[0]!r}"
-            raise FrameMetadataError(msg, file=file) from exc
-        center = SkyCoord(prep.center[0], prep.center[1], unit="deg")
-        offset = center.separation(frame_center).deg
-        if offset > prep.fov_rad:
-            msg = (
-                f"frame pointing is {offset:.3f} deg from the batch center, "
-                f"beyond the {prep.fov_rad:.3f} deg field radius"
-            )
-            raise FrameError(msg, file=file)
+    try:
+        frame_center = SkyCoord(header["RA"], header["DEC"], unit="deg")
+    except KeyError as exc:
+        msg = f"missing pointing header keyword {exc.args[0]!r}"
+        raise FrameMetadataError(msg, file=file) from exc
+    center = SkyCoord(prep.center[0], prep.center[1], unit="deg")
+    offset = center.separation(frame_center).deg
+    if offset > prep.fov_rad:
+        msg = (
+            f"frame pointing is {offset:.3f} deg from the batch center, "
+            f"beyond the {prep.fov_rad:.3f} deg field radius"
+        )
+        raise FrameError(msg, file=file)
 
 
 def process_batch(
@@ -282,11 +278,7 @@ def process_batch(
         Path(output_dir).mkdir(parents=True, exist_ok=True)
     for file in files:
         try:
-            # Only read the header when there is something to check against (a
-            # prep built by prepare_batch always has these; a hand-built one may
-            # not).
-            if prep.shape is not None or prep.center is not None:
-                check_frame_consistency(file, fits.getheader(file), prep)
+            check_frame_consistency(file, fits.getheader(file), prep)
             by_filter = process_one_image(
                 file,
                 user_specific_metadata,
