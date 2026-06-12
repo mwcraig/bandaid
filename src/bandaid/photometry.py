@@ -28,6 +28,7 @@ from photutils.aperture import ApertureStats, CircularAnnulus, CircularAperture
 from st_pipeline.schema_definition import StarList
 from twirl import compute_wcs
 
+from .exceptions import TooFewStarsError, WCSSolveError
 from .image2sl_qt import bayer_balance_image
 
 logger = logging.getLogger(__name__)
@@ -380,6 +381,12 @@ def calibration_sequence(file, threshold=1) -> tuple:
         A tuple containing the calibrated data, metadata, region coordinates,
         FWHM, and regions.
 
+    Raises
+    ------
+    TooFewStarsError
+        If fewer than ``MIN_DETECTED_STARS`` are detected, or every detected
+        source is saturated, so no usable PSF can be fit.
+
     """
     data = fits.getdata(file)
     header = fits.getheader(file)
@@ -393,7 +400,8 @@ def calibration_sequence(file, threshold=1) -> tuple:
 
     # in case we detect fewer than the minimum number of stars
     if len(regions) < MIN_DETECTED_STARS:
-        return None, [], None, None, None
+        msg = f"only {len(regions)} stars detected (need at least {MIN_DETECTED_STARS})"
+        raise TooFewStarsError(msg, file=file)
 
     region_coords_xy = np.array([(r.centroid[1], r.centroid[0]) for r in regions])
     cutouts = utils.cutout(calibrated_data, region_coords_xy, (50, 50))
@@ -404,7 +412,8 @@ def calibration_sequence(file, threshold=1) -> tuple:
 
     # If every detected source was saturated there is nothing left to fit a PSF to
     if len(cutouts) == 0:
-        return None, [], None, None, None
+        msg = "all detected sources are saturated"
+        raise TooFewStarsError(msg, file=file)
 
     # Drop any regions that are saturated for calculating the FWHM
     cutouts_normalized = cutouts / np.nanmax(cutouts, (1, 2))[:, None, None]
@@ -561,6 +570,14 @@ def align(coords, radecs=None, *, photometry_coords=None, wcs=None):
         Aligned star coordinates in pixel space.
     this_wcs : astropy.wcs.WCS
         World Coordinate System for the image.
+
+    Raises
+    ------
+    WCSSolveError
+        If `wcs` is None and twirl cannot solve a WCS from `coords` and
+        `radecs` -- either it returns None (too few stars overlap to satisfy its
+        min_match threshold) or it raises while matching. The raiser does not
+        know the source file; callers attach it to the error before re-raising.
     """
     if wcs is None:
         # Feed the brightest N_STARS_ALIGN detections and Gaia reference
@@ -568,18 +585,26 @@ def align(coords, radecs=None, *, photometry_coords=None, wcs=None):
         # geometric shape, so the two lists need NOT be in the same order or
         # even the same length -- there is no per-index correspondence. The
         # slicing just limits the matcher to the brightest, most reliable
-        # stars. compute_wcs returns None if too few stars overlap to satisfy
-        # its min_match threshold, so callers must supply enough stars (not
-        # enough *matched* stars).
+        # stars.
         # twirl's asterism matcher prints timing/diagnostic lines straight to
         # stdout (e.g. "Match took ... us"); redirect them to /dev/null so the
         # pipeline and notebooks stay quiet.
-        with contextlib.redirect_stdout(io.StringIO()):
-            this_wcs = compute_wcs(
-                coords[0:N_STARS_ALIGN],
-                radecs[0:N_STARS_ALIGN],
-                tolerance=1,
-            )
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                this_wcs = compute_wcs(
+                    coords[0:N_STARS_ALIGN],
+                    radecs[0:N_STARS_ALIGN],
+                    tolerance=1,
+                )
+        except Exception as exc:
+            # twirl raises (e.g. fit_wcs_from_points with a single matched pair)
+            # when too few stars match; surface it as a recoverable frame error
+            # while preserving the original for the log.
+            msg = "twirl raised while solving the WCS"
+            raise WCSSolveError(msg) from exc
+        if this_wcs is None:
+            msg = "twirl returned no WCS (too few matched stars)"
+            raise WCSSolveError(msg)
     else:
         this_wcs = wcs
 
@@ -814,20 +839,23 @@ def prepare_image(
 
     Returns
     -------
-    ImageData or None
-        Per-image results, or None if too few stars were detected.
+    ImageData
+        Per-image detection/alignment results.
+
+    Raises
+    ------
+    WCSSolveError
+        If the per-image WCS cannot be solved. The source `file` is attached to
+        the error before it propagates. (`calibration_sequence` may also raise
+        `TooFewStarsError`, which propagates unchanged.)
     """
     # "calibrate" the data and get initial detections for WCS alignment and
-    # FWHM estimation
+    # FWHM estimation. calibration_sequence raises TooFewStarsError (a
+    # FrameError) when the frame is unusable; let it propagate to the batch loop.
     calibrated_data, metadata, coords, fwhm, _ = calibration_sequence(
         file,
         threshold=THRESH,
     )
-
-    # calibration_sequence returns the (None, [], None, None, None) sentinel when too
-    # few usable stars were detected; honor the documented "return None" contract.
-    if calibrated_data is None:
-        return None
 
     if user_specific_metadata is not None:
         metadata.update(user_specific_metadata)
@@ -838,12 +866,18 @@ def prepare_image(
     else:
         working_image = calibrated_data
 
-    aligned_coords, this_wcs = align(
-        coords,
-        radecs,
-        photometry_coords=photometry_coords,
-        wcs=wcs,
-    )
+    try:
+        aligned_coords, this_wcs = align(
+            coords,
+            radecs,
+            photometry_coords=photometry_coords,
+            wcs=wcs,
+        )
+    except WCSSolveError as exc:
+        # align does not know the source file; attach it here so the batch
+        # loop can report which frame failed.
+        exc.file = file
+        raise
     centroid_coords = centroid_stars(working_image, aligned_coords, cnn)
 
     header = fits.getheader(file)
@@ -998,9 +1032,11 @@ def process_one_image(
 
     Returns
     -------
-    dict of {str: Table} or None
+    dict of {str: Table}
         Dictionary mapping each filter name to the photometry table for that
-        filter, or None if the image could not be processed.
+        filter. If the frame cannot be processed, the `FrameError` raised by
+        `prepare_image` (too few stars, unsolvable WCS, ...) propagates
+        unchanged; `process_batch` catches it, logs it, and skips the frame.
 
     Notes
     -----
@@ -1008,7 +1044,9 @@ def process_one_image(
     present and ordered before it; otherwise `calculate_l4_quantities` raises a
     `ValueError`.
     """
-    # Calculate everything we need for all filters at once.
+    # Calculate everything we need for all filters at once. prepare_image raises
+    # a FrameError (TooFewStarsError / WCSSolveError) when the frame is unusable;
+    # let it propagate to the batch loop.
     img = prepare_image(
         file,
         radecs,
@@ -1017,9 +1055,6 @@ def process_one_image(
         photometry_coords=input_photometry_coords,
         user_specific_metadata=user_specific_metadata,
     )
-
-    if img is None:
-        return None
 
     by_filter_data = {}
     for filter_name, mask in bayer_masks.items():

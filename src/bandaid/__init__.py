@@ -31,6 +31,13 @@ its purpose, and any important notes.
 import logging
 
 from .catalog import cached_gaia_radecs
+from .exceptions import (
+    BandaidError,
+    BatchPrepError,
+    FrameError,
+    TooFewStarsError,
+    WCSSolveError,
+)
 from .image2sl_qt import bayer_balance_image, generate_bayer_masks
 from .logging_setup import configure_logging
 from .photometry import (

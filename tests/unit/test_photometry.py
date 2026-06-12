@@ -20,6 +20,7 @@ from astropy.table import Table
 from astropy.wcs import WCS
 
 from bandaid import measure_photometry
+from bandaid.exceptions import TooFewStarsError
 from bandaid.image2sl_qt import generate_bayer_masks
 from bandaid.photometry import (
     ANNULUS,
@@ -1308,8 +1309,8 @@ class TestCalibrationSequence:
         assert measured_fwhm == pytest.approx(fwhm, rel=0.05)
         assert metadata["largest_usable_adu_value"] == expected_max_adu
 
-    def test_too_few_stars_returns_sentinel(self, make_test_image, tmp_path):
-        """Fewer than MIN_DETECTED_STARS detections returns the None sentinel."""
+    def test_too_few_stars_raises(self, make_test_image, tmp_path):
+        """Fewer than MIN_DETECTED_STARS detections raises TooFewStarsError."""
         image = _detectable_image(
             make_test_image,
             n_sources=2,
@@ -1317,26 +1318,25 @@ class TestCalibrationSequence:
         )
         path = _write_seestar_fits(tmp_path / "few.fits", image)
 
-        result = calibration_sequence(path, threshold=1)
-        assert result == (None, [], None, None, None)
+        with pytest.raises(TooFewStarsError, match="stars detected"):
+            calibration_sequence(path, threshold=1)
 
-    def test_all_saturated_returns_sentinel(self, make_test_image, tmp_path):
-        """When every source saturates, no PSF can be fit and the sentinel returns."""
+    def test_all_saturated_raises(self, make_test_image, tmp_path):
+        """When every source saturates, no PSF can be fit, so it raises."""
         # Amplitude above the 50000 ADU cap means every cutout is dropped as
         # saturated, leaving nothing to fit.
         image = _detectable_image(make_test_image, n_sources=5, amplitude=60000.0)
         path = _write_seestar_fits(tmp_path / "sat.fits", image)
 
-        calibrated, coords_meta, _, _, _ = calibration_sequence(path, threshold=1)
-        assert calibrated is None
-        assert coords_meta == []
+        with pytest.raises(TooFewStarsError, match="saturated"):
+            calibration_sequence(path, threshold=1)
 
 
 class TestPrepareImageBranches:
     """Branch coverage for ``prepare_image`` beyond the alignment fallback."""
 
-    def test_returns_none_when_too_few_stars(self, make_test_image, tmp_path):
-        """prepare_image propagates the calibration_sequence None sentinel."""
+    def test_raises_when_too_few_stars(self, make_test_image, tmp_path):
+        """prepare_image propagates calibration_sequence's TooFewStarsError."""
         image = _detectable_image(
             make_test_image,
             n_sources=2,
@@ -1344,8 +1344,9 @@ class TestPrepareImageBranches:
         )
         path = _write_seestar_fits(tmp_path / "few.fits", image)
 
-        # No external stubbing needed: prepare_image returns before align/centroid.
-        assert prepare_image(path, _REF_RADECS, None) is None
+        # No external stubbing needed: it raises before align/centroid.
+        with pytest.raises(TooFewStarsError):
+            prepare_image(path, _REF_RADECS, None)
 
     def test_merges_user_specific_metadata(
         self, make_test_image, tmp_path, monkeypatch
@@ -1393,8 +1394,8 @@ class TestPrepareImageBranches:
 class TestProcessOneImage:
     """End-to-end (stubbed-externals) coverage for ``process_one_image``."""
 
-    def test_returns_none_when_image_rejected(self, make_test_image, tmp_path):
-        """A frame with too few stars yields None for every filter."""
+    def test_raises_when_image_rejected(self, make_test_image, tmp_path):
+        """A frame with too few stars raises TooFewStarsError."""
         image = _detectable_image(
             make_test_image,
             n_sources=2,
@@ -1407,7 +1408,8 @@ class TestProcessOneImage:
             append_l4=True,
         )
 
-        assert process_one_image(path, {}, _REF_RADECS, None, masks) is None
+        with pytest.raises(TooFewStarsError):
+            process_one_image(path, {}, _REF_RADECS, None, masks)
 
     def test_full_path_builds_per_filter_tables_with_l4(
         self, make_test_image, tmp_path, monkeypatch
