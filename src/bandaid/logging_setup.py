@@ -15,8 +15,9 @@ __all__ = ["configure_logging"]
 #: Name of the package-level logger that :func:`configure_logging` configures.
 _PACKAGE_LOGGER = "bandaid"
 
-#: Marks handlers this module owns so repeat calls can replace, not stack, them.
-_MANAGED_FLAG = "_bandaid_managed"
+#: Name of the attribute stamped on handlers this module owns, so repeat calls
+#: can replace, not stack, them.
+_MANAGED_ATTR = "_bandaid_managed"
 
 _FORMAT = "%(asctime)s %(name)s %(levelname)s %(message)s"
 
@@ -24,7 +25,7 @@ _FORMAT = "%(asctime)s %(name)s %(levelname)s %(message)s"
 def _clear_managed_handlers(logger):
     """Remove (and close) only the handlers this module previously added."""
     for handler in list(logger.handlers):
-        if getattr(handler, _MANAGED_FLAG, False):
+        if getattr(handler, _MANAGED_ATTR, False):
             logger.removeHandler(handler)
             handler.close()
 
@@ -67,7 +68,7 @@ def configure_logging(level=logging.INFO, *, logfile=None, stream=True):
 
     for handler in handlers:
         handler.setFormatter(formatter)
-        setattr(handler, _MANAGED_FLAG, True)
+        setattr(handler, _MANAGED_ATTR, True)
         logger.addHandler(handler)
 
     return logger
