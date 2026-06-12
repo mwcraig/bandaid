@@ -20,6 +20,7 @@ from astropy.table import Table
 from astropy.wcs import WCS
 
 from bandaid import measure_photometry
+from bandaid.exceptions import TooFewStarsError, WCSSolveError
 from bandaid.image2sl_qt import generate_bayer_masks
 from bandaid.photometry import (
     ANNULUS,
@@ -1096,6 +1097,60 @@ class TestAlign:
         assert returned_wcs is sentinel_wcs
         assert capsys.readouterr().out == ""
 
+    @pytest.mark.parametrize(
+        "twirl_error",
+        [
+            # The original SS Leo failure: too few matched points reach
+            # fit_wcs_from_points, so scipy's least-squares fitter raises.
+            ValueError("Initial guess is outside of provided bounds"),
+            # The shallower exit: cross_match finds zero pairs and the empty
+            # float index array fails when used to index.
+            IndexError("arrays used as indices must be of integer type"),
+        ],
+        ids=["fit_wcs_from_points-ValueError", "cross_match-IndexError"],
+    )
+    def test_twirl_raising_becomes_wcs_solve_error(self, monkeypatch, twirl_error):
+        """A too-few-stars raise from twirl surfaces as a recoverable WCSSolveError."""
+
+        def failing_compute_wcs(coords, radecs, tolerance):  # noqa: ARG001
+            raise twirl_error
+
+        monkeypatch.setattr("bandaid.photometry.compute_wcs", failing_compute_wcs)
+
+        coords = np.arange(N_STARS_ALIGN * 2, dtype=float).reshape(N_STARS_ALIGN, 2)
+
+        with pytest.raises(WCSSolveError, match="twirl raised") as excinfo:
+            align(coords, coords.copy(), photometry_coords=None)
+        # The original twirl error is preserved on the chain for the log.
+        assert excinfo.value.__cause__ is twirl_error
+
+    def test_twirl_returning_none_becomes_wcs_solve_error(self, monkeypatch):
+        """compute_wcs returning None (no match) surfaces as WCSSolveError."""
+
+        def none_compute_wcs(coords, radecs, tolerance):  # noqa: ARG001
+            return None
+
+        monkeypatch.setattr("bandaid.photometry.compute_wcs", none_compute_wcs)
+
+        coords = np.arange(N_STARS_ALIGN * 2, dtype=float).reshape(N_STARS_ALIGN, 2)
+
+        with pytest.raises(WCSSolveError, match="no WCS"):
+            align(coords, coords.copy(), photometry_coords=None)
+
+    def test_unexpected_twirl_error_propagates(self, monkeypatch):
+        """A non too-few-stars error is a bug and is left to propagate, not masked."""
+        bug = TypeError("genuine bug, not a bad frame")
+
+        def buggy_compute_wcs(coords, radecs, tolerance):  # noqa: ARG001
+            raise bug
+
+        monkeypatch.setattr("bandaid.photometry.compute_wcs", buggy_compute_wcs)
+
+        coords = np.arange(N_STARS_ALIGN * 2, dtype=float).reshape(N_STARS_ALIGN, 2)
+
+        with pytest.raises(TypeError, match="genuine bug"):
+            align(coords, coords.copy(), photometry_coords=None)
+
 
 def test_centroid_stars_delegates_to_ballet(monkeypatch):
     """
@@ -1308,8 +1363,8 @@ class TestCalibrationSequence:
         assert measured_fwhm == pytest.approx(fwhm, rel=0.05)
         assert metadata["largest_usable_adu_value"] == expected_max_adu
 
-    def test_too_few_stars_returns_sentinel(self, make_test_image, tmp_path):
-        """Fewer than MIN_DETECTED_STARS detections returns the None sentinel."""
+    def test_too_few_stars_raises(self, make_test_image, tmp_path):
+        """Fewer than MIN_DETECTED_STARS detections raises TooFewStarsError."""
         image = _detectable_image(
             make_test_image,
             n_sources=2,
@@ -1317,26 +1372,25 @@ class TestCalibrationSequence:
         )
         path = _write_seestar_fits(tmp_path / "few.fits", image)
 
-        result = calibration_sequence(path, threshold=1)
-        assert result == (None, [], None, None, None)
+        with pytest.raises(TooFewStarsError, match="stars detected"):
+            calibration_sequence(path, threshold=1)
 
-    def test_all_saturated_returns_sentinel(self, make_test_image, tmp_path):
-        """When every source saturates, no PSF can be fit and the sentinel returns."""
+    def test_all_saturated_raises(self, make_test_image, tmp_path):
+        """When every source saturates, no PSF can be fit, so it raises."""
         # Amplitude above the 50000 ADU cap means every cutout is dropped as
         # saturated, leaving nothing to fit.
         image = _detectable_image(make_test_image, n_sources=5, amplitude=60000.0)
         path = _write_seestar_fits(tmp_path / "sat.fits", image)
 
-        calibrated, coords_meta, _, _, _ = calibration_sequence(path, threshold=1)
-        assert calibrated is None
-        assert coords_meta == []
+        with pytest.raises(TooFewStarsError, match="saturated"):
+            calibration_sequence(path, threshold=1)
 
 
 class TestPrepareImageBranches:
     """Branch coverage for ``prepare_image`` beyond the alignment fallback."""
 
-    def test_returns_none_when_too_few_stars(self, make_test_image, tmp_path):
-        """prepare_image propagates the calibration_sequence None sentinel."""
+    def test_raises_when_too_few_stars(self, make_test_image, tmp_path):
+        """prepare_image propagates calibration_sequence's TooFewStarsError."""
         image = _detectable_image(
             make_test_image,
             n_sources=2,
@@ -1344,8 +1398,9 @@ class TestPrepareImageBranches:
         )
         path = _write_seestar_fits(tmp_path / "few.fits", image)
 
-        # No external stubbing needed: prepare_image returns before align/centroid.
-        assert prepare_image(path, _REF_RADECS, None) is None
+        # No external stubbing needed: it raises before align/centroid.
+        with pytest.raises(TooFewStarsError, match="stars detected"):
+            prepare_image(path, _REF_RADECS, None)
 
     def test_merges_user_specific_metadata(
         self, make_test_image, tmp_path, monkeypatch
@@ -1393,8 +1448,8 @@ class TestPrepareImageBranches:
 class TestProcessOneImage:
     """End-to-end (stubbed-externals) coverage for ``process_one_image``."""
 
-    def test_returns_none_when_image_rejected(self, make_test_image, tmp_path):
-        """A frame with too few stars yields None for every filter."""
+    def test_raises_when_image_rejected(self, make_test_image, tmp_path):
+        """A frame with too few stars raises TooFewStarsError."""
         image = _detectable_image(
             make_test_image,
             n_sources=2,
@@ -1407,7 +1462,8 @@ class TestProcessOneImage:
             append_l4=True,
         )
 
-        assert process_one_image(path, {}, _REF_RADECS, None, masks) is None
+        with pytest.raises(TooFewStarsError, match="stars detected"):
+            process_one_image(path, {}, _REF_RADECS, None, masks)
 
     def test_full_path_builds_per_filter_tables_with_l4(
         self, make_test_image, tmp_path, monkeypatch

@@ -23,6 +23,7 @@ from astropy.coordinates import SkyCoord
 from st_pipeline.schema_definition import StarListSet
 
 from .catalog import cached_gaia_radecs
+from .exceptions import BatchPrepError, FrameError, TooFewStarsError
 from .image2sl_qt import generate_bayer_masks
 from .photometry import (
     calibration_sequence,
@@ -89,14 +90,18 @@ def prepare_batch(first_file, *, cnn, append_l4=False, gaia_mag_limit=15):
 
     Raises
     ------
-    ValueError
-        If too few stars are detected in ``first_file`` to measure an FWHM
-        (``calibration_sequence`` returns its all-None sentinel).
+    BatchPrepError
+        If too few stars are detected in ``first_file`` to measure an FWHM, so
+        the batch preparation cannot be built.
     """
-    calibrated_data, metadata, _, fwhm_pix, _ = calibration_sequence(first_file)
-    if calibrated_data is None:
+    # A too-few-stars failure on the *first* frame is fatal for the whole batch
+    # (no FWHM/pointing to prepare from), so translate the recoverable
+    # per-frame TooFewStarsError into a fatal BatchPrepError.
+    try:
+        _, metadata, _, fwhm_pix, _ = calibration_sequence(first_file)
+    except TooFewStarsError as exc:
         msg = f"too few stars detected in {first_file!r} to prepare the batch"
-        raise ValueError(msg)
+        raise BatchPrepError(msg) from exc
 
     # fov_rad is a field *radius*; cached_gaia_radecs takes the full field and
     # halves it internally (matching the established twirl.gaia_radecs usage).
@@ -124,7 +129,13 @@ def prepare_batch(first_file, *, cnn, append_l4=False, gaia_mag_limit=15):
 
 
 def process_batch(
-    files, prep, *, user_specific_metadata, output_dir=None, output_suffix=".star"
+    files,
+    prep,
+    *,
+    user_specific_metadata,
+    output_dir=None,
+    output_suffix=".star",
+    fail_fast=True,
 ):
     """
     Photometer every frame in a batch using a shared `BatchPrep`.
@@ -147,6 +158,13 @@ def process_batch(
 
     output_suffix : str, optional
         Suffix for the output files. Default ".star".
+    fail_fast : bool, optional
+        How to handle an *unexpected* error (one that is not a `FrameError`)
+        while processing a frame. If True (default), re-raise it so genuine
+        bugs surface. If False, log it at ERROR and continue with the next
+        frame -- the robust mode for unattended runs. Expected per-frame
+        failures (`FrameError` and its subclasses) are always logged and
+        skipped regardless of this flag.
 
     Returns
     -------
@@ -155,8 +173,14 @@ def process_batch(
         in-memory mode (``output_dir`` is None) the value is the
         ``{filter: Table}`` photometry result; in write-to-disk mode the value
         is the written output ``Path`` (the tables are not held in memory).
-        Frames that fail (``process_one_image`` returns None) are skipped with a
-        logged warning and omitted from the result in both modes.
+        Frames that raise a `FrameError` (too few stars, unsolvable WCS, ...)
+        are skipped with a logged warning and omitted from the result.
+
+    Raises
+    ------
+    Exception
+        Any unexpected (non-`FrameError`) error raised while processing a frame
+        is re-raised when ``fail_fast`` is True (the default).
     """
     results = {}
     # Create the output directory once, before the loop, so a missing parent
@@ -164,26 +188,42 @@ def process_batch(
     if output_dir is not None:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
     for file in files:
-        by_filter = process_one_image(
-            file,
-            user_specific_metadata,
-            prep.radecs,
-            prep.cnn,
-            prep.bayer_masks,
-            input_photometry_coords=prep.photometry_coords,
-        )
-        if by_filter is None:
-            logger.warning("skipping %s: too few stars detected", file)
+        try:
+            by_filter = process_one_image(
+                file,
+                user_specific_metadata,
+                prep.radecs,
+                prep.cnn,
+                prep.bayer_masks,
+                input_photometry_coords=prep.photometry_coords,
+            )
+        except FrameError as exc:
+            # Expected per-frame failure: skip the frame and keep going. exc is
+            # the human-readable headline; exc_info=True captures the chained
+            # __cause__ (e.g. the original twirl traceback) so no detail is lost.
+            logger.warning("skipping %s: %s", file, exc.reason, exc_info=True)
             continue
-        if output_dir is not None:
-            output_path = Path(output_dir) / (Path(file).stem + output_suffix)
-            star_lists = [
-                eloy_to_starlist(tab, tab.meta["full_image_meta"])
-                for tab in by_filter.values()
-            ]
-            star_list_set = StarListSet(star_lists=star_lists)
-            output_path.write_text(star_list_set.model_dump_json(indent=2))
-            results[file] = output_path
+        except Exception:
+            # Unexpected error (a bug, not a bad frame): surface it by default;
+            # only swallow-and-continue when the caller opted into robust mode.
+            if fail_fast:
+                raise
+            logger.exception("unexpected error on %s", file)
+            continue
         else:
-            results[file] = by_filter
+            # The frame processed cleanly. Writing its output is deliberately
+            # outside the try: a write failure (bad output_dir, permissions,
+            # full disk) is systemic, not a property of this frame, so it must
+            # abort the run rather than be skipped as a "bad frame".
+            if output_dir is not None:
+                output_path = Path(output_dir) / (Path(file).stem + output_suffix)
+                star_lists = [
+                    eloy_to_starlist(tab, tab.meta["full_image_meta"])
+                    for tab in by_filter.values()
+                ]
+                star_list_set = StarListSet(star_lists=star_lists)
+                output_path.write_text(star_list_set.model_dump_json(indent=2))
+                results[file] = output_path
+            else:
+                results[file] = by_filter
     return results

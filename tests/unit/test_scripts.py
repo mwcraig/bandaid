@@ -14,6 +14,7 @@ from astropy.table import Table
 from st_pipeline.schema_definition import StarListSet
 
 from bandaid import scripts
+from bandaid.exceptions import BatchPrepError, TooFewStarsError, WCSSolveError
 from bandaid.photometry import neighbor_contamination_flag_sky
 
 
@@ -176,19 +177,14 @@ class TestPrepareBatch:
         np.testing.assert_array_equal(prep.radecs, radecs[[0, 2]])
 
     def test_raises_when_too_few_stars_detected(self, monkeypatch):
-        """The all-None sentinel from ``calibration_sequence`` raises clearly."""
-        # calibration_sequence returns the documented all-None/empty sentinel.
-        monkeypatch.setattr(
-            scripts,
-            "calibration_sequence",
-            lambda file: (None, [], None, None, None),
-        )
-        monkeypatch.setattr(
-            scripts,
-            "cached_gaia_radecs",
-            lambda center, fov: (np.zeros((0, 2)), np.zeros(0)),
-        )
-        with pytest.raises(ValueError, match="too few stars"):
+        """A first-frame TooFewStarsError becomes a fatal BatchPrepError."""
+
+        def _too_few(file):
+            msg = "only 1 stars detected"
+            raise TooFewStarsError(msg, file=file)
+
+        monkeypatch.setattr(scripts, "calibration_sequence", _too_few)
+        with pytest.raises(BatchPrepError, match="too few stars"):
             scripts.prepare_batch("frame1.fits", cnn=object())
 
 
@@ -240,21 +236,57 @@ class TestProcessBatch:
             assert phot_coords is prep.photometry_coords
 
     def test_failed_frames_are_skipped(self, monkeypatch):
-        """A frame whose ``process_one_image`` returns None is omitted."""
+        """A frame whose ``process_one_image`` raises a FrameError is omitted."""
         prep = _dummy_prep()
 
-        monkeypatch.setattr(
-            scripts,
-            "process_one_image",
-            lambda file, *a, **k: (
-                None if file == "bad.fits" else {"TR": Table({"tot_count": [1.0]})}
-            ),
-        )
+        def _maybe(file, *_args: object, **_kwargs: object):
+            if file == "bad.fits":
+                msg = "too few stars"
+                raise TooFewStarsError(msg, file=file)
+            return {"TR": Table({"tot_count": [1.0]})}
+
+        monkeypatch.setattr(scripts, "process_one_image", _maybe)
 
         results = scripts.process_batch(
             ["good.fits", "bad.fits"],
             prep,
             user_specific_metadata={},
+        )
+
+        assert list(results) == ["good.fits"]
+
+    def test_unexpected_error_propagates_when_fail_fast(self, monkeypatch):
+        """A non-FrameError bug aborts the batch by default (fail_fast=True)."""
+
+        def _boom(*_args: object, **_kwargs: object):
+            msg = "a real bug"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(scripts, "process_one_image", _boom)
+
+        with pytest.raises(RuntimeError, match="a real bug"):
+            scripts.process_batch(
+                ["a.fits", "b.fits"],
+                _dummy_prep(),
+                user_specific_metadata={},
+            )
+
+    def test_unexpected_error_skipped_when_not_fail_fast(self, monkeypatch):
+        """With fail_fast=False, an unexpected bug is logged and skipped."""
+
+        def _maybe(file, *_args: object, **_kwargs: object):
+            if file == "bad.fits":
+                msg = "a real bug"
+                raise RuntimeError(msg)
+            return {"TR": Table({"tot_count": [1.0]})}
+
+        monkeypatch.setattr(scripts, "process_one_image", _maybe)
+
+        results = scripts.process_batch(
+            ["good.fits", "bad.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            fail_fast=False,
         )
 
         assert list(results) == ["good.fits"]
@@ -403,12 +435,15 @@ class TestProcessBatchToDisk:
         }
 
     def test_failed_frames_write_no_file(self, monkeypatch, tmp_path, by_filter):
-        """A frame whose ``process_one_image`` returns None writes nothing."""
-        monkeypatch.setattr(
-            scripts,
-            "process_one_image",
-            lambda file, *a, **k: None if file == "bad.fits" else by_filter(),
-        )
+        """A frame whose ``process_one_image`` raises a FrameError writes nothing."""
+
+        def _maybe(file, *_args: object, **_kwargs: object):
+            if file == "bad.fits":
+                msg = "twirl found no match"
+                raise WCSSolveError(msg, file=file)
+            return by_filter()
+
+        monkeypatch.setattr(scripts, "process_one_image", _maybe)
 
         results = scripts.process_batch(
             ["good.fits", "bad.fits"],
