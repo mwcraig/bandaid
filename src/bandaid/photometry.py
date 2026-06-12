@@ -11,6 +11,7 @@ resulting tables into a ``StarList``.
 import contextlib
 import io
 import json
+import logging
 from dataclasses import dataclass
 from importlib.resources import files as package_files
 
@@ -28,6 +29,8 @@ from st_pipeline.schema_definition import StarList
 from twirl import compute_wcs
 
 from .image2sl_qt import bayer_balance_image
+
+logger = logging.getLogger(__name__)
 
 # Half-width (in pixels) of the cutout taken around each star for per-star
 # processing.
