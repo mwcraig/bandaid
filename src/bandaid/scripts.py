@@ -20,12 +20,19 @@ from pathlib import Path
 
 import numpy as np
 from astropy.coordinates import SkyCoord
+from astropy.io import fits
 from st_pipeline.schema_definition import StarListSet
 
 from .catalog import cached_gaia_radecs
-from .exceptions import BatchPrepError, FrameError, TooFewStarsError
+from .exceptions import (
+    BatchPrepError,
+    FrameError,
+    FrameMetadataError,
+    TooFewStarsError,
+)
 from .image2sl_qt import generate_bayer_masks
 from .photometry import (
+    N_STARS_ALIGN,
     calibration_sequence,
     eloy_to_starlist,
     neighbor_contamination_flag_sky,
@@ -53,12 +60,23 @@ class BatchPrep:
     bayer_masks : dict
         Mapping of filter name to Bayer mask, as returned by
         `generate_bayer_masks`.
+    center : tuple of float
+        ``(ra, dec)`` in degrees of the field the Gaia catalog was queried for,
+        used by `check_frame_consistency` to reject frames that drifted off it.
+    fov_rad : float
+        Field radius in degrees; the maximum allowed pointing offset from
+        ``center``.
+    shape : tuple of int
+        Expected ``(height, width)`` of every frame.
     """
 
     radecs: np.ndarray
     photometry_coords: SkyCoord
     cnn: object
     bayer_masks: dict
+    center: tuple
+    fov_rad: float
+    shape: tuple
 
 
 def prepare_batch(first_file, *, cnn, append_l4=False, gaia_mag_limit=15):
@@ -106,10 +124,27 @@ def prepare_batch(first_file, *, cnn, append_l4=False, gaia_mag_limit=15):
     # fov_rad is a field *radius*; cached_gaia_radecs takes the full field and
     # halves it internally (matching the established twirl.gaia_radecs usage).
     center = (metadata["ra"], metadata["dec"])
-    radecs, mags = cached_gaia_radecs(center, 2 * metadata["fov_rad"])
+    # A Gaia query failure (network/service error) is fatal for the whole batch;
+    # surface it as a BatchPrepError instead of a raw astroquery/requests error.
+    try:
+        radecs, mags = cached_gaia_radecs(center, 2 * metadata["fov_rad"])
+    except Exception as exc:
+        msg = f"could not query Gaia for the field at {center}"
+        raise BatchPrepError(msg) from exc
     bright_gaia = mags <= gaia_mag_limit
     radecs = radecs[bright_gaia]
     mags = mags[bright_gaia]
+
+    # Without enough reference stars no frame can solve a WCS, so fail the batch
+    # now with a clear message rather than letting every frame fail later.
+    if len(radecs) < N_STARS_ALIGN:
+        msg = (
+            f"Gaia returned only {len(radecs)} stars brighter than "
+            f"{gaia_mag_limit} for the field at {center}; need at least "
+            f"{N_STARS_ALIGN} to solve a WCS"
+        )
+        raise BatchPrepError(msg)
+
     fwhm_arcsec = fwhm_pix * metadata["pixscale"]
     flagged = neighbor_contamination_flag_sky(radecs, mags, fwhm_arcsec)
     photometry_coords = SkyCoord(radecs[~flagged], unit="deg")
@@ -125,7 +160,61 @@ def prepare_batch(first_file, *, cnn, append_l4=False, gaia_mag_limit=15):
         photometry_coords=photometry_coords,
         cnn=cnn,
         bayer_masks=bayer_masks,
+        center=center,
+        fov_rad=metadata["fov_rad"],
+        shape=(metadata["height"], metadata["width"]),
     )
+
+
+def check_frame_consistency(file, header, prep):
+    """
+    Reject a frame whose pointing or shape disagrees with the batch prep.
+
+    `prepare_batch` derives the field pointing, FOV, and image shape from the
+    first frame and queries Gaia once for that field. A later frame that drifted
+    off the field (a slew, a meridian flip, the wrong target) or has a different
+    shape would be photometered against a catalog that no longer covers it,
+    producing silently wrong results -- so reject it instead.
+
+    Parameters
+    ----------
+    file : str or Path
+        The frame being checked (attached to any raised error).
+    header : astropy.io.fits.Header
+        The frame's FITS header.
+    prep : BatchPrep
+        The batch prep whose ``center``, ``fov_rad``, and ``shape`` the frame is
+        checked against.
+
+    Raises
+    ------
+    FrameError
+        If the frame's shape or pointing is inconsistent with the prep.
+    FrameMetadataError
+        If the header lacks the keywords needed to perform the checks.
+    """
+    try:
+        shape = (header["NAXIS2"], header["NAXIS1"])
+    except KeyError as exc:
+        msg = f"missing required header keyword {exc.args[0]!r}"
+        raise FrameMetadataError(msg, file=file) from exc
+    if shape != tuple(prep.shape):
+        msg = f"frame shape {shape} does not match batch shape {tuple(prep.shape)}"
+        raise FrameError(msg, file=file)
+
+    try:
+        frame_center = SkyCoord(header["RA"], header["DEC"], unit="deg")
+    except KeyError as exc:
+        msg = f"missing pointing header keyword {exc.args[0]!r}"
+        raise FrameMetadataError(msg, file=file) from exc
+    center = SkyCoord(prep.center[0], prep.center[1], unit="deg")
+    offset = center.separation(frame_center).deg
+    if offset > prep.fov_rad:
+        msg = (
+            f"frame pointing is {offset:.3f} deg from the batch center, "
+            f"beyond the {prep.fov_rad:.3f} deg field radius"
+        )
+        raise FrameError(msg, file=file)
 
 
 def process_batch(
@@ -189,6 +278,7 @@ def process_batch(
         Path(output_dir).mkdir(parents=True, exist_ok=True)
     for file in files:
         try:
+            check_frame_consistency(file, fits.getheader(file), prep)
             by_filter = process_one_image(
                 file,
                 user_specific_metadata,
@@ -201,6 +291,10 @@ def process_batch(
             # Expected per-frame failure: skip the frame and keep going. exc is
             # the human-readable headline; exc_info=True captures the chained
             # __cause__ (e.g. the original twirl traceback) so no detail is lost.
+            # Some raisers (build_photometry_table, eloy_to_starlist) do not know
+            # the path, so label the error with the current file here.
+            if exc.file is None:
+                exc.file = file
             logger.warning("skipping %s: %s", file, exc.reason, exc_info=True)
             continue
         except Exception:

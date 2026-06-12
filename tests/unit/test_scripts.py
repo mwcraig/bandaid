@@ -14,7 +14,13 @@ from astropy.table import Table
 from st_pipeline.schema_definition import StarListSet
 
 from bandaid import scripts
-from bandaid.exceptions import BatchPrepError, TooFewStarsError, WCSSolveError
+from bandaid.exceptions import (
+    BatchPrepError,
+    FrameError,
+    FrameMetadataError,
+    TooFewStarsError,
+    WCSSolveError,
+)
 from bandaid.photometry import neighbor_contamination_flag_sky
 
 
@@ -57,6 +63,11 @@ def _patch_prep(monkeypatch, *, metadata=None, radecs_mags=None, fwhm_pix=2.0):
     """Monkeypatch the heavy prep dependencies and return the spied call args."""
     metadata = metadata if metadata is not None else _batch_metadata()
     radecs, mags = radecs_mags if radecs_mags is not None else _batch_radecs_mags()
+
+    # These tests exercise the mag-cut/contamination plumbing with deliberately
+    # tiny synthetic catalogs, so relax the "enough Gaia stars to solve a WCS"
+    # floor; the floor itself is covered by TestPrepareBatch's guard tests.
+    monkeypatch.setattr(scripts, "N_STARS_ALIGN", 1)
 
     calls = {}
 
@@ -187,6 +198,99 @@ class TestPrepareBatch:
         with pytest.raises(BatchPrepError, match="too few stars"):
             scripts.prepare_batch("frame1.fits", cnn=object())
 
+    def test_empty_gaia_field_raises_batchpreperror(self, monkeypatch):
+        """An empty Gaia cone is fatal -- no reference stars to solve any WCS."""
+        _patch_prep(monkeypatch, radecs_mags=(np.empty((0, 2)), np.empty(0)))
+        # Use the real floor, not _patch_prep's relaxed one, for the guard.
+        monkeypatch.setattr(scripts, "N_STARS_ALIGN", 15)
+        with pytest.raises(BatchPrepError, match="Gaia returned only 0"):
+            scripts.prepare_batch("frame1.fits", cnn=object())
+
+    def test_sparse_gaia_field_raises_batchpreperror(self, monkeypatch):
+        """Fewer than N_STARS_ALIGN reference stars is fatal for the batch."""
+        radecs = np.column_stack([np.linspace(9.0, 11.0, 5), np.zeros(5)])
+        _patch_prep(monkeypatch, radecs_mags=(radecs, np.full(5, 12.0)))
+        monkeypatch.setattr(scripts, "N_STARS_ALIGN", 15)
+        with pytest.raises(BatchPrepError, match="Gaia returned only 5"):
+            scripts.prepare_batch("frame1.fits", cnn=object())
+
+    def test_gaia_network_error_raises_batchpreperror(self, monkeypatch):
+        """A Gaia query failure is surfaced as a fatal BatchPrepError."""
+        monkeypatch.setattr(
+            scripts,
+            "calibration_sequence",
+            lambda file: (np.zeros((4, 4)), _batch_metadata(), None, 2.0, object()),
+        )
+
+        def _boom(*_args: object, **_kwargs: object):
+            msg = "no network"
+            raise ConnectionError(msg)
+
+        monkeypatch.setattr(scripts, "cached_gaia_radecs", _boom)
+        with pytest.raises(BatchPrepError, match="could not query Gaia"):
+            scripts.prepare_batch("frame1.fits", cnn=object())
+
+
+class TestCheckFrameConsistency:
+    """Unit tests for the per-frame pointing/shape guard."""
+
+    @staticmethod
+    def _prep(**overrides: object) -> scripts.BatchPrep:
+        """A BatchPrep carrying consistency fields, overridable per test."""
+        fields = {"center": (10.0, 0.0), "fov_rad": 0.74, "shape": (1920, 1080)}
+        fields.update(overrides)
+        return scripts.BatchPrep(
+            radecs=np.zeros((1, 2)),
+            photometry_coords=SkyCoord([0.0], [0.0], unit="deg"),
+            cnn=object(),
+            bayer_masks={},
+            **fields,
+        )
+
+    def test_consistent_frame_passes(self):
+        """A frame matching the prep's shape and pointing is accepted."""
+        header = {"NAXIS1": 1080, "NAXIS2": 1920, "RA": 10.0, "DEC": 0.0}
+        scripts.check_frame_consistency("ok.fits", header, self._prep())
+
+    def test_shape_mismatch_raises_frameerror(self):
+        """A different image shape is rejected."""
+        header = {"NAXIS1": 1000, "NAXIS2": 1920, "RA": 10.0, "DEC": 0.0}
+        with pytest.raises(FrameError, match="shape"):
+            scripts.check_frame_consistency("bad.fits", header, self._prep())
+
+    def test_offfield_pointing_raises_frameerror(self):
+        """A frame pointing beyond the field radius is rejected."""
+        header = {"NAXIS1": 1080, "NAXIS2": 1920, "RA": 12.0, "DEC": 0.0}
+        with pytest.raises(FrameError, match="pointing"):
+            scripts.check_frame_consistency("bad.fits", header, self._prep())
+
+    def test_missing_keyword_raises_metadata_error(self):
+        """A header missing a needed keyword is a metadata error."""
+        header = {"NAXIS1": 1080, "RA": 10.0, "DEC": 0.0}  # no NAXIS2
+        with pytest.raises(FrameMetadataError):
+            scripts.check_frame_consistency("bad.fits", header, self._prep())
+
+    def test_inconsistent_frame_is_skipped_by_batch(self, monkeypatch):
+        """process_batch skips an off-field frame and keeps the good one."""
+        prep = self._prep()
+
+        def _header(file):
+            ra = 10.0 if file == "good.fits" else 50.0
+            return {"NAXIS1": 1080, "NAXIS2": 1920, "RA": ra, "DEC": 0.0}
+
+        monkeypatch.setattr(scripts.fits, "getheader", _header)
+        monkeypatch.setattr(
+            scripts,
+            "process_one_image",
+            lambda *a, **k: {"TR": Table({"tot_count": [1.0]})},
+        )
+        results = scripts.process_batch(
+            ["good.fits", "bad.fits"],
+            prep,
+            user_specific_metadata={},
+        )
+        assert list(results) == ["good.fits"]
+
 
 def _dummy_prep():
     """Return a BatchPrep with recognizable sentinel fields for identity checks."""
@@ -195,11 +299,31 @@ def _dummy_prep():
         photometry_coords=SkyCoord([10.0, 10.1], [0.0, 0.0], unit="deg"),
         cnn=object(),
         bayer_masks={"TR": np.zeros((2, 2), dtype=bool)},
+        center=(10.0, 0.0),
+        fov_rad=0.74,
+        shape=(1920, 1080),
     )
+
+
+# Header matching _dummy_prep's center/shape, so check_frame_consistency passes.
+_CONSISTENT_HEADER = {"NAXIS1": 1080, "NAXIS2": 1920, "RA": 10.0, "DEC": 0.0}
 
 
 class TestProcessBatch:
     """Unit tests for ``process_batch``."""
+
+    @pytest.fixture(autouse=True)
+    def _consistent_headers(self, monkeypatch):
+        """
+        Stub fits.getheader so every frame passes check_frame_consistency.
+
+        process_batch now reads each frame's header unconditionally; these tests
+        use fake paths and exercise process_one_image, not the consistency
+        check, so return a header that matches _dummy_prep for all of them.
+        """
+        monkeypatch.setattr(
+            scripts.fits, "getheader", lambda _file: dict(_CONSISTENT_HEADER)
+        )
 
     def test_one_result_per_frame_with_shared_prep(self, monkeypatch):
         """Each frame is processed once with the same shared prep objects."""
@@ -350,6 +474,19 @@ def by_filter(eloy_table, starlist_metadata):
 
 class TestProcessBatchToDisk:
     """Unit tests for the ``output_dir`` (write starlists to disk) path."""
+
+    @pytest.fixture(autouse=True)
+    def _consistent_headers(self, monkeypatch):
+        """
+        Stub fits.getheader so every frame passes check_frame_consistency.
+
+        process_batch now reads each frame's header unconditionally; these tests
+        use fake paths and exercise the output-writing path, not the consistency
+        check, so return a header that matches _dummy_prep for all of them.
+        """
+        monkeypatch.setattr(
+            scripts.fits, "getheader", lambda _file: dict(_CONSISTENT_HEADER)
+        )
 
     def test_writes_one_file_per_frame(self, monkeypatch, tmp_path, by_filter):
         """Each processed frame produces one ``<stem>.star`` file in output_dir."""

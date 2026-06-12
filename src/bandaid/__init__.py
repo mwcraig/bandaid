@@ -35,6 +35,8 @@ from .exceptions import (
     BandaidError,
     BatchPrepError,
     FrameError,
+    FrameMetadataError,
+    NoUsableStarsError,
     TooFewStarsError,
     WCSSolveError,
 )
