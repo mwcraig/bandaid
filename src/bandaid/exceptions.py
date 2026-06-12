@@ -45,20 +45,17 @@ class FrameError(BandaidError):
     def __init__(self, reason, *, file=None) -> None:
         self.reason = reason
         self.file = file
-        super().__init__(self._render())
-
-    def _render(self) -> str:
-        """Build the exception message from ``file`` and ``reason``."""
-        return f"{self.file}: {self.reason}" if self.file is not None else self.reason
+        super().__init__(reason)
 
     def __str__(self) -> str:
         """
-        Render the message, recomputing in case ``file`` was attached late.
+        Render the message from ``file`` and ``reason``.
 
-        Supports the common "raise here, label at the caller" pattern where the
-        source file is set on the error after construction.
+        Recomputed on each call so it picks up a ``file`` attached after
+        construction -- the common "raise here, label at the caller" pattern
+        where the source file is set on the error by the caller that knows it.
         """
-        return self._render()
+        return f"{self.file}: {self.reason}" if self.file is not None else self.reason
 
 
 class TooFewStarsError(FrameError):

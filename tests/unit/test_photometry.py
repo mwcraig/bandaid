@@ -20,7 +20,7 @@ from astropy.table import Table
 from astropy.wcs import WCS
 
 from bandaid import measure_photometry
-from bandaid.exceptions import TooFewStarsError
+from bandaid.exceptions import TooFewStarsError, WCSSolveError
 from bandaid.image2sl_qt import generate_bayer_masks
 from bandaid.photometry import (
     ANNULUS,
@@ -1097,6 +1097,60 @@ class TestAlign:
         assert returned_wcs is sentinel_wcs
         assert capsys.readouterr().out == ""
 
+    @pytest.mark.parametrize(
+        "twirl_error",
+        [
+            # The original SS Leo failure: too few matched points reach
+            # fit_wcs_from_points, so scipy's least-squares fitter raises.
+            ValueError("Initial guess is outside of provided bounds"),
+            # The shallower exit: cross_match finds zero pairs and the empty
+            # float index array fails when used to index.
+            IndexError("arrays used as indices must be of integer type"),
+        ],
+        ids=["fit_wcs_from_points-ValueError", "cross_match-IndexError"],
+    )
+    def test_twirl_raising_becomes_wcs_solve_error(self, monkeypatch, twirl_error):
+        """A too-few-stars raise from twirl surfaces as a recoverable WCSSolveError."""
+
+        def failing_compute_wcs(coords, radecs, tolerance):  # noqa: ARG001
+            raise twirl_error
+
+        monkeypatch.setattr("bandaid.photometry.compute_wcs", failing_compute_wcs)
+
+        coords = np.arange(N_STARS_ALIGN * 2, dtype=float).reshape(N_STARS_ALIGN, 2)
+
+        with pytest.raises(WCSSolveError, match="twirl raised") as excinfo:
+            align(coords, coords.copy(), photometry_coords=None)
+        # The original twirl error is preserved on the chain for the log.
+        assert excinfo.value.__cause__ is twirl_error
+
+    def test_twirl_returning_none_becomes_wcs_solve_error(self, monkeypatch):
+        """compute_wcs returning None (no match) surfaces as WCSSolveError."""
+
+        def none_compute_wcs(coords, radecs, tolerance):  # noqa: ARG001
+            return None
+
+        monkeypatch.setattr("bandaid.photometry.compute_wcs", none_compute_wcs)
+
+        coords = np.arange(N_STARS_ALIGN * 2, dtype=float).reshape(N_STARS_ALIGN, 2)
+
+        with pytest.raises(WCSSolveError, match="no WCS"):
+            align(coords, coords.copy(), photometry_coords=None)
+
+    def test_unexpected_twirl_error_propagates(self, monkeypatch):
+        """A non too-few-stars error is a bug and is left to propagate, not masked."""
+        bug = TypeError("genuine bug, not a bad frame")
+
+        def buggy_compute_wcs(coords, radecs, tolerance):  # noqa: ARG001
+            raise bug
+
+        monkeypatch.setattr("bandaid.photometry.compute_wcs", buggy_compute_wcs)
+
+        coords = np.arange(N_STARS_ALIGN * 2, dtype=float).reshape(N_STARS_ALIGN, 2)
+
+        with pytest.raises(TypeError, match="genuine bug"):
+            align(coords, coords.copy(), photometry_coords=None)
+
 
 def test_centroid_stars_delegates_to_ballet(monkeypatch):
     """
@@ -1345,7 +1399,7 @@ class TestPrepareImageBranches:
         path = _write_seestar_fits(tmp_path / "few.fits", image)
 
         # No external stubbing needed: it raises before align/centroid.
-        with pytest.raises(TooFewStarsError):
+        with pytest.raises(TooFewStarsError, match="stars detected"):
             prepare_image(path, _REF_RADECS, None)
 
     def test_merges_user_specific_metadata(
@@ -1408,7 +1462,7 @@ class TestProcessOneImage:
             append_l4=True,
         )
 
-        with pytest.raises(TooFewStarsError):
+        with pytest.raises(TooFewStarsError, match="stars detected"):
             process_one_image(path, {}, _REF_RADECS, None, masks)
 
     def test_full_path_builds_per_filter_tables_with_l4(

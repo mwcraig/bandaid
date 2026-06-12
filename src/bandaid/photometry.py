@@ -596,10 +596,13 @@ def align(coords, radecs=None, *, photometry_coords=None, wcs=None):
                     radecs[0:N_STARS_ALIGN],
                     tolerance=1,
                 )
-        except Exception as exc:
-            # twirl raises (e.g. fit_wcs_from_points with a single matched pair)
-            # when too few stars match; surface it as a recoverable frame error
-            # while preserving the original for the log.
+        except (IndexError, ValueError) as exc:
+            # twirl's two too-few-stars exits: an IndexError when cross_match
+            # finds zero pairs (empty float index array), or a ValueError out of
+            # fit_wcs_from_points when too few matched points reach scipy's
+            # least-squares fitter (the original SS Leo failure). Surface either
+            # as a recoverable frame error; anything else is an unexpected bug
+            # and is left to propagate. The original is preserved for the log.
             msg = "twirl raised while solving the WCS"
             raise WCSSolveError(msg) from exc
         if this_wcs is None:

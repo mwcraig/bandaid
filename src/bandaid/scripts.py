@@ -197,17 +197,6 @@ def process_batch(
                 prep.bayer_masks,
                 input_photometry_coords=prep.photometry_coords,
             )
-            if output_dir is not None:
-                output_path = Path(output_dir) / (Path(file).stem + output_suffix)
-                star_lists = [
-                    eloy_to_starlist(tab, tab.meta["full_image_meta"])
-                    for tab in by_filter.values()
-                ]
-                star_list_set = StarListSet(star_lists=star_lists)
-                output_path.write_text(star_list_set.model_dump_json(indent=2))
-                results[file] = output_path
-            else:
-                results[file] = by_filter
         except FrameError as exc:
             # Expected per-frame failure: skip the frame and keep going. exc is
             # the human-readable headline; exc_info=True captures the chained
@@ -221,4 +210,20 @@ def process_batch(
                 raise
             logger.exception("unexpected error on %s", file)
             continue
+        else:
+            # The frame processed cleanly. Writing its output is deliberately
+            # outside the try: a write failure (bad output_dir, permissions,
+            # full disk) is systemic, not a property of this frame, so it must
+            # abort the run rather than be skipped as a "bad frame".
+            if output_dir is not None:
+                output_path = Path(output_dir) / (Path(file).stem + output_suffix)
+                star_lists = [
+                    eloy_to_starlist(tab, tab.meta["full_image_meta"])
+                    for tab in by_filter.values()
+                ]
+                star_list_set = StarListSet(star_lists=star_lists)
+                output_path.write_text(star_list_set.model_dump_json(indent=2))
+                results[file] = output_path
+            else:
+                results[file] = by_filter
     return results
