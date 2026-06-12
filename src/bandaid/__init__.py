@@ -28,8 +28,11 @@ This might include a very brief description of the package,
 its purpose, and any important notes.
 """
 
+import logging
+
 from .catalog import cached_gaia_radecs
 from .image2sl_qt import bayer_balance_image, generate_bayer_masks
+from .logging_setup import configure_logging
 from .photometry import (
     ImageData,
     align,
@@ -43,3 +46,9 @@ from .photometry import (
     neighbor_contamination_flag,
     prepare_image,
 )
+
+# Libraries should not configure logging; attach a NullHandler so the package
+# can emit records without forcing handler configuration on the host
+# application (and without "No handlers could be found" warnings). Callers route
+# records explicitly via configure_logging().
+logging.getLogger(__name__).addHandler(logging.NullHandler())
