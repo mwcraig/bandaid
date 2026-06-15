@@ -199,6 +199,23 @@ class TestPrepareBatch:
         np.testing.assert_array_equal(prep.radecs, radecs[[0, 2]])
         np.testing.assert_allclose(prep.photometry_coords.ra.deg, radecs[[0, 2], 0])
 
+    def test_nonfinite_contaminant_mag_limit_raises(self, monkeypatch):
+        """
+        A non-finite ``contaminant_mag_limit`` is rejected with a clear error.
+
+        ``max(nan, limit)`` silently returns ``nan``, which would make the
+        contaminant mask all-False and later blow up as a boolean-index length
+        mismatch. Catch the bad argument up front instead.
+        """
+        radecs = np.array([[10.0, 0.0], [10.1, 0.0], [10.2, 0.0]])
+        mags = np.array([12.0, 13.0, 10.0])
+        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+
+        with pytest.raises(ValueError, match="contaminant_mag_limit"):
+            scripts.prepare_batch(
+                "frame1.fits", cnn=object(), contaminant_mag_limit=np.nan
+            )
+
     def test_nan_magnitude_dropped_by_mag_limit(self, monkeypatch):
         """A star with no Gaia magnitude fails the cut and is dropped entirely."""
         radecs = np.array([[10.0, 0.0], [10.1, 0.0], [10.2, 0.0]])
