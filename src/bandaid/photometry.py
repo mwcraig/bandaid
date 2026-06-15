@@ -317,33 +317,34 @@ def neighbor_contamination_flag_sky(
         return flagged
 
     coords = SkyCoord(radecs[:, 0], radecs[:, 1], unit="deg")
-    # Seed the search only from the targets; idx_target indexes into that subset,
-    # so map it back to full-array indices before flagging.
-    target_idx = np.nonzero(targets)[0]
-    idx_target, idx_neighbor, sep2d, _ = search_around_sky(
-        coords[target_idx],
+    # Seed the search only from the targets; search_around_sky indexes its first
+    # catalog (the target subset), so map those back to full-array rows. Each
+    # match is one (target, neighbor) pair, both in full-array coordinates.
+    target_rows = np.nonzero(targets)[0]
+    subset_target, pair_neighbor, sep2d, _ = search_around_sky(
+        coords[target_rows],
         coords,
         max_sep_arcsec * u.arcsec,
     )
-    idx_target = target_idx[idx_target]
+    pair_target = target_rows[subset_target]
 
     # Same pair convention as `_contamination_flag`: a star is never its own
     # neighbor (but distinct stars at zero separation are), and a pair only
     # counts when both magnitudes are finite (targets are finite by construction).
-    keep = (idx_target != idx_neighbor) & finite[idx_neighbor]
-    idx_target = idx_target[keep]
-    idx_neighbor = idx_neighbor[keep]
+    keep = (pair_target != pair_neighbor) & finite[pair_neighbor]
+    pair_target = pair_target[keep]
+    pair_neighbor = pair_neighbor[keep]
     sep_arcsec = sep2d.arcsec[keep]
 
     min_sep = (
         min_separation_fwhm(
-            mags[idx_target] - mags[idx_neighbor],
+            mags[pair_target] - mags[pair_neighbor],
             tolerance=tolerance,
             beta=beta,
         )
         * fwhm_arcsec
     )
-    flagged[idx_target[sep_arcsec < min_sep]] = True
+    flagged[pair_target[sep_arcsec < min_sep]] = True
     return flagged
 
 
