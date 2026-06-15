@@ -29,10 +29,13 @@ from bandaid.exceptions import (
 from bandaid.image2sl_qt import generate_bayer_masks
 from bandaid.photometry import (
     ANNULUS,
+    DETECTION_OPENING,
     MIN_DETECTED_STARS,
-    N_STARS_ALIGN,
+    N_GAIA_STARS_ALIGN,
+    N_IMAGE_STARS_ALIGN,
     RELATIVE_RADII,
     THRESH,
+    WCS_MATCH_TOLERANCE,
     ImageData,
     align,
     build_photometry_table,
@@ -1077,12 +1080,20 @@ class TestAlign:
 
     def test_solves_wcs_from_detections_when_none_supplied(self, monkeypatch):
         """
-        With wcs=None, align calls compute_wcs on the first N_STARS_ALIGN stars.
+        With wcs=None, align slices image and Gaia coords *independently*.
 
-        twirl.compute_wcs is a slow, stochastic asterism solver and the unit
-        under test is align's orchestration (input slicing + branch selection),
-        not twirl's matching -- so it is stubbed with a sentinel WCS.
+        Detections are capped at N_IMAGE_STARS_ALIGN and Gaia references at
+        N_GAIA_STARS_ALIGN -- the two counts are decoupled so the matcher can be
+        fed more references than detections. The constants are monkeypatched to
+        distinct values here to prove the slices are independent rather than a
+        single shared cap. compute_wcs (twirl's slow, stochastic asterism solver)
+        is stubbed with a sentinel WCS; the unit under test is align's slicing,
+        not twirl's matching.
         """
+        n_image = 4
+        n_gaia = 7
+        monkeypatch.setattr("bandaid.photometry.N_IMAGE_STARS_ALIGN", n_image)
+        monkeypatch.setattr("bandaid.photometry.N_GAIA_STARS_ALIGN", n_gaia)
         sentinel_wcs = _make_tan_wcs()
         calls = {}
 
@@ -1094,16 +1105,18 @@ class TestAlign:
 
         monkeypatch.setattr("bandaid.photometry.compute_wcs", fake_compute_wcs)
 
-        n_detected = N_STARS_ALIGN + 5
+        n_detected = 12  # more than either cap
         coords = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
         radecs = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
 
         aligned, returned_wcs = align(coords, radecs, photometry_coords=None)
 
         assert returned_wcs is sentinel_wcs
-        # Only the brightest N_STARS_ALIGN detections/refs reach the solver.
-        assert len(calls["coords"]) == N_STARS_ALIGN
-        assert len(calls["radecs"]) == N_STARS_ALIGN
+        # The two lists are sliced by their own caps, independently.
+        assert len(calls["coords"]) == n_image
+        assert len(calls["radecs"]) == n_gaia
+        # align passes the tolerance constant through to twirl.
+        assert calls["tolerance"] == WCS_MATCH_TOLERANCE
         # With no photometry_coords, aligned coords are the detections themselves.
         np.testing.assert_array_equal(aligned, coords)
 
@@ -1124,7 +1137,9 @@ class TestAlign:
 
         monkeypatch.setattr("bandaid.photometry.compute_wcs", noisy_compute_wcs)
 
-        coords = np.arange(N_STARS_ALIGN * 2, dtype=float).reshape(N_STARS_ALIGN, 2)
+        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
+            N_IMAGE_STARS_ALIGN, 2
+        )
         radecs = coords.copy()
 
         _, returned_wcs = align(coords, radecs, photometry_coords=None)
@@ -1152,7 +1167,9 @@ class TestAlign:
 
         monkeypatch.setattr("bandaid.photometry.compute_wcs", failing_compute_wcs)
 
-        coords = np.arange(N_STARS_ALIGN * 2, dtype=float).reshape(N_STARS_ALIGN, 2)
+        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
+            N_IMAGE_STARS_ALIGN, 2
+        )
 
         with pytest.raises(WCSSolveError, match="twirl raised") as excinfo:
             align(coords, coords.copy(), photometry_coords=None)
@@ -1167,7 +1184,9 @@ class TestAlign:
 
         monkeypatch.setattr("bandaid.photometry.compute_wcs", none_compute_wcs)
 
-        coords = np.arange(N_STARS_ALIGN * 2, dtype=float).reshape(N_STARS_ALIGN, 2)
+        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
+            N_IMAGE_STARS_ALIGN, 2
+        )
 
         with pytest.raises(WCSSolveError, match="no WCS"):
             align(coords, coords.copy(), photometry_coords=None)
@@ -1181,7 +1200,9 @@ class TestAlign:
 
         monkeypatch.setattr("bandaid.photometry.compute_wcs", buggy_compute_wcs)
 
-        coords = np.arange(N_STARS_ALIGN * 2, dtype=float).reshape(N_STARS_ALIGN, 2)
+        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
+            N_IMAGE_STARS_ALIGN, 2
+        )
 
         with pytest.raises(TypeError, match="genuine bug"):
             align(coords, coords.copy(), photometry_coords=None)
@@ -1294,13 +1315,17 @@ def _detectable_image(
     image_size=(480, 480),
     noise_mean=100.0,
     noise_stddev=2.0,
+    include_noise=True,
 ):
     """
     Build a noisy multi-Gaussian frame that eloy's detection can resolve.
 
     ``amplitude`` far above ``noise_stddev`` keeps detection reliable; an
     ``amplitude`` above the 50000 ADU saturation cap exercises the saturated
-    path in ``calibration_sequence``.
+    path in ``calibration_sequence``. Pass ``include_noise=False`` for the
+    "too few stars" frames so detection returns exactly ``n_sources`` regardless
+    of the threshold/opening (flat Gaussian noise at the low production threshold
+    spawns spurious blobs that would otherwise pad the count past the floor).
     """
     sigma = fwhm * gaussian_fwhm_to_sigma
     positions = _SOURCE_POSITIONS[:n_sources]
@@ -1316,7 +1341,7 @@ def _detectable_image(
     return make_test_image(
         image_size=image_size,
         source_properties=source_properties,
-        include_noise=True,
+        include_noise=include_noise,
         noise_mean=noise_mean,
         noise_stddev=noise_stddev,
         seed=SEED,
@@ -1420,6 +1445,41 @@ class TestCalibrationSequence:
         with pytest.raises(TooFewStarsError, match="saturated"):
             calibration_sequence(path, threshold=1)
 
+    def test_forwards_opening_to_detection(
+        self, make_test_image, tmp_path, monkeypatch
+    ):
+        """
+        calibration_sequence passes the opening kernel size through to detection.
+
+        The morphological opening (not the threshold) is what gates faint-star
+        detection, so the pipeline default must reach eloy's stars_detection. The
+        detector is stubbed to capture its kwargs and return no regions; the
+        resulting TooFewStarsError is incidental -- the assertion is the forwarded
+        opening.
+        """
+        image = _detectable_image(make_test_image, n_sources=5)
+        path = _write_seestar_fits(tmp_path / "open.fits", image)
+        captured = {}
+
+        def fake_stars_detection(data, threshold=5, opening=5):  # noqa: ARG001
+            captured["opening"] = opening
+            return []
+
+        monkeypatch.setattr(
+            "bandaid.photometry.detection.stars_detection", fake_stars_detection
+        )
+
+        # Default: the pipeline's DETECTION_OPENING reaches the detector.
+        with pytest.raises(TooFewStarsError):
+            calibration_sequence(path, threshold=1)
+        assert captured["opening"] == DETECTION_OPENING
+
+        # And an explicit override is honored.
+        custom_opening = 7
+        with pytest.raises(TooFewStarsError):
+            calibration_sequence(path, threshold=1, opening=custom_opening)
+        assert captured["opening"] == custom_opening
+
 
 class TestPrepareImageBranches:
     """Branch coverage for ``prepare_image`` beyond the alignment fallback."""
@@ -1430,6 +1490,7 @@ class TestPrepareImageBranches:
             make_test_image,
             n_sources=2,
             image_size=(200, 200),
+            include_noise=False,
         )
         path = _write_seestar_fits(tmp_path / "few.fits", image)
 
@@ -1489,6 +1550,7 @@ class TestProcessOneImage:
             make_test_image,
             n_sources=2,
             image_size=(200, 200),
+            include_noise=False,
         )
         path = _write_seestar_fits(tmp_path / "few.fits", image)
         masks = generate_bayer_masks(
@@ -1601,12 +1663,13 @@ class TestSmokeRealFrame:
         )
 
         # twirl is stubbed, so radecs is never matched; it only needs >=
-        # N_STARS_ALIGN plausibly shaped rows (align slices the first
-        # N_STARS_ALIGN). photometry_coords=None means aligned == detections.
+        # N_GAIA_STARS_ALIGN plausibly shaped rows (align slices the first
+        # N_GAIA_STARS_ALIGN refs). photometry_coords=None means aligned ==
+        # detections.
         radecs = np.column_stack(
             [
-                np.full(N_STARS_ALIGN, header["RA"]),
-                np.full(N_STARS_ALIGN, header["DEC"]),
+                np.full(N_GAIA_STARS_ALIGN, header["RA"]),
+                np.full(N_GAIA_STARS_ALIGN, header["DEC"]),
             ],
         )
 

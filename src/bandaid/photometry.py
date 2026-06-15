@@ -42,12 +42,28 @@ logger = logging.getLogger(__name__)
 # processing.
 CUTOUT = 500  # 120
 
-# Number of (brightest) detected stars used to compute the per-image WCS in
-# `align`. Only the first N_STARS_ALIGN detections/reference coords are paired up.
-N_STARS_ALIGN = 15
+# Star counts fed to twirl's asterism matcher in `align` to compute the per-image
+# WCS. The image (detected) and Gaia (reference) lists are sliced *independently*
+# so the matcher can be handed more references than detections. The two ranked
+# lists order by different quantities (measured peak vs catalog G mag), so under
+# clouds/colour/saturation they diverge; a deeper Gaia pool then raises the
+# bright-end overlap and is the documented robustness lever for starved frames.
+# Defaults are equal because, with DETECTION_OPENING below, an un-starved frame
+# solves at 15/15 -- raise N_GAIA_STARS_ALIGN if a future dataset needs it. Cost
+# grows ~ C(N_GAIA_STARS_ALIGN, 4), so keep it modest.
+N_IMAGE_STARS_ALIGN = 15
+N_GAIA_STARS_ALIGN = 15
 # Source-detection threshold (in units of the background sigma) passed to
 # `detection.stars_detection`.
 THRESH = 0.5
+# Size of the morphological-opening kernel passed to `detection.stars_detection`.
+# A source must hold a solid opening x opening above-threshold core to survive, so
+# this -- not THRESH -- is what gates faint-star detection. eloy's default of 5
+# starved real fields (~10 of ~23 real stars), failing the plate solve; 3 recovers
+# them.
+DETECTION_OPENING = 3
+# Pixel tolerance handed to twirl's WCS solve.
+WCS_MATCH_TOLERANCE = 1
 
 # Minimum number of detected stars required before an image can be processed.
 MIN_DETECTED_STARS = 3
@@ -400,7 +416,7 @@ def centroid_drift_flag(
     return (drift > max_allowed) | ~np.isfinite(drift)
 
 
-def calibration_sequence(file, threshold=1) -> tuple:
+def calibration_sequence(file, threshold=1, opening=DETECTION_OPENING) -> tuple:
     """
     Find sources and compute FWHM for an image.
 
@@ -410,6 +426,10 @@ def calibration_sequence(file, threshold=1) -> tuple:
         Path to the FITS file.
     threshold : float, optional
         Detection threshold for star finding, by default 1
+    opening : int, optional
+        Size of the morphological-opening kernel passed to
+        `detection.stars_detection`; gates faint-star detection. By default
+        ``DETECTION_OPENING``.
 
     Returns
     -------
@@ -440,7 +460,9 @@ def calibration_sequence(file, threshold=1) -> tuple:
 
     # Multiplying by 1 should force conversion from int to float data
     calibrated_data = 1.0 * data
-    regions = detection.stars_detection(calibrated_data, threshold=threshold)
+    regions = detection.stars_detection(
+        calibrated_data, threshold=threshold, opening=opening
+    )
 
     # in case we detect fewer than the minimum number of stars
     if len(regions) < MIN_DETECTED_STARS:
@@ -724,21 +746,21 @@ def align(coords, radecs=None, *, photometry_coords=None, wcs=None):
         know the source file; callers attach it to the error before re-raising.
     """
     if wcs is None:
-        # Feed the brightest N_STARS_ALIGN detections and Gaia reference
-        # RA/Decs to twirl's asterism (quad) matcher. twirl matches by
-        # geometric shape, so the two lists need NOT be in the same order or
-        # even the same length -- there is no per-index correspondence. The
-        # slicing just limits the matcher to the brightest, most reliable
-        # stars.
+        # Feed the brightest N_IMAGE_STARS_ALIGN detections and the brightest
+        # N_GAIA_STARS_ALIGN reference RA/Decs to twirl's asterism (quad) matcher.
+        # twirl matches by geometric shape, so the two lists need NOT be in the
+        # same order or even the same length -- there is no per-index
+        # correspondence. The slices are independent so the matcher can be handed
+        # more references than detections (see the constants above).
         # twirl's asterism matcher prints timing/diagnostic lines straight to
         # stdout (e.g. "Match took ... us"); redirect them to /dev/null so the
         # pipeline and notebooks stay quiet.
         try:
             with contextlib.redirect_stdout(io.StringIO()):
                 this_wcs = compute_wcs(
-                    coords[0:N_STARS_ALIGN],
-                    radecs[0:N_STARS_ALIGN],
-                    tolerance=1,
+                    coords[0:N_IMAGE_STARS_ALIGN],
+                    radecs[0:N_GAIA_STARS_ALIGN],
+                    tolerance=WCS_MATCH_TOLERANCE,
                 )
         except (IndexError, ValueError) as exc:
             # twirl's two too-few-stars exits: an IndexError when cross_match

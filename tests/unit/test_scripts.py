@@ -67,7 +67,7 @@ def _patch_prep(monkeypatch, *, metadata=None, radecs_mags=None, fwhm_pix=2.0):
     # These tests exercise the mag-cut/contamination plumbing with deliberately
     # tiny synthetic catalogs, so relax the "enough Gaia stars to solve a WCS"
     # floor; the floor itself is covered by TestPrepareBatch's guard tests.
-    monkeypatch.setattr(scripts, "N_STARS_ALIGN", 1)
+    monkeypatch.setattr(scripts, "N_GAIA_STARS_ALIGN", 1)
 
     calls = {}
 
@@ -241,15 +241,15 @@ class TestPrepareBatch:
         """An empty Gaia cone is fatal -- no reference stars to solve any WCS."""
         _patch_prep(monkeypatch, radecs_mags=(np.empty((0, 2)), np.empty(0)))
         # Use the real floor, not _patch_prep's relaxed one, for the guard.
-        monkeypatch.setattr(scripts, "N_STARS_ALIGN", 15)
+        monkeypatch.setattr(scripts, "N_GAIA_STARS_ALIGN", 15)
         with pytest.raises(BatchPrepError, match="Gaia returned only 0"):
             scripts.prepare_batch("frame1.fits", cnn=object())
 
     def test_sparse_gaia_field_raises_batchpreperror(self, monkeypatch):
-        """Fewer than N_STARS_ALIGN reference stars is fatal for the batch."""
+        """Fewer than N_GAIA_STARS_ALIGN reference stars is fatal for the batch."""
         radecs = np.column_stack([np.linspace(9.0, 11.0, 5), np.zeros(5)])
         _patch_prep(monkeypatch, radecs_mags=(radecs, np.full(5, 12.0)))
-        monkeypatch.setattr(scripts, "N_STARS_ALIGN", 15)
+        monkeypatch.setattr(scripts, "N_GAIA_STARS_ALIGN", 15)
         with pytest.raises(BatchPrepError, match="Gaia returned only 5"):
             scripts.prepare_batch("frame1.fits", cnn=object())
 
