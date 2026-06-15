@@ -153,19 +153,18 @@ class TestPrepareBatch:
 
         np.testing.assert_array_equal(prep.radecs, radecs[:1])
 
-    def test_mag_limit_applied_before_contamination_flagging(self, monkeypatch):
+    def test_faint_real_star_contaminates_brighter_target(self, monkeypatch):
         """
-        A too-faint star is cut before it can contamination-flag a neighbor.
+        A real star fainter than the photometry limit still flags a brighter target.
 
         The mag-16 star sits ~1 arcsec from the mag-14 star -- well inside the
-        ~7 arcsec the contamination model requires for that pair at this FWHM --
-        but it is fainter than the default limit of 15, so it is removed before
-        flagging and the mag-14 star survives into ``photometry_coords``. If the
-        flagging ran first, the mag-14 star would be dropped too.
-
-        NOTE: this ordering is a known design flaw -- the mag-16 star really is
-        on the sky and really does contaminate the mag-14 star, so we arguably
-        should flag the mag-14 star. Tracked in
+        ~7 arcsec the contamination model requires for that pair at this FWHM. It
+        is fainter than the photometry limit of 15, so it is *not* a photometry
+        target, but it is within the default contaminant limit (gaia_mag_limit + 3
+        = 18), so it still contaminates the mag-14 target. The mag-14 star is
+        therefore flagged and dropped from ``photometry_coords``; only the
+        isolated mag-10 star survives. ``radecs`` (the alignment catalog) keeps
+        both targets regardless of contamination. Fixes
         https://github.com/mwcraig/bandaid/issues/24.
         """
         radecs = np.array([[10.0, 0.0], [10.0 + 1.0 / 3600.0, 0.0], [10.2, 0.0]])
@@ -174,8 +173,48 @@ class TestPrepareBatch:
 
         prep = scripts.prepare_batch("frame1.fits", cnn=object())
 
+        # Targets (mag <= 15) are the mag-14 and mag-10 stars; both stay in radecs.
+        np.testing.assert_array_equal(prep.radecs, radecs[[0, 2]])
+        # The mag-14 target is now flagged by the faint mag-16 neighbor, leaving
+        # only the far mag-10 star.
+        np.testing.assert_allclose(prep.photometry_coords.ra.deg, radecs[[2], 0])
+
+    def test_contaminant_mag_limit_bounds_the_flagging_catalog(self, monkeypatch):
+        """
+        ``contaminant_mag_limit`` caps which faint stars can flag a target.
+
+        Same close pair as ``test_faint_real_star_contaminates_brighter_target``,
+        but ``contaminant_mag_limit=15`` excludes the mag-16 neighbor from the
+        contaminant catalog entirely, so the mag-14 target is no longer flagged
+        and survives into ``photometry_coords``.
+        """
+        radecs = np.array([[10.0, 0.0], [10.0 + 1.0 / 3600.0, 0.0], [10.2, 0.0]])
+        mags = np.array([14.0, 16.0, 10.0])
+        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+
+        prep = scripts.prepare_batch(
+            "frame1.fits", cnn=object(), contaminant_mag_limit=15
+        )
+
         np.testing.assert_array_equal(prep.radecs, radecs[[0, 2]])
         np.testing.assert_allclose(prep.photometry_coords.ra.deg, radecs[[0, 2], 0])
+
+    def test_nonfinite_contaminant_mag_limit_raises(self, monkeypatch):
+        """
+        A non-finite ``contaminant_mag_limit`` is rejected with a clear error.
+
+        ``max(nan, limit)`` silently returns ``nan``, which would make the
+        contaminant mask all-False and later blow up as a boolean-index length
+        mismatch. Catch the bad argument up front instead.
+        """
+        radecs = np.array([[10.0, 0.0], [10.1, 0.0], [10.2, 0.0]])
+        mags = np.array([12.0, 13.0, 10.0])
+        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+
+        with pytest.raises(ValueError, match="contaminant_mag_limit"):
+            scripts.prepare_batch(
+                "frame1.fits", cnn=object(), contaminant_mag_limit=np.nan
+            )
 
     def test_nan_magnitude_dropped_by_mag_limit(self, monkeypatch):
         """A star with no Gaia magnitude fails the cut and is dropped entirely."""

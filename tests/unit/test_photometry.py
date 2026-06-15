@@ -881,6 +881,35 @@ class TestNeighborContaminationFlagSky:
         assert expected.any()
         assert not expected.all()
 
+    def test_target_mask_restricts_which_stars_can_be_flagged(self):
+        """
+        ``target_mask`` makes flagging asymmetric: only masked-in stars are victims.
+
+        A bright star B (mag 10) and a faint star F (mag 13) sit ~3 arcsec apart --
+        close enough that, symmetrically, each is flagged by the other (B because F
+        spills into its aperture, F because the much brighter B spills into its,
+        which needs a far larger separation). A third star sits well away.
+
+        With ``target_mask`` selecting only B, B is still flagged (F contaminates
+        it) but F is *not* -- F serves purely as a contaminator, never a victim.
+        Without the mask the result is the symmetric default, flagging both.
+        """
+        ra0 = 10.0
+        offsets_arcsec = np.array([0.0, 3.0, 50.0])
+        ras = ra0 + offsets_arcsec / 3600.0
+        radecs = np.column_stack([ras, np.zeros_like(ras)])
+        mags = np.array([10.0, 13.0, 12.0])
+        fwhm_arcsec = 5.0
+
+        symmetric = neighbor_contamination_flag_sky(radecs, mags, fwhm_arcsec)
+        np.testing.assert_array_equal(symmetric, [True, True, False])
+
+        target_mask = np.array([True, False, False])
+        asymmetric = neighbor_contamination_flag_sky(
+            radecs, mags, fwhm_arcsec, target_mask=target_mask
+        )
+        np.testing.assert_array_equal(asymmetric, [True, False, False])
+
 
 def _seestar_header(*, with_stackcnt=True):
     """Build a FITS header carrying the keys referenced by ``basic.json``."""

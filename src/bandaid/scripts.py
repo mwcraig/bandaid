@@ -79,7 +79,9 @@ class BatchPrep:
     shape: tuple
 
 
-def prepare_batch(first_file, *, cnn, append_l4=False, gaia_mag_limit=15):
+def prepare_batch(
+    first_file, *, cnn, append_l4=False, gaia_mag_limit=15, contaminant_mag_limit=None
+):
     """
     Compute the once-per-batch photometry inputs from the first frame.
 
@@ -99,7 +101,16 @@ def prepare_batch(first_file, *, cnn, append_l4=False, gaia_mag_limit=15):
         Whether to add a full-frame "L4" luminance channel to the Bayer masks.
         Default False.
     gaia_mag_limit : float, optional
-        Gaia magnitude limit for the initial source list. Default 15.
+        Gaia magnitude limit for the photometry *targets* -- the stars actually
+        measured and used to align each frame. Default 15.
+    contaminant_mag_limit : float, optional
+        Gaia magnitude limit for the deeper *contaminant* catalog used only for
+        contamination flagging: a real star fainter than ``gaia_mag_limit`` can
+        still spill into a brighter target's aperture, so flagging runs against
+        this deeper list. If ``None`` (default), it is ``gaia_mag_limit + 3``;
+        values below ``gaia_mag_limit`` are clamped up to it (the contaminant
+        list is never shallower than the target list). Must be finite; a
+        non-finite value raises ``ValueError``.
 
     Returns
     -------
@@ -111,6 +122,8 @@ def prepare_batch(first_file, *, cnn, append_l4=False, gaia_mag_limit=15):
     BatchPrepError
         If too few stars are detected in ``first_file`` to measure an FWHM, so
         the batch preparation cannot be built.
+    ValueError
+        If ``contaminant_mag_limit`` is non-finite.
     """
     # A too-few-stars failure on the *first* frame is fatal for the whole batch
     # (no FWHM/pointing to prepare from), so translate the recoverable
@@ -131,23 +144,45 @@ def prepare_batch(first_file, *, cnn, append_l4=False, gaia_mag_limit=15):
     except Exception as exc:
         msg = f"could not query Gaia for the field at {center}"
         raise BatchPrepError(msg) from exc
-    bright_gaia = mags <= gaia_mag_limit
-    radecs = radecs[bright_gaia]
-    mags = mags[bright_gaia]
+    # Decouple the stars we *measure* (targets, cut at gaia_mag_limit) from the
+    # stars that can *contaminate* them (a deeper list down to
+    # contaminant_mag_limit). A real star fainter than the photometry limit still
+    # spills into a brighter target's aperture, so flagging runs against the
+    # deeper list -- but only targets are ever flagged/dropped.
+    if contaminant_mag_limit is None:
+        contaminant_mag_limit = gaia_mag_limit + 3
+    elif not np.isfinite(contaminant_mag_limit):
+        # max(nan, limit) silently returns nan, which makes `contaminant`
+        # all-False and later blows up as a boolean-index length mismatch.
+        msg = f"contaminant_mag_limit must be finite, got {contaminant_mag_limit!r}"
+        raise ValueError(msg)
+    contaminant_mag_limit = max(contaminant_mag_limit, gaia_mag_limit)
+
+    target = mags <= gaia_mag_limit
+    contaminant = mags <= contaminant_mag_limit
+    target_radecs = radecs[target]
 
     # Without enough reference stars no frame can solve a WCS, so fail the batch
     # now with a clear message rather than letting every frame fail later.
-    if len(radecs) < N_STARS_ALIGN:
+    if len(target_radecs) < N_STARS_ALIGN:
         msg = (
-            f"Gaia returned only {len(radecs)} stars brighter than "
+            f"Gaia returned only {len(target_radecs)} stars brighter than "
             f"{gaia_mag_limit} for the field at {center}; need at least "
             f"{N_STARS_ALIGN} to solve a WCS"
         )
         raise BatchPrepError(msg)
 
     fwhm_arcsec = fwhm_pix * metadata["pixscale"]
-    flagged = neighbor_contamination_flag_sky(radecs, mags, fwhm_arcsec)
-    photometry_coords = SkyCoord(radecs[~flagged], unit="deg")
+    # Asymmetric flagging: only targets can be flagged, but the deeper contaminant
+    # list supplies the (possibly fainter) neighbors that can contaminate them.
+    flagged = neighbor_contamination_flag_sky(
+        radecs[contaminant],
+        mags[contaminant],
+        fwhm_arcsec,
+        target_mask=target[contaminant],
+    )
+    flagged_target = flagged[target[contaminant]]
+    photometry_coords = SkyCoord(target_radecs[~flagged_target], unit="deg")
 
     bayer_masks = generate_bayer_masks(
         (metadata["height"], metadata["width"]),
@@ -156,7 +191,7 @@ def prepare_batch(first_file, *, cnn, append_l4=False, gaia_mag_limit=15):
     )
 
     return BatchPrep(
-        radecs=radecs,
+        radecs=target_radecs,
         photometry_coords=photometry_coords,
         cnn=cnn,
         bayer_masks=bayer_masks,

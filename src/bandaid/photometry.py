@@ -247,6 +247,7 @@ def neighbor_contamination_flag_sky(
     fwhm_arcsec,
     tolerance=CONTAMINATION_TOLERANCE,
     beta=MOFFAT_BETA,
+    target_mask=None,
 ):
     """
     Flag contaminated stars directly from sky coordinates and an angular FWHM.
@@ -273,11 +274,19 @@ def neighbor_contamination_flag_sky(
         See `min_separation_fwhm`.
     beta : float, optional
         See `min_separation_fwhm`.
+    target_mask : array-like of bool, shape (N,), optional
+        If given, only stars where ``target_mask`` is True are evaluated as
+        contamination *targets* (i.e. can be flagged); every star still acts as
+        a potential contaminating *neighbor*. This makes the check asymmetric: a
+        deeper catalog of faint stars can flag a brighter target without the
+        faint stars themselves ever being flagged. If ``None`` (default), every
+        star is a target, matching the symmetric all-pairs behavior.
 
     Returns
     -------
     ndarray of bool, shape (N,)
         True where any neighbor sits inside this star's contamination radius.
+        Entries outside ``target_mask`` are always False.
     """
     radecs = np.asarray(radecs, dtype=float)
     mags = np.asarray(mags, dtype=float)
@@ -289,11 +298,18 @@ def neighbor_contamination_flag_sky(
     if not finite.any():
         return flagged
 
-    # The largest separation any pair can require is the faintest target with
+    # Targets are the stars eligible to be flagged: every finite-magnitude star
+    # by default, or only the finite stars selected by `target_mask`. Neighbors
+    # (contaminators) are always drawn from the full finite set.
+    targets = finite if target_mask is None else finite & np.asarray(target_mask, bool)
+    if not targets.any():
+        return flagged
+
+    # The largest separation any target can require is the faintest target with
     # the brightest neighbor; `min_separation_fwhm` is monotonic in delta_mag,
     # so capping the neighbor search there finds every pair the dense N x N
     # separation matrix would flag at a fraction of the time and memory.
-    max_delta_mag = np.max(mags[finite]) - np.min(mags[finite])
+    max_delta_mag = np.max(mags[targets]) - np.min(mags[finite])
     max_sep_arcsec = (
         min_separation_fwhm(max_delta_mag, tolerance=tolerance, beta=beta) * fwhm_arcsec
     )
@@ -301,29 +317,34 @@ def neighbor_contamination_flag_sky(
         return flagged
 
     coords = SkyCoord(radecs[:, 0], radecs[:, 1], unit="deg")
-    idx_target, idx_neighbor, sep2d, _ = search_around_sky(
-        coords,
+    # Seed the search only from the targets; search_around_sky indexes its first
+    # catalog (the target subset), so map those back to full-array rows. Each
+    # match is one (target, neighbor) pair, both in full-array coordinates.
+    target_rows = np.nonzero(targets)[0]
+    subset_target, pair_neighbor, sep2d, _ = search_around_sky(
+        coords[target_rows],
         coords,
         max_sep_arcsec * u.arcsec,
     )
+    pair_target = target_rows[subset_target]
 
     # Same pair convention as `_contamination_flag`: a star is never its own
     # neighbor (but distinct stars at zero separation are), and a pair only
-    # counts when both magnitudes are finite.
-    keep = (idx_target != idx_neighbor) & finite[idx_target] & finite[idx_neighbor]
-    idx_target = idx_target[keep]
-    idx_neighbor = idx_neighbor[keep]
+    # counts when both magnitudes are finite (targets are finite by construction).
+    keep = (pair_target != pair_neighbor) & finite[pair_neighbor]
+    pair_target = pair_target[keep]
+    pair_neighbor = pair_neighbor[keep]
     sep_arcsec = sep2d.arcsec[keep]
 
     min_sep = (
         min_separation_fwhm(
-            mags[idx_target] - mags[idx_neighbor],
+            mags[pair_target] - mags[pair_neighbor],
             tolerance=tolerance,
             beta=beta,
         )
         * fwhm_arcsec
     )
-    flagged[idx_target[sep_arcsec < min_sep]] = True
+    flagged[pair_target[sep_arcsec < min_sep]] = True
     return flagged
 
 
