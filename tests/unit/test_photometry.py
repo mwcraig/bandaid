@@ -37,6 +37,7 @@ from bandaid.photometry import (
     THRESH,
     WCS_MATCH_TOLERANCE,
     ImageData,
+    _fwhm_from_coords,
     align,
     build_photometry_table,
     calculate_l4_quantities,
@@ -399,6 +400,115 @@ def test_min_separation_fwhm():
 
     # Now a case where the neighbor is the same brightness as the target.
     assert min_separation_fwhm(0, tolerance=0.01) == pytest.approx(2.176, rel=0.01)
+
+
+def _grid_star_image(make_test_image, fwhm, *, jitter=1.0, seed=SEED):
+    """
+    Build a noisy image of a grid of identical sub-pixel Gaussian stars.
+
+    Returns ``(image, true_coords_xy, jittered_coords_xy)``. ``true_coords_xy`` are
+    the exact (sub-pixel) star centres; ``jittered_coords_xy`` are those centres
+    displaced by up to ``jitter`` px, standing in for an imperfect detection centroid
+    that smears a position-stacked PSF.
+    """
+    rng = np.random.default_rng(seed)
+    img_size = (300, 300)
+    gx, gy = np.meshgrid(np.arange(40, 280, 48.0), np.arange(40, 280, 48.0))
+    xs = gx.ravel() + rng.uniform(-0.5, 0.5, gx.size)
+    ys = gy.ravel() + rng.uniform(-0.5, 0.5, gy.size)
+    n = xs.size
+    sigma = fwhm * gaussian_fwhm_to_sigma
+    src = Table(
+        {
+            "amplitude": [500.0] * n,
+            "x_mean": xs,
+            "y_mean": ys,
+            "x_stddev": [sigma] * n,
+            "y_stddev": [sigma] * n,
+        },
+    )
+    image = make_test_image(
+        image_size=img_size,
+        source_properties=src,
+        include_noise=True,
+        noise_mean=100.0,
+        noise_stddev=2.0,
+        seed=seed,
+    )
+    true_coords = np.column_stack([xs, ys])
+    jit = rng.uniform(-jitter, jitter, true_coords.shape)
+    return image, true_coords, true_coords + jit
+
+
+class TestFwhmFromCoords:
+    """The FWHM-from-cutouts helper, with and without CNN re-centroiding."""
+
+    def test_cnn_registration_recovers_injected_fwhm(
+        self, make_test_image, monkeypatch
+    ):
+        """
+        A perfect CNN recovers the injected FWHM despite misregistered input.
+
+        ``ballet_centroid`` returns the exact centres, so the registered stack
+        recovers the true PSF even though the detection coordinates are jittered.
+        """
+        inject_fwhm = 3.0
+        image, true_coords, jittered = _grid_star_image(make_test_image, inject_fwhm)
+
+        # Perfect CNN: ballet_centroid hands back the exact star centres.
+        monkeypatch.setattr(
+            "bandaid.photometry.ballet_centroid",
+            lambda data, coords, cnn: true_coords,
+        )
+        fwhm_cnn = _fwhm_from_coords(image, jittered, max_adu=50000, cnn=object())
+        assert fwhm_cnn == pytest.approx(inject_fwhm, rel=0.05)
+
+    def test_legacy_path_recovers_fwhm_with_accurate_coords(self, make_test_image):
+        """
+        The legacy (cnn=None) stack recovers the injected FWHM on accurate coords.
+
+        Guards backward compatibility of the un-centroided path.
+        """
+        inject_fwhm = 3.0
+        image, true_coords, _ = _grid_star_image(make_test_image, inject_fwhm)
+        fwhm = _fwhm_from_coords(image, true_coords, max_adu=50000, cnn=None)
+        assert fwhm == pytest.approx(inject_fwhm, rel=0.05)
+
+
+class TestCalibrationSequenceCnn:
+    """`calibration_sequence` threads its optional ``cnn`` to the FWHM helper."""
+
+    def test_cnn_is_passed_to_fwhm_helper(self, tmp_path, monkeypatch):
+        """The ``cnn`` given to ``calibration_sequence`` reaches the FWHM helper."""
+
+        class _Region:
+            def __init__(self, y, x) -> None:
+                self.centroid = (y, x)
+
+        monkeypatch.setattr(
+            "bandaid.photometry.detection.stars_detection",
+            lambda data, threshold, opening: [
+                _Region(10 * i, 10 * i) for i in range(1, 6)
+            ],
+        )
+        captured = {}
+        stub_fwhm = 2.5
+
+        def _spy(_data, _coords, _max_adu, *, cnn=None):
+            captured["cnn"] = cnn
+            return stub_fwhm
+
+        monkeypatch.setattr("bandaid.photometry._fwhm_from_coords", _spy)
+
+        path = tmp_path / "frame.fits"
+        fits.PrimaryHDU(np.zeros((200, 200)), header=_seestar_header()).writeto(
+            path, output_verify="silentfix"
+        )
+        sentinel = object()
+        _, _, _, fwhm, _ = calibration_sequence(path, cnn=sentinel)
+
+        assert captured["cnn"] is sentinel
+        assert fwhm == stub_fwhm
 
 
 class TestCentroidDriftFlag:

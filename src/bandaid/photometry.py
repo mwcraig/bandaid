@@ -24,7 +24,9 @@ from astropy.table import Table
 from astropy.time import Time
 from dateutil import parser
 from eloy import centroid, detection, photometry, psf, utils
+from eloy.centroid import ballet_centroid
 from photutils.aperture import ApertureStats, CircularAnnulus, CircularAperture
+from scipy.ndimage import shift as _ndshift
 from st_pipeline.schema_definition import StarList
 from twirl import compute_wcs
 
@@ -416,7 +418,112 @@ def centroid_drift_flag(
     return (drift > max_allowed) | ~np.isfinite(drift)
 
 
-def calibration_sequence(file, threshold=1, opening=DETECTION_OPENING) -> tuple:
+# Half-width (px) of the square cutout used to build the effective PSF for the
+# FWHM fit; 25 reproduces the long-standing 50x50 calibration window.
+_FWHM_CUTOUT_HALF = 25
+
+
+def _registered_epsf(data, coords_xy, max_adu, half=_FWHM_CUTOUT_HALF):
+    """
+    Median-stack sub-pixel-registered, peak-normalized cutouts into an effective PSF.
+
+    Each source is cut out, shifted so its centre (``coords_xy``) lands on the cutout
+    centre, peak-normalized, and median-combined. The sub-pixel registration is what
+    keeps the stack from broadening when the input centres carry centroid error.
+
+    Parameters
+    ----------
+    data : numpy.ndarray
+        2D image.
+    coords_xy : numpy.ndarray, shape (N, 2)
+        Source centres as ``(x, y)`` in pixels (may be sub-pixel).
+    max_adu : float
+        Saturation ceiling; cutouts whose peak reaches it are dropped.
+    half : int, optional
+        Half-width of the (square) stacked cutout in pixels.
+
+    Returns
+    -------
+    numpy.ndarray or None
+        The ``(2*half, 2*half)`` effective PSF, or None if no usable cutout survived
+        (every source off-edge, saturated, or non-finite).
+    """
+    # Cut a slightly larger box so the sub-pixel shift never pulls in edge fill.
+    box = half + 3
+    stack = []
+    for cx, cy in np.asarray(coords_xy, dtype=float):
+        ix, iy = round(cx), round(cy)
+        if (
+            iy - box < 0
+            or ix - box < 0
+            or iy + box >= data.shape[0]
+            or ix + box >= data.shape[1]
+        ):
+            continue
+        sub = data[iy - box : iy + box, ix - box : ix + box].astype(float)
+        peak = np.nanmax(sub)
+        if not np.isfinite(sub).all() or peak >= max_adu or peak <= 0:
+            continue
+        # Shift the (off-centre) source onto the cutout centre before stacking.
+        sub = _ndshift(sub, shift=(iy - cy, ix - cx), order=3, mode="nearest")
+        inner = sub[box - half : box + half, box - half : box + half]
+        stack.append(inner / np.nanmax(inner))
+    if not stack:
+        return None
+    return np.nanmedian(stack, 0)
+
+
+def _fwhm_from_coords(data, coords_xy, max_adu, *, cnn=None):
+    """
+    Fit the image FWHM (px) from the effective PSF of the given sources.
+
+    With ``cnn=None`` this reproduces the legacy behaviour: peak-normalized 50x50
+    cutouts taken at ``coords_xy`` (integer-pixel) are median-stacked and fit with a
+    Gaussian. The stack inherits any error in ``coords_xy`` as extra width, so a
+    detection opening that yields jittery centroids inflates the FWHM -- and hence the
+    photometry aperture, which is sized in FWHM.
+
+    With a ``cnn`` (an ``eloy.centroid.Ballet``), the centres are first refined with
+    `ballet_centroid` and the cutouts are sub-pixel-registered to them before
+    stacking, so the measured FWHM tracks the true PSF regardless of the opening.
+
+    Parameters
+    ----------
+    data : numpy.ndarray
+        2D image.
+    coords_xy : numpy.ndarray, shape (N, 2)
+        Detected source centres as ``(x, y)`` in pixels.
+    max_adu : float
+        Saturation ceiling; saturated cutouts are excluded from the fit.
+    cnn : eloy.centroid.Ballet or None, optional
+        If given, re-centroid sources with the CNN and sub-pixel-register the cutouts
+        before fitting. Default None (legacy integer-cutout stack).
+
+    Returns
+    -------
+    float or None
+        FWHM in pixels, or None if no source was usable for the fit.
+    """
+    if cnn is not None:
+        coords_xy = ballet_centroid(data, np.asarray(coords_xy, dtype=float), cnn)
+        epsf = _registered_epsf(data, coords_xy, max_adu)
+    else:
+        cutouts = utils.cutout(data, coords_xy, (50, 50))
+        cutouts = np.array([c for c in cutouts if np.max(c) < max_adu])
+        epsf = (
+            None
+            if len(cutouts) == 0
+            else np.nanmedian(cutouts / np.nanmax(cutouts, (1, 2))[:, None, None], 0)
+        )
+    if epsf is None:
+        return None
+    params = psf.fit_gaussian(epsf)
+    return psf.gaussian_sigma_to_fwhm * np.mean([params["sigma_x"], params["sigma_y"]])
+
+
+def calibration_sequence(
+    file, threshold=1, opening=DETECTION_OPENING, *, cnn=None
+) -> tuple:
     """
     Find sources and compute FWHM for an image.
 
@@ -430,6 +537,12 @@ def calibration_sequence(file, threshold=1, opening=DETECTION_OPENING) -> tuple:
         Size of the morphological-opening kernel passed to
         `detection.stars_detection`; gates faint-star detection. By default
         ``DETECTION_OPENING``.
+    cnn : eloy.centroid.Ballet or None, optional
+        If given, the FWHM is measured by re-centroiding detections with the CNN and
+        sub-pixel-registering their cutouts before the PSF fit, so the FWHM (and the
+        FWHM-sized photometry aperture) is independent of the detection ``opening``.
+        Default None preserves the legacy integer-cutout FWHM. See
+        `_fwhm_from_coords`.
 
     Returns
     -------
@@ -470,37 +583,16 @@ def calibration_sequence(file, threshold=1, opening=DETECTION_OPENING) -> tuple:
         raise TooFewStarsError(msg, file=file)
 
     region_coords_xy = np.array([(r.centroid[1], r.centroid[0]) for r in regions])
-    cutouts = utils.cutout(calibrated_data, region_coords_xy, (50, 50))
 
-    # Drop any cutouts that are saturated -- NOTE THAT THIS LEAVES BEHIND
-    # SATURATED REGIONS
-    cutouts = np.array(list(filter(lambda data: np.max(data) < max_adu, cutouts)))
-
-    # If every detected source was saturated there is nothing left to fit a PSF to
-    if len(cutouts) == 0:
+    # Saturated sources are excluded inside the helper; if none survive there is
+    # nothing to fit a PSF to.
+    fwhm = _fwhm_from_coords(calibrated_data, region_coords_xy, max_adu, cnn=cnn)
+    if fwhm is None:
         msg = "all detected sources are saturated"
         raise TooFewStarsError(msg, file=file)
 
-    # Drop any regions that are saturated for calculating the FWHM
-    cutouts_normalized = cutouts / np.nanmax(cutouts, (1, 2))[:, None, None]
-
-    # Average the cutouts...yolo I guess on whether these are good detections
-    epsf = np.nanmedian(cutouts_normalized, 0)
-
-    # Note fitting is only done to the normalized cutout
-    psf_params = psf.fit_gaussian(epsf)
-    fwhm = psf.gaussian_sigma_to_fwhm * np.mean(
-        [psf_params["sigma_x"], psf_params["sigma_y"]],
-    )
-
     # Saves a bit of memory, I guess, by forcing garbage collection
-    del (
-        cutouts_normalized,
-        data,
-        cutouts,
-        epsf,
-        header,
-    )
+    del data, header
 
     return calibrated_data, metadata, region_coords_xy, fwhm, regions
 
@@ -1021,9 +1113,12 @@ def prepare_image(
     # "calibrate" the data and get initial detections for WCS alignment and
     # FWHM estimation. calibration_sequence raises TooFewStarsError (a
     # FrameError) when the frame is unusable; let it propagate to the batch loop.
+    # Pass the CNN so the FWHM that sizes the photometry aperture is measured by
+    # re-centroiding detections, keeping it independent of the detection opening.
     calibrated_data, metadata, coords, fwhm, _ = calibration_sequence(
         file,
         threshold=THRESH,
+        cnn=cnn,
     )
 
     if user_specific_metadata is not None:

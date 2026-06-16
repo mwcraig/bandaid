@@ -71,8 +71,9 @@ def _patch_prep(monkeypatch, *, metadata=None, radecs_mags=None, fwhm_pix=2.0):
 
     calls = {}
 
-    def fake_calibration_sequence(file):
+    def fake_calibration_sequence(file, *, cnn=None):
         calls["calibration_file"] = file
+        calls["calibration_cnn"] = cnn
         return np.zeros((4, 4)), metadata, np.zeros((3, 2)), fwhm_pix, object()
 
     def fake_cached_gaia_radecs(center, fov):
@@ -229,7 +230,7 @@ class TestPrepareBatch:
     def test_raises_when_too_few_stars_detected(self, monkeypatch):
         """A first-frame TooFewStarsError becomes a fatal BatchPrepError."""
 
-        def _too_few(file):
+        def _too_few(file, **_kwargs: object):
             msg = "only 1 stars detected"
             raise TooFewStarsError(msg, file=file)
 
@@ -258,7 +259,13 @@ class TestPrepareBatch:
         monkeypatch.setattr(
             scripts,
             "calibration_sequence",
-            lambda file: (np.zeros((4, 4)), _batch_metadata(), None, 2.0, object()),
+            lambda file, *, cnn=None: (
+                np.zeros((4, 4)),
+                _batch_metadata(),
+                None,
+                2.0,
+                object(),
+            ),
         )
 
         def _boom(*_args: object, **_kwargs: object):

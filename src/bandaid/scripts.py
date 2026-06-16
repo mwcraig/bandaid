@@ -129,7 +129,9 @@ def prepare_batch(
     # (no FWHM/pointing to prepare from), so translate the recoverable
     # per-frame TooFewStarsError into a fatal BatchPrepError.
     try:
-        _, metadata, _, fwhm_pix, _ = calibration_sequence(first_file)
+        # Pass the CNN so the FWHM (which sizes the photometry aperture) is measured
+        # by re-centroiding detections, decoupling it from the detection opening.
+        _, metadata, _, fwhm_pix, _ = calibration_sequence(first_file, cnn=cnn)
     except TooFewStarsError as exc:
         msg = f"too few stars detected in {first_file!r} to prepare the batch"
         raise BatchPrepError(msg) from exc
