@@ -50,11 +50,18 @@ CUTOUT = 500  # 120
 # lists order by different quantities (measured peak vs catalog G mag), so under
 # clouds/colour/saturation they diverge; a deeper Gaia pool then raises the
 # bright-end overlap and is the documented robustness lever for starved frames.
-# Defaults are equal because, with DETECTION_OPENING below, an un-starved frame
-# solves at 15/15 -- raise N_GAIA_STARS_ALIGN if a future dataset needs it. Cost
-# grows ~ C(N_GAIA_STARS_ALIGN, 4), so keep it modest.
+# DETECTION_OPENING = 3 roughly doubles the detections, which reshuffles the
+# brightest N_IMAGE_STARS_ALIGN handed to twirl; on SS Leo that cost 6 frames a
+# match at the 15-star pool that all came back at 20. Rather than pay the deeper
+# pool on every frame, `align` solves with N_GAIA_STARS_ALIGN first and only
+# widens to N_GAIA_STARS_ALIGN_RETRY when that fails -- the ~99% of frames that
+# solve immediately keep the cheap search (cost grows ~ C(N, 4), so the retry is
+# ~3x slower and is reserved for the few starved frames that need it).
+# N_GAIA_STARS_ALIGN is also the per-batch minimum reference count
+# (scripts.prepare_batch).
 N_IMAGE_STARS_ALIGN = 15
 N_GAIA_STARS_ALIGN = 15
+N_GAIA_STARS_ALIGN_RETRY = 20
 # Source-detection threshold (in units of the background sigma) passed to
 # `detection.stars_detection`.
 THRESH = 0.5
@@ -839,31 +846,47 @@ def align(coords, radecs=None, *, photometry_coords=None, wcs=None):
     """
     if wcs is None:
         # Feed the brightest N_IMAGE_STARS_ALIGN detections and the brightest
-        # N_GAIA_STARS_ALIGN reference RA/Decs to twirl's asterism (quad) matcher.
-        # twirl matches by geometric shape, so the two lists need NOT be in the
-        # same order or even the same length -- there is no per-index
-        # correspondence. The slices are independent so the matcher can be handed
-        # more references than detections (see the constants above).
+        # Gaia reference RA/Decs to twirl's asterism (quad) matcher. twirl matches
+        # by geometric shape, so the two lists need NOT be in the same order or
+        # even the same length -- there is no per-index correspondence. The slices
+        # are independent so the matcher can be handed more references than
+        # detections (see the constants above).
+        #
+        # Try the cheap shallow Gaia pool first and only widen to the deeper retry
+        # pool if it fails: the larger pool's asterism search costs ~ C(N, 4), so
+        # the ~99% of frames that solve immediately should not pay for it. A pool
+        # that returns None or raises a too-few-stars error is a failure to retry;
+        # the last failure (exception or None) decides the error if every pool
+        # fails.
         # twirl's asterism matcher prints timing/diagnostic lines straight to
         # stdout (e.g. "Match took ... us"); redirect them to /dev/null so the
         # pipeline and notebooks stay quiet.
-        try:
-            with contextlib.redirect_stdout(io.StringIO()):
-                this_wcs = compute_wcs(
-                    coords[0:N_IMAGE_STARS_ALIGN],
-                    radecs[0:N_GAIA_STARS_ALIGN],
-                    tolerance=WCS_MATCH_TOLERANCE,
-                )
-        except (IndexError, ValueError) as exc:
-            # twirl's two too-few-stars exits: an IndexError when cross_match
-            # finds zero pairs (empty float index array), or a ValueError out of
-            # fit_wcs_from_points when too few matched points reach scipy's
-            # least-squares fitter (the original SS Leo failure). Surface either
-            # as a recoverable frame error; anything else is an unexpected bug
-            # and is left to propagate. The original is preserved for the log.
-            msg = "twirl raised while solving the WCS"
-            raise WCSSolveError(msg) from exc
+        this_wcs = None
+        last_exc = None
+        for n_gaia in (N_GAIA_STARS_ALIGN, N_GAIA_STARS_ALIGN_RETRY):
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    this_wcs = compute_wcs(
+                        coords[0:N_IMAGE_STARS_ALIGN],
+                        radecs[0:n_gaia],
+                        tolerance=WCS_MATCH_TOLERANCE,
+                    )
+            except (IndexError, ValueError) as exc:
+                # twirl's two too-few-stars exits: an IndexError when cross_match
+                # finds zero pairs (empty float index array), or a ValueError out
+                # of fit_wcs_from_points when too few matched points reach scipy's
+                # least-squares fitter (the original SS Leo failure). Surface
+                # either as a recoverable frame error; anything else is an
+                # unexpected bug and is left to propagate. The original is
+                # preserved for the log.
+                last_exc = exc
+                this_wcs = None
+            if this_wcs is not None:
+                break
         if this_wcs is None:
+            if last_exc is not None:
+                msg = "twirl raised while solving the WCS"
+                raise WCSSolveError(msg) from last_exc
             msg = "twirl returned no WCS (too few matched stars)"
             raise WCSSolveError(msg)
     else:

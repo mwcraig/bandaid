@@ -32,6 +32,7 @@ from bandaid.photometry import (
     DETECTION_OPENING,
     MIN_DETECTED_STARS,
     N_GAIA_STARS_ALIGN,
+    N_GAIA_STARS_ALIGN_RETRY,
     N_IMAGE_STARS_ALIGN,
     RELATIVE_RADII,
     THRESH,
@@ -1316,6 +1317,38 @@ class TestAlign:
 
         with pytest.raises(TypeError, match="genuine bug"):
             align(coords, coords.copy(), photometry_coords=None)
+
+    def test_retries_with_deeper_gaia_pool_on_failure(self, monkeypatch):
+        """
+        A shallow-pool match failure retries once at the deeper retry pool.
+
+        The cheap match at N_GAIA_STARS_ALIGN is attempted first; only when it
+        fails does align widen the Gaia reference pool to
+        N_GAIA_STARS_ALIGN_RETRY, so the common case (which solves immediately)
+        never pays the larger, slower asterism search.
+        """
+        sentinel_wcs = _make_tan_wcs()
+        pool_sizes = []
+        shallow_failure = ValueError("Initial guess is outside of provided bounds")
+
+        def fake_compute_wcs(coords, radecs, tolerance):  # noqa: ARG001
+            pool_sizes.append(len(radecs))
+            # Fail at the shallow pool, succeed once the pool is deepened.
+            if len(radecs) <= N_GAIA_STARS_ALIGN:
+                raise shallow_failure
+            return sentinel_wcs
+
+        monkeypatch.setattr("bandaid.photometry.compute_wcs", fake_compute_wcs)
+
+        n_detected = N_GAIA_STARS_ALIGN_RETRY + 5  # more than either pool
+        coords = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
+        radecs = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
+
+        _, returned_wcs = align(coords, radecs, photometry_coords=None)
+
+        assert returned_wcs is sentinel_wcs
+        # Shallow pool tried first, then the deeper retry pool -- in that order.
+        assert pool_sizes == [N_GAIA_STARS_ALIGN, N_GAIA_STARS_ALIGN_RETRY]
 
 
 def test_centroid_stars_delegates_to_ballet(monkeypatch):
