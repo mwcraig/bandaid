@@ -26,7 +26,7 @@ from dateutil import parser
 from eloy import centroid, detection, photometry, psf, utils
 from eloy.centroid import ballet_centroid
 from photutils.aperture import ApertureStats, CircularAnnulus, CircularAperture
-from scipy.ndimage import shift as _ndshift
+from scipy.ndimage import shift as ndshift
 from st_pipeline.schema_definition import StarList
 from twirl import compute_wcs
 
@@ -39,6 +39,26 @@ from .exceptions import (
 from .image2sl_qt import bayer_balance_image
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "ImageData",
+    "align",
+    "annulus_sigma_clip_stats",
+    "build_photometry_table",
+    "calculate_l4_quantities",
+    "calibration_sequence",
+    "centroid_drift_flag",
+    "centroid_stars",
+    "eloy_to_starlist",
+    "flag_partial_obstruction",
+    "measure_photometry",
+    "metadata_from_header",
+    "min_separation_fwhm",
+    "neighbor_contamination_flag",
+    "neighbor_contamination_flag_sky",
+    "prepare_image",
+    "process_one_image",
+]
 
 # Half-width (in pixels) of the cutout taken around each star for per-star
 # processing.
@@ -57,8 +77,9 @@ CUTOUT = 500  # 120
 # widens to N_GAIA_STARS_ALIGN_RETRY when that fails -- the ~99% of frames that
 # solve immediately keep the cheap search (cost grows ~ C(N, 4), so the retry is
 # ~3x slower and is reserved for the few starved frames that need it).
-# N_GAIA_STARS_ALIGN is also the per-batch minimum reference count
-# (scripts.prepare_batch).
+# N_GAIA_STARS_ALIGN_RETRY is also the per-batch minimum reference count
+# (scripts.prepare_batch): a field that cannot fill the retry pool can never use
+# the deeper search, so the batch fails up front.
 N_IMAGE_STARS_ALIGN = 15
 N_GAIA_STARS_ALIGN = 15
 N_GAIA_STARS_ALIGN_RETRY = 20
@@ -73,6 +94,9 @@ THRESH = 0.5
 DETECTION_OPENING = 3
 # Pixel tolerance handed to twirl's WCS solve.
 WCS_MATCH_TOLERANCE = 1
+# Half-width (px) of the square cutout used to build the effective PSF for the
+# FWHM fit; 25 reproduces the long-standing 50x50 calibration window.
+_FWHM_CUTOUT_HALF = 25
 
 # Minimum number of detected stars required before an image can be processed.
 MIN_DETECTED_STARS = 3
@@ -425,25 +449,20 @@ def centroid_drift_flag(
     return (drift > max_allowed) | ~np.isfinite(drift)
 
 
-# Half-width (px) of the square cutout used to build the effective PSF for the
-# FWHM fit; 25 reproduces the long-standing 50x50 calibration window.
-_FWHM_CUTOUT_HALF = 25
-
-
 def _registered_epsf(data, coords_xy, max_adu, half=_FWHM_CUTOUT_HALF):
     """
     Median-stack sub-pixel-registered, peak-normalized cutouts into an effective PSF.
 
-    Each source is cut out, shifted so its centre (``coords_xy``) lands on the cutout
-    centre, peak-normalized, and median-combined. The sub-pixel registration is what
-    keeps the stack from broadening when the input centres carry centroid error.
+    Each source is cut out, shifted so its center (``coords_xy``) lands on the cutout
+    center, peak-normalized, and median-combined. The sub-pixel registration is what
+    keeps the stack from broadening when the input centers carry centroid error.
 
     Parameters
     ----------
     data : numpy.ndarray
         2D image.
     coords_xy : numpy.ndarray, shape (N, 2)
-        Source centres as ``(x, y)`` in pixels (may be sub-pixel).
+        Source centers as ``(x, y)`` in pixels (may be sub-pixel).
     max_adu : float
         Saturation ceiling; cutouts whose peak reaches it are dropped.
     half : int, optional
@@ -468,12 +487,14 @@ def _registered_epsf(data, coords_xy, max_adu, half=_FWHM_CUTOUT_HALF):
         ):
             continue
         sub = data[iy - box : iy + box, ix - box : ix + box].astype(float)
-        peak = np.nanmax(sub)
-        if not np.isfinite(sub).all() or peak >= max_adu or peak <= 0:
+        if not np.isfinite(sub).all():
             continue
-        # Shift the (off-centre) source onto the cutout centre before stacking.
-        sub = _ndshift(sub, shift=(iy - cy, ix - cx), order=3, mode="nearest")
-        inner = sub[box - half : box + half, box - half : box + half]
+        peak = sub.max()
+        if peak >= max_adu or peak <= 0:
+            continue
+        # Shift the (off-center) source onto the cutout center before stacking.
+        sub = ndshift(sub, shift=(iy - cy, ix - cx), order=3, mode="nearest")
+        inner = sub[(box - half) : (box + half), (box - half) : (box + half)]
         stack.append(inner / np.nanmax(inner))
     if not stack:
         return None
@@ -490,7 +511,7 @@ def _fwhm_from_coords(data, coords_xy, max_adu, *, cnn=None):
     detection opening that yields jittery centroids inflates the FWHM -- and hence the
     photometry aperture, which is sized in FWHM.
 
-    With a ``cnn`` (an ``eloy.centroid.Ballet``), the centres are first refined with
+    With a ``cnn`` (an ``eloy.centroid.Ballet``), the centers are first refined with
     `ballet_centroid` and the cutouts are sub-pixel-registered to them before
     stacking, so the measured FWHM tracks the true PSF regardless of the opening.
 
@@ -499,7 +520,7 @@ def _fwhm_from_coords(data, coords_xy, max_adu, *, cnn=None):
     data : numpy.ndarray
         2D image.
     coords_xy : numpy.ndarray, shape (N, 2)
-        Detected source centres as ``(x, y)`` in pixels.
+        Detected source centers as ``(x, y)`` in pixels.
     max_adu : float
         Saturation ceiling; saturated cutouts are excluded from the fit.
     cnn : eloy.centroid.Ballet or None, optional
@@ -597,9 +618,6 @@ def calibration_sequence(
     if fwhm is None:
         msg = "all detected sources are saturated"
         raise TooFewStarsError(msg, file=file)
-
-    # Saves a bit of memory, I guess, by forcing garbage collection
-    del data, header
 
     return calibrated_data, metadata, region_coords_xy, fwhm, regions
 
@@ -864,6 +882,7 @@ def align(coords, radecs=None, *, photometry_coords=None, wcs=None):
         this_wcs = None
         last_exc = None
         for n_gaia in (N_GAIA_STARS_ALIGN, N_GAIA_STARS_ALIGN_RETRY):
+            last_exc = None
             try:
                 with contextlib.redirect_stdout(io.StringIO()):
                     this_wcs = compute_wcs(

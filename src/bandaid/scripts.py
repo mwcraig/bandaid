@@ -32,7 +32,7 @@ from .exceptions import (
 )
 from .image2sl_qt import generate_bayer_masks
 from .photometry import (
-    N_GAIA_STARS_ALIGN,
+    N_GAIA_STARS_ALIGN_RETRY,
     calibration_sequence,
     eloy_to_starlist,
     neighbor_contamination_flag_sky,
@@ -166,11 +166,11 @@ def prepare_batch(
 
     # Without enough reference stars no frame can solve a WCS, so fail the batch
     # now with a clear message rather than letting every frame fail later.
-    if len(target_radecs) < N_GAIA_STARS_ALIGN:
+    if len(target_radecs) < N_GAIA_STARS_ALIGN_RETRY:
         msg = (
             f"Gaia returned only {len(target_radecs)} stars brighter than "
             f"{gaia_mag_limit} for the field at {center}; need at least "
-            f"{N_GAIA_STARS_ALIGN} to solve a WCS"
+            f"{N_GAIA_STARS_ALIGN_RETRY} to solve a WCS"
         )
         raise BatchPrepError(msg)
 

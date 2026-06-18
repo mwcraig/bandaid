@@ -407,8 +407,12 @@ def _grid_star_image(make_test_image, fwhm, *, jitter=1.0, seed=SEED):
     """
     Build a noisy image of a grid of identical sub-pixel Gaussian stars.
 
+    Unlike ``_detectable_image`` (which returns only an image of a few well-separated
+    sources), this returns ground-truth coordinates alongside the frame so the
+    registration test can prove the effective PSF survives centroid error.
+
     Returns ``(image, true_coords_xy, jittered_coords_xy)``. ``true_coords_xy`` are
-    the exact (sub-pixel) star centres; ``jittered_coords_xy`` are those centres
+    the exact (sub-pixel) star centers; ``jittered_coords_xy`` are those centers
     displaced by up to ``jitter`` px, standing in for an imperfect detection centroid
     that smears a position-stacked PSF.
     """
@@ -450,13 +454,13 @@ class TestFwhmFromCoords:
         """
         A perfect CNN recovers the injected FWHM despite misregistered input.
 
-        ``ballet_centroid`` returns the exact centres, so the registered stack
+        ``ballet_centroid`` returns the exact centers, so the registered stack
         recovers the true PSF even though the detection coordinates are jittered.
         """
         inject_fwhm = 3.0
         image, true_coords, jittered = _grid_star_image(make_test_image, inject_fwhm)
 
-        # Perfect CNN: ballet_centroid hands back the exact star centres.
+        # Perfect CNN: ballet_centroid hands back the exact star centers.
         monkeypatch.setattr(
             "bandaid.photometry.ballet_centroid",
             lambda data, coords, cnn: true_coords,
@@ -640,7 +644,7 @@ class TestPrepareImage:
 
 
 def _make_tan_wcs(image_size=(500, 500), crval=(10.0, 20.0)):
-    """Build a simple TAN WCS centred at ``crval`` for the given image size."""
+    """Build a simple TAN WCS centered at ``crval`` for the given image size."""
     wcs = WCS(naxis=2)
     wcs.wcs.crpix = [image_size[1] / 2, image_size[0] / 2]
     wcs.wcs.crval = list(crval)
@@ -715,7 +719,7 @@ class TestBuildPhotometryTable:
             _fake_phot_factory(n_stars),
         )
         wcs = _make_tan_wcs()
-        # Centroids near the image centre; their WCS sky positions are close to
+        # Centroids near the image center; their WCS sky positions are close to
         # the WCS crval (10, 20) -- deliberately NOT the photometry_coords below.
         centroid_coords = np.array([[245.0, 250.0], [255.0, 260.0], [250.0, 240.0]])
         photometry_coords = SkyCoord(
