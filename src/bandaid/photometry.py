@@ -17,7 +17,7 @@ from importlib.resources import files as package_files
 
 import astropy.units as u
 import numpy as np
-from astropy.coordinates import SkyCoord, search_around_sky
+from astropy.coordinates import AltAz, EarthLocation, SkyCoord, search_around_sky
 from astropy.io import fits
 from astropy.stats import SigmaClip
 from astropy.table import Table
@@ -620,6 +620,76 @@ def calibration_sequence(
         raise TooFewStarsError(msg, file=file)
 
     return calibrated_data, metadata, region_coords_xy, fwhm, regions
+
+
+def _airmass_from_header(header):
+    """
+    Return the frame airmass, deriving it when the header lacks AIRMASS.
+
+    Seestar ``.fit`` headers carry no ``AIRMASS`` keyword but do record the
+    pointing (``RA``/``DEC``), site (``SITELAT``/``SITELONG``, optionally
+    ``SITEELEV``) and time (``DATE-OBS``) -- enough to compute the field-center
+    airmass via an AltAz transform. The header value is preferred when present.
+
+    The relative optical airmass is computed with the Kasten & Young (1989)
+    formula, which stays accurate at the high airmass (up to ~4) these frames
+    reach -- where the plane-parallel ``sec(z)`` overestimates by several percent.
+
+    Parameters
+    ----------
+    header : astropy.io.fits.Header or dict
+        FITS header for the frame.
+
+    Returns
+    -------
+    float
+        The header ``AIRMASS`` value, or the derived Kasten-Young airmass.
+
+    Raises
+    ------
+    FrameMetadataError
+        If the header has neither a parseable ``AIRMASS`` nor the
+        pointing/site/time keywords needed to derive one. Airmass is a standard
+        input for extinction work, so an undiagnosable frame is skipped rather
+        than carried with a NaN.
+    """
+    # Only the header reads and the date-string parse can fail *because of the
+    # header*; keep exactly those inside the try so a well-understood missing or
+    # malformed keyword maps to a skipped frame, while a bug in the astropy
+    # object construction or the airmass formula below surfaces as itself.
+    try:
+        airmass = header.get("AIRMASS")
+        if airmass is not None:
+            return float(airmass)
+        site_lat = float(header["SITELAT"])
+        site_lon = float(header["SITELONG"])
+        site_elev = float(header.get("SITEELEV", 0.0))
+        ra = float(header["RA"])
+        dec = float(header["DEC"])
+        obs_datetime = parser.parse(header["DATE-OBS"])
+    except (KeyError, ValueError, TypeError) as exc:
+        msg = (
+            "cannot determine AIRMASS: header has no parseable AIRMASS and is "
+            "missing/unparseable RA/DEC/SITELAT/SITELONG/DATE-OBS"
+        )
+        raise FrameMetadataError(msg) from exc
+
+    location = EarthLocation(
+        lat=site_lat * u.deg, lon=site_lon * u.deg, height=site_elev * u.m
+    )
+    pointing = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
+    altaz = pointing.transform_to(AltAz(obstime=Time(obs_datetime), location=location))
+
+    # Kasten & Young (1989) relative optical airmass:
+    #   X = 1 / (sin(h) + 0.50572 * (h + 6.07995)**-1.6364),  h = apparent
+    #   altitude in degrees. Accurate to high airmass where the plane-parallel
+    #   sec(z) breaks down (sec(z) is ~3% high at airmass ~5.7).
+    # Kasten & Young 1989, Applied Optics 28(22), 4735; doi:10.1364/AO.28.004735
+    alt_deg = altaz.alt.to_value(u.deg)
+    airmass = 1.0 / (
+        np.sin(np.deg2rad(alt_deg)) + 0.50572 * (alt_deg + 6.07995) ** -1.6364
+    )
+    return float(airmass)
 
 
 def metadata_from_header(header):
@@ -1303,7 +1373,7 @@ def build_photometry_table(
     data["sky"] = np.mean(
         phot["total_bkg"] / (np.pi * (np.asarray(relative_radii) * img.fwhm) ** 2),
     )
-    data["airmass"] = img.header.get("AIRMASS", np.nan)
+    data["airmass"] = _airmass_from_header(img.header)
     data["peak_count"] = phot["peak_count"]
     data["stars_in_exp"] = len(img.coords)
     data["ra"] = ra_deg
