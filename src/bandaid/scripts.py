@@ -14,6 +14,7 @@ once-per-batch work and the per-frame work as separate, single-trigger
 functions: no shared mutable state, no "is it done yet?" bookkeeping.
 """
 
+import csv
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,14 +30,32 @@ from .exceptions import (
     FrameError,
     FrameMetadataError,
     TooFewStarsError,
+    WCSSolveError,
 )
 from .image2sl_qt import generate_bayer_masks
 from .photometry import (
     N_GAIA_STARS_ALIGN_RETRY,
     calibration_sequence,
     eloy_to_starlist,
+    good_star_mask,
     neighbor_contamination_flag_sky,
     process_one_image,
+)
+
+# Per-frame QA manifest written alongside the starlists in write-to-disk mode.
+# The columns are the run-quality signals the pipeline already computes; a
+# degrading night (clouds, rising airmass, an obstruction) shows up at a glance
+# and the manifest enables a future partial-batch resume.
+QA_MANIFEST_FILENAME = "qa_manifest.csv"
+QA_MANIFEST_COLUMNS = (
+    "file",
+    "status",
+    "n_detected",
+    "sky_median",
+    "fwhm",
+    "wcs_solved",
+    "n_good_stars",
+    "partial_obstruction",
 )
 
 logger = logging.getLogger(__name__)
@@ -254,6 +273,106 @@ def check_frame_consistency(file, header, prep):
         raise FrameError(msg, file=file)
 
 
+def _qa_record_ok(file, by_filter):
+    """
+    Build the QA manifest record for a frame that processed cleanly.
+
+    Diagnostics are pulled defensively from a representative channel (L4 if
+    present, else the first), so a frame missing a given column simply records a
+    blank for it rather than failing the whole manifest.
+
+    Parameters
+    ----------
+    file : str or Path
+        The processed input frame.
+    by_filter : dict of {str: astropy.table.Table}
+        The ``process_one_image`` result for this frame.
+
+    Returns
+    -------
+    dict
+        One manifest row keyed by `QA_MANIFEST_COLUMNS`.
+    """
+    if "L4" in by_filter:
+        representative = by_filter["L4"]
+    else:
+        representative = next(iter(by_filter.values()))
+    meta = representative.meta
+    full_meta = meta.get("full_image_meta", {})
+    cols = set(representative.colnames)
+
+    n_detected = (
+        int(representative["stars_in_exp"][0]) if "stars_in_exp" in cols else None
+    )
+    sky_median = float(representative["sky"][0]) if "sky" in cols else None
+    n_good_stars = None
+    has_phot_cols = {"tot_count", "count_err", "x", "y"} <= cols
+    has_bounds = {"width", "height"} <= set(full_meta)
+    if has_phot_cols and has_bounds:
+        n_good_stars = int(np.sum(good_star_mask(representative, full_meta)))
+
+    return {
+        "file": str(file),
+        "status": "ok",
+        "n_detected": n_detected,
+        "sky_median": sky_median,
+        "fwhm": meta.get("fwhm"),
+        "wcs_solved": True,
+        "n_good_stars": n_good_stars,
+        "partial_obstruction": full_meta.get("partial_obstruction"),
+    }
+
+
+def _qa_record_failed(file, status, *, wcs_solved=None):
+    """
+    Build the QA manifest record for a skipped or errored frame.
+
+    Parameters
+    ----------
+    file : str or Path
+        The input frame.
+    status : str
+        Outcome label, e.g. ``"skipped: WCSSolveError"`` or ``"error: KeyError"``.
+    wcs_solved : bool or None, optional
+        ``False`` for a WCS solve failure, otherwise ``None`` (the frame failed
+        before -- or unrelated to -- the solve, so it is left blank).
+
+    Returns
+    -------
+    dict
+        One manifest row keyed by `QA_MANIFEST_COLUMNS`, diagnostics blank.
+    """
+    record = dict.fromkeys(QA_MANIFEST_COLUMNS)
+    record["file"] = str(file)
+    record["status"] = status
+    record["wcs_solved"] = wcs_solved
+    return record
+
+
+def _write_qa_manifest(path, records):
+    """
+    Write the per-frame QA records to a CSV manifest.
+
+    Parameters
+    ----------
+    path : pathlib.Path
+        Destination CSV path.
+    records : list of dict
+        Per-frame rows keyed by `QA_MANIFEST_COLUMNS`; ``None`` values are
+        written as empty cells.
+    """
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=QA_MANIFEST_COLUMNS)
+        writer.writeheader()
+        for record in records:
+            writer.writerow(
+                {
+                    key: "" if record.get(key) is None else record[key]
+                    for key in QA_MANIFEST_COLUMNS
+                }
+            )
+
+
 def process_batch(
     files,
     prep,
@@ -262,6 +381,8 @@ def process_batch(
     output_dir=None,
     output_suffix=".star",
     fail_fast=True,
+    write_qa_manifest=True,
+    qa_manifest_name=QA_MANIFEST_FILENAME,
 ):
     """
     Photometer every frame in a batch using a shared `BatchPrep`.
@@ -291,6 +412,16 @@ def process_batch(
         frame -- the robust mode for unattended runs. Expected per-frame
         failures (`FrameError` and its subclasses) are always logged and
         skipped regardless of this flag.
+    write_qa_manifest : bool, optional
+        Whether to write the per-frame QA manifest in write-to-disk mode.
+        Default True -- the manifest is cheap and makes a degrading night
+        self-evident the first time it goes bad, before anyone thinks to ask
+        for it. Set False to write only the `.star` files and leave the rest
+        of ``output_dir`` untouched. Ignored in in-memory mode (no directory
+        to write to).
+    qa_manifest_name : str, optional
+        Filename for the QA manifest within ``output_dir``. Default
+        `QA_MANIFEST_FILENAME`.
 
     Returns
     -------
@@ -302,6 +433,12 @@ def process_batch(
         Frames that raise a `FrameError` (too few stars, unsolvable WCS, ...)
         are skipped with a logged warning and omitted from the result.
 
+        In write-to-disk mode, unless ``write_qa_manifest`` is False, a
+        per-frame QA manifest (``qa_manifest_name``) is also written to
+        ``output_dir``, with one row per input frame recording its status
+        (``ok`` / ``skipped: <FrameError type>`` / ``error: <type>``) and the
+        available run-quality signals (`QA_MANIFEST_COLUMNS`).
+
     Raises
     ------
     Exception
@@ -309,6 +446,10 @@ def process_batch(
         is re-raised when ``fail_fast`` is True (the default).
     """
     results = {}
+    # One QA record per frame (ok/skipped/error), written to a manifest at the
+    # end when in write-to-disk mode and the caller has not opted out.
+    write_manifest = output_dir is not None and write_qa_manifest
+    manifest_records = []
     # Create the output directory once, before the loop, so a missing parent
     # fails fast instead of partway through the batch.
     if output_dir is not None:
@@ -333,19 +474,30 @@ def process_batch(
             if exc.file is None:
                 exc.file = file
             logger.warning("skipping %s: %s", file, exc.reason, exc_info=True)
+            manifest_records.append(
+                _qa_record_failed(
+                    file,
+                    f"skipped: {type(exc).__name__}",
+                    wcs_solved=False if isinstance(exc, WCSSolveError) else None,
+                )
+            )
             continue
-        except Exception:
+        except Exception as exc:
             # Unexpected error (a bug, not a bad frame): surface it by default;
             # only swallow-and-continue when the caller opted into robust mode.
             if fail_fast:
                 raise
             logger.exception("unexpected error on %s", file)
+            manifest_records.append(
+                _qa_record_failed(file, f"error: {type(exc).__name__}")
+            )
             continue
         else:
             # The frame processed cleanly. Writing its output is deliberately
             # outside the try: a write failure (bad output_dir, permissions,
             # full disk) is systemic, not a property of this frame, so it must
             # abort the run rather than be skipped as a "bad frame".
+            manifest_records.append(_qa_record_ok(file, by_filter))
             if output_dir is not None:
                 output_path = Path(output_dir) / (Path(file).stem + output_suffix)
                 star_lists = [
@@ -357,4 +509,10 @@ def process_batch(
                 results[file] = output_path
             else:
                 results[file] = by_filter
+
+    # Persist the per-frame QA manifest next to the starlists. Only written in
+    # write-to-disk mode (in-memory mode has no directory to write it to) and
+    # only when the caller has not opted out.
+    if write_manifest:
+        _write_qa_manifest(Path(output_dir) / qa_manifest_name, manifest_records)
     return results

@@ -7,6 +7,8 @@ with the heavy/network dependencies (``calibration_sequence``,
 ``cached_gaia_radecs``, ``process_one_image``) monkeypatched out.
 """
 
+import csv
+
 import numpy as np
 import pytest
 from astropy.coordinates import SkyCoord
@@ -545,7 +547,10 @@ class TestProcessBatchToDisk:
             output_dir=tmp_path,
         )
 
-        written = sorted(p.name for p in tmp_path.iterdir())
+        # Ignore the QA manifest sibling; this test is about the starlist files.
+        written = sorted(
+            p.name for p in tmp_path.iterdir() if p.name != scripts.QA_MANIFEST_FILENAME
+        )
         assert written == ["a.star", "b.star"]
 
     def test_output_filename_is_stem_plus_default_suffix(
@@ -561,7 +566,9 @@ class TestProcessBatchToDisk:
             output_dir=tmp_path,
         )
 
-        assert [p.name for p in tmp_path.iterdir()] == ["frame1.star"]
+        assert [
+            p.name for p in tmp_path.iterdir() if p.name != scripts.QA_MANIFEST_FILENAME
+        ] == ["frame1.star"]
 
     def test_custom_output_suffix_is_honored(self, monkeypatch, tmp_path, by_filter):
         """An explicit ``output_suffix`` replaces the default ``.star``."""
@@ -575,7 +582,9 @@ class TestProcessBatchToDisk:
             output_suffix=".starlist",
         )
 
-        assert [p.name for p in tmp_path.iterdir()] == ["frame1.starlist"]
+        assert [
+            p.name for p in tmp_path.iterdir() if p.name != scripts.QA_MANIFEST_FILENAME
+        ] == ["frame1.starlist"]
 
     def test_written_file_round_trips_through_starlistset(
         self, monkeypatch, tmp_path, by_filter
@@ -635,5 +644,86 @@ class TestProcessBatchToDisk:
             output_dir=tmp_path,
         )
 
-        assert [p.name for p in tmp_path.iterdir()] == ["good.star"]
+        assert [
+            p.name for p in tmp_path.iterdir() if p.name != scripts.QA_MANIFEST_FILENAME
+        ] == ["good.star"]
         assert results == {"good.fits": tmp_path / "good.star"}
+
+    def test_writes_qa_manifest(self, monkeypatch, tmp_path, by_filter):
+        """A per-frame QA manifest records ok and skipped frames (#31)."""
+
+        def _maybe(file, *_args: object, **_kwargs: object):
+            if file == "bad.fits":
+                msg = "twirl found no match"
+                raise WCSSolveError(msg, file=file)
+            return by_filter()
+
+        monkeypatch.setattr(scripts, "process_one_image", _maybe)
+
+        scripts.process_batch(
+            ["good.fits", "bad.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+        )
+
+        manifest = tmp_path / "qa_manifest.csv"
+        assert manifest.exists()
+
+        with manifest.open(newline="") as f:
+            rows = list(csv.DictReader(f))
+
+        expected_columns = {
+            "file",
+            "status",
+            "n_detected",
+            "sky_median",
+            "fwhm",
+            "wcs_solved",
+            "n_good_stars",
+            "partial_obstruction",
+        }
+        assert expected_columns <= set(rows[0])
+        by_file = {row["file"]: row for row in rows}
+        assert set(by_file) == {"good.fits", "bad.fits"}
+
+        good = by_file["good.fits"]
+        assert good["status"] == "ok"
+        assert good["wcs_solved"] == "True"
+        # Both fixture rows are finite/positive/in-bounds, so both are "good".
+        assert good["n_good_stars"] == "2"
+
+        bad = by_file["bad.fits"]
+        assert bad["status"].startswith("skipped")
+        # A WCS solve failure is recorded as an explicit non-solve.
+        assert bad["wcs_solved"] == "False"
+
+    def test_qa_manifest_can_be_disabled(self, monkeypatch, tmp_path, by_filter):
+        """``write_qa_manifest=False`` writes only starlists, no manifest."""
+        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+
+        scripts.process_batch(
+            ["a.fits", "b.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+            write_qa_manifest=False,
+        )
+
+        assert not (tmp_path / scripts.QA_MANIFEST_FILENAME).exists()
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["a.star", "b.star"]
+
+    def test_qa_manifest_name_is_honored(self, monkeypatch, tmp_path, by_filter):
+        """An explicit ``qa_manifest_name`` overrides the default filename."""
+        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+
+        scripts.process_batch(
+            ["a.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+            qa_manifest_name="run_quality.csv",
+        )
+
+        assert (tmp_path / "run_quality.csv").exists()
+        assert not (tmp_path / scripts.QA_MANIFEST_FILENAME).exists()

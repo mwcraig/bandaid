@@ -51,6 +51,7 @@ __all__ = [
     "centroid_stars",
     "eloy_to_starlist",
     "flag_partial_obstruction",
+    "good_star_mask",
     "measure_photometry",
     "metadata_from_header",
     "min_separation_fwhm",
@@ -792,6 +793,37 @@ def eloy_to_starlist(eloy_table, metadata):
         If no rows survive filtering, so the frame would produce an empty
         StarList. The source file is not known here; the caller attaches it.
     """
+    good = good_star_mask(eloy_table, metadata)
+    if not np.any(good):
+        msg = "no stars survived photometry filtering"
+        raise NoUsableStarsError(msg)
+    return StarList.from_table(eloy_table[good], metadata=metadata)
+
+
+def good_star_mask(eloy_table, metadata):
+    """
+    Boolean mask of rows that survive photometry filtering.
+
+    A star is "good" when it has a finite, positive net count and error, lies
+    in-bounds, and is not flagged as contaminated. This is the same predicate
+    `eloy_to_starlist` uses to decide which rows reach the output StarList, so
+    QA tooling can count good stars without rebuilding the StarList.
+
+    Parameters
+    ----------
+    eloy_table : astropy.table.Table
+        Per-image photometry table; one row per star. Must include
+        ``tot_count``, ``count_err``, ``x``, and ``y`` (and optionally
+        ``contaminated``).
+    metadata : dict
+        Must include the frame ``width`` and ``height`` used for the in-bounds
+        test.
+
+    Returns
+    -------
+    numpy.ndarray
+        Boolean array, ``True`` for rows that pass the filter.
+    """
     # REPLACE THIS WITH FILTERING FROM IMAGE2SL_QT
     good = ~np.isnan(eloy_table["tot_count"])
     good &= eloy_table["tot_count"] > 0
@@ -805,10 +837,7 @@ def eloy_to_starlist(eloy_table, metadata):
     )
     if "contaminated" in eloy_table.colnames:
         good &= ~eloy_table["contaminated"]
-    if not np.any(good):
-        msg = "no stars survived photometry filtering"
-        raise NoUsableStarsError(msg)
-    return StarList.from_table(eloy_table[good], metadata=metadata)
+    return np.asarray(good)
 
 
 def flag_partial_obstruction(
