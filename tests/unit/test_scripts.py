@@ -547,7 +547,8 @@ class TestProcessBatchToDisk:
             output_dir=tmp_path,
         )
 
-        written = sorted(p.name for p in tmp_path.iterdir())
+        # Ignore the QA manifest sibling; this test is about the starlist files.
+        written = sorted(p.name for p in tmp_path.iterdir() if p.suffix != ".csv")
         assert written == ["a.star", "b.star"]
 
     def test_output_filename_is_stem_plus_default_suffix(
@@ -563,7 +564,9 @@ class TestProcessBatchToDisk:
             output_dir=tmp_path,
         )
 
-        assert [p.name for p in tmp_path.iterdir()] == ["frame1.star"]
+        assert [p.name for p in tmp_path.iterdir() if p.suffix != ".csv"] == [
+            "frame1.star"
+        ]
 
     def test_custom_output_suffix_is_honored(self, monkeypatch, tmp_path, by_filter):
         """An explicit ``output_suffix`` replaces the default ``.star``."""
@@ -577,7 +580,9 @@ class TestProcessBatchToDisk:
             output_suffix=".starlist",
         )
 
-        assert [p.name for p in tmp_path.iterdir()] == ["frame1.starlist"]
+        assert [p.name for p in tmp_path.iterdir() if p.suffix != ".csv"] == [
+            "frame1.starlist"
+        ]
 
     def test_written_file_round_trips_through_starlistset(
         self, monkeypatch, tmp_path, by_filter
