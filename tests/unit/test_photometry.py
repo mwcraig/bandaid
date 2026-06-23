@@ -12,7 +12,7 @@ from pathlib import Path
 import astropy.units as u
 import numpy as np
 import pytest
-from astropy.coordinates import SkyCoord
+from astropy.coordinates import AltAz, EarthLocation, SkyCoord
 from astropy.io import fits
 from astropy.nddata import CCDData
 from astropy.stats import gaussian_fwhm_to_sigma, sigma_clipped_stats
@@ -38,6 +38,7 @@ from bandaid.photometry import (
     THRESH,
     WCS_MATCH_TOLERANCE,
     ImageData,
+    _airmass_from_header,
     _fwhm_from_coords,
     align,
     build_photometry_table,
@@ -716,6 +717,51 @@ def _make_image_data(
         input_photometry_coords=input_photometry_coords,
         metadata={"egain": 1.0},
     )
+
+
+class TestAirmassFromHeader:
+    """Airmass is taken from the header when present, otherwise derived (#29)."""
+
+    def test_uses_header_airmass_when_present(self):
+        """A present AIRMASS keyword is returned verbatim, pointing ignored."""
+        header = fits.Header()
+        header["AIRMASS"] = 1.37
+        # Pointing/site/time are present but must not be consulted.
+        header["RA"] = 10.0
+        header["DEC"] = 20.0
+        header["SITELAT"] = 40.0
+        header["SITELONG"] = -105.0
+        header["DATE-OBS"] = "2024-06-01T07:00:00"
+
+        assert _airmass_from_header(header) == pytest.approx(1.37)
+
+    def test_derives_from_pointing_when_absent(self):
+        """With no AIRMASS, derive sec(z) from RA/DEC/site/time (not NaN)."""
+        location = EarthLocation(lat=40.0 * u.deg, lon=-105.0 * u.deg, height=0.0 * u.m)
+        obstime = "2024-06-01T07:00:00"
+        # Point ~1 deg from the zenith so the target is unambiguously up and the
+        # airmass is ~sec(1 deg) ~ 1.0 -- a finite, physical (>= 1) value.
+        zenith_ish = SkyCoord(
+            AltAz(alt=89.0 * u.deg, az=0.0 * u.deg, obstime=obstime, location=location)
+        ).icrs
+
+        header = fits.Header()
+        header["RA"] = zenith_ish.ra.degree
+        header["DEC"] = zenith_ish.dec.degree
+        header["SITELAT"] = 40.0
+        header["SITELONG"] = -105.0
+        header["DATE-OBS"] = obstime
+
+        airmass = _airmass_from_header(header)
+
+        assert np.isfinite(airmass)
+        assert airmass == pytest.approx(1.0 / np.cos(np.deg2rad(1.0)), rel=1e-3)
+
+    def test_nan_when_inputs_missing(self):
+        """No AIRMASS and no pointing/site/time -> NaN, not an error."""
+        header = fits.Header()
+        header["DATE-OBS"] = "2024-06-01T07:00:00"
+        assert np.isnan(_airmass_from_header(header))
 
 
 class TestBuildPhotometryTable:

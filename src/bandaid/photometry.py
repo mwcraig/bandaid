@@ -622,6 +622,26 @@ def calibration_sequence(
     return calibrated_data, metadata, region_coords_xy, fwhm, regions
 
 
+def _airmass_from_header(header):
+    """
+    Return the frame airmass, taken from the header or NaN when absent.
+
+    Parameters
+    ----------
+    header : astropy.io.fits.Header or dict
+        FITS header for the frame.
+
+    Returns
+    -------
+    float
+        The header ``AIRMASS`` value, or NaN when it is missing.
+    """
+    airmass = header.get("AIRMASS")
+    if airmass is not None:
+        return float(airmass)
+    return float("nan")
+
+
 def metadata_from_header(header):
     """
     Build a metadata dictionary from a JSON template and a FITS header.
@@ -1285,7 +1305,7 @@ def build_photometry_table(
     data["sky"] = np.mean(
         phot["total_bkg"] / (np.pi * (np.asarray(relative_radii) * img.fwhm) ** 2),
     )
-    data["airmass"] = img.header.get("AIRMASS", np.nan)
+    data["airmass"] = _airmass_from_header(img.header)
     data["peak_count"] = phot["peak_count"]
     data["stars_in_exp"] = len(img.coords)
     data["ra"] = ra_deg
