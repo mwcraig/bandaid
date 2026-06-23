@@ -7,6 +7,8 @@ with the heavy/network dependencies (``calibration_sequence``,
 ``cached_gaia_radecs``, ``process_one_image``) monkeypatched out.
 """
 
+import csv
+
 import numpy as np
 import pytest
 from astropy.coordinates import SkyCoord
@@ -635,5 +637,56 @@ class TestProcessBatchToDisk:
             output_dir=tmp_path,
         )
 
-        assert [p.name for p in tmp_path.iterdir()] == ["good.star"]
+        assert [p.name for p in tmp_path.iterdir() if p.suffix != ".csv"] == [
+            "good.star"
+        ]
         assert results == {"good.fits": tmp_path / "good.star"}
+
+    def test_writes_qa_manifest(self, monkeypatch, tmp_path, by_filter):
+        """A per-frame QA manifest records ok and skipped frames (#31)."""
+
+        def _maybe(file, *_args: object, **_kwargs: object):
+            if file == "bad.fits":
+                msg = "twirl found no match"
+                raise WCSSolveError(msg, file=file)
+            return by_filter()
+
+        monkeypatch.setattr(scripts, "process_one_image", _maybe)
+
+        scripts.process_batch(
+            ["good.fits", "bad.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+        )
+
+        manifest = tmp_path / "qa_manifest.csv"
+        assert manifest.exists()
+
+        with manifest.open(newline="") as f:
+            rows = list(csv.DictReader(f))
+
+        expected_columns = {
+            "file",
+            "status",
+            "n_detected",
+            "sky_median",
+            "fwhm",
+            "wcs_solved",
+            "n_good_stars",
+            "partial_obstruction",
+        }
+        assert expected_columns <= set(rows[0])
+        by_file = {row["file"]: row for row in rows}
+        assert set(by_file) == {"good.fits", "bad.fits"}
+
+        good = by_file["good.fits"]
+        assert good["status"] == "ok"
+        assert good["wcs_solved"] == "True"
+        # Both fixture rows are finite/positive/in-bounds, so both are "good".
+        assert good["n_good_stars"] == "2"
+
+        bad = by_file["bad.fits"]
+        assert bad["status"].startswith("skipped")
+        # A WCS solve failure is recorded as an explicit non-solve.
+        assert bad["wcs_solved"] == "False"
