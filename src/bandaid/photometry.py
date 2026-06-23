@@ -550,7 +550,14 @@ def _fwhm_from_coords(data, coords_xy, max_adu, *, cnn=None):
 
 
 def calibration_sequence(
-    file, threshold=1, opening=DETECTION_OPENING, *, cnn=None
+    file,
+    threshold=1,
+    opening=DETECTION_OPENING,
+    *,
+    # Accepted now but not yet honored; the next commit runs detection on the
+    # balanced copy. The unused-arg lint is silenced only for this interim state.
+    detect_on_bayer_balanced=False,  # noqa: ARG001
+    cnn=None,
 ) -> tuple:
     """
     Find sources and compute FWHM for an image.
@@ -565,6 +572,11 @@ def calibration_sequence(
         Size of the morphological-opening kernel passed to
         `detection.stars_detection`; gates faint-star detection. By default
         ``DETECTION_OPENING``.
+    detect_on_bayer_balanced : bool, optional
+        When True, run source detection and the FWHM fit on a Bayer-balanced
+        *copy* of the data. The returned ``calibrated_data`` is always the
+        original unbalanced array, so downstream photometry still measures real
+        counts. Default False preserves detection on the raw data.
     cnn : eloy.centroid.Ballet or None, optional
         If given, the FWHM is measured by re-centroiding detections with the CNN and
         sub-pixel-registering their cutouts before the PSF fit, so the FWHM (and the
