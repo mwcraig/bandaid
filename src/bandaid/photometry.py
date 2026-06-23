@@ -17,7 +17,7 @@ from importlib.resources import files as package_files
 
 import astropy.units as u
 import numpy as np
-from astropy.coordinates import SkyCoord, search_around_sky
+from astropy.coordinates import AltAz, EarthLocation, SkyCoord, search_around_sky
 from astropy.io import fits
 from astropy.stats import SigmaClip
 from astropy.table import Table
@@ -624,7 +624,14 @@ def calibration_sequence(
 
 def _airmass_from_header(header):
     """
-    Return the frame airmass, taken from the header or NaN when absent.
+    Return the frame airmass, deriving it when the header lacks AIRMASS.
+
+    Seestar ``.fit`` headers carry no ``AIRMASS`` keyword but do record the
+    pointing (``RA``/``DEC``), site (``SITELAT``/``SITELONG``, optionally
+    ``SITEELEV``) and time (``DATE-OBS``) -- enough to compute the field-center
+    airmass as ``sec(z)`` via an AltAz transform. The header value is preferred
+    when present; NaN is returned only when neither ``AIRMASS`` nor the inputs
+    needed to derive it are available or parseable.
 
     Parameters
     ----------
@@ -634,12 +641,32 @@ def _airmass_from_header(header):
     Returns
     -------
     float
-        The header ``AIRMASS`` value, or NaN when it is missing.
+        The header ``AIRMASS`` value, the derived ``sec(z)``, or NaN when
+        neither can be obtained.
     """
     airmass = header.get("AIRMASS")
     if airmass is not None:
         return float(airmass)
-    return float("nan")
+
+    # No AIRMASS keyword (Seestar): derive sec(z) from pointing, site and time.
+    # Any missing/unparseable input means we cannot derive it, so fall back to
+    # NaN rather than raising -- airmass is informational, not required.
+    try:
+        location = EarthLocation(
+            lat=float(header["SITELAT"]) * u.deg,
+            lon=float(header["SITELONG"]) * u.deg,
+            height=float(header.get("SITEELEV", 0.0)) * u.m,
+        )
+        obstime = Time(parser.parse(header["DATE-OBS"]))
+        pointing = SkyCoord(
+            ra=float(header["RA"]) * u.deg,
+            dec=float(header["DEC"]) * u.deg,
+        )
+        altaz = pointing.transform_to(AltAz(obstime=obstime, location=location))
+    except (KeyError, ValueError, TypeError) as exc:
+        logger.debug("could not derive AIRMASS from header: %s", exc)
+        return float("nan")
+    return float(altaz.secz)
 
 
 def metadata_from_header(header):
