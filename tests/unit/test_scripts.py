@@ -548,7 +548,9 @@ class TestProcessBatchToDisk:
         )
 
         # Ignore the QA manifest sibling; this test is about the starlist files.
-        written = sorted(p.name for p in tmp_path.iterdir() if p.suffix != ".csv")
+        written = sorted(
+            p.name for p in tmp_path.iterdir() if p.name != scripts.QA_MANIFEST_FILENAME
+        )
         assert written == ["a.star", "b.star"]
 
     def test_output_filename_is_stem_plus_default_suffix(
@@ -564,9 +566,9 @@ class TestProcessBatchToDisk:
             output_dir=tmp_path,
         )
 
-        assert [p.name for p in tmp_path.iterdir() if p.suffix != ".csv"] == [
-            "frame1.star"
-        ]
+        assert [
+            p.name for p in tmp_path.iterdir() if p.name != scripts.QA_MANIFEST_FILENAME
+        ] == ["frame1.star"]
 
     def test_custom_output_suffix_is_honored(self, monkeypatch, tmp_path, by_filter):
         """An explicit ``output_suffix`` replaces the default ``.star``."""
@@ -580,9 +582,9 @@ class TestProcessBatchToDisk:
             output_suffix=".starlist",
         )
 
-        assert [p.name for p in tmp_path.iterdir() if p.suffix != ".csv"] == [
-            "frame1.starlist"
-        ]
+        assert [
+            p.name for p in tmp_path.iterdir() if p.name != scripts.QA_MANIFEST_FILENAME
+        ] == ["frame1.starlist"]
 
     def test_written_file_round_trips_through_starlistset(
         self, monkeypatch, tmp_path, by_filter
@@ -642,9 +644,9 @@ class TestProcessBatchToDisk:
             output_dir=tmp_path,
         )
 
-        assert [p.name for p in tmp_path.iterdir() if p.suffix != ".csv"] == [
-            "good.star"
-        ]
+        assert [
+            p.name for p in tmp_path.iterdir() if p.name != scripts.QA_MANIFEST_FILENAME
+        ] == ["good.star"]
         assert results == {"good.fits": tmp_path / "good.star"}
 
     def test_writes_qa_manifest(self, monkeypatch, tmp_path, by_filter):
@@ -695,3 +697,33 @@ class TestProcessBatchToDisk:
         assert bad["status"].startswith("skipped")
         # A WCS solve failure is recorded as an explicit non-solve.
         assert bad["wcs_solved"] == "False"
+
+    def test_qa_manifest_can_be_disabled(self, monkeypatch, tmp_path, by_filter):
+        """``write_qa_manifest=False`` writes only starlists, no manifest."""
+        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+
+        scripts.process_batch(
+            ["a.fits", "b.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+            write_qa_manifest=False,
+        )
+
+        assert not (tmp_path / scripts.QA_MANIFEST_FILENAME).exists()
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["a.star", "b.star"]
+
+    def test_qa_manifest_name_is_honored(self, monkeypatch, tmp_path, by_filter):
+        """An explicit ``qa_manifest_name`` overrides the default filename."""
+        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+
+        scripts.process_batch(
+            ["a.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+            qa_manifest_name="run_quality.csv",
+        )
+
+        assert (tmp_path / "run_quality.csv").exists()
+        assert not (tmp_path / scripts.QA_MANIFEST_FILENAME).exists()

@@ -381,6 +381,8 @@ def process_batch(
     output_dir=None,
     output_suffix=".star",
     fail_fast=True,
+    write_qa_manifest=True,
+    qa_manifest_name=QA_MANIFEST_FILENAME,
 ):
     """
     Photometer every frame in a batch using a shared `BatchPrep`.
@@ -410,6 +412,16 @@ def process_batch(
         frame -- the robust mode for unattended runs. Expected per-frame
         failures (`FrameError` and its subclasses) are always logged and
         skipped regardless of this flag.
+    write_qa_manifest : bool, optional
+        Whether to write the per-frame QA manifest in write-to-disk mode.
+        Default True -- the manifest is cheap and makes a degrading night
+        self-evident the first time it goes bad, before anyone thinks to ask
+        for it. Set False to write only the `.star` files and leave the rest
+        of ``output_dir`` untouched. Ignored in in-memory mode (no directory
+        to write to).
+    qa_manifest_name : str, optional
+        Filename for the QA manifest within ``output_dir``. Default
+        `QA_MANIFEST_FILENAME`.
 
     Returns
     -------
@@ -421,10 +433,11 @@ def process_batch(
         Frames that raise a `FrameError` (too few stars, unsolvable WCS, ...)
         are skipped with a logged warning and omitted from the result.
 
-        In write-to-disk mode a per-frame QA manifest (`QA_MANIFEST_FILENAME`)
-        is also written to ``output_dir``, with one row per input frame
-        recording its status (``ok`` / ``skipped: <reason>`` / ``error: <type>``)
-        and the available run-quality signals (`QA_MANIFEST_COLUMNS`).
+        In write-to-disk mode, unless ``write_qa_manifest`` is False, a
+        per-frame QA manifest (``qa_manifest_name``) is also written to
+        ``output_dir``, with one row per input frame recording its status
+        (``ok`` / ``skipped: <FrameError type>`` / ``error: <type>``) and the
+        available run-quality signals (`QA_MANIFEST_COLUMNS`).
 
     Raises
     ------
@@ -434,7 +447,8 @@ def process_batch(
     """
     results = {}
     # One QA record per frame (ok/skipped/error), written to a manifest at the
-    # end in write-to-disk mode.
+    # end when in write-to-disk mode and the caller has not opted out.
+    write_manifest = output_dir is not None and write_qa_manifest
     manifest_records = []
     # Create the output directory once, before the loop, so a missing parent
     # fails fast instead of partway through the batch.
@@ -497,7 +511,8 @@ def process_batch(
                 results[file] = by_filter
 
     # Persist the per-frame QA manifest next to the starlists. Only written in
-    # write-to-disk mode; in-memory mode has no directory to write it to.
-    if output_dir is not None:
-        _write_qa_manifest(Path(output_dir) / QA_MANIFEST_FILENAME, manifest_records)
+    # write-to-disk mode (in-memory mode has no directory to write it to) and
+    # only when the caller has not opted out.
+    if write_manifest:
+        _write_qa_manifest(Path(output_dir) / qa_manifest_name, manifest_records)
     return results
