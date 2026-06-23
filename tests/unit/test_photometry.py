@@ -7,6 +7,7 @@ Covers aperture photometry on synthetic single-source images
 (``prepare_image``), using the synthetic-image fixtures from ``conftest.py``.
 """
 
+import warnings
 from pathlib import Path
 
 import astropy.units as u
@@ -314,6 +315,41 @@ def test_measure_photometry_accepts_scalar_relative_radii(make_test_image):
     # A scalar behaves like a single-element radius list.
     assert photom["fluxes"].shape == (len(coords), 1)
     assert photom["aperture_radii"] == pytest.approx(1.0 * fwhm)
+
+
+def test_measure_photometry_negative_net_count_no_warning():
+    """
+    Negative net counts emit no RuntimeWarning but still yield NaN SNR (#30).
+
+    A faint star whose annulus background over-subtracts gives ``net_count < 0``,
+    so ``sqrt(egain * net_count)`` is the root of a negative number. The NaN is an
+    expected intermediate that ``eloy_to_starlist`` filters downstream, so the
+    function must not spray ``RuntimeWarning: invalid value encountered in sqrt``.
+    """
+    fwhm = 2.3
+    egain = 0.3
+    side = int(max(ANNULUS) * fwhm * 2) + 10
+    # Bright, uniform background with a dark hole at the aperture: the 1*FWHM
+    # aperture sums to ~0 while the distant annulus reads the bright background,
+    # so net_count = flux - total_bkg is strongly negative.
+    background = 100.0
+    image = np.full((side, side), background, dtype=float)
+    center = side / 2.0
+    yy, xx = np.mgrid[0:side, 0:side]
+    radius = np.sqrt((xx - center) ** 2 + (yy - center) ** 2)
+    image[radius <= 1.5 * fwhm] = 0.0
+    coords = np.array([[center, center]])
+    mask = np.zeros_like(image, dtype=bool)
+
+    with warnings.catch_warnings():
+        # Turn the specific RuntimeWarning into an error so the test fails if the
+        # function emits it; other warnings are left untouched.
+        warnings.simplefilter("error", RuntimeWarning)
+        photom = measure_photometry(image, coords, coords, fwhm, egain, mask)
+
+    # The NaN contract: negative count survives, SNR is NaN, no warning was raised.
+    assert photom["tot_count"][0] < 0
+    assert np.isnan(photom["snr"][0])
 
 
 @pytest.mark.parametrize(

@@ -1021,6 +1021,16 @@ def measure_photometry(
     ValueError
         If `annulus` is not a 2-element sequence with the outer radius larger
         than the inner radius.
+
+    Notes
+    -----
+    Per-star ``snr`` (and the noise terms feeding it) may be ``NaN`` for faint
+    stars whose annulus background over-subtracts (negative ``net_count``) or for
+    stars near the frame edge whose annulus statistics are undefined. These
+    ``NaN``s are an accepted part of the contract: they are filtered out
+    downstream by `eloy_to_starlist` (which keeps only rows with ``tot_count > 0``,
+    finite ``count_err``, and in-bounds ``x``/``y``). The associated
+    ``invalid``/``divide`` RuntimeWarnings are deliberately suppressed.
     """
     msg = (
         "annulus must be a 2-element (inner, outer) sequence with "
@@ -1087,9 +1097,17 @@ def measure_photometry(
     net_count = flux - total_bkg
     # Background noise per pixel estimated from the annulus standard deviation
     tot_noise_bkgd = bkg_std[:, None] * np.sqrt(aperture_area)
-    poiss_noise = np.sqrt(egain * net_count) / egain
-    tot_noise = np.sqrt(poiss_noise**2 + tot_noise_bkgd**2)
-    snr = net_count / tot_noise
+    # NaN contract: a faint star whose annulus over-subtracts gives net_count < 0
+    # (so sqrt yields NaN), and an edge-of-frame annulus can give a NaN
+    # background/std that poisons tot_noise and snr. These NaNs are *expected*
+    # intermediates -- eloy_to_starlist drops such rows downstream (tot_count > 0,
+    # finite count_err, in-bounds x/y) -- so suppress the corresponding
+    # invalid/divide RuntimeWarnings here rather than letting them spam the logs
+    # and obscure real problems.
+    with np.errstate(invalid="ignore", divide="ignore"):
+        poiss_noise = np.sqrt(egain * net_count) / egain
+        tot_noise = np.sqrt(poiss_noise**2 + tot_noise_bkgd**2)
+        snr = net_count / tot_noise
 
     return {
         "tot_count": net_count[:, 0],
