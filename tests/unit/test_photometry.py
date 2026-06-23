@@ -407,14 +407,22 @@ def _grid_star_image(make_test_image, fwhm, *, jitter=1.0, seed=SEED):
     """
     Build a noisy image of a grid of identical sub-pixel Gaussian stars.
 
-    Unlike ``_detectable_image`` (which returns only an image of a few well-separated
-    sources), this returns ground-truth coordinates alongside the frame so the
-    registration test can prove the effective PSF survives centroid error.
+    Unlike the other image-generation helpers, this hands back ground-truth
+    coordinates alongside the frame:
+
+    - ``make_test_image`` (conftest) is the base factory all of these wrap.
+    - ``_detectable_image`` returns only an image of a few well-separated
+      sources at fixed positions, tuned so eloy's detection resolves them.
+    - ``_single_source_photometry_inputs`` builds a single noiseless source
+      plus its ``measure_photometry`` inputs.
+    - this lays down a dense grid of identical stars at deliberate sub-pixel
+      offsets so a stable ePSF can be median-stacked.
 
     Returns ``(image, true_coords_xy, jittered_coords_xy)``. ``true_coords_xy`` are
     the exact (sub-pixel) star centers; ``jittered_coords_xy`` are those centers
     displaced by up to ``jitter`` px, standing in for an imperfect detection centroid
-    that smears a position-stacked PSF.
+    that smears a position-stacked PSF. Together they let the registration test prove
+    the effective PSF survives centroid error.
     """
     rng = np.random.default_rng(seed)
     img_size = (300, 300)
