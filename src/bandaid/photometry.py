@@ -554,9 +554,7 @@ def calibration_sequence(
     threshold=1,
     opening=DETECTION_OPENING,
     *,
-    # Accepted now but not yet honored; the next commit runs detection on the
-    # balanced copy. The unused-arg lint is silenced only for this interim state.
-    detect_on_bayer_balanced=False,  # noqa: ARG001
+    detect_on_bayer_balanced=False,
     cnn=None,
 ) -> tuple:
     """
@@ -613,8 +611,18 @@ def calibration_sequence(
 
     # Multiplying by 1 should force conversion from int to float data
     calibrated_data = 1.0 * data
+
+    # Detection and the FWHM fit run on the Bayer-balanced data when requested
+    # (the channel imbalance otherwise biases both), but photometry must see the
+    # real counts, so balance a *copy* and keep calibrated_data untouched.
+    if detect_on_bayer_balanced:
+        detection_image = calibrated_data.copy()
+        bayer_balance_image(detection_image)
+    else:
+        detection_image = calibrated_data
+
     regions = detection.stars_detection(
-        calibrated_data, threshold=threshold, opening=opening
+        detection_image, threshold=threshold, opening=opening
     )
 
     # in case we detect fewer than the minimum number of stars
@@ -626,7 +634,7 @@ def calibration_sequence(
 
     # Saturated sources are excluded inside the helper; if none survive there is
     # nothing to fit a PSF to.
-    fwhm = _fwhm_from_coords(calibrated_data, region_coords_xy, max_adu, cnn=cnn)
+    fwhm = _fwhm_from_coords(detection_image, region_coords_xy, max_adu, cnn=cnn)
     if fwhm is None:
         msg = "all detected sources are saturated"
         raise TooFewStarsError(msg, file=file)
@@ -1172,6 +1180,7 @@ def prepare_image(
     calibrated_data, metadata, coords, fwhm, _ = calibration_sequence(
         file,
         threshold=THRESH,
+        detect_on_bayer_balanced=detect_on_bayer_balanced,
         cnn=cnn,
     )
 
