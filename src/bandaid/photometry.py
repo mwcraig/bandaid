@@ -1484,3 +1484,13 @@ def calculate_l4_quantities(final_data, by_filter_data, egain):
     # here from a full-frame photometry pass, so its snr column otherwise still
     # reflects the discarded full-frame measurement instead of the channel sum.
     final_data["snr"] = final_data["tot_count"] / final_data["count_err"]
+
+    # fluxes/total_bkg/bkgd_std are not recombined across TR/TG/TB and have no
+    # L4-consistent meaning, so drop them rather than leave the stale full-frame
+    # values from the incoming table (issue #21). remove_columns is given only
+    # the columns actually present so it is safe if the table is built without
+    # them.
+    stale_columns = [
+        col for col in ("fluxes", "total_bkg", "bkgd_std") if col in final_data.colnames
+    ]
+    final_data.remove_columns(stale_columns)
