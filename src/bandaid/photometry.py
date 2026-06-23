@@ -482,8 +482,8 @@ def _registered_epsf(data, coords_xy, max_adu, half=_FWHM_CUTOUT_HALF):
         if (
             iy - box < 0
             or ix - box < 0
-            or iy + box >= data.shape[0]
-            or ix + box >= data.shape[1]
+            or iy + box > data.shape[0]
+            or ix + box > data.shape[1]
         ):
             continue
         sub = data[iy - box : iy + box, ix - box : ix + box].astype(float)
