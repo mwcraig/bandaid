@@ -67,12 +67,13 @@ def _patch_prep(monkeypatch, *, metadata=None, radecs_mags=None, fwhm_pix=2.0):
     # These tests exercise the mag-cut/contamination plumbing with deliberately
     # tiny synthetic catalogs, so relax the "enough Gaia stars to solve a WCS"
     # floor; the floor itself is covered by TestPrepareBatch's guard tests.
-    monkeypatch.setattr(scripts, "N_STARS_ALIGN", 1)
+    monkeypatch.setattr(scripts, "N_GAIA_STARS_ALIGN_RETRY", 1)
 
     calls = {}
 
-    def fake_calibration_sequence(file):
+    def fake_calibration_sequence(file, *, cnn=None):
         calls["calibration_file"] = file
+        calls["calibration_cnn"] = cnn
         return np.zeros((4, 4)), metadata, np.zeros((3, 2)), fwhm_pix, object()
 
     def fake_cached_gaia_radecs(center, fov):
@@ -229,7 +230,7 @@ class TestPrepareBatch:
     def test_raises_when_too_few_stars_detected(self, monkeypatch):
         """A first-frame TooFewStarsError becomes a fatal BatchPrepError."""
 
-        def _too_few(file):
+        def _too_few(file, **_kwargs: object):
             msg = "only 1 stars detected"
             raise TooFewStarsError(msg, file=file)
 
@@ -241,15 +242,15 @@ class TestPrepareBatch:
         """An empty Gaia cone is fatal -- no reference stars to solve any WCS."""
         _patch_prep(monkeypatch, radecs_mags=(np.empty((0, 2)), np.empty(0)))
         # Use the real floor, not _patch_prep's relaxed one, for the guard.
-        monkeypatch.setattr(scripts, "N_STARS_ALIGN", 15)
+        monkeypatch.setattr(scripts, "N_GAIA_STARS_ALIGN_RETRY", 20)
         with pytest.raises(BatchPrepError, match="Gaia returned only 0"):
             scripts.prepare_batch("frame1.fits", cnn=object())
 
     def test_sparse_gaia_field_raises_batchpreperror(self, monkeypatch):
-        """Fewer than N_STARS_ALIGN reference stars is fatal for the batch."""
+        """Fewer than N_GAIA_STARS_ALIGN_RETRY references is fatal for the batch."""
         radecs = np.column_stack([np.linspace(9.0, 11.0, 5), np.zeros(5)])
         _patch_prep(monkeypatch, radecs_mags=(radecs, np.full(5, 12.0)))
-        monkeypatch.setattr(scripts, "N_STARS_ALIGN", 15)
+        monkeypatch.setattr(scripts, "N_GAIA_STARS_ALIGN_RETRY", 20)
         with pytest.raises(BatchPrepError, match="Gaia returned only 5"):
             scripts.prepare_batch("frame1.fits", cnn=object())
 
@@ -258,7 +259,13 @@ class TestPrepareBatch:
         monkeypatch.setattr(
             scripts,
             "calibration_sequence",
-            lambda file: (np.zeros((4, 4)), _batch_metadata(), None, 2.0, object()),
+            lambda file, *, cnn=None: (
+                np.zeros((4, 4)),
+                _batch_metadata(),
+                None,
+                2.0,
+                object(),
+            ),
         )
 
         def _boom(*_args: object, **_kwargs: object):

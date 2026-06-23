@@ -24,7 +24,9 @@ from astropy.table import Table
 from astropy.time import Time
 from dateutil import parser
 from eloy import centroid, detection, photometry, psf, utils
+from eloy.centroid import ballet_centroid
 from photutils.aperture import ApertureStats, CircularAnnulus, CircularAperture
+from scipy.ndimage import shift as ndshift
 from st_pipeline.schema_definition import StarList
 from twirl import compute_wcs
 
@@ -38,16 +40,63 @@ from .image2sl_qt import bayer_balance_image
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "ImageData",
+    "align",
+    "annulus_sigma_clip_stats",
+    "build_photometry_table",
+    "calculate_l4_quantities",
+    "calibration_sequence",
+    "centroid_drift_flag",
+    "centroid_stars",
+    "eloy_to_starlist",
+    "flag_partial_obstruction",
+    "measure_photometry",
+    "metadata_from_header",
+    "min_separation_fwhm",
+    "neighbor_contamination_flag",
+    "neighbor_contamination_flag_sky",
+    "prepare_image",
+    "process_one_image",
+]
+
 # Half-width (in pixels) of the cutout taken around each star for per-star
 # processing.
 CUTOUT = 500  # 120
 
-# Number of (brightest) detected stars used to compute the per-image WCS in
-# `align`. Only the first N_STARS_ALIGN detections/reference coords are paired up.
-N_STARS_ALIGN = 15
+# Star counts fed to twirl's asterism matcher in `align` to compute the per-image
+# WCS. The image (detected) and Gaia (reference) lists are sliced *independently*
+# so the matcher can be handed more references than detections. The two ranked
+# lists order by different quantities (measured peak vs catalog G mag), so under
+# clouds/colour/saturation they diverge; a deeper Gaia pool then raises the
+# bright-end overlap and is the documented robustness lever for starved frames.
+# DETECTION_OPENING = 3 roughly doubles the detections, which reshuffles the
+# brightest N_IMAGE_STARS_ALIGN handed to twirl; on SS Leo that cost 6 frames a
+# match at the 15-star pool that all came back at 20. Rather than pay the deeper
+# pool on every frame, `align` solves with N_GAIA_STARS_ALIGN first and only
+# widens to N_GAIA_STARS_ALIGN_RETRY when that fails -- the ~99% of frames that
+# solve immediately keep the cheap search (cost grows ~ C(N, 4), so the retry is
+# ~3x slower and is reserved for the few starved frames that need it).
+# N_GAIA_STARS_ALIGN_RETRY is also the per-batch minimum reference count
+# (scripts.prepare_batch): a field that cannot fill the retry pool can never use
+# the deeper search, so the batch fails up front.
+N_IMAGE_STARS_ALIGN = 15
+N_GAIA_STARS_ALIGN = 15
+N_GAIA_STARS_ALIGN_RETRY = 20
 # Source-detection threshold (in units of the background sigma) passed to
 # `detection.stars_detection`.
 THRESH = 0.5
+# Size of the morphological-opening kernel passed to `detection.stars_detection`.
+# A source must hold a solid opening x opening above-threshold core to survive, so
+# this -- not THRESH -- is what gates faint-star detection. eloy's default of 5
+# starved real fields (~10 of ~23 real stars), failing the plate solve; 3 recovers
+# them.
+DETECTION_OPENING = 3
+# Pixel tolerance handed to twirl's WCS solve.
+WCS_MATCH_TOLERANCE = 1
+# Half-width (px) of the square cutout used to build the effective PSF for the
+# FWHM fit; 25 reproduces the long-standing 50x50 calibration window.
+_FWHM_CUTOUT_HALF = 25
 
 # Minimum number of detected stars required before an image can be processed.
 MIN_DETECTED_STARS = 3
@@ -400,7 +449,109 @@ def centroid_drift_flag(
     return (drift > max_allowed) | ~np.isfinite(drift)
 
 
-def calibration_sequence(file, threshold=1) -> tuple:
+def _registered_epsf(data, coords_xy, max_adu, half=_FWHM_CUTOUT_HALF):
+    """
+    Median-stack sub-pixel-registered, peak-normalized cutouts into an effective PSF.
+
+    Each source is cut out, shifted so its center (``coords_xy``) lands on the cutout
+    center, peak-normalized, and median-combined. The sub-pixel registration is what
+    keeps the stack from broadening when the input centers carry centroid error.
+
+    Parameters
+    ----------
+    data : numpy.ndarray
+        2D image.
+    coords_xy : numpy.ndarray, shape (N, 2)
+        Source centers as ``(x, y)`` in pixels (may be sub-pixel).
+    max_adu : float
+        Saturation ceiling; cutouts whose peak reaches it are dropped.
+    half : int, optional
+        Half-width of the (square) stacked cutout in pixels.
+
+    Returns
+    -------
+    numpy.ndarray or None
+        The ``(2*half, 2*half)`` effective PSF, or None if no usable cutout survived
+        (every source off-edge, saturated, or non-finite).
+    """
+    # Cut a slightly larger box so the sub-pixel shift never pulls in edge fill.
+    box = half + 3
+    stack = []
+    for cx, cy in np.asarray(coords_xy, dtype=float):
+        ix, iy = round(cx), round(cy)
+        if (
+            iy - box < 0
+            or ix - box < 0
+            or iy + box > data.shape[0]
+            or ix + box > data.shape[1]
+        ):
+            continue
+        sub = data[iy - box : iy + box, ix - box : ix + box].astype(float)
+        if not np.isfinite(sub).all():
+            continue
+        peak = sub.max()
+        if peak >= max_adu or peak <= 0:
+            continue
+        # Shift the (off-center) source onto the cutout center before stacking.
+        sub = ndshift(sub, shift=(iy - cy, ix - cx), order=3, mode="nearest")
+        inner = sub[(box - half) : (box + half), (box - half) : (box + half)]
+        stack.append(inner / np.nanmax(inner))
+    if not stack:
+        return None
+    return np.nanmedian(stack, 0)
+
+
+def _fwhm_from_coords(data, coords_xy, max_adu, *, cnn=None):
+    """
+    Fit the image FWHM (px) from the effective PSF of the given sources.
+
+    With ``cnn=None`` this reproduces the legacy behaviour: peak-normalized 50x50
+    cutouts taken at ``coords_xy`` (integer-pixel) are median-stacked and fit with a
+    Gaussian. The stack inherits any error in ``coords_xy`` as extra width, so a
+    detection opening that yields jittery centroids inflates the FWHM -- and hence the
+    photometry aperture, which is sized in FWHM.
+
+    With a ``cnn`` (an ``eloy.centroid.Ballet``), the centers are first refined with
+    `ballet_centroid` and the cutouts are sub-pixel-registered to them before
+    stacking, so the measured FWHM tracks the true PSF regardless of the opening.
+
+    Parameters
+    ----------
+    data : numpy.ndarray
+        2D image.
+    coords_xy : numpy.ndarray, shape (N, 2)
+        Detected source centers as ``(x, y)`` in pixels.
+    max_adu : float
+        Saturation ceiling; saturated cutouts are excluded from the fit.
+    cnn : eloy.centroid.Ballet or None, optional
+        If given, re-centroid sources with the CNN and sub-pixel-register the cutouts
+        before fitting. Default None (legacy integer-cutout stack).
+
+    Returns
+    -------
+    float or None
+        FWHM in pixels, or None if no source was usable for the fit.
+    """
+    if cnn is not None:
+        coords_xy = ballet_centroid(data, np.asarray(coords_xy, dtype=float), cnn)
+        epsf = _registered_epsf(data, coords_xy, max_adu)
+    else:
+        cutouts = utils.cutout(data, coords_xy, (50, 50))
+        cutouts = np.array([c for c in cutouts if np.max(c) < max_adu])
+        epsf = (
+            None
+            if len(cutouts) == 0
+            else np.nanmedian(cutouts / np.nanmax(cutouts, (1, 2))[:, None, None], 0)
+        )
+    if epsf is None:
+        return None
+    params = psf.fit_gaussian(epsf)
+    return psf.gaussian_sigma_to_fwhm * np.mean([params["sigma_x"], params["sigma_y"]])
+
+
+def calibration_sequence(
+    file, threshold=1, opening=DETECTION_OPENING, *, cnn=None
+) -> tuple:
     """
     Find sources and compute FWHM for an image.
 
@@ -410,6 +561,16 @@ def calibration_sequence(file, threshold=1) -> tuple:
         Path to the FITS file.
     threshold : float, optional
         Detection threshold for star finding, by default 1
+    opening : int, optional
+        Size of the morphological-opening kernel passed to
+        `detection.stars_detection`; gates faint-star detection. By default
+        ``DETECTION_OPENING``.
+    cnn : eloy.centroid.Ballet or None, optional
+        If given, the FWHM is measured by re-centroiding detections with the CNN and
+        sub-pixel-registering their cutouts before the PSF fit, so the FWHM (and the
+        FWHM-sized photometry aperture) is independent of the detection ``opening``.
+        Default None preserves the legacy integer-cutout FWHM. See
+        `_fwhm_from_coords`.
 
     Returns
     -------
@@ -440,7 +601,9 @@ def calibration_sequence(file, threshold=1) -> tuple:
 
     # Multiplying by 1 should force conversion from int to float data
     calibrated_data = 1.0 * data
-    regions = detection.stars_detection(calibrated_data, threshold=threshold)
+    regions = detection.stars_detection(
+        calibrated_data, threshold=threshold, opening=opening
+    )
 
     # in case we detect fewer than the minimum number of stars
     if len(regions) < MIN_DETECTED_STARS:
@@ -448,37 +611,13 @@ def calibration_sequence(file, threshold=1) -> tuple:
         raise TooFewStarsError(msg, file=file)
 
     region_coords_xy = np.array([(r.centroid[1], r.centroid[0]) for r in regions])
-    cutouts = utils.cutout(calibrated_data, region_coords_xy, (50, 50))
 
-    # Drop any cutouts that are saturated -- NOTE THAT THIS LEAVES BEHIND
-    # SATURATED REGIONS
-    cutouts = np.array(list(filter(lambda data: np.max(data) < max_adu, cutouts)))
-
-    # If every detected source was saturated there is nothing left to fit a PSF to
-    if len(cutouts) == 0:
+    # Saturated sources are excluded inside the helper; if none survive there is
+    # nothing to fit a PSF to.
+    fwhm = _fwhm_from_coords(calibrated_data, region_coords_xy, max_adu, cnn=cnn)
+    if fwhm is None:
         msg = "all detected sources are saturated"
         raise TooFewStarsError(msg, file=file)
-
-    # Drop any regions that are saturated for calculating the FWHM
-    cutouts_normalized = cutouts / np.nanmax(cutouts, (1, 2))[:, None, None]
-
-    # Average the cutouts...yolo I guess on whether these are good detections
-    epsf = np.nanmedian(cutouts_normalized, 0)
-
-    # Note fitting is only done to the normalized cutout
-    psf_params = psf.fit_gaussian(epsf)
-    fwhm = psf.gaussian_sigma_to_fwhm * np.mean(
-        [psf_params["sigma_x"], psf_params["sigma_y"]],
-    )
-
-    # Saves a bit of memory, I guess, by forcing garbage collection
-    del (
-        cutouts_normalized,
-        data,
-        cutouts,
-        epsf,
-        header,
-    )
 
     return calibrated_data, metadata, region_coords_xy, fwhm, regions
 
@@ -724,32 +863,49 @@ def align(coords, radecs=None, *, photometry_coords=None, wcs=None):
         know the source file; callers attach it to the error before re-raising.
     """
     if wcs is None:
-        # Feed the brightest N_STARS_ALIGN detections and Gaia reference
-        # RA/Decs to twirl's asterism (quad) matcher. twirl matches by
-        # geometric shape, so the two lists need NOT be in the same order or
-        # even the same length -- there is no per-index correspondence. The
-        # slicing just limits the matcher to the brightest, most reliable
-        # stars.
+        # Feed the brightest N_IMAGE_STARS_ALIGN detections and the brightest
+        # Gaia reference RA/Decs to twirl's asterism (quad) matcher. twirl matches
+        # by geometric shape, so the two lists need NOT be in the same order or
+        # even the same length -- there is no per-index correspondence. The slices
+        # are independent so the matcher can be handed more references than
+        # detections (see the constants above).
+        #
+        # Try the cheap shallow Gaia pool first and only widen to the deeper retry
+        # pool if it fails: the larger pool's asterism search costs ~ C(N, 4), so
+        # the ~99% of frames that solve immediately should not pay for it. A pool
+        # that returns None or raises a too-few-stars error is a failure to retry;
+        # the last failure (exception or None) decides the error if every pool
+        # fails.
         # twirl's asterism matcher prints timing/diagnostic lines straight to
         # stdout (e.g. "Match took ... us"); redirect them to /dev/null so the
         # pipeline and notebooks stay quiet.
-        try:
-            with contextlib.redirect_stdout(io.StringIO()):
-                this_wcs = compute_wcs(
-                    coords[0:N_STARS_ALIGN],
-                    radecs[0:N_STARS_ALIGN],
-                    tolerance=1,
-                )
-        except (IndexError, ValueError) as exc:
-            # twirl's two too-few-stars exits: an IndexError when cross_match
-            # finds zero pairs (empty float index array), or a ValueError out of
-            # fit_wcs_from_points when too few matched points reach scipy's
-            # least-squares fitter (the original SS Leo failure). Surface either
-            # as a recoverable frame error; anything else is an unexpected bug
-            # and is left to propagate. The original is preserved for the log.
-            msg = "twirl raised while solving the WCS"
-            raise WCSSolveError(msg) from exc
+        this_wcs = None
+        last_exc = None
+        for n_gaia in (N_GAIA_STARS_ALIGN, N_GAIA_STARS_ALIGN_RETRY):
+            last_exc = None
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    this_wcs = compute_wcs(
+                        coords[0:N_IMAGE_STARS_ALIGN],
+                        radecs[0:n_gaia],
+                        tolerance=WCS_MATCH_TOLERANCE,
+                    )
+            except (IndexError, ValueError) as exc:
+                # twirl's two too-few-stars exits: an IndexError when cross_match
+                # finds zero pairs (empty float index array), or a ValueError out
+                # of fit_wcs_from_points when too few matched points reach scipy's
+                # least-squares fitter (the original SS Leo failure). Surface
+                # either as a recoverable frame error; anything else is an
+                # unexpected bug and is left to propagate. The original is
+                # preserved for the log.
+                last_exc = exc
+                this_wcs = None
+            if this_wcs is not None:
+                break
         if this_wcs is None:
+            if last_exc is not None:
+                msg = "twirl raised while solving the WCS"
+                raise WCSSolveError(msg) from last_exc
             msg = "twirl returned no WCS (too few matched stars)"
             raise WCSSolveError(msg)
     else:
@@ -999,9 +1155,12 @@ def prepare_image(
     # "calibrate" the data and get initial detections for WCS alignment and
     # FWHM estimation. calibration_sequence raises TooFewStarsError (a
     # FrameError) when the frame is unusable; let it propagate to the batch loop.
+    # Pass the CNN so the FWHM that sizes the photometry aperture is measured by
+    # re-centroiding detections, keeping it independent of the detection opening.
     calibrated_data, metadata, coords, fwhm, _ = calibration_sequence(
         file,
         threshold=THRESH,
+        cnn=cnn,
     )
 
     if user_specific_metadata is not None:
