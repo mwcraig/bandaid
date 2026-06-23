@@ -19,6 +19,7 @@ from astropy.nddata import CCDData
 from astropy.stats import gaussian_fwhm_to_sigma, sigma_clipped_stats
 from astropy.table import Table
 from astropy.wcs import WCS
+from eloy import detection
 
 from bandaid import measure_photometry
 from bandaid.exceptions import (
@@ -1799,6 +1800,57 @@ class TestCalibrationSequence:
         with pytest.raises(TooFewStarsError):
             calibration_sequence(path, threshold=1, opening=custom_opening)
         assert captured["opening"] == custom_opening
+
+    def test_detects_on_balanced_copy_when_flagged(
+        self, make_test_image, tmp_path, monkeypatch
+    ):
+        """
+        detect_on_bayer_balanced runs detection/FWHM on a balanced copy (#22).
+
+        The flag is meant to reach source detection, not just centroiding, while
+        photometry must still see the original unbalanced counts. The detector is
+        wrapped to capture the array it receives and ``bayer_balance_image`` is
+        replaced with an in-place marker, so we can assert detection saw the
+        balanced image while the returned ``calibrated_data`` is left unbalanced.
+        """
+        marker = 1000.0
+
+        def fake_balance(arr):
+            # Stand in for the real channel balancing with an obvious in-place
+            # transform so a balanced array is trivially distinguishable.
+            arr += marker
+
+        monkeypatch.setattr("bandaid.photometry.bayer_balance_image", fake_balance)
+
+        seen = {}
+        real_detection = detection.stars_detection
+
+        def capturing_detection(data, threshold=5, opening=5):
+            seen["data"] = np.array(data, copy=True)
+            return real_detection(data, threshold=threshold, opening=opening)
+
+        monkeypatch.setattr(
+            "bandaid.photometry.detection.stars_detection", capturing_detection
+        )
+
+        n_sources = 5
+        image = _detectable_image(make_test_image, n_sources=n_sources)
+        path = _write_seestar_fits(tmp_path / "bayer_detect.fits", image)
+
+        calibrated, _, coords, _, regions = calibration_sequence(
+            path,
+            threshold=1,
+            detect_on_bayer_balanced=True,
+        )
+
+        # Detection saw the balanced (marked) image...
+        np.testing.assert_allclose(seen["data"], image + marker)
+        # ...while the returned calibrated_data is the original, unbalanced counts
+        # that downstream photometry relies on.
+        np.testing.assert_allclose(calibrated, image)
+        # Sanity: the balanced detection still recovers the injected sources.
+        assert len(regions) == n_sources
+        assert coords.shape == (n_sources, 2)
 
 
 class TestPrepareImageBranches:
