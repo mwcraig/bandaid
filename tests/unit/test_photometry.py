@@ -735,33 +735,72 @@ class TestAirmassFromHeader:
 
         assert _airmass_from_header(header) == pytest.approx(1.37)
 
-    def test_derives_from_pointing_when_absent(self):
-        """With no AIRMASS, derive sec(z) from RA/DEC/site/time (not NaN)."""
+    def _header_pointing_at_altitude(self, alt_deg):
+        """Build a header whose RA/DEC put the field at ``alt_deg`` altitude."""
         location = EarthLocation(lat=40.0 * u.deg, lon=-105.0 * u.deg, height=0.0 * u.m)
         obstime = "2024-06-01T07:00:00"
-        # Point ~1 deg from the zenith so the target is unambiguously up and the
-        # airmass is ~sec(1 deg) ~ 1.0 -- a finite, physical (>= 1) value.
-        zenith_ish = SkyCoord(
-            AltAz(alt=89.0 * u.deg, az=0.0 * u.deg, obstime=obstime, location=location)
+        target = SkyCoord(
+            AltAz(
+                alt=alt_deg * u.deg,
+                az=0.0 * u.deg,
+                obstime=obstime,
+                location=location,
+            )
         ).icrs
 
         header = fits.Header()
-        header["RA"] = zenith_ish.ra.degree
-        header["DEC"] = zenith_ish.dec.degree
+        header["RA"] = target.ra.degree
+        header["DEC"] = target.dec.degree
         header["SITELAT"] = 40.0
         header["SITELONG"] = -105.0
         header["DATE-OBS"] = obstime
+        return header
+
+    @staticmethod
+    def _kasten_young(alt_deg) -> float:
+        """Kasten & Young (1989) relative optical airmass for a given altitude."""
+        return 1.0 / (
+            np.sin(np.deg2rad(alt_deg)) + 0.50572 * (alt_deg + 6.07995) ** -1.6364
+        )
+
+    def test_derives_from_pointing_when_absent(self):
+        """With no AIRMASS, derive the airmass from RA/DEC/site/time (not NaN)."""
+        # Point ~1 deg from the zenith: a finite, physical (~1) airmass where
+        # Kasten-Young and sec(z) coincide.
+        header = self._header_pointing_at_altitude(89.0)
 
         airmass = _airmass_from_header(header)
 
         assert np.isfinite(airmass)
-        assert airmass == pytest.approx(1.0 / np.cos(np.deg2rad(1.0)), rel=1e-3)
+        assert airmass == pytest.approx(self._kasten_young(89.0), rel=1e-6)
 
-    def test_nan_when_inputs_missing(self):
-        """No AIRMASS and no pointing/site/time -> NaN, not an error."""
+    def test_high_airmass_uses_kasten_young_not_secz(self):
+        """At low altitude the result follows Kasten-Young, not sec(z)."""
+        # Altitude 15 deg (zenith angle 75 deg) is in the range these frames
+        # reach, where sec(z) overestimates by ~1.3%. The result must match KY1989
+        # and be distinguishable from sec(z).
+        header = self._header_pointing_at_altitude(15.0)
+
+        airmass = _airmass_from_header(header)
+
+        secz = 1.0 / np.cos(np.deg2rad(90.0 - 15.0))
+        assert airmass == pytest.approx(self._kasten_young(15.0), rel=1e-4)
+        assert airmass < secz
+        assert airmass == pytest.approx(secz, rel=2e-2)
+
+    def test_raises_when_inputs_missing(self):
+        """No AIRMASS and no pointing/site/time -> skip the frame, not a NaN."""
         header = fits.Header()
         header["DATE-OBS"] = "2024-06-01T07:00:00"
-        assert np.isnan(_airmass_from_header(header))
+        with pytest.raises(FrameMetadataError):
+            _airmass_from_header(header)
+
+    def test_raises_on_malformed_header_airmass(self):
+        """A present-but-unparseable AIRMASS skips the frame rather than crashing."""
+        header = fits.Header()
+        header["AIRMASS"] = "not-a-number"
+        with pytest.raises(FrameMetadataError):
+            _airmass_from_header(header)
 
 
 class TestBuildPhotometryTable:
@@ -1557,6 +1596,12 @@ def _write_seestar_fits(path, image):
     ccd.header["CREATOR"] = "ZWO Seestar S50"
     ccd.header["DATE-OBS"] = "2024-01-01T00:00:00"
     ccd.header["BAYERPAT"] = "RGGB"
+    # Real Seestar frames carry pointing and site so airmass derives (issue #29);
+    # without them build_photometry_table now skips the frame.
+    ccd.header["RA"] = 10.0
+    ccd.header["DEC"] = 20.0
+    ccd.header["SITELAT"] = 40.0
+    ccd.header["SITELONG"] = -105.0
     ccd.write(path)
     return path
 
