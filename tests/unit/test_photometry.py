@@ -1453,6 +1453,44 @@ class TestCalculateL4Quantities:
         np.testing.assert_allclose(final_data["count_err"], expected_err)
         np.testing.assert_allclose(final_data["snr"], expected_snr)
 
+    def test_drops_stale_full_frame_columns(self):
+        """
+        fluxes/total_bkg/bkgd_std are not recombined, so they are dropped.
+
+        ``final_data`` arrives from a full-frame photometry pass carrying these
+        columns at their discarded full-frame values. ``calculate_l4_quantities``
+        overwrites the columns it can recombine (tot_count, count_err, snr, ...)
+        but leaves these three with no L4-consistent meaning, so they must be
+        removed rather than left stale (issue #21).
+        """
+        egain = 0.5
+
+        def _filter_table(tot, area, bkgd, bkgd_std, peak):
+            t = Table()
+            t["tot_count"] = np.array(tot, dtype=float)
+            t["aperture_area"] = np.array(area, dtype=float)
+            t["bkgd_count"] = np.array(bkgd, dtype=float)
+            t["bkgd_std"] = np.array(bkgd_std, dtype=float)
+            t["peak_count"] = np.array(peak, dtype=float)
+            return t
+
+        by_filter = {
+            "TR": _filter_table([100, 200], [10, 12], [5, 6], [2, 3], [50, 90]),
+            "TG": _filter_table([110, 210], [11, 13], [4, 7], [1, 2], [70, 80]),
+            "TB": _filter_table([120, 220], [9, 14], [6, 5], [3, 1], [60, 95]),
+        }
+
+        # Seed the stale full-frame columns the L4 table really arrives with.
+        final_data = Table()
+        final_data["fluxes"] = np.array([1.0, 2.0])
+        final_data["total_bkg"] = np.array([3.0, 4.0])
+        final_data["bkgd_std"] = np.array([5.0, 6.0])
+
+        calculate_l4_quantities(final_data, by_filter, egain)
+
+        for stale in ("fluxes", "total_bkg", "bkgd_std"):
+            assert stale not in final_data.colnames
+
 
 # --- Synthetic-FITS helpers for the detect/align/centroid pipeline tests ---
 
