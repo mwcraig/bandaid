@@ -49,7 +49,6 @@ from bandaid.photometry import (
     centroid_drift_flag,
     centroid_stars,
     eloy_to_starlist,
-    flag_partial_obstruction,
     metadata_from_header,
     min_separation_fwhm,
     neighbor_contamination_flag,
@@ -2086,30 +2085,3 @@ class TestMetadataFromHeaderGuard:
         """A header missing required keywords is a frame metadata error."""
         with pytest.raises(FrameMetadataError):
             metadata_from_header(fits.Header())
-
-
-class TestFlagPartialObstruction:
-    """A localized SNR drop is flagged; a uniform one is not."""
-
-    @staticmethod
-    def _grid_table(snr_grid, shape=(400, 400)) -> Table:
-        """Build a table with five stars per cell of a 4x4 SNR grid."""
-        height, width = shape
-        xs, ys, snrs = [], [], []
-        for r in range(4):
-            for c in range(4):
-                xs.extend([(c + 0.5) / 4 * width] * 5)
-                ys.extend([(r + 0.5) / 4 * height] * 5)
-                snrs.extend([snr_grid[r, c]] * 5)
-        return Table({"x": xs, "y": ys, "snr": snrs})
-
-    def test_localized_low_snr_is_flagged(self):
-        """One quadrant of heavily depressed SNR trips the flag."""
-        snr_grid = np.full((4, 4), 50.0)
-        snr_grid[0, 0] = 2.0
-        assert flag_partial_obstruction(self._grid_table(snr_grid), (400, 400))
-
-    def test_uniform_low_snr_is_not_flagged(self):
-        """A uniform SNR drop (transparency loss) does not trip the flag."""
-        table = self._grid_table(np.full((4, 4), 5.0))
-        assert not flag_partial_obstruction(table, (400, 400))

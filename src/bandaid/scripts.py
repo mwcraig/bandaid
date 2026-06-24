@@ -44,8 +44,8 @@ from .photometry import (
 
 # Per-frame QA manifest written alongside the starlists in write-to-disk mode.
 # The columns are the run-quality signals the pipeline already computes; a
-# degrading night (clouds, rising airmass, an obstruction) shows up at a glance
-# and the manifest enables a future partial-batch resume.
+# degrading night (clouds, rising airmass) shows up at a glance and the manifest
+# enables a future partial-batch resume.
 QA_MANIFEST_FILENAME = "qa_manifest.csv"
 QA_MANIFEST_COLUMNS = (
     "file",
@@ -55,7 +55,6 @@ QA_MANIFEST_COLUMNS = (
     "fwhm",
     "wcs_solved",
     "n_good_stars",
-    "partial_obstruction",
 )
 
 logger = logging.getLogger(__name__)
@@ -319,7 +318,6 @@ def _qa_record_ok(file, by_filter):
         "fwhm": meta.get("fwhm"),
         "wcs_solved": True,
         "n_good_stars": n_good_stars,
-        "partial_obstruction": full_meta.get("partial_obstruction"),
     }
 
 

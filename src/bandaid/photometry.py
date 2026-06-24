@@ -50,7 +50,6 @@ __all__ = [
     "centroid_drift_flag",
     "centroid_stars",
     "eloy_to_starlist",
-    "flag_partial_obstruction",
     "good_star_mask",
     "measure_photometry",
     "metadata_from_header",
@@ -126,16 +125,6 @@ MIN_STARS_FOR_PAIRS = 2
 # `centroid_drift_flag` / `build_photometry_table`).
 DRIFT_TOLERANCE_FWHM = 1.0  # max centroid drift, in units of FWHM
 DRIFT_CAP_PIX = 4.0  # absolute pixel cap on allowed drift
-
-# Partial-obstruction detection. The frame is binned into an
-# OBSTRUCTION_GRID x OBSTRUCTION_GRID grid; a cell holding at least
-# OBSTRUCTION_MIN_STARS_PER_CELL expected stars is flagged when its median SNR
-# falls below OBSTRUCTION_SNR_FRACTION of the frame-wide median (a *localized*
-# drop, the signature of something blocking part of the field -- as opposed to
-# transparency loss, which lowers SNR roughly uniformly).
-OBSTRUCTION_GRID = 4
-OBSTRUCTION_SNR_FRACTION = 0.25
-OBSTRUCTION_MIN_STARS_PER_CELL = 3
 
 
 def min_separation_fwhm(delta_mag, tolerance=CONTAMINATION_TOLERANCE, beta=MOFFAT_BETA):
@@ -860,74 +849,6 @@ def good_star_mask(eloy_table, metadata):
     return np.asarray(good)
 
 
-def flag_partial_obstruction(
-    table,
-    shape,
-    *,
-    grid=OBSTRUCTION_GRID,
-    snr_fraction=OBSTRUCTION_SNR_FRACTION,
-    min_stars=OBSTRUCTION_MIN_STARS_PER_CELL,
-):
-    """
-    Detect a partial obstruction from a spatially-localized SNR deficit.
-
-    A chimney, tree, or dome edge can block or attenuate a contiguous block of
-    stars while the plate solve still succeeds, leaving the frame looking healthy
-    but silently incomplete. The blocked stars come back with badly depressed
-    SNR, so binning the per-star SNR onto a coarse grid and comparing each cell
-    to the frame-wide median exposes the obstruction. Because the comparison is
-    *relative to this frame*, a uniform transparency loss (which lowers every
-    cell together) does not trip it.
-
-    Parameters
-    ----------
-    table : astropy.table.Table
-        A per-frame photometry table with ``x``, ``y``, and ``snr`` columns
-        (one row per expected star), e.g. from `build_photometry_table`.
-    shape : tuple of int
-        Image ``(height, width)`` in pixels, used to bin star positions.
-    grid : int, optional
-        Number of bins per axis. Defaults to `OBSTRUCTION_GRID`.
-    snr_fraction : float, optional
-        A cell is flagged when its median SNR is below this fraction of the
-        frame-wide median SNR. Defaults to `OBSTRUCTION_SNR_FRACTION`.
-    min_stars : int, optional
-        Minimum expected stars in a cell before it is judged (cells too sparse
-        to be meaningful are skipped). Defaults to
-        `OBSTRUCTION_MIN_STARS_PER_CELL`.
-
-    Returns
-    -------
-    bool
-        True if at least one populated cell shows a localized SNR deficit.
-    """
-    snr = np.asarray(table["snr"], dtype=float)
-    frame_median = np.nanmedian(snr)
-    if not np.isfinite(frame_median) or frame_median <= 0:
-        return False
-
-    height, width = shape
-    x = np.asarray(table["x"], dtype=float)
-    y = np.asarray(table["y"], dtype=float)
-    col = np.clip((x / width * grid).astype(int), 0, grid - 1)
-    row = np.clip((y / height * grid).astype(int), 0, grid - 1)
-
-    threshold = snr_fraction * frame_median
-    # Bin stars into the grid by a flat cell id (row * grid + col), then judge
-    # only the cells holding enough stars. The grouped nan-median has no
-    # vectorized numpy form, but looping the populated cells (usually a handful)
-    # replaces the full grid x grid sweep and skips empty cells outright.
-    cell = row * grid + col
-    counts = np.bincount(cell, minlength=grid * grid)
-    for cid in np.flatnonzero(counts >= min_stars):
-        cell_snr = snr[cell == cid]
-        # A cell whose stars are all non-finite (no flux recovered) is the
-        # strongest obstruction signal; otherwise compare the cell median.
-        if np.all(np.isnan(cell_snr)) or np.nanmedian(cell_snr) < threshold:
-            return True
-    return False
-
-
 @dataclass
 class ImageData:
     """Per-image detection, alignment, and centroiding results."""
@@ -1522,19 +1443,6 @@ def process_one_image(
             # violates the ordering.
             calculate_l4_quantities(data, by_filter_data, img.metadata["egain"])
         by_filter_data[filter_name] = data
-
-    # Flag (but keep) frames where something blocked part of the field. Use a
-    # representative channel -- L4 if present, else any -- since SNR is only
-    # available after photometry. The flag rides in img.metadata, which every
-    # table references via meta["full_image_meta"], so it reaches the output.
-    representative = by_filter_data.get("L4", next(iter(by_filter_data.values())))
-    obstructed = flag_partial_obstruction(
-        representative,
-        img.calibrated_data.shape,
-    )
-    img.metadata["partial_obstruction"] = obstructed
-    if obstructed:
-        logger.warning("possible partial obstruction in %s", file)
 
     return by_filter_data
 
