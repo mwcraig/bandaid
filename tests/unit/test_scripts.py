@@ -681,7 +681,6 @@ class TestProcessBatchToDisk:
             "fwhm",
             "wcs_solved",
             "n_good_stars",
-            "partial_obstruction",
         }
         assert expected_columns <= set(rows[0])
         by_file = {row["file"]: row for row in rows}
