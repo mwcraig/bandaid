@@ -27,16 +27,17 @@ The knobs fall into three groups by how safe they are to change.
 
 These are ordinary analysis choices and are safe to set for any run.
 
-| Sub-config  | Field                     | Meaning                                       |
-| ----------- | ------------------------- | --------------------------------------------- |
-| `apertures` | `relative_radii`          | Aperture radii, in units of FWHM              |
-| `apertures` | `annulus`                 | Background annulus `(inner, outer)`, in FWHM  |
-| `detection` | `gaia_mag_limit`          | Magnitude limit for the photometry targets    |
-| `detection` | `contaminant_mag_limit`   | Depth of the contaminant-flagging catalog     |
-| `quality`   | `drift_tolerance_fwhm`    | Max centroid drift, in FWHM                   |
-| `quality`   | `drift_cap_pix`           | Absolute pixel cap on centroid drift          |
-| `quality`   | `contamination_tolerance` | Max neighbour spillover before flagging       |
-| `quality`   | `moffat_beta`             | Moffat wing index for the contamination model |
+| Sub-config  | Field                     | Meaning                                          |
+| ----------- | ------------------------- | ------------------------------------------------ |
+| `apertures` | `relative_radii`          | Aperture radii, in units of FWHM                 |
+| `apertures` | `annulus`                 | Background annulus `(inner, outer)`, in FWHM     |
+| `detection` | `gaia_mag_limit`          | Magnitude limit for the photometry targets       |
+| `detection` | `contaminant_mag_limit`   | Depth of the contaminant-flagging catalog        |
+| `detection` | `contaminant_mag_offset`  | Default contaminant depth below `gaia_mag_limit` |
+| `quality`   | `drift_tolerance_fwhm`    | Max centroid drift, in FWHM                      |
+| `quality`   | `drift_cap_pix`           | Absolute pixel cap on centroid drift             |
+| `quality`   | `contamination_tolerance` | Max neighbour spillover before flagging          |
+| `quality`   | `moffat_beta`             | Moffat wing index for the contamination model    |
 
 ### Tier 2 — Instrument / per-telescope (advanced)
 
@@ -65,9 +66,10 @@ Construction enforces the invariants the pipeline relies on, for example:
 - aperture radii must be positive,
 - the annulus inner radius must be strictly inside the outer radius,
 - the quality cuts must be positive, and
-- `contaminant_mag_limit` must be finite; it defaults to `gaia_mag_limit + 3` and
-    is clamped up to `gaia_mag_limit` (the contaminant list is never shallower than
-    the target list).
+- `contaminant_mag_limit` must be finite; it defaults to
+    `gaia_mag_limit + contaminant_mag_offset` (offset `3` by default) and is clamped
+    up to `gaia_mag_limit` (the contaminant list is never shallower than the target
+    list).
 
 ```python
 from bandaid import ApertureConfig

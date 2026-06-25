@@ -154,6 +154,7 @@ def prepare_batch(
         # by re-centroiding detections, decoupling it from the detection opening.
         _, metadata, _, fwhm_pix, _ = calibration_sequence(
             first_file,
+            threshold=instrument.thresh,
             opening=instrument.detection_opening,
             cnn=cnn,
             fwhm_cutout_half=instrument.fwhm_cutout_half,
