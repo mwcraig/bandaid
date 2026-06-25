@@ -22,6 +22,7 @@ from astropy.wcs import WCS
 from eloy import detection
 
 from bandaid import measure_photometry
+from bandaid.config import InstrumentConfig, PhotometryConfig
 from bandaid.exceptions import (
     FrameMetadataError,
     NoUsableStarsError,
@@ -686,6 +687,59 @@ class TestPrepareImage:
         )
 
         assert np.array_equal(img.coords, img.aligned_coords)
+
+    def test_instrument_config_reaches_detection(self, monkeypatch):
+        """
+        A non-default instrument config sets the detection threshold/opening.
+
+        ``prepare_image`` historically hardcoded ``threshold=THRESH`` and never
+        forwarded ``opening`` to ``calibration_sequence``, so detection settings
+        passed in via the config never reached detection. Spy on
+        ``calibration_sequence`` and assert the configured values arrive.
+        """
+        expected_thresh = 0.9
+        expected_opening = 7
+        captured = {}
+
+        def _spy_calibration_sequence(_file, *_args: object, **kwargs: object):
+            captured["threshold"] = kwargs.get("threshold")
+            captured["opening"] = kwargs.get("opening")
+            calibrated = np.zeros((10, 10))
+            coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+            return calibrated, {"creator": "spy"}, coords, 2.0, None
+
+        monkeypatch.setattr(
+            "bandaid.photometry.calibration_sequence",
+            _spy_calibration_sequence,
+        )
+        monkeypatch.setattr(
+            "bandaid.photometry.align",
+            lambda coords, radecs, **kwargs: (coords, _make_tan_wcs()),
+        )
+        monkeypatch.setattr(
+            "bandaid.photometry.centroid_stars",
+            lambda data, coords, cnn: coords,
+        )
+        monkeypatch.setattr(
+            "bandaid.photometry.fits.getheader",
+            lambda file: {"creator": "spy"},
+        )
+
+        config = PhotometryConfig(
+            instrument=InstrumentConfig(
+                thresh=expected_thresh,
+                detection_opening=expected_opening,
+            ),
+        )
+        prepare_image(
+            "unused.fits",
+            np.zeros((5, 2)),
+            None,
+            config=config,
+        )
+
+        assert captured["threshold"] == expected_thresh
+        assert captured["opening"] == expected_opening
 
 
 def _make_tan_wcs(image_size=(500, 500), crval=(10.0, 20.0)):
