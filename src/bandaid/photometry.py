@@ -30,7 +30,12 @@ from scipy.ndimage import shift as ndshift
 from st_pipeline.schema_definition import StarList
 from twirl import compute_wcs
 
-from .config import ApertureConfig, InstrumentConfig, QualityConfig
+from .config import (
+    ApertureConfig,
+    InstrumentConfig,
+    PhotometryConfig,
+    QualityConfig,
+)
 from .exceptions import (
     FrameMetadataError,
     NoUsableStarsError,
@@ -497,7 +502,9 @@ def _registered_epsf(data, coords_xy, max_adu, half=_FWHM_CUTOUT_HALF):
     return np.nanmedian(stack, 0)
 
 
-def _fwhm_from_coords(data, coords_xy, max_adu, *, cnn=None):
+def _fwhm_from_coords(
+    data, coords_xy, max_adu, *, cnn=None, fwhm_cutout_half=_FWHM_CUTOUT_HALF
+):
     """
     Fit the image FWHM (px) from the effective PSF of the given sources.
 
@@ -522,6 +529,9 @@ def _fwhm_from_coords(data, coords_xy, max_adu, *, cnn=None):
     cnn : eloy.centroid.Ballet or None, optional
         If given, re-centroid sources with the CNN and sub-pixel-register the cutouts
         before fitting. Default None (legacy integer-cutout stack).
+    fwhm_cutout_half : int, optional
+        Half-width (px) of the square cutout used to build the effective PSF.
+        Defaults to ``_FWHM_CUTOUT_HALF`` (a 50x50 window).
 
     Returns
     -------
@@ -530,9 +540,10 @@ def _fwhm_from_coords(data, coords_xy, max_adu, *, cnn=None):
     """
     if cnn is not None:
         coords_xy = ballet_centroid(data, np.asarray(coords_xy, dtype=float), cnn)
-        epsf = _registered_epsf(data, coords_xy, max_adu)
+        epsf = _registered_epsf(data, coords_xy, max_adu, half=fwhm_cutout_half)
     else:
-        cutouts = utils.cutout(data, coords_xy, (50, 50))
+        cutout_size = (2 * fwhm_cutout_half, 2 * fwhm_cutout_half)
+        cutouts = utils.cutout(data, coords_xy, cutout_size)
         cutouts = np.array([c for c in cutouts if np.max(c) < max_adu])
         epsf = (
             None
@@ -552,6 +563,7 @@ def calibration_sequence(
     *,
     detect_on_bayer_balanced=False,
     cnn=None,
+    fwhm_cutout_half=_FWHM_CUTOUT_HALF,
 ) -> tuple:
     """
     Find sources and compute FWHM for an image.
@@ -577,6 +589,9 @@ def calibration_sequence(
         FWHM-sized photometry aperture) is independent of the detection ``opening``.
         Default None preserves the legacy integer-cutout FWHM. See
         `_fwhm_from_coords`.
+    fwhm_cutout_half : int, optional
+        Half-width (px) of the square cutout used to build the effective PSF for
+        the FWHM fit. By default ``_FWHM_CUTOUT_HALF``.
 
     Returns
     -------
@@ -630,7 +645,13 @@ def calibration_sequence(
 
     # Saturated sources are excluded inside the helper; if none survive there is
     # nothing to fit a PSF to.
-    fwhm = _fwhm_from_coords(detection_image, region_coords_xy, max_adu, cnn=cnn)
+    fwhm = _fwhm_from_coords(
+        detection_image,
+        region_coords_xy,
+        max_adu,
+        cnn=cnn,
+        fwhm_cutout_half=fwhm_cutout_half,
+    )
     if fwhm is None:
         msg = "all detected sources are saturated"
         raise TooFewStarsError(msg, file=file)
@@ -1175,6 +1196,7 @@ def prepare_image(
     radecs,
     cnn,
     *,
+    config=None,
     detect_on_bayer_balanced=False,
     photometry_coords=None,
     user_specific_metadata=None,
@@ -1191,6 +1213,10 @@ def prepare_image(
         Gaia reference sky coordinates (RA/Dec) used for WCS alignment.
     cnn : eloy.centroid.Ballet
         Centroiding CNN model.
+    config : PhotometryConfig or None, optional
+        Photometry configuration. The ``instrument`` settings (detection
+        threshold, opening, and FWHM cutout window) drive the detection call. If
+        None (default), a default ``PhotometryConfig`` is used.
     detect_on_bayer_balanced : bool, optional
         Whether to detect sources on Bayer balanced data (default is False).
     photometry_coords : `astropy.coordinates.SkyCoord` or None, optional
@@ -1221,11 +1247,15 @@ def prepare_image(
     # FrameError) when the frame is unusable; let it propagate to the batch loop.
     # Pass the CNN so the FWHM that sizes the photometry aperture is measured by
     # re-centroiding detections, keeping it independent of the detection opening.
+    config = config or PhotometryConfig()
+    instrument = config.instrument
     calibrated_data, metadata, coords, fwhm, _ = calibration_sequence(
         file,
-        threshold=THRESH,
+        threshold=instrument.thresh,
+        opening=instrument.detection_opening,
         detect_on_bayer_balanced=detect_on_bayer_balanced,
         cnn=cnn,
+        fwhm_cutout_half=instrument.fwhm_cutout_half,
     )
 
     if user_specific_metadata is not None:
@@ -1270,10 +1300,11 @@ def build_photometry_table(
     img,
     mask,
     *,
-    relative_radii=RELATIVE_RADII,
-    annulus=ANNULUS,
-    drift_tolerance=DRIFT_TOLERANCE_FWHM,
-    drift_cap=DRIFT_CAP_PIX,
+    config=None,
+    relative_radii=None,
+    annulus=None,
+    drift_tolerance=None,
+    drift_cap=None,
 ):
     """
     Run photometry with a given mask and build an output table.
@@ -1284,19 +1315,26 @@ def build_photometry_table(
         Per-image detection/alignment results.
     mask : numpy.ndarray or None
         Bayer mask to apply to the image data.
-    relative_radii : array-like or float, optional
+    config : PhotometryConfig or None, optional
+        Photometry configuration supplying the apertures/quality defaults. Any of
+        the explicit keyword overrides below take precedence over it. If None
+        (default), a default ``PhotometryConfig`` is used.
+    relative_radii : array-like or float or None, optional
         Aperture radii in units of FWHM, passed through to `measure_photometry`
-        (a scalar is treated as a single radius). Defaults to the module-level
-        `RELATIVE_RADII`.
-    annulus : tuple of float, optional
+        (a scalar is treated as a single radius). If None (default), taken from
+        ``config.apertures.relative_radii``.
+    annulus : tuple of float or None, optional
         Background annulus inner and outer radii in units of FWHM, passed
-        through to `measure_photometry`. Defaults to the module-level `ANNULUS`.
-    drift_tolerance : float, optional
+        through to `measure_photometry`. If None (default), taken from
+        ``config.apertures.annulus``.
+    drift_tolerance : float or None, optional
         Maximum allowed centroid drift in units of FWHM, passed to
-        `centroid_drift_flag`. Defaults to `DRIFT_TOLERANCE_FWHM`.
-    drift_cap : float, optional
+        `centroid_drift_flag`. If None (default), taken from
+        ``config.quality.drift_tolerance_fwhm``.
+    drift_cap : float or None, optional
         Absolute pixel cap on the allowed centroid drift, passed to
-        `centroid_drift_flag`. Defaults to `DRIFT_CAP_PIX`.
+        `centroid_drift_flag`. If None (default), taken from
+        ``config.quality.drift_cap_pix``.
 
     Returns
     -------
@@ -1310,6 +1348,15 @@ def build_photometry_table(
     FrameMetadataError
         If the image header has a missing or unparseable ``DATE-OBS``.
     """
+    config = config or PhotometryConfig()
+    if relative_radii is None:
+        relative_radii = config.apertures.relative_radii
+    if annulus is None:
+        annulus = config.apertures.annulus
+    if drift_tolerance is None:
+        drift_tolerance = config.quality.drift_tolerance_fwhm
+    if drift_cap is None:
+        drift_cap = config.quality.drift_cap_pix
     phot = measure_photometry(
         img.calibrated_data,
         img.centroid_coords,
@@ -1379,6 +1426,7 @@ def process_one_image(
     cnn,
     bayer_masks,
     *,
+    config=None,
     bayer_balance_detection=True,
     input_photometry_coords=None,
 ):
@@ -1402,6 +1450,10 @@ def process_one_image(
         shape as the image data. To include the synthetic full-frame "L4"
         luminance channel, map "L4" to None; it must be ordered after the RGB
         channels (TR/TG/TB) it is built from.
+    config : PhotometryConfig or None, optional
+        Photometry configuration threaded through to `prepare_image` and
+        `build_photometry_table`. If None (default), a default
+        ``PhotometryConfig`` is used.
     bayer_balance_detection : bool, optional
         Whether to perform source detection on Bayer balanced data. This is usually
         desirable for data with a bayer pattern.
@@ -1427,10 +1479,12 @@ def process_one_image(
     # Calculate everything we need for all filters at once. prepare_image raises
     # a FrameError (TooFewStarsError / WCSSolveError) when the frame is unusable;
     # let it propagate to the batch loop.
+    config = config or PhotometryConfig()
     img = prepare_image(
         file,
         radecs,
         cnn,
+        config=config,
         detect_on_bayer_balanced=bayer_balance_detection,
         photometry_coords=input_photometry_coords,
         user_specific_metadata=user_specific_metadata,
@@ -1438,7 +1492,7 @@ def process_one_image(
 
     by_filter_data = {}
     for filter_name, mask in bayer_masks.items():
-        data = build_photometry_table(img, mask)
+        data = build_photometry_table(img, mask, config=config)
         data.meta["filter"] = filter_name
         data.meta["full_image_meta"] = img.metadata
         if filter_name == "L4":

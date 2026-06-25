@@ -73,7 +73,7 @@ def _patch_prep(monkeypatch, *, metadata=None, radecs_mags=None, fwhm_pix=2.0):
 
     calls = {}
 
-    def fake_calibration_sequence(file, *, cnn=None):
+    def fake_calibration_sequence(file, *, cnn=None, **_kwargs: object):
         calls["calibration_file"] = file
         calls["calibration_cnn"] = cnn
         return np.zeros((4, 4)), metadata, np.zeros((3, 2)), fwhm_pix, object()
@@ -261,7 +261,7 @@ class TestPrepareBatch:
         monkeypatch.setattr(
             scripts,
             "calibration_sequence",
-            lambda file, *, cnn=None: (
+            lambda file, *, cnn=None, **_kwargs: (
                 np.zeros((4, 4)),
                 _batch_metadata(),
                 None,
@@ -387,6 +387,7 @@ class TestProcessBatch:
             masks,
             *,
             input_photometry_coords,
+            **_kwargs: object,
         ):
             calls.append((file, meta, radecs, cnn, masks, input_photometry_coords))
             return {"TR": Table({"tot_count": [1.0]})}

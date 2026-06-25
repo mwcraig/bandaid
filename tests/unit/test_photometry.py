@@ -545,7 +545,7 @@ class TestCalibrationSequenceCnn:
         captured = {}
         stub_fwhm = 2.5
 
-        def _spy(_data, _coords, _max_adu, *, cnn=None):
+        def _spy(_data, _coords, _max_adu, *, cnn=None, **_kwargs: object):
             captured["cnn"] = cnn
             return stub_fwhm
 

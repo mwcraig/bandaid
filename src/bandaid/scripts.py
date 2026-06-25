@@ -16,7 +16,7 @@ functions: no shared mutable state, no "is it done yet?" bookkeeping.
 
 import csv
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +25,7 @@ from astropy.io import fits
 from st_pipeline.schema_definition import StarListSet
 
 from .catalog import cached_gaia_radecs
+from .config import PhotometryConfig
 from .exceptions import (
     BatchPrepError,
     FrameError,
@@ -86,6 +87,8 @@ class BatchPrep:
         ``center``.
     shape : tuple of int
         Expected ``(height, width)`` of every frame.
+    config : PhotometryConfig
+        The photometry configuration to apply to every frame in the batch.
     """
 
     radecs: np.ndarray
@@ -95,10 +98,17 @@ class BatchPrep:
     center: tuple
     fov_rad: float
     shape: tuple
+    config: PhotometryConfig = field(default_factory=PhotometryConfig)
 
 
 def prepare_batch(
-    first_file, *, cnn, append_l4=False, gaia_mag_limit=15, contaminant_mag_limit=None
+    first_file,
+    *,
+    cnn,
+    config=None,
+    append_l4=False,
+    gaia_mag_limit=15,
+    contaminant_mag_limit=None,
 ):
     """
     Compute the once-per-batch photometry inputs from the first frame.
@@ -115,6 +125,11 @@ def prepare_batch(
         frames in the batch are assumed to share these.
     cnn : object
         The ``eloy`` Ballet centroiding model to carry through to every frame.
+    config : PhotometryConfig or None, optional
+        Photometry configuration carried on the returned `BatchPrep` and applied
+        to every frame. Its ``instrument`` settings drive the first-frame FWHM
+        detection and its ``quality`` settings drive contamination flagging here.
+        If None (default), a default ``PhotometryConfig`` is used.
     append_l4 : bool, optional
         Whether to add a full-frame "L4" luminance channel to the Bayer masks.
         Default False.
@@ -146,10 +161,17 @@ def prepare_batch(
     # A too-few-stars failure on the *first* frame is fatal for the whole batch
     # (no FWHM/pointing to prepare from), so translate the recoverable
     # per-frame TooFewStarsError into a fatal BatchPrepError.
+    config = config or PhotometryConfig()
+    instrument = config.instrument
     try:
         # Pass the CNN so the FWHM (which sizes the photometry aperture) is measured
         # by re-centroiding detections, decoupling it from the detection opening.
-        _, metadata, _, fwhm_pix, _ = calibration_sequence(first_file, cnn=cnn)
+        _, metadata, _, fwhm_pix, _ = calibration_sequence(
+            first_file,
+            opening=instrument.detection_opening,
+            cnn=cnn,
+            fwhm_cutout_half=instrument.fwhm_cutout_half,
+        )
     except TooFewStarsError as exc:
         msg = f"too few stars detected in {first_file!r} to prepare the batch"
         raise BatchPrepError(msg) from exc
@@ -199,6 +221,8 @@ def prepare_batch(
         radecs[contaminant],
         mags[contaminant],
         fwhm_arcsec,
+        tolerance=config.quality.contamination_tolerance,
+        beta=config.quality.moffat_beta,
         target_mask=target[contaminant],
     )
     flagged_target = flagged[target[contaminant]]
@@ -218,6 +242,7 @@ def prepare_batch(
         center=center,
         fov_rad=metadata["fov_rad"],
         shape=(metadata["height"], metadata["width"]),
+        config=config,
     )
 
 
@@ -461,6 +486,7 @@ def process_batch(
                 prep.radecs,
                 prep.cnn,
                 prep.bayer_masks,
+                config=prep.config,
                 input_photometry_coords=prep.photometry_coords,
             )
         except FrameError as exc:
