@@ -30,6 +30,7 @@ from scipy.ndimage import shift as ndshift
 from st_pipeline.schema_definition import StarList
 from twirl import compute_wcs
 
+from .config import ApertureConfig, InstrumentConfig, QualityConfig
 from .exceptions import (
     FrameMetadataError,
     NoUsableStarsError,
@@ -79,38 +80,47 @@ __all__ = [
 N_IMAGE_STARS_ALIGN = 15
 N_GAIA_STARS_ALIGN = 15
 N_GAIA_STARS_ALIGN_RETRY = 20
+# Pixel tolerance handed to twirl's WCS solve.
+WCS_MATCH_TOLERANCE = 1
+
+# Minimum number of detected stars required before an image can be processed.
+MIN_DETECTED_STARS = 3
+
+# At least two stars are needed before any neighbor pair can exist.
+MIN_STARS_FOR_PAIRS = 2
+
+# The user-tunable knobs below now live in `bandaid.config`; the module-level
+# names are kept (as the defaults pulled from a default-constructed config) so the
+# leaf-function signatures and any existing callers continue to read them. The
+# config object is the single source of truth for these values.
+_DEFAULT_APERTURES = ApertureConfig()
+_DEFAULT_QUALITY = QualityConfig()
+_DEFAULT_INSTRUMENT = InstrumentConfig()
+
 # Source-detection threshold (in units of the background sigma) passed to
 # `detection.stars_detection`.
-THRESH = 0.5
+THRESH = _DEFAULT_INSTRUMENT.thresh
 # Size of the morphological-opening kernel passed to `detection.stars_detection`.
 # A source must hold a solid opening x opening above-threshold core to survive, so
 # this -- not THRESH -- is what gates faint-star detection. eloy's default of 5
 # starved real fields (~10 of ~23 real stars), failing the plate solve; 3 recovers
 # them.
-DETECTION_OPENING = 3
-# Pixel tolerance handed to twirl's WCS solve.
-WCS_MATCH_TOLERANCE = 1
+DETECTION_OPENING = _DEFAULT_INSTRUMENT.detection_opening
 # Half-width (px) of the square cutout used to build the effective PSF for the
 # FWHM fit; 25 reproduces the long-standing 50x50 calibration window.
-_FWHM_CUTOUT_HALF = 25
+_FWHM_CUTOUT_HALF = _DEFAULT_INSTRUMENT.fwhm_cutout_half
 
-# Minimum number of detected stars required before an image can be processed.
-MIN_DETECTED_STARS = 3
-
-# Relative radii and annulus are defined here. These radii are multiplied by
-# each image's FWHM to determine the actual aperture sizes.
-
-# Only need one radius for STWG, but it needs to be in an iterable
-RELATIVE_RADII = np.array([1.0])  # np.linspace(0.1, 5, 30)
-ANNULUS = (5, 8)
+# Relative radii and annulus are multiplied by each image's FWHM to determine the
+# actual aperture sizes. Only one radius is needed for STWG, but it must be in an
+# iterable.
+RELATIVE_RADII = np.array(_DEFAULT_APERTURES.relative_radii)
+ANNULUS = _DEFAULT_APERTURES.annulus
 
 # Bright-neighbor rejection. A star is flagged if any brighter neighbor's PSF
 # wings would contribute more than CONTAMINATION_TOLERANCE of the target flux
 # inside the 1*FWHM aperture, modeled as a Moffat profile of index MOFFAT_BETA.
-CONTAMINATION_TOLERANCE = 0.01
-MOFFAT_BETA = 3.0
-# At least two stars are needed before any neighbor pair can exist.
-MIN_STARS_FOR_PAIRS = 2
+CONTAMINATION_TOLERANCE = _DEFAULT_QUALITY.contamination_tolerance
+MOFFAT_BETA = _DEFAULT_QUALITY.moffat_beta
 
 # Centroid-drift check. A star is flagged if its measured centroid wandered
 # more than `min(DRIFT_TOLERANCE_FWHM * fwhm, DRIFT_CAP_PIX)` pixels from its
@@ -119,8 +129,8 @@ MIN_STARS_FOR_PAIRS = 2
 # licensing an enormous shift. These defaults are empirical starting points and are
 # meant to be tuned against real frames (override via the kwargs on
 # `centroid_drift_flag` / `build_photometry_table`).
-DRIFT_TOLERANCE_FWHM = 1.0  # max centroid drift, in units of FWHM
-DRIFT_CAP_PIX = 4.0  # absolute pixel cap on allowed drift
+DRIFT_TOLERANCE_FWHM = _DEFAULT_QUALITY.drift_tolerance_fwhm  # max drift, in FWHM
+DRIFT_CAP_PIX = _DEFAULT_QUALITY.drift_cap_pix  # absolute pixel cap on allowed drift
 
 
 def min_separation_fwhm(delta_mag, tolerance=CONTAMINATION_TOLERANCE, beta=MOFFAT_BETA):
