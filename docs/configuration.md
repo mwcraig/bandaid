@@ -64,7 +64,7 @@ tuning it can graduate to Tier 2 with a validator; until then, leave them alone.
 Construction enforces the invariants the pipeline relies on, for example:
 
 - aperture radii, `gap`, and `annulus_width` must all be positive, and
-- the quality cuts and `gaia_mag_limit` must be finite (the latter positive).
+- the quality cuts and `gaia_mag_limit` must be finite.
 
 Several values are **derived** rather than set directly, so the invariants the
 pipeline cares about hold by construction instead of needing a validator:
