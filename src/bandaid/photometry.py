@@ -60,10 +60,6 @@ __all__ = [
     "process_one_image",
 ]
 
-# Half-width (in pixels) of the cutout taken around each star for per-star
-# processing.
-CUTOUT = 500  # 120
-
 # Star counts fed to twirl's asterism matcher in `align` to compute the per-image
 # WCS. The image (detected) and Gaia (reference) lists are sliced *independently*
 # so the matcher can be handed more references than detections. The two ranked

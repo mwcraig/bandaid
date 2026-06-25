@@ -44,6 +44,7 @@ dependencies = [
     "eloy[jax] @ git+https://github.com/mwcraig/eloy@a056c91a945772e0520a89695f8fcd16fda36870",
     # "eloy @ git+https://github.com/lgrcia/eloy@0b53f23f90b12b33ef21473cbb1a785a819aaeeb",
     "photutils",
+    "pydantic>=2",
     "twirl",
     "st-pipeline @ git+https://github.com/AAVSO/ST_Pipeline_Dev.git"
 ]

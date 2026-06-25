@@ -31,6 +31,13 @@ its purpose, and any important notes.
 import logging
 
 from .catalog import cached_gaia_radecs
+from .config import (
+    ApertureConfig,
+    DetectionConfig,
+    InstrumentConfig,
+    PhotometryConfig,
+    QualityConfig,
+)
 from .exceptions import (
     BandaidError,
     BatchPrepError,
