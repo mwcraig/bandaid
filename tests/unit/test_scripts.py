@@ -187,14 +187,15 @@ class TestPrepareBatch:
         # only the far mag-10 star.
         np.testing.assert_allclose(prep.photometry_coords.ra.deg, radecs[[2], 0])
 
-    def test_contaminant_mag_limit_bounds_the_flagging_catalog(self, monkeypatch):
+    def test_contaminant_mag_offset_bounds_the_flagging_catalog(self, monkeypatch):
         """
-        ``contaminant_mag_limit`` caps which faint stars can flag a target.
+        ``contaminant_mag_offset`` caps which faint stars can flag a target.
 
         Same close pair as ``test_faint_real_star_contaminates_brighter_target``,
-        but ``contaminant_mag_limit=15`` excludes the mag-16 neighbor from the
-        contaminant catalog entirely, so the mag-14 target is no longer flagged
-        and survives into ``photometry_coords``.
+        but a small ``contaminant_mag_offset=0.5`` shrinks the contaminant limit to
+        ``gaia_mag_limit + 0.5 = 15.5``, which excludes the mag-16 neighbor from the
+        contaminant catalog entirely, so the mag-14 target is no longer flagged and
+        survives into ``photometry_coords``.
         """
         radecs = np.array([[10.0, 0.0], [10.0 + 1.0 / 3600.0, 0.0], [10.2, 0.0]])
         mags = np.array([14.0, 16.0, 10.0])
@@ -204,7 +205,7 @@ class TestPrepareBatch:
             "frame1.fits",
             cnn=object(),
             config=PhotometryConfig(
-                detection=DetectionConfig(contaminant_mag_limit=15),
+                detection=DetectionConfig(contaminant_mag_offset=0.5),
             ),
         )
 

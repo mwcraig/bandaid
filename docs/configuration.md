@@ -7,7 +7,7 @@ returned `BatchPrep` and applied to every frame in the batch:
 ```python
 from bandaid import PhotometryConfig, ApertureConfig, prepare_batch
 
-config = PhotometryConfig(apertures=ApertureConfig(annulus=(6, 10)))
+config = PhotometryConfig(apertures=ApertureConfig(gap=5, annulus_width=4))
 prep = prepare_batch(first_file, cnn=cnn, config=config)
 ```
 
@@ -29,11 +29,11 @@ These are ordinary analysis choices and are safe to set for any run.
 
 | Sub-config  | Field                     | Meaning                                          |
 | ----------- | ------------------------- | ------------------------------------------------ |
-| `apertures` | `relative_radii`          | Aperture radii, in units of FWHM                 |
-| `apertures` | `annulus`                 | Background annulus `(inner, outer)`, in FWHM     |
+| `apertures` | `radii`                   | Aperture radii, in units of FWHM                 |
+| `apertures` | `gap`                     | FWHM gap between largest aperture and annulus    |
+| `apertures` | `annulus_width`           | Radial width of the background annulus, in FWHM  |
 | `detection` | `gaia_mag_limit`          | Magnitude limit for the photometry targets       |
-| `detection` | `contaminant_mag_limit`   | Depth of the contaminant-flagging catalog        |
-| `detection` | `contaminant_mag_offset`  | Default contaminant depth below `gaia_mag_limit` |
+| `detection` | `contaminant_mag_offset`  | Contaminant-catalog depth below `gaia_mag_limit` |
 | `quality`   | `drift_tolerance_fwhm`    | Max centroid drift, in FWHM                      |
 | `quality`   | `drift_cap_pix`           | Absolute pixel cap on centroid drift             |
 | `quality`   | `contamination_tolerance` | Max neighbour spillover before flagging          |
@@ -63,18 +63,24 @@ tuning it can graduate to Tier 2 with a validator; until then, leave them alone.
 
 Construction enforces the invariants the pipeline relies on, for example:
 
-- aperture radii must be positive,
-- the annulus inner radius must be strictly inside the outer radius,
-- the quality cuts must be positive, and
-- `contaminant_mag_limit` must be finite; it defaults to
-    `gaia_mag_limit + contaminant_mag_offset` (offset `3` by default) and is clamped
-    up to `gaia_mag_limit` (the contaminant list is never shallower than the target
-    list).
+- aperture radii, `gap`, and `annulus_width` must all be positive, and
+- the quality cuts and `gaia_mag_limit` must be finite (the latter positive).
+
+Several values are **derived** rather than set directly, so the invariants the
+pipeline cares about hold by construction instead of needing a validator:
+
+- the background annulus is `(max(radii) + gap, max(radii) + gap + annulus_width)`,
+    exposed as `inner_annulus`, `outer_annulus`, and the `annulus` pair. Because
+    `gap` and `annulus_width` are positive, the annulus always sits strictly
+    outside the largest aperture and has positive width.
+- `contaminant_mag_limit` is `gaia_mag_limit + contaminant_mag_offset` (offset `3`
+    by default). Because the offset is positive, the contaminant list is always
+    deeper than the target list. Tune the *offset* rather than an absolute limit.
 
 ```python
 from bandaid import ApertureConfig
 
-ApertureConfig(annulus=(8, 5))   # raises: inner radius must be < outer radius
+ApertureConfig(gap=-1)   # raises: gap must be greater than 0
 ```
 
 ## Per-function overrides

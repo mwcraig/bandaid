@@ -28,7 +28,9 @@ DEFAULT_CONTAMINANT_OFFSET = 3
 # Legacy module-level constants the config defaults must reproduce. Pinned as
 # explicit literals (rather than read back off the config-derived photometry.*
 # constants) so these tests actually catch an accidental default change.
-EXPECTED_RELATIVE_RADII = (1.0,)
+EXPECTED_RADII = (1.0,)
+EXPECTED_GAP = 4.0
+EXPECTED_ANNULUS_WIDTH = 3.0
 EXPECTED_ANNULUS = (5.0, 8.0)
 EXPECTED_DRIFT_TOLERANCE_FWHM = 1.0
 EXPECTED_DRIFT_CAP_PIX = 4.0
@@ -43,9 +45,12 @@ class TestDefaultsMatchLegacyConstants:
     """A default config reproduces the current module-level constants."""
 
     def test_apertures(self):
-        """Aperture radii and annulus default to the legacy literal values."""
+        """Aperture radii/gap/width default to the legacy literal values."""
         cfg = ApertureConfig()
-        np.testing.assert_array_equal(cfg.relative_radii, EXPECTED_RELATIVE_RADII)
+        np.testing.assert_array_equal(cfg.radii, EXPECTED_RADII)
+        assert cfg.gap == EXPECTED_GAP
+        assert cfg.annulus_width == EXPECTED_ANNULUS_WIDTH
+        # The derived annulus reproduces the legacy (inner, outer) pair exactly.
         assert tuple(cfg.annulus) == EXPECTED_ANNULUS
 
     def test_detection(self):
@@ -95,67 +100,46 @@ class TestImmutability:
 class TestValidators:
     """Validators reject the values that would break the pipeline."""
 
-    def test_annulus_inner_must_be_less_than_outer(self):
-        """An inner radius larger than the outer radius is rejected."""
-        with pytest.raises(ValidationError, match="annulus"):
-            ApertureConfig(annulus=(8, 5))
-
-    def test_annulus_equal_radii_rejected(self):
-        """Equal inner/outer radii leave no annulus and are rejected."""
-        with pytest.raises(ValidationError, match="annulus"):
-            ApertureConfig(annulus=(5, 5))
-
-    @pytest.mark.parametrize("annulus", [(0, 8), (-1, 8), (5, 0), (5, -1)])
-    def test_non_positive_annulus_rejected(self, annulus):
-        """A zero or negative annulus radius is rejected at construction."""
+    @pytest.mark.parametrize("gap", [0, -1])
+    def test_non_positive_gap_rejected(self, gap):
+        """A zero or negative gap is rejected at construction."""
         with pytest.raises(ValidationError):
-            ApertureConfig(annulus=annulus)
+            ApertureConfig(gap=gap)
 
-    def test_annulus_inner_must_exceed_largest_aperture(self):
-        """An inner annulus radius inside the photometry aperture is rejected."""
-        with pytest.raises(ValidationError, match="aperture"):
-            ApertureConfig(relative_radii=(6.0,), annulus=(5.0, 8.0))
+    @pytest.mark.parametrize("annulus_width", [0, -1])
+    def test_non_positive_annulus_width_rejected(self, annulus_width):
+        """A zero or negative annulus width is rejected at construction."""
+        with pytest.raises(ValidationError):
+            ApertureConfig(annulus_width=annulus_width)
 
-    def test_annulus_inner_equal_to_aperture_rejected(self):
-        """An inner annulus radius equal to the aperture radius is rejected."""
-        with pytest.raises(ValidationError, match="aperture"):
-            ApertureConfig(relative_radii=(5.0,), annulus=(5.0, 8.0))
-
-    def test_annulus_outside_apertures_accepted(self):
-        """An annulus comfortably outside the largest aperture is accepted."""
-        cfg = ApertureConfig(relative_radii=(2.0, 4.0), annulus=(5.0, 8.0))
-        assert tuple(cfg.annulus) == (5.0, 8.0)
+    def test_annulus_geometry_is_structural(self):
+        """The annulus sits strictly outside the largest aperture by construction."""
+        # gap and annulus_width are positive *increments*, so for any valid config
+        # max(radii) < inner_annulus < outer_annulus holds without a validator.
+        cfg = ApertureConfig(radii=(2.0, 4.0), gap=1.5, annulus_width=2.0)
+        assert cfg.inner_annulus == max(cfg.radii) + cfg.gap
+        assert cfg.outer_annulus == cfg.inner_annulus + cfg.annulus_width
+        assert max(cfg.radii) < cfg.inner_annulus < cfg.outer_annulus
+        assert tuple(cfg.annulus) == (cfg.inner_annulus, cfg.outer_annulus)
 
     def test_negative_radius_rejected(self):
         """A negative aperture radius is rejected."""
         with pytest.raises(ValidationError):
-            ApertureConfig(relative_radii=[-1.0])
+            ApertureConfig(radii=[-1.0])
 
     def test_zero_radius_rejected(self):
         """A zero aperture radius is rejected."""
         with pytest.raises(ValidationError):
-            ApertureConfig(relative_radii=[0.0])
-
-    def test_non_finite_contaminant_limit_rejected(self):
-        """A non-finite contaminant limit is rejected with a clear message."""
-        with pytest.raises(ValidationError, match="contaminant_mag_limit"):
-            DetectionConfig(contaminant_mag_limit=float("inf"))
-
-    def test_contaminant_limit_clamped_up_to_gaia(self):
-        """A contaminant limit shallower than the target limit is clamped up."""
-        # The legacy code clamped a too-shallow contaminant list up to the target
-        # limit rather than erroring; the validator preserves that.
-        cfg = DetectionConfig(gaia_mag_limit=15, contaminant_mag_limit=12)
-        assert cfg.contaminant_mag_limit == cfg.gaia_mag_limit
+            ApertureConfig(radii=[0.0])
 
     def test_contaminant_default_tracks_gaia(self):
-        """The default contaminant limit follows a custom Gaia limit by +3."""
+        """The derived contaminant limit follows a custom Gaia limit by +3."""
         gaia_limit = 14
         cfg = DetectionConfig(gaia_mag_limit=gaia_limit)
         assert cfg.contaminant_mag_limit == gaia_limit + DEFAULT_CONTAMINANT_OFFSET
 
     def test_contaminant_offset_is_configurable(self):
-        """A custom offset shifts the defaulted contaminant limit by that amount."""
+        """A custom offset shifts the derived contaminant limit by that amount."""
         gaia_limit = 15
         offset = 2
         cfg = DetectionConfig(gaia_mag_limit=gaia_limit, contaminant_mag_offset=offset)
@@ -167,13 +151,19 @@ class TestValidators:
         with pytest.raises(ValidationError):
             DetectionConfig(contaminant_mag_offset=0)
 
+    def test_non_finite_contaminant_offset_rejected(self):
+        """A non-finite contaminant offset is rejected with a clear message."""
+        with pytest.raises(ValidationError, match="contaminant_mag_offset"):
+            DetectionConfig(contaminant_mag_offset=float("inf"))
+
     def test_string_inputs_are_coerced(self):
         """String numeric inputs coerce cleanly instead of raising TypeError."""
         expected_gaia = 15.0
-        expected_contaminant = 20.0
-        cfg = DetectionConfig(gaia_mag_limit="15", contaminant_mag_limit="20")
+        expected_offset = 2.0
+        cfg = DetectionConfig(gaia_mag_limit="15", contaminant_mag_offset="2")
         assert cfg.gaia_mag_limit == expected_gaia
-        assert cfg.contaminant_mag_limit == expected_contaminant
+        assert cfg.contaminant_mag_offset == expected_offset
+        assert cfg.contaminant_mag_limit == expected_gaia + expected_offset
 
     def test_non_finite_gaia_limit_rejected(self):
         """A non-finite Gaia magnitude limit is rejected."""
@@ -196,7 +186,16 @@ class TestOverrides:
         assert cfg.instrument.detection_opening == opening
 
     def test_aperture_override(self):
-        """A custom annulus is preserved on the nested config."""
-        annulus = (6, 10)
-        cfg = PhotometryConfig(apertures=ApertureConfig(annulus=annulus))
-        assert tuple(cfg.apertures.annulus) == annulus
+        """Custom aperture geometry is preserved and drives the derived annulus."""
+        radii, gap, annulus_width = (1.0,), 5.0, 4.0
+        cfg = PhotometryConfig(
+            apertures=ApertureConfig(radii=radii, gap=gap, annulus_width=annulus_width)
+        )
+        assert tuple(cfg.apertures.radii) == radii
+        assert cfg.apertures.gap == gap
+        assert cfg.apertures.annulus_width == annulus_width
+        # inner = max(radii) + gap = 6.0; outer = inner + annulus_width = 10.0.
+        assert tuple(cfg.apertures.annulus) == (
+            max(radii) + gap,
+            max(radii) + gap + annulus_width,
+        )

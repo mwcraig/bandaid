@@ -29,182 +29,121 @@ solve, so they stay as locked module constants in :mod:`bandaid.photometry`.
 
 from typing import Annotated
 
-import numpy as np
 from pydantic import (
     BaseModel,
     Field,
-    field_validator,
-    model_validator,
+    computed_field,
 )
-
-# Default contaminant catalogue depth relative to the photometry target limit,
-# used only when `contaminant_mag_limit` is left unset. A real star up to this
-# many magnitudes fainter than the target limit can still spill into a brighter
-# target's aperture, so contamination flagging runs against a list this much
-# deeper than the measured-target list. The depth is user-settable via
-# `DetectionConfig.contaminant_mag_offset`; this is just its default.
-_DEFAULT_CONTAMINANT_MAG_OFFSET = 3.0
 
 
 class ApertureConfig(BaseModel, frozen=True):
     """
     Aperture photometry geometry, in units of the per-image FWHM.
 
+    The background annulus is parametrised the way ``stellarphot`` does it -- as
+    positive *increments* outward from the apertures rather than absolute radii.
+    Because ``gap`` and ``annulus_width`` are strictly positive, the invariant the
+    background estimate relies on (``max(radii) < inner_annulus < outer_annulus``)
+    holds by construction, so no cross-field validator is needed. The derived
+    ``inner_annulus``, ``outer_annulus``, and ``annulus`` properties expose the
+    resulting background annulus.
+
     Attributes
     ----------
-    relative_radii : tuple of float
+    radii : tuple of float
         Aperture radii in units of FWHM; each is multiplied by the image FWHM to
         get an actual aperture size. All radii must be positive.
-    annulus : tuple of float
-        Background annulus ``(inner, outer)`` radii in units of FWHM, with
-        ``outer > inner``.
+    gap : float
+        Gap, in units of FWHM, between the largest aperture and the inner edge of
+        the background annulus. Must be positive.
+    annulus_width : float
+        Radial width of the background annulus in units of FWHM. Must be positive.
     """
 
-    relative_radii: tuple[Annotated[float, Field(gt=0)], ...] = (1.0,)
-    annulus: tuple[Annotated[float, Field(gt=0)], Annotated[float, Field(gt=0)]] = (
-        5.0,
-        8.0,
-    )
+    radii: tuple[Annotated[float, Field(gt=0)], ...] = (1.0,)
+    gap: Annotated[float, Field(gt=0)] = 4.0
+    annulus_width: Annotated[float, Field(gt=0)] = 3.0
 
-    @field_validator("relative_radii", mode="before")
-    @classmethod
-    def _coerce_radii(cls, value):
+    @computed_field
+    @property
+    def inner_annulus(self) -> float:
         """
-        Coerce a scalar or array of radii to a tuple of floats.
+        Inner background-annulus radius in units of FWHM.
 
-        Positivity is enforced by the ``Field(gt=0)`` annotation on the elements;
-        this only normalises the shape so a scalar or any array-like is accepted.
+        Returns
+        -------
+        float
+            ``max(radii) + gap`` -- always larger than the largest aperture
+            because ``gap`` is positive.
+        """
+        return max(self.radii) + self.gap
 
-        Parameters
-        ----------
-        value : float or array-like
-            The aperture radii, as a scalar or any array-like of radii.
+    @computed_field
+    @property
+    def outer_annulus(self) -> float:
+        """
+        Outer background-annulus radius in units of FWHM.
+
+        Returns
+        -------
+        float
+            ``inner_annulus + annulus_width`` -- always larger than the inner
+            radius because ``annulus_width`` is positive.
+        """
+        return self.inner_annulus + self.annulus_width
+
+    @property
+    def annulus(self) -> tuple[float, float]:
+        """
+        Background annulus as an ``(inner, outer)`` pair, in units of FWHM.
 
         Returns
         -------
         tuple of float
-            The radii as a flat tuple of floats.
+            ``(inner_annulus, outer_annulus)``.
         """
-        return tuple(float(r) for r in np.atleast_1d(np.asarray(value, dtype=float)))
-
-    @model_validator(mode="after")
-    def _check_annulus_geometry(self):
-        """
-        Require ``max(relative_radii) < annulus_inner < annulus_outer``.
-
-        The background annulus must sit strictly outside the largest photometry
-        aperture (otherwise the background estimate is taken from inside the star)
-        and have a positive width. These are cross-field constraints, so they live
-        here rather than on a single field.
-
-        Returns
-        -------
-        ApertureConfig
-            The validated config.
-
-        Raises
-        ------
-        ValueError
-            If the inner radius is not strictly inside the outer radius, or does
-            not strictly exceed the largest aperture radius.
-        """
-        inner, outer = self.annulus
-        if inner >= outer:
-            msg = f"annulus inner radius must be < outer radius, got {self.annulus!r}"
-            raise ValueError(msg)
-        largest_aperture = max(self.relative_radii)
-        if inner <= largest_aperture:
-            msg = (
-                f"annulus inner radius ({inner}) must exceed the largest aperture "
-                f"radius ({largest_aperture})"
-            )
-            raise ValueError(msg)
-        return self
+        return (self.inner_annulus, self.outer_annulus)
 
 
 class DetectionConfig(BaseModel, frozen=True):
     """
     Gaia magnitude limits for the photometry targets and contaminant catalogue.
 
+    The derived ``contaminant_mag_limit`` property exposes the resulting
+    contaminant-catalogue depth (``gaia_mag_limit + contaminant_mag_offset``);
+    tune ``contaminant_mag_offset`` rather than setting it directly.
+
     Attributes
     ----------
     gaia_mag_limit : float
         Magnitude limit for the photometry *targets* -- the stars actually
-        measured and used to align each frame.
-    contaminant_mag_limit : float
-        Magnitude limit for the deeper *contaminant* catalogue used only for
-        contamination flagging. If left unset it defaults to
-        ``gaia_mag_limit + contaminant_mag_offset``; a value shallower than
-        ``gaia_mag_limit`` is clamped up to it (the contaminant list is never
-        shallower than the target list). Must be finite.
+        measured and used to align each frame. Must be finite.
     contaminant_mag_offset : float
-        How many magnitudes deeper than ``gaia_mag_limit`` the defaulted
-        contaminant catalogue runs. Only consulted when ``contaminant_mag_limit``
-        is left unset. Must be positive.
+        How many magnitudes deeper than ``gaia_mag_limit`` the *contaminant*
+        catalogue runs. Must be positive (and finite), which guarantees the
+        contaminant list is always deeper than the target list.
     """
 
     # Finiteness is enforced by the `allow_inf_nan=False` annotation: a non-finite
-    # limit makes max()/the downstream contaminant mask silently misbehave (a nan
-    # limit yields an all-False mask and a length mismatch), so it is rejected at
+    # limit makes the downstream contaminant mask silently misbehave (a nan limit
+    # yields an all-False mask and a length mismatch), so it is rejected at
     # construction rather than caught deep in a batch.
     gaia_mag_limit: Annotated[float, Field(allow_inf_nan=False)] = 15.0
-    contaminant_mag_limit: Annotated[float, Field(allow_inf_nan=False)] | None = None
-    contaminant_mag_offset: Annotated[float, Field(gt=0)] = (
-        _DEFAULT_CONTAMINANT_MAG_OFFSET
-    )
+    contaminant_mag_offset: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 3.0
 
-    @model_validator(mode="before")
-    @classmethod
-    def _resolve_contaminant_limit(cls, data):
+    @computed_field
+    @property
+    def contaminant_mag_limit(self) -> float:
         """
-        Default and clamp the contaminant magnitude limit before field validation.
-
-        Defaulting and clamping are inherently cross-field, so they run here on the
-        raw input. Positivity (``contaminant_mag_offset``) and finiteness
-        (``*_mag_limit``) are left to the field annotations, which run afterwards;
-        this validator only coerces the numeric inputs it needs for the arithmetic
-        so a stringly-typed value (e.g. from a TOML/env source) yields a clean
-        ``ValidationError`` from the field rather than a raw ``TypeError`` here.
-
-        Parameters
-        ----------
-        data : dict or typing.Any
-            The raw construction input. Only acted on when it is a mapping; any
-            other input is returned unchanged for pydantic to handle.
+        Magnitude limit for the deeper contaminant-flagging catalogue.
 
         Returns
         -------
-        dict or typing.Any
-            The input with ``contaminant_mag_limit`` resolved to a concrete,
-            clamped value when it could be computed.
+        float
+            ``gaia_mag_limit + contaminant_mag_offset`` -- always deeper than the
+            target limit because the offset is positive.
         """
-        if not isinstance(data, dict):
-            return data
-
-        def _as_float(value):
-            try:
-                return float(value)
-            except (TypeError, ValueError):
-                return None
-
-        gaia = _as_float(data.get("gaia_mag_limit", 15.0))
-        offset = _as_float(
-            data.get("contaminant_mag_offset", _DEFAULT_CONTAMINANT_MAG_OFFSET)
-        )
-        raw_contaminant = data.get("contaminant_mag_limit")
-        contaminant = None if raw_contaminant is None else _as_float(raw_contaminant)
-
-        # If any input we need could not be coerced, leave the data untouched and
-        # let pydantic's field validation raise the appropriate ValidationError.
-        if (
-            gaia is None
-            or offset is None
-            or (raw_contaminant is not None and contaminant is None)
-        ):
-            return data
-        if contaminant is None:
-            contaminant = gaia + offset
-        return {**data, "contaminant_mag_limit": max(contaminant, gaia)}
+        return self.gaia_mag_limit + self.contaminant_mag_offset
 
 
 class QualityConfig(BaseModel, frozen=True):

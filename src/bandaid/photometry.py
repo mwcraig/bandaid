@@ -118,7 +118,7 @@ _FWHM_CUTOUT_HALF = _DEFAULT_INSTRUMENT.fwhm_cutout_half
 # Relative radii and annulus are multiplied by each image's FWHM to determine the
 # actual aperture sizes. Only one radius is needed for STWG, but it must be in an
 # iterable.
-RELATIVE_RADII = np.array(_DEFAULT_APERTURES.relative_radii)
+RELATIVE_RADII = np.array(_DEFAULT_APERTURES.radii)
 ANNULUS = _DEFAULT_APERTURES.annulus
 
 # Bright-neighbor rejection. A star is flagged if any brighter neighbor's PSF
@@ -1049,7 +1049,7 @@ def measure_photometry(
     egain,
     mask,
     *,
-    relative_radii=RELATIVE_RADII,
+    radii=RELATIVE_RADII,
     annulus=ANNULUS,
 ):
     """
@@ -1069,7 +1069,7 @@ def measure_photometry(
         System gain in e-/adu.
     mask : numpy.ndarray or None
         Bayer mask to apply to the image data.
-    relative_radii : array-like or float, optional
+    radii : array-like or float, optional
         Aperture radii in units of FWHM; multiplied by `fwhm` to get the actual
         aperture sizes. A scalar is treated as a single radius. Defaults to the
         module-level `RELATIVE_RADII`.
@@ -1111,9 +1111,9 @@ def measure_photometry(
         raise ValueError(msg) from None
     if outer <= inner:
         raise ValueError(msg)
-    # Coerce to at least 1D float so a scalar relative_radii (e.g. 1.0) is
-    # treated as a single radius rather than a 0-d array (which is not iterable).
-    apertures_radii = np.atleast_1d(np.asarray(relative_radii, dtype=float)) * fwhm
+    # Coerce to at least 1D float so a scalar radii (e.g. 1.0) is treated as a
+    # single radius rather than a 0-d array (which is not iterable).
+    apertures_radii = np.atleast_1d(np.asarray(radii, dtype=float)) * fwhm
 
     # The inner background radius is pushed out to at least the largest aperture
     # so the annulus never overlaps the photometry aperture. If that leaves the
@@ -1124,7 +1124,7 @@ def measure_photometry(
         radius_msg = (
             f"no usable background annulus: outer radius ({r_out}) is not larger "
             f"than the inner radius ({r_in}) after expanding it to the largest "
-            "aperture. Use a larger annulus or smaller relative_radii."
+            "aperture. Use a larger annulus or smaller radii."
         )
         raise ValueError(radius_msg)
     annulus_radii = (r_in, r_out)
@@ -1301,7 +1301,7 @@ def build_photometry_table(
     mask,
     *,
     config=None,
-    relative_radii=None,
+    radii=None,
     annulus=None,
     drift_tolerance=None,
     drift_cap=None,
@@ -1319,10 +1319,10 @@ def build_photometry_table(
         Photometry configuration supplying the apertures/quality defaults. Any of
         the explicit keyword overrides below take precedence over it. If None
         (default), a default ``PhotometryConfig`` is used.
-    relative_radii : array-like or float or None, optional
+    radii : array-like or float or None, optional
         Aperture radii in units of FWHM, passed through to `measure_photometry`
         (a scalar is treated as a single radius). If None (default), taken from
-        ``config.apertures.relative_radii``.
+        ``config.apertures.radii``.
     annulus : tuple of float or None, optional
         Background annulus inner and outer radii in units of FWHM, passed
         through to `measure_photometry`. If None (default), taken from
@@ -1349,8 +1349,8 @@ def build_photometry_table(
         If the image header has a missing or unparseable ``DATE-OBS``.
     """
     config = config or PhotometryConfig()
-    if relative_radii is None:
-        relative_radii = config.apertures.relative_radii
+    if radii is None:
+        radii = config.apertures.radii
     if annulus is None:
         annulus = config.apertures.annulus
     if drift_tolerance is None:
@@ -1364,7 +1364,7 @@ def build_photometry_table(
         img.fwhm,
         img.metadata["egain"],
         mask,
-        relative_radii=relative_radii,
+        radii=radii,
         annulus=annulus,
     )
     if img.input_photometry_coords is not None:
@@ -1395,7 +1395,7 @@ def build_photometry_table(
         msg = "missing or unparseable DATE-OBS header keyword"
         raise FrameMetadataError(msg) from exc
     data["sky"] = np.mean(
-        phot["total_bkg"] / (np.pi * (np.asarray(relative_radii) * img.fwhm) ** 2),
+        phot["total_bkg"] / (np.pi * (np.asarray(radii) * img.fwhm) ** 2),
     )
     data["airmass"] = _airmass_from_header(img.header)
     data["peak_count"] = phot["peak_count"]

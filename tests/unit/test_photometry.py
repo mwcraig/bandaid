@@ -210,7 +210,7 @@ def test_measure_photometry_single_source(make_test_image, include_noise, noise_
 
 
 def test_measure_photometry_default_matches_explicit_constants(make_test_image):
-    """Omitting relative_radii/annulus matches passing the module constants."""
+    """Omitting radii/annulus matches passing the module constants."""
     image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
     egain = 0.3
 
@@ -222,7 +222,7 @@ def test_measure_photometry_default_matches_explicit_constants(make_test_image):
         fwhm,
         egain,
         mask,
-        relative_radii=RELATIVE_RADII,
+        radii=RELATIVE_RADII,
         annulus=ANNULUS,
     )
 
@@ -232,11 +232,11 @@ def test_measure_photometry_default_matches_explicit_constants(make_test_image):
     assert default["annulus_radii"] == explicit["annulus_radii"]
 
 
-def test_measure_photometry_custom_relative_radii(make_test_image):
-    """A custom relative_radii drives the output shapes and aperture radius."""
+def test_measure_photometry_custom_radii(make_test_image):
+    """A custom radii drives the output shapes and aperture radius."""
     image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
     egain = 0.3
-    relative_radii = [1.0, 2.0]
+    radii = [1.0, 2.0]
 
     photom = measure_photometry(
         image,
@@ -245,16 +245,16 @@ def test_measure_photometry_custom_relative_radii(make_test_image):
         fwhm,
         egain,
         mask,
-        relative_radii=relative_radii,
+        radii=radii,
     )
 
     # One column per requested radius.
-    assert photom["fluxes"].shape == (1, len(relative_radii))
-    assert photom["total_bkg"].shape == (1, len(relative_radii))
+    assert photom["fluxes"].shape == (1, len(radii))
+    assert photom["total_bkg"].shape == (1, len(radii))
     # A larger aperture captures more flux for a Gaussian source.
     assert photom["fluxes"][0, 1] > photom["fluxes"][0, 0]
     # The reported aperture radius is the first requested radius times the FWHM.
-    assert photom["aperture_radii"] == pytest.approx(relative_radii[0] * fwhm)
+    assert photom["aperture_radii"] == pytest.approx(radii[0] * fwhm)
 
 
 def test_measure_photometry_custom_annulus(make_test_image):
@@ -281,8 +281,8 @@ def test_measure_photometry_custom_annulus(make_test_image):
     assert photom["annulus_radii"] == pytest.approx(expected)
 
 
-def test_measure_photometry_accepts_list_relative_radii(make_test_image):
-    """A plain list (not just ndarray) works for relative_radii."""
+def test_measure_photometry_accepts_list_radii(make_test_image):
+    """A plain list (not just ndarray) works for radii."""
     image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
     egain = 0.3
 
@@ -293,14 +293,14 @@ def test_measure_photometry_accepts_list_relative_radii(make_test_image):
         fwhm,
         egain,
         mask,
-        relative_radii=[1.0],
+        radii=[1.0],
     )
 
     assert photom["aperture_radii"] == pytest.approx(1.0 * fwhm)
 
 
-def test_measure_photometry_accepts_scalar_relative_radii(make_test_image):
-    """A bare scalar relative_radii is coerced to 1D and works as one aperture."""
+def test_measure_photometry_accepts_scalar_radii(make_test_image):
+    """A bare scalar radii is coerced to 1D and works as one aperture."""
     image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
     egain = 0.3
 
@@ -311,7 +311,7 @@ def test_measure_photometry_accepts_scalar_relative_radii(make_test_image):
         fwhm,
         egain,
         mask,
-        relative_radii=1.0,
+        radii=1.0,
     )
 
     # A scalar behaves like a single-element radius list.
@@ -397,7 +397,7 @@ def test_measure_photometry_rejects_aperture_larger_than_annulus(make_test_image
             fwhm,
             egain,
             mask,
-            relative_radii=[20.0],
+            radii=[20.0],
             annulus=(5, 8),
         )
 
@@ -944,11 +944,11 @@ class TestBuildPhotometryTable:
         np.testing.assert_allclose(table["dec"], wcs_radec.dec.degree)
 
     def test_overrides_reach_photometry_and_show_in_output(self, make_test_image):
-        """Custom relative_radii/annulus flow through to the real photometry output."""
+        """Custom radii/annulus flow through to the real photometry output."""
         # Drive build_photometry_table end-to-end on a real single-source image
         # (no monkeypatching): the overrides only reach the output table meta if
         # build_photometry_table actually forwarded them to measure_photometry.
-        relative_radii = [1.0, 2.0]
+        radii = [1.0, 2.0]
         annulus = (6, 10)
         image, coords, fwhm, _ = _single_source_photometry_inputs(
             make_test_image,
@@ -960,14 +960,14 @@ class TestBuildPhotometryTable:
         table = build_photometry_table(
             img,
             mask=None,
-            relative_radii=relative_radii,
+            radii=radii,
             annulus=annulus,
         )
 
         # One flux column per requested radius, and the meta echoes the overrides.
-        assert table["fluxes"].shape == (len(coords), len(relative_radii))
-        assert table.meta["aperture_radii"] == pytest.approx(relative_radii[0] * fwhm)
-        max_aper = max(relative_radii) * fwhm
+        assert table["fluxes"].shape == (len(coords), len(radii))
+        assert table.meta["aperture_radii"] == pytest.approx(radii[0] * fwhm)
+        max_aper = max(radii) * fwhm
         expected_annulus = (max(max_aper, annulus[0] * fwhm), annulus[1] * fwhm)
         assert table.meta["annulus_radii"] == pytest.approx(expected_annulus)
 
