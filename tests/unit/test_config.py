@@ -25,15 +25,28 @@ from bandaid.config import (
 DEFAULT_GAIA_MAG_LIMIT = 15
 DEFAULT_CONTAMINANT_OFFSET = 3
 
+# Legacy module-level constants the config defaults must reproduce. Pinned as
+# explicit literals (rather than read back off the config-derived photometry.*
+# constants) so these tests actually catch an accidental default change.
+EXPECTED_RELATIVE_RADII = (1.0,)
+EXPECTED_ANNULUS = (5.0, 8.0)
+EXPECTED_DRIFT_TOLERANCE_FWHM = 1.0
+EXPECTED_DRIFT_CAP_PIX = 4.0
+EXPECTED_CONTAMINATION_TOLERANCE = 0.01
+EXPECTED_MOFFAT_BETA = 3.0
+EXPECTED_THRESH = 0.5
+EXPECTED_DETECTION_OPENING = 3
+EXPECTED_FWHM_CUTOUT_HALF = 25
+
 
 class TestDefaultsMatchLegacyConstants:
     """A default config reproduces the current module-level constants."""
 
     def test_apertures(self):
-        """Aperture radii and annulus default to the photometry.py constants."""
+        """Aperture radii and annulus default to the legacy literal values."""
         cfg = ApertureConfig()
-        np.testing.assert_array_equal(cfg.relative_radii, photometry.RELATIVE_RADII)
-        assert tuple(cfg.annulus) == tuple(photometry.ANNULUS)
+        np.testing.assert_array_equal(cfg.relative_radii, EXPECTED_RELATIVE_RADII)
+        assert tuple(cfg.annulus) == EXPECTED_ANNULUS
 
     def test_detection(self):
         """The Gaia limit defaults to 15 and the contaminant limit to limit + 3."""
@@ -45,19 +58,19 @@ class TestDefaultsMatchLegacyConstants:
         )
 
     def test_quality(self):
-        """Drift and contamination cuts default to the photometry.py constants."""
+        """Drift and contamination cuts default to the legacy literal values."""
         cfg = QualityConfig()
-        assert cfg.drift_tolerance_fwhm == photometry.DRIFT_TOLERANCE_FWHM
-        assert cfg.drift_cap_pix == photometry.DRIFT_CAP_PIX
-        assert cfg.contamination_tolerance == photometry.CONTAMINATION_TOLERANCE
-        assert cfg.moffat_beta == photometry.MOFFAT_BETA
+        assert cfg.drift_tolerance_fwhm == EXPECTED_DRIFT_TOLERANCE_FWHM
+        assert cfg.drift_cap_pix == EXPECTED_DRIFT_CAP_PIX
+        assert cfg.contamination_tolerance == EXPECTED_CONTAMINATION_TOLERANCE
+        assert cfg.moffat_beta == EXPECTED_MOFFAT_BETA
 
     def test_instrument(self):
-        """Detection/FWHM settings default to the photometry.py constants."""
+        """Detection/FWHM settings default to the legacy literal values."""
         cfg = InstrumentConfig()
-        assert cfg.thresh == photometry.THRESH
-        assert cfg.detection_opening == photometry.DETECTION_OPENING
-        assert cfg.fwhm_cutout_half == photometry._FWHM_CUTOUT_HALF  # noqa: SLF001
+        assert cfg.thresh == EXPECTED_THRESH
+        assert cfg.detection_opening == EXPECTED_DETECTION_OPENING
+        assert cfg.fwhm_cutout_half == EXPECTED_FWHM_CUTOUT_HALF
 
     def test_photometry_config_composes_defaults(self):
         """PhotometryConfig nests one of each sub-config with default values."""
@@ -92,6 +105,27 @@ class TestValidators:
         with pytest.raises(ValidationError, match="annulus"):
             ApertureConfig(annulus=(5, 5))
 
+    @pytest.mark.parametrize("annulus", [(0, 8), (-1, 8), (5, 0), (5, -1)])
+    def test_non_positive_annulus_rejected(self, annulus):
+        """A zero or negative annulus radius is rejected at construction."""
+        with pytest.raises(ValidationError):
+            ApertureConfig(annulus=annulus)
+
+    def test_annulus_inner_must_exceed_largest_aperture(self):
+        """An inner annulus radius inside the photometry aperture is rejected."""
+        with pytest.raises(ValidationError, match="aperture"):
+            ApertureConfig(relative_radii=(6.0,), annulus=(5.0, 8.0))
+
+    def test_annulus_inner_equal_to_aperture_rejected(self):
+        """An inner annulus radius equal to the aperture radius is rejected."""
+        with pytest.raises(ValidationError, match="aperture"):
+            ApertureConfig(relative_radii=(5.0,), annulus=(5.0, 8.0))
+
+    def test_annulus_outside_apertures_accepted(self):
+        """An annulus comfortably outside the largest aperture is accepted."""
+        cfg = ApertureConfig(relative_radii=(2.0, 4.0), annulus=(5.0, 8.0))
+        assert tuple(cfg.annulus) == (5.0, 8.0)
+
     def test_negative_radius_rejected(self):
         """A negative aperture radius is rejected."""
         with pytest.raises(ValidationError):
@@ -119,6 +153,32 @@ class TestValidators:
         gaia_limit = 14
         cfg = DetectionConfig(gaia_mag_limit=gaia_limit)
         assert cfg.contaminant_mag_limit == gaia_limit + DEFAULT_CONTAMINANT_OFFSET
+
+    def test_contaminant_offset_is_configurable(self):
+        """A custom offset shifts the defaulted contaminant limit by that amount."""
+        gaia_limit = 15
+        offset = 2
+        cfg = DetectionConfig(gaia_mag_limit=gaia_limit, contaminant_mag_offset=offset)
+        assert cfg.contaminant_mag_offset == offset
+        assert cfg.contaminant_mag_limit == gaia_limit + offset
+
+    def test_non_positive_contaminant_offset_rejected(self):
+        """A zero or negative contaminant offset is rejected."""
+        with pytest.raises(ValidationError):
+            DetectionConfig(contaminant_mag_offset=0)
+
+    def test_string_inputs_are_coerced(self):
+        """String numeric inputs coerce cleanly instead of raising TypeError."""
+        expected_gaia = 15.0
+        expected_contaminant = 20.0
+        cfg = DetectionConfig(gaia_mag_limit="15", contaminant_mag_limit="20")
+        assert cfg.gaia_mag_limit == expected_gaia
+        assert cfg.contaminant_mag_limit == expected_contaminant
+
+    def test_non_finite_gaia_limit_rejected(self):
+        """A non-finite Gaia magnitude limit is rejected."""
+        with pytest.raises(ValidationError, match="gaia_mag_limit"):
+            DetectionConfig(gaia_mag_limit=float("inf"))
 
     def test_negative_drift_cap_rejected(self):
         """A negative pixel cap on centroid drift is rejected."""

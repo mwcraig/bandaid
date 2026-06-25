@@ -27,6 +27,8 @@ are deliberately *not* modelled here: mis-setting them stalls or breaks the WCS
 solve, so they stay as locked module constants in :mod:`bandaid.photometry`.
 """
 
+from typing import Annotated
+
 import numpy as np
 from pydantic import (
     BaseModel,
@@ -35,11 +37,13 @@ from pydantic import (
     model_validator,
 )
 
-# Default contaminant catalogue depth relative to the photometry target limit.
-# A real star up to this many magnitudes fainter than the target limit can still
-# spill into a brighter target's aperture, so contamination flagging runs against
-# a list this much deeper than the measured-target list.
-_CONTAMINANT_MAG_OFFSET = 3.0
+# Default contaminant catalogue depth relative to the photometry target limit,
+# used only when `contaminant_mag_limit` is left unset. A real star up to this
+# many magnitudes fainter than the target limit can still spill into a brighter
+# target's aperture, so contamination flagging runs against a list this much
+# deeper than the measured-target list. The depth is user-settable via
+# `DetectionConfig.contaminant_mag_offset`; this is just its default.
+_DEFAULT_CONTAMINANT_MAG_OFFSET = 3.0
 
 
 class ApertureConfig(BaseModel, frozen=True):
@@ -56,14 +60,20 @@ class ApertureConfig(BaseModel, frozen=True):
         ``outer > inner``.
     """
 
-    relative_radii: tuple[float, ...] = (1.0,)
-    annulus: tuple[float, float] = (5.0, 8.0)
+    relative_radii: tuple[Annotated[float, Field(gt=0)], ...] = (1.0,)
+    annulus: tuple[Annotated[float, Field(gt=0)], Annotated[float, Field(gt=0)]] = (
+        5.0,
+        8.0,
+    )
 
     @field_validator("relative_radii", mode="before")
     @classmethod
-    def _coerce_and_check_radii(cls, value):
+    def _coerce_radii(cls, value):
         """
-        Coerce a scalar or array of radii to a positive tuple of floats.
+        Coerce a scalar or array of radii to a tuple of floats.
+
+        Positivity is enforced by the ``Field(gt=0)`` annotation on the elements;
+        this only normalises the shape so a scalar or any array-like is accepted.
 
         Parameters
         ----------
@@ -73,45 +83,43 @@ class ApertureConfig(BaseModel, frozen=True):
         Returns
         -------
         tuple of float
-            The validated radii.
-
-        Raises
-        ------
-        ValueError
-            If any radius is not strictly positive.
+            The radii as a flat tuple of floats.
         """
-        radii = tuple(float(r) for r in np.atleast_1d(np.asarray(value, dtype=float)))
-        if any(r <= 0 for r in radii):
-            msg = f"relative_radii must all be positive, got {radii!r}"
-            raise ValueError(msg)
-        return radii
+        return tuple(float(r) for r in np.atleast_1d(np.asarray(value, dtype=float)))
 
-    @field_validator("annulus")
-    @classmethod
-    def _check_annulus(cls, value):
+    @model_validator(mode="after")
+    def _check_annulus_geometry(self):
         """
-        Require the annulus inner radius to be strictly inside the outer.
+        Require ``max(relative_radii) < annulus_inner < annulus_outer``.
 
-        Parameters
-        ----------
-        value : tuple of float
-            The ``(inner, outer)`` annulus radii.
+        The background annulus must sit strictly outside the largest photometry
+        aperture (otherwise the background estimate is taken from inside the star)
+        and have a positive width. These are cross-field constraints, so they live
+        here rather than on a single field.
 
         Returns
         -------
-        tuple of float
-            The validated annulus.
+        ApertureConfig
+            The validated config.
 
         Raises
         ------
         ValueError
-            If the inner radius is not strictly less than the outer radius.
+            If the inner radius is not strictly inside the outer radius, or does
+            not strictly exceed the largest aperture radius.
         """
-        inner, outer = value
+        inner, outer = self.annulus
         if inner >= outer:
-            msg = f"annulus inner radius must be < outer radius, got {value!r}"
+            msg = f"annulus inner radius must be < outer radius, got {self.annulus!r}"
             raise ValueError(msg)
-        return value
+        largest_aperture = max(self.relative_radii)
+        if inner <= largest_aperture:
+            msg = (
+                f"annulus inner radius ({inner}) must exceed the largest aperture "
+                f"radius ({largest_aperture})"
+            )
+            raise ValueError(msg)
+        return self
 
 
 class DetectionConfig(BaseModel, frozen=True):
@@ -126,19 +134,37 @@ class DetectionConfig(BaseModel, frozen=True):
     contaminant_mag_limit : float
         Magnitude limit for the deeper *contaminant* catalogue used only for
         contamination flagging. If left unset it defaults to
-        ``gaia_mag_limit + 3``; a value shallower than ``gaia_mag_limit`` is
-        clamped up to it (the contaminant list is never shallower than the target
-        list). Must be finite.
+        ``gaia_mag_limit + contaminant_mag_offset``; a value shallower than
+        ``gaia_mag_limit`` is clamped up to it (the contaminant list is never
+        shallower than the target list). Must be finite.
+    contaminant_mag_offset : float
+        How many magnitudes deeper than ``gaia_mag_limit`` the defaulted
+        contaminant catalogue runs. Only consulted when ``contaminant_mag_limit``
+        is left unset. Must be positive.
     """
 
-    gaia_mag_limit: float = 15.0
-    contaminant_mag_limit: float | None = None
+    # Finiteness is enforced by the `allow_inf_nan=False` annotation: a non-finite
+    # limit makes max()/the downstream contaminant mask silently misbehave (a nan
+    # limit yields an all-False mask and a length mismatch), so it is rejected at
+    # construction rather than caught deep in a batch.
+    gaia_mag_limit: Annotated[float, Field(allow_inf_nan=False)] = 15.0
+    contaminant_mag_limit: Annotated[float, Field(allow_inf_nan=False)] | None = None
+    contaminant_mag_offset: Annotated[float, Field(gt=0)] = (
+        _DEFAULT_CONTAMINANT_MAG_OFFSET
+    )
 
     @model_validator(mode="before")
     @classmethod
     def _resolve_contaminant_limit(cls, data):
         """
-        Default, finiteness-check, and clamp the contaminant magnitude limit.
+        Default and clamp the contaminant magnitude limit before field validation.
+
+        Defaulting and clamping are inherently cross-field, so they run here on the
+        raw input. Positivity (``contaminant_mag_offset``) and finiteness
+        (``*_mag_limit``) are left to the field annotations, which run afterwards;
+        this validator only coerces the numeric inputs it needs for the arithmetic
+        so a stringly-typed value (e.g. from a TOML/env source) yields a clean
+        ``ValidationError`` from the field rather than a raw ``TypeError`` here.
 
         Parameters
         ----------
@@ -150,24 +176,34 @@ class DetectionConfig(BaseModel, frozen=True):
         -------
         dict or typing.Any
             The input with ``contaminant_mag_limit`` resolved to a concrete,
-            clamped value.
-
-        Raises
-        ------
-        ValueError
-            If an explicit ``contaminant_mag_limit`` is non-finite.
+            clamped value when it could be computed.
         """
         if not isinstance(data, dict):
             return data
-        gaia = data.get("gaia_mag_limit", 15.0)
-        contaminant = data.get("contaminant_mag_limit")
+
+        def _as_float(value):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        gaia = _as_float(data.get("gaia_mag_limit", 15.0))
+        offset = _as_float(
+            data.get("contaminant_mag_offset", _DEFAULT_CONTAMINANT_MAG_OFFSET)
+        )
+        raw_contaminant = data.get("contaminant_mag_limit")
+        contaminant = None if raw_contaminant is None else _as_float(raw_contaminant)
+
+        # If any input we need could not be coerced, leave the data untouched and
+        # let pydantic's field validation raise the appropriate ValidationError.
+        if (
+            gaia is None
+            or offset is None
+            or (raw_contaminant is not None and contaminant is None)
+        ):
+            return data
         if contaminant is None:
-            contaminant = gaia + _CONTAMINANT_MAG_OFFSET
-        elif not np.isfinite(contaminant):
-            # max(nan, limit) silently returns nan, which downstream makes the
-            # contaminant mask all-False and blows up as a length mismatch.
-            msg = f"contaminant_mag_limit must be finite, got {contaminant!r}"
-            raise ValueError(msg)
+            contaminant = gaia + offset
         return {**data, "contaminant_mag_limit": max(contaminant, gaia)}
 
 
@@ -188,10 +224,10 @@ class QualityConfig(BaseModel, frozen=True):
         Moffat wing index used to model neighbour spillover.
     """
 
-    drift_tolerance_fwhm: float = Field(default=1.0, gt=0)
-    drift_cap_pix: float = Field(default=4.0, gt=0)
-    contamination_tolerance: float = Field(default=0.01, gt=0)
-    moffat_beta: float = Field(default=3.0, gt=0)
+    drift_tolerance_fwhm: Annotated[float, Field(gt=0)] = 1.0
+    drift_cap_pix: Annotated[float, Field(gt=0)] = 4.0
+    contamination_tolerance: Annotated[float, Field(gt=0)] = 0.01
+    moffat_beta: Annotated[float, Field(gt=0)] = 3.0
 
 
 class InstrumentConfig(BaseModel, frozen=True):
@@ -212,9 +248,9 @@ class InstrumentConfig(BaseModel, frozen=True):
         fit.
     """
 
-    thresh: float = Field(default=0.5, gt=0)
-    detection_opening: int = Field(default=3, ge=1)
-    fwhm_cutout_half: int = Field(default=25, ge=1)
+    thresh: Annotated[float, Field(gt=0)] = 0.5
+    detection_opening: Annotated[int, Field(ge=1)] = 3
+    fwhm_cutout_half: Annotated[int, Field(ge=1)] = 25
 
 
 class PhotometryConfig(BaseModel, frozen=True):
