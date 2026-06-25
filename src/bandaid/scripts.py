@@ -107,8 +107,6 @@ def prepare_batch(
     cnn,
     config=None,
     append_l4=False,
-    gaia_mag_limit=15,
-    contaminant_mag_limit=None,
 ):
     """
     Compute the once-per-batch photometry inputs from the first frame.
@@ -128,22 +126,12 @@ def prepare_batch(
     config : PhotometryConfig or None, optional
         Photometry configuration carried on the returned `BatchPrep` and applied
         to every frame. Its ``instrument`` settings drive the first-frame FWHM
-        detection and its ``quality`` settings drive contamination flagging here.
-        If None (default), a default ``PhotometryConfig`` is used.
+        detection, its ``quality`` settings drive contamination flagging here, and
+        its ``detection`` settings supply the Gaia target/contaminant magnitude
+        limits. If None (default), a default ``PhotometryConfig`` is used.
     append_l4 : bool, optional
         Whether to add a full-frame "L4" luminance channel to the Bayer masks.
         Default False.
-    gaia_mag_limit : float, optional
-        Gaia magnitude limit for the photometry *targets* -- the stars actually
-        measured and used to align each frame. Default 15.
-    contaminant_mag_limit : float, optional
-        Gaia magnitude limit for the deeper *contaminant* catalog used only for
-        contamination flagging: a real star fainter than ``gaia_mag_limit`` can
-        still spill into a brighter target's aperture, so flagging runs against
-        this deeper list. If ``None`` (default), it is ``gaia_mag_limit + 3``;
-        values below ``gaia_mag_limit`` are clamped up to it (the contaminant
-        list is never shallower than the target list). Must be finite; a
-        non-finite value raises ``ValueError``.
 
     Returns
     -------
@@ -155,8 +143,6 @@ def prepare_batch(
     BatchPrepError
         If too few stars are detected in ``first_file`` to measure an FWHM, so
         the batch preparation cannot be built.
-    ValueError
-        If ``contaminant_mag_limit`` is non-finite.
     """
     # A too-few-stars failure on the *first* frame is fatal for the whole batch
     # (no FWHM/pointing to prepare from), so translate the recoverable
@@ -190,15 +176,10 @@ def prepare_batch(
     # stars that can *contaminate* them (a deeper list down to
     # contaminant_mag_limit). A real star fainter than the photometry limit still
     # spills into a brighter target's aperture, so flagging runs against the
-    # deeper list -- but only targets are ever flagged/dropped.
-    if contaminant_mag_limit is None:
-        contaminant_mag_limit = gaia_mag_limit + 3
-    elif not np.isfinite(contaminant_mag_limit):
-        # max(nan, limit) silently returns nan, which makes `contaminant`
-        # all-False and later blows up as a boolean-index length mismatch.
-        msg = f"contaminant_mag_limit must be finite, got {contaminant_mag_limit!r}"
-        raise ValueError(msg)
-    contaminant_mag_limit = max(contaminant_mag_limit, gaia_mag_limit)
+    # deeper list -- but only targets are ever flagged/dropped. DetectionConfig
+    # has already defaulted, finiteness-checked, and clamped these for us.
+    gaia_mag_limit = config.detection.gaia_mag_limit
+    contaminant_mag_limit = config.detection.contaminant_mag_limit
 
     target = mags <= gaia_mag_limit
     contaminant = mags <= contaminant_mag_limit
