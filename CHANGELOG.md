@@ -22,7 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     root, so calls using `relative_radii=` now raise `TypeError`; pass `radii=`
     instead. No deprecated alias is provided.
 - `prepare_batch` dropped its `gaia_mag_limit=` and `contaminant_mag_limit=`
-    keyword arguments. Set these via `config=PhotometryConfig(detection=...)`
+    keyword arguments. Set these via
+    `config=PhotometryConfig(source_selection=SourceSelectionConfig(gaia_mag_limit=...))`
     instead.
 
 ## [0.1.0] - (1979-01-01)

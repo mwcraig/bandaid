@@ -22,8 +22,8 @@ The leaf photometry functions (`measure_photometry`, `build_photometry_table`)
 still accept their individual keyword arguments, which override the config when
 set — handy for one-off calls from a notebook.
 
-To see every default (including the derived `annulus` and `contaminant_mag_limit`)
-live from the code:
+To see every default (including the derived `inner_annulus`, `outer_annulus`, and
+`contaminant_mag_limit`) live from the code:
 
 ```python
 >>> from bandaid import PhotometryConfig
