@@ -16,6 +16,7 @@ from astropy.table import Table
 from st_pipeline.schema_definition import StarListSet
 
 from bandaid import scripts
+from bandaid.config import PhotometryConfig, SourceSelectionConfig
 from bandaid.exceptions import (
     BatchPrepError,
     FrameError,
@@ -73,7 +74,7 @@ def _patch_prep(monkeypatch, *, metadata=None, radecs_mags=None, fwhm_pix=2.0):
 
     calls = {}
 
-    def fake_calibration_sequence(file, *, cnn=None):
+    def fake_calibration_sequence(file, *, cnn=None, **_kwargs: object):
         calls["calibration_file"] = file
         calls["calibration_cnn"] = cnn
         return np.zeros((4, 4)), metadata, np.zeros((3, 2)), fwhm_pix, object()
@@ -152,7 +153,13 @@ class TestPrepareBatch:
         mags = np.array([12.0, 15.0, 15.1, 16.0])
         _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
 
-        prep = scripts.prepare_batch("frame1.fits", cnn=object(), gaia_mag_limit=12.0)
+        prep = scripts.prepare_batch(
+            "frame1.fits",
+            cnn=object(),
+            config=PhotometryConfig(
+                source_selection=SourceSelectionConfig(gaia_mag_limit=12.0)
+            ),
+        )
 
         np.testing.assert_array_equal(prep.radecs, radecs[:1])
 
@@ -182,42 +189,30 @@ class TestPrepareBatch:
         # only the far mag-10 star.
         np.testing.assert_allclose(prep.photometry_coords.ra.deg, radecs[[2], 0])
 
-    def test_contaminant_mag_limit_bounds_the_flagging_catalog(self, monkeypatch):
+    def test_contaminant_mag_offset_bounds_the_flagging_catalog(self, monkeypatch):
         """
-        ``contaminant_mag_limit`` caps which faint stars can flag a target.
+        ``contaminant_mag_offset`` caps which faint stars can flag a target.
 
         Same close pair as ``test_faint_real_star_contaminates_brighter_target``,
-        but ``contaminant_mag_limit=15`` excludes the mag-16 neighbor from the
-        contaminant catalog entirely, so the mag-14 target is no longer flagged
-        and survives into ``photometry_coords``.
+        but a small ``contaminant_mag_offset=0.5`` shrinks the contaminant limit to
+        ``gaia_mag_limit + 0.5 = 15.5``, which excludes the mag-16 neighbor from the
+        contaminant catalog entirely, so the mag-14 target is no longer flagged and
+        survives into ``photometry_coords``.
         """
         radecs = np.array([[10.0, 0.0], [10.0 + 1.0 / 3600.0, 0.0], [10.2, 0.0]])
         mags = np.array([14.0, 16.0, 10.0])
         _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
 
         prep = scripts.prepare_batch(
-            "frame1.fits", cnn=object(), contaminant_mag_limit=15
+            "frame1.fits",
+            cnn=object(),
+            config=PhotometryConfig(
+                source_selection=SourceSelectionConfig(contaminant_mag_offset=0.5),
+            ),
         )
 
         np.testing.assert_array_equal(prep.radecs, radecs[[0, 2]])
         np.testing.assert_allclose(prep.photometry_coords.ra.deg, radecs[[0, 2], 0])
-
-    def test_nonfinite_contaminant_mag_limit_raises(self, monkeypatch):
-        """
-        A non-finite ``contaminant_mag_limit`` is rejected with a clear error.
-
-        ``max(nan, limit)`` silently returns ``nan``, which would make the
-        contaminant mask all-False and later blow up as a boolean-index length
-        mismatch. Catch the bad argument up front instead.
-        """
-        radecs = np.array([[10.0, 0.0], [10.1, 0.0], [10.2, 0.0]])
-        mags = np.array([12.0, 13.0, 10.0])
-        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
-
-        with pytest.raises(ValueError, match="contaminant_mag_limit"):
-            scripts.prepare_batch(
-                "frame1.fits", cnn=object(), contaminant_mag_limit=np.nan
-            )
 
     def test_nan_magnitude_dropped_by_mag_limit(self, monkeypatch):
         """A star with no Gaia magnitude fails the cut and is dropped entirely."""
@@ -261,7 +256,7 @@ class TestPrepareBatch:
         monkeypatch.setattr(
             scripts,
             "calibration_sequence",
-            lambda file, *, cnn=None: (
+            lambda file, *, cnn=None, **_kwargs: (
                 np.zeros((4, 4)),
                 _batch_metadata(),
                 None,
@@ -387,6 +382,7 @@ class TestProcessBatch:
             masks,
             *,
             input_photometry_coords,
+            **_kwargs: object,
         ):
             calls.append((file, meta, radecs, cnn, masks, input_photometry_coords))
             return {"TR": Table({"tot_count": [1.0]})}

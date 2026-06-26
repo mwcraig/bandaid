@@ -31,6 +31,13 @@ its purpose, and any important notes.
 import logging
 
 from .catalog import cached_gaia_radecs
+from .config import (
+    ApertureConfig,
+    DriftConfig,
+    InstrumentConfig,
+    PhotometryConfig,
+    SourceSelectionConfig,
+)
 from .exceptions import (
     BandaidError,
     BatchPrepError,
@@ -55,6 +62,7 @@ from .photometry import (
     neighbor_contamination_flag,
     prepare_image,
 )
+from .scripts import prepare_batch
 
 # Libraries should not configure logging; attach a NullHandler so the package
 # can emit records without forcing handler configuration on the host

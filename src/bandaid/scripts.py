@@ -16,7 +16,7 @@ functions: no shared mutable state, no "is it done yet?" bookkeeping.
 
 import csv
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +25,7 @@ from astropy.io import fits
 from st_pipeline.schema_definition import StarListSet
 
 from .catalog import cached_gaia_radecs
+from .config import PhotometryConfig
 from .exceptions import (
     BatchPrepError,
     FrameError,
@@ -86,6 +87,8 @@ class BatchPrep:
         ``center``.
     shape : tuple of int
         Expected ``(height, width)`` of every frame.
+    config : PhotometryConfig
+        The photometry configuration to apply to every frame in the batch.
     """
 
     radecs: np.ndarray
@@ -95,10 +98,15 @@ class BatchPrep:
     center: tuple
     fov_rad: float
     shape: tuple
+    config: PhotometryConfig = field(default_factory=PhotometryConfig)
 
 
 def prepare_batch(
-    first_file, *, cnn, append_l4=False, gaia_mag_limit=15, contaminant_mag_limit=None
+    first_file,
+    *,
+    cnn,
+    config=None,
+    append_l4=False,
 ):
     """
     Compute the once-per-batch photometry inputs from the first frame.
@@ -115,20 +123,15 @@ def prepare_batch(
         frames in the batch are assumed to share these.
     cnn : object
         The ``eloy`` Ballet centroiding model to carry through to every frame.
+    config : PhotometryConfig or None, optional
+        Photometry configuration carried on the returned `BatchPrep` and applied
+        to every frame. Its ``instrument`` settings drive the first-frame FWHM
+        detection and the contamination flagging here, and its ``source_selection``
+        settings supply the Gaia target/contaminant magnitude limits. If None
+        (default), a default ``PhotometryConfig`` is used.
     append_l4 : bool, optional
         Whether to add a full-frame "L4" luminance channel to the Bayer masks.
         Default False.
-    gaia_mag_limit : float, optional
-        Gaia magnitude limit for the photometry *targets* -- the stars actually
-        measured and used to align each frame. Default 15.
-    contaminant_mag_limit : float, optional
-        Gaia magnitude limit for the deeper *contaminant* catalog used only for
-        contamination flagging: a real star fainter than ``gaia_mag_limit`` can
-        still spill into a brighter target's aperture, so flagging runs against
-        this deeper list. If ``None`` (default), it is ``gaia_mag_limit + 3``;
-        values below ``gaia_mag_limit`` are clamped up to it (the contaminant
-        list is never shallower than the target list). Must be finite; a
-        non-finite value raises ``ValueError``.
 
     Returns
     -------
@@ -140,16 +143,22 @@ def prepare_batch(
     BatchPrepError
         If too few stars are detected in ``first_file`` to measure an FWHM, so
         the batch preparation cannot be built.
-    ValueError
-        If ``contaminant_mag_limit`` is non-finite.
     """
     # A too-few-stars failure on the *first* frame is fatal for the whole batch
     # (no FWHM/pointing to prepare from), so translate the recoverable
     # per-frame TooFewStarsError into a fatal BatchPrepError.
+    config = config or PhotometryConfig()
+    instrument = config.instrument
     try:
         # Pass the CNN so the FWHM (which sizes the photometry aperture) is measured
         # by re-centroiding detections, decoupling it from the detection opening.
-        _, metadata, _, fwhm_pix, _ = calibration_sequence(first_file, cnn=cnn)
+        _, metadata, _, fwhm_pix, _ = calibration_sequence(
+            first_file,
+            threshold=instrument.thresh,
+            opening=instrument.detection_opening,
+            cnn=cnn,
+            fwhm_cutout_half=instrument.fwhm_cutout_half,
+        )
     except TooFewStarsError as exc:
         msg = f"too few stars detected in {first_file!r} to prepare the batch"
         raise BatchPrepError(msg) from exc
@@ -169,14 +178,9 @@ def prepare_batch(
     # contaminant_mag_limit). A real star fainter than the photometry limit still
     # spills into a brighter target's aperture, so flagging runs against the
     # deeper list -- but only targets are ever flagged/dropped.
-    if contaminant_mag_limit is None:
-        contaminant_mag_limit = gaia_mag_limit + 3
-    elif not np.isfinite(contaminant_mag_limit):
-        # max(nan, limit) silently returns nan, which makes `contaminant`
-        # all-False and later blows up as a boolean-index length mismatch.
-        msg = f"contaminant_mag_limit must be finite, got {contaminant_mag_limit!r}"
-        raise ValueError(msg)
-    contaminant_mag_limit = max(contaminant_mag_limit, gaia_mag_limit)
+    # SourceSelectionConfig has already defaulted and finiteness-checked these.
+    gaia_mag_limit = config.source_selection.gaia_mag_limit
+    contaminant_mag_limit = config.source_selection.contaminant_mag_limit
 
     target = mags <= gaia_mag_limit
     contaminant = mags <= contaminant_mag_limit
@@ -199,6 +203,8 @@ def prepare_batch(
         radecs[contaminant],
         mags[contaminant],
         fwhm_arcsec,
+        tolerance=config.instrument.contamination_tolerance,
+        beta=config.instrument.moffat_beta,
         target_mask=target[contaminant],
     )
     flagged_target = flagged[target[contaminant]]
@@ -218,6 +224,7 @@ def prepare_batch(
         center=center,
         fov_rad=metadata["fov_rad"],
         shape=(metadata["height"], metadata["width"]),
+        config=config,
     )
 
 
@@ -461,6 +468,7 @@ def process_batch(
                 prep.radecs,
                 prep.cnn,
                 prep.bayer_masks,
+                config=prep.config,
                 input_photometry_coords=prep.photometry_coords,
             )
         except FrameError as exc:

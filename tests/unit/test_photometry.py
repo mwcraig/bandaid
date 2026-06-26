@@ -22,6 +22,7 @@ from astropy.wcs import WCS
 from eloy import detection
 
 from bandaid import measure_photometry
+from bandaid.config import InstrumentConfig, PhotometryConfig
 from bandaid.exceptions import (
     FrameMetadataError,
     NoUsableStarsError,
@@ -209,7 +210,7 @@ def test_measure_photometry_single_source(make_test_image, include_noise, noise_
 
 
 def test_measure_photometry_default_matches_explicit_constants(make_test_image):
-    """Omitting relative_radii/annulus matches passing the module constants."""
+    """Omitting radii/annulus matches passing the module constants."""
     image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
     egain = 0.3
 
@@ -221,7 +222,7 @@ def test_measure_photometry_default_matches_explicit_constants(make_test_image):
         fwhm,
         egain,
         mask,
-        relative_radii=RELATIVE_RADII,
+        radii=RELATIVE_RADII,
         annulus=ANNULUS,
     )
 
@@ -231,11 +232,11 @@ def test_measure_photometry_default_matches_explicit_constants(make_test_image):
     assert default["annulus_radii"] == explicit["annulus_radii"]
 
 
-def test_measure_photometry_custom_relative_radii(make_test_image):
-    """A custom relative_radii drives the output shapes and aperture radius."""
+def test_measure_photometry_custom_radii(make_test_image):
+    """A custom radii drives the output shapes and aperture radius."""
     image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
     egain = 0.3
-    relative_radii = [1.0, 2.0]
+    radii = [1.0, 2.0]
 
     photom = measure_photometry(
         image,
@@ -244,16 +245,16 @@ def test_measure_photometry_custom_relative_radii(make_test_image):
         fwhm,
         egain,
         mask,
-        relative_radii=relative_radii,
+        radii=radii,
     )
 
     # One column per requested radius.
-    assert photom["fluxes"].shape == (1, len(relative_radii))
-    assert photom["total_bkg"].shape == (1, len(relative_radii))
+    assert photom["fluxes"].shape == (1, len(radii))
+    assert photom["total_bkg"].shape == (1, len(radii))
     # A larger aperture captures more flux for a Gaussian source.
     assert photom["fluxes"][0, 1] > photom["fluxes"][0, 0]
     # The reported aperture radius is the first requested radius times the FWHM.
-    assert photom["aperture_radii"] == pytest.approx(relative_radii[0] * fwhm)
+    assert photom["aperture_radii"] == pytest.approx(radii[0] * fwhm)
 
 
 def test_measure_photometry_custom_annulus(make_test_image):
@@ -280,8 +281,8 @@ def test_measure_photometry_custom_annulus(make_test_image):
     assert photom["annulus_radii"] == pytest.approx(expected)
 
 
-def test_measure_photometry_accepts_list_relative_radii(make_test_image):
-    """A plain list (not just ndarray) works for relative_radii."""
+def test_measure_photometry_accepts_list_radii(make_test_image):
+    """A plain list (not just ndarray) works for radii."""
     image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
     egain = 0.3
 
@@ -292,14 +293,14 @@ def test_measure_photometry_accepts_list_relative_radii(make_test_image):
         fwhm,
         egain,
         mask,
-        relative_radii=[1.0],
+        radii=[1.0],
     )
 
     assert photom["aperture_radii"] == pytest.approx(1.0 * fwhm)
 
 
-def test_measure_photometry_accepts_scalar_relative_radii(make_test_image):
-    """A bare scalar relative_radii is coerced to 1D and works as one aperture."""
+def test_measure_photometry_accepts_scalar_radii(make_test_image):
+    """A bare scalar radii is coerced to 1D and works as one aperture."""
     image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
     egain = 0.3
 
@@ -310,7 +311,7 @@ def test_measure_photometry_accepts_scalar_relative_radii(make_test_image):
         fwhm,
         egain,
         mask,
-        relative_radii=1.0,
+        radii=1.0,
     )
 
     # A scalar behaves like a single-element radius list.
@@ -396,7 +397,7 @@ def test_measure_photometry_rejects_aperture_larger_than_annulus(make_test_image
             fwhm,
             egain,
             mask,
-            relative_radii=[20.0],
+            radii=[20.0],
             annulus=(5, 8),
         )
 
@@ -544,7 +545,7 @@ class TestCalibrationSequenceCnn:
         captured = {}
         stub_fwhm = 2.5
 
-        def _spy(_data, _coords, _max_adu, *, cnn=None):
+        def _spy(_data, _coords, _max_adu, *, cnn=None, **_kwargs: object):
             captured["cnn"] = cnn
             return stub_fwhm
 
@@ -686,6 +687,59 @@ class TestPrepareImage:
         )
 
         assert np.array_equal(img.coords, img.aligned_coords)
+
+    def test_instrument_config_reaches_detection(self, monkeypatch):
+        """
+        A non-default instrument config sets the detection threshold/opening.
+
+        ``prepare_image`` historically hardcoded ``threshold=THRESH`` and never
+        forwarded ``opening`` to ``calibration_sequence``, so detection settings
+        passed in via the config never reached detection. Spy on
+        ``calibration_sequence`` and assert the configured values arrive.
+        """
+        expected_thresh = 0.9
+        expected_opening = 7
+        captured = {}
+
+        def _spy_calibration_sequence(_file, *_args: object, **kwargs: object):
+            captured["threshold"] = kwargs.get("threshold")
+            captured["opening"] = kwargs.get("opening")
+            calibrated = np.zeros((10, 10))
+            coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+            return calibrated, {"creator": "spy"}, coords, 2.0, None
+
+        monkeypatch.setattr(
+            "bandaid.photometry.calibration_sequence",
+            _spy_calibration_sequence,
+        )
+        monkeypatch.setattr(
+            "bandaid.photometry.align",
+            lambda coords, radecs, **kwargs: (coords, _make_tan_wcs()),
+        )
+        monkeypatch.setattr(
+            "bandaid.photometry.centroid_stars",
+            lambda data, coords, cnn: coords,
+        )
+        monkeypatch.setattr(
+            "bandaid.photometry.fits.getheader",
+            lambda file: {"creator": "spy"},
+        )
+
+        config = PhotometryConfig(
+            instrument=InstrumentConfig(
+                thresh=expected_thresh,
+                detection_opening=expected_opening,
+            ),
+        )
+        prepare_image(
+            "unused.fits",
+            np.zeros((5, 2)),
+            None,
+            config=config,
+        )
+
+        assert captured["threshold"] == expected_thresh
+        assert captured["opening"] == expected_opening
 
 
 def _make_tan_wcs(image_size=(500, 500), crval=(10.0, 20.0)):
@@ -890,11 +944,11 @@ class TestBuildPhotometryTable:
         np.testing.assert_allclose(table["dec"], wcs_radec.dec.degree)
 
     def test_overrides_reach_photometry_and_show_in_output(self, make_test_image):
-        """Custom relative_radii/annulus flow through to the real photometry output."""
+        """Custom radii/annulus flow through to the real photometry output."""
         # Drive build_photometry_table end-to-end on a real single-source image
         # (no monkeypatching): the overrides only reach the output table meta if
         # build_photometry_table actually forwarded them to measure_photometry.
-        relative_radii = [1.0, 2.0]
+        radii = [1.0, 2.0]
         annulus = (6, 10)
         image, coords, fwhm, _ = _single_source_photometry_inputs(
             make_test_image,
@@ -906,14 +960,14 @@ class TestBuildPhotometryTable:
         table = build_photometry_table(
             img,
             mask=None,
-            relative_radii=relative_radii,
+            radii=radii,
             annulus=annulus,
         )
 
         # One flux column per requested radius, and the meta echoes the overrides.
-        assert table["fluxes"].shape == (len(coords), len(relative_radii))
-        assert table.meta["aperture_radii"] == pytest.approx(relative_radii[0] * fwhm)
-        max_aper = max(relative_radii) * fwhm
+        assert table["fluxes"].shape == (len(coords), len(radii))
+        assert table.meta["aperture_radii"] == pytest.approx(radii[0] * fwhm)
+        max_aper = max(radii) * fwhm
         expected_annulus = (max(max_aper, annulus[0] * fwhm), annulus[1] * fwhm)
         assert table.meta["annulus_radii"] == pytest.approx(expected_annulus)
 
