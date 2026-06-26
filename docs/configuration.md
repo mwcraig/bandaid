@@ -11,13 +11,24 @@ config = PhotometryConfig(apertures=ApertureConfig(gap=5, annulus_width=4))
 prep = prepare_batch(first_file, cnn=cnn, config=config)
 ```
 
-If you pass no `config`, a default `PhotometryConfig()` is used and the pipeline
-behaves exactly as it did before the config existed: every default reproduces the
-historical module-level constant.
+If you pass no `config`, a default `PhotometryConfig()` is used — every field
+takes the documented default.
 
 The config is **frozen** (you cannot mutate it after construction) and
 **validated** at construction, so values that would silently break the pipeline
 are rejected up front with a clear error rather than failing deep in a batch.
+
+The leaf photometry functions (`measure_photometry`, `build_photometry_table`)
+still accept their individual keyword arguments, which override the config when
+set — handy for one-off calls from a notebook.
+
+To see every default (including the derived `annulus` and `contaminant_mag_limit`)
+live from the code:
+
+```python
+>>> from bandaid import PhotometryConfig
+>>> PhotometryConfig().model_dump()
+```
 
 ## The three tiers
 
@@ -27,28 +38,29 @@ The knobs fall into three groups by how safe they are to change.
 
 These are ordinary analysis choices and are safe to set for any run.
 
-| Sub-config  | Field                     | Meaning                                          |
-| ----------- | ------------------------- | ------------------------------------------------ |
-| `apertures` | `radii`                   | Aperture radii, in units of FWHM                 |
-| `apertures` | `gap`                     | FWHM gap between largest aperture and annulus    |
-| `apertures` | `annulus_width`           | Radial width of the background annulus, in FWHM  |
-| `detection` | `gaia_mag_limit`          | Magnitude limit for the photometry targets       |
-| `detection` | `contaminant_mag_offset`  | Contaminant-catalog depth below `gaia_mag_limit` |
-| `quality`   | `drift_tolerance_fwhm`    | Max centroid drift, in FWHM                      |
-| `quality`   | `drift_cap_pix`           | Absolute pixel cap on centroid drift             |
-| `quality`   | `contamination_tolerance` | Max neighbour spillover before flagging          |
-| `quality`   | `moffat_beta`             | Moffat wing index for the contamination model    |
+| Sub-config         | Field                    | Default  | Meaning                                          |
+| ------------------ | ------------------------ | -------- | ------------------------------------------------ |
+| `apertures`        | `radii`                  | `(1.0,)` | Aperture radii, in units of FWHM                 |
+| `apertures`        | `gap`                    | `4.0`    | FWHM gap between largest aperture and annulus    |
+| `apertures`        | `annulus_width`          | `3.0`    | Radial width of the background annulus, in FWHM  |
+| `source_selection` | `gaia_mag_limit`         | `15.0`   | Magnitude limit for the photometry targets       |
+| `source_selection` | `contaminant_mag_offset` | `3.0`    | Contaminant-catalog depth below `gaia_mag_limit` |
+| `quality`          | `drift_tolerance_fwhm`   | `1.0`    | Max centroid drift, in FWHM                      |
+| `quality`          | `drift_cap_pix`          | `4.0`    | Absolute pixel cap on centroid drift             |
 
 ### Tier 2 — Instrument / per-telescope (advanced)
 
-These depend on the plate scale and the PSF. The defaults are the Seestar50
-values; change them only when pointing a **different** telescope at the sky.
+These depend on the plate scale, the PSF, and the instrument's sensitivity. The
+defaults are the Seestar50 values; change them only when pointing a
+**different** telescope at the sky.
 
-| Sub-config   | Field               | Meaning                                                  |
-| ------------ | ------------------- | -------------------------------------------------------- |
-| `instrument` | `thresh`            | Source-detection threshold, in background sigma          |
-| `instrument` | `detection_opening` | Morphological-opening kernel that gates faint detections |
-| `instrument` | `fwhm_cutout_half`  | Half-width (px) of the PSF window for the FWHM fit       |
+| Sub-config   | Field                     | Default | Meaning                                                  |
+| ------------ | ------------------------- | ------- | -------------------------------------------------------- |
+| `instrument` | `thresh`                  | `0.5`   | Source-detection threshold, in background sigma          |
+| `instrument` | `detection_opening`       | `3`     | Morphological-opening kernel that gates faint detections |
+| `instrument` | `fwhm_cutout_half`        | `25`    | Half-width (px) of the PSF window for the FWHM fit       |
+| `instrument` | `contamination_tolerance` | `0.01`  | Max neighbour spillover before flagging                  |
+| `instrument` | `moffat_beta`             | `3.0`   | Moffat wing index for the contamination model            |
 
 ### Tier 3 — Solver internals (do not touch)
 
@@ -56,8 +68,7 @@ The twirl asterism-matcher star counts, the WCS match tolerance, the minimum
 detected-star count, and the minimum stars for a contamination pair are **not**
 exposed on the config. Mis-setting them stalls or breaks the WCS solve (the cost
 of the matcher grows like `C(N, 4)`, and too-small counts leave frames unsolved),
-so they remain locked module constants in `bandaid.photometry`. If one ever needs
-tuning it can graduate to Tier 2 with a validator; until then, leave them alone.
+so they remain locked module constants in `bandaid.photometry`.
 
 ## Validation
 
@@ -82,12 +93,3 @@ from bandaid import ApertureConfig
 
 ApertureConfig(gap=-1)   # raises: gap must be greater than 0
 ```
-
-## Per-function overrides
-
-The leaf photometry functions (e.g. `measure_photometry`,
-`build_photometry_table`) still
-accept their individual keyword arguments. When set, those take precedence over
-the config; when left at their defaults they fall back to it. This keeps the leaf
-functions convenient to call directly from a notebook or a unit test without
-building a full config.

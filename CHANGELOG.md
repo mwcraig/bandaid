@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - A tiered, pydantic-validated `PhotometryConfig` (with `ApertureConfig`,
-    `DetectionConfig`, `QualityConfig`, and `InstrumentConfig`) makes the
+    `SourceSelectionConfig`, `QualityConfig`, and `InstrumentConfig`) makes the
     photometry tuning parameters configurable. `prepare_batch` accepts a
     `config=` argument carried through the batch pipeline. See
     `docs/configuration.md`.

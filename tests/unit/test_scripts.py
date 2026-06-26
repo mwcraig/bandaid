@@ -16,7 +16,7 @@ from astropy.table import Table
 from st_pipeline.schema_definition import StarListSet
 
 from bandaid import scripts
-from bandaid.config import DetectionConfig, PhotometryConfig
+from bandaid.config import PhotometryConfig, SourceSelectionConfig
 from bandaid.exceptions import (
     BatchPrepError,
     FrameError,
@@ -156,7 +156,9 @@ class TestPrepareBatch:
         prep = scripts.prepare_batch(
             "frame1.fits",
             cnn=object(),
-            config=PhotometryConfig(detection=DetectionConfig(gaia_mag_limit=12.0)),
+            config=PhotometryConfig(
+                source_selection=SourceSelectionConfig(gaia_mag_limit=12.0)
+            ),
         )
 
         np.testing.assert_array_equal(prep.radecs, radecs[:1])
@@ -205,7 +207,7 @@ class TestPrepareBatch:
             "frame1.fits",
             cnn=object(),
             config=PhotometryConfig(
-                detection=DetectionConfig(contaminant_mag_offset=0.5),
+                source_selection=SourceSelectionConfig(contaminant_mag_offset=0.5),
             ),
         )
 

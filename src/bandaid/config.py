@@ -7,13 +7,14 @@ classes that this module makes explicit:
 
 - **Science knobs** a user legitimately sets per run -- aperture radii, the
   background annulus, and the Gaia magnitude limits (`ApertureConfig`,
-  `DetectionConfig`).
-- **Quality cuts** that flag/drop suspect measurements -- centroid drift and
-  bright-neighbour contamination (`QualityConfig`).
-- **Instrument / per-telescope** settings that depend on the pixel scale and
-  should change only when pointing a different telescope at the sky -- the
-  detection threshold, the morphological-opening kernel, and the FWHM-fit window
-  (`InstrumentConfig`).
+  `SourceSelectionConfig`).
+- **Quality cuts** that flag/drop suspect measurements -- centroid drift
+  (`QualityConfig`).
+- **Instrument / per-telescope** settings that depend on the pixel scale, the
+  PSF, and the instrument's sensitivity, and should change only when pointing a
+  different telescope at the sky -- the detection threshold, the
+  morphological-opening kernel, the FWHM-fit window, and the bright-neighbour
+  contamination model (`InstrumentConfig`).
 
 The composing :class:`PhotometryConfig` bundles one of each. It is immutable
 (frozen) so a batch cannot mutate its inputs mid-run, and its fields are
@@ -40,14 +41,6 @@ class ApertureConfig(BaseModel, frozen=True):
     """
     Aperture photometry geometry, in units of the per-image FWHM.
 
-    The background annulus is parametrised the way ``stellarphot`` does it -- as
-    positive *increments* outward from the apertures rather than absolute radii.
-    Because ``gap`` and ``annulus_width`` are strictly positive, the invariant the
-    background estimate relies on (``max(radii) < inner_annulus < outer_annulus``)
-    holds by construction, so no cross-field validator is needed. The derived
-    ``inner_annulus``, ``outer_annulus``, and ``annulus`` properties expose the
-    resulting background annulus.
-
     Attributes
     ----------
     radii : tuple of float
@@ -58,6 +51,16 @@ class ApertureConfig(BaseModel, frozen=True):
         the background annulus. Must be positive.
     annulus_width : float
         Radial width of the background annulus in units of FWHM. Must be positive.
+
+    Notes
+    -----
+    The background annulus is parametrised as positive *increments* outward from
+    the apertures (``gap``, ``annulus_width``) rather than absolute radii. Because
+    both are strictly positive, the invariant the background estimate relies on
+    (``max(radii) < inner_annulus < outer_annulus``) holds by construction, so no
+    cross-field validator is needed. The derived ``inner_annulus``,
+    ``outer_annulus``, and ``annulus`` properties expose the resulting background
+    annulus.
     """
 
     radii: tuple[Annotated[float, Field(gt=0)], ...] = (1.0,)
@@ -105,13 +108,17 @@ class ApertureConfig(BaseModel, frozen=True):
         return (self.inner_annulus, self.outer_annulus)
 
 
-class DetectionConfig(BaseModel, frozen=True):
+class SourceSelectionConfig(BaseModel, frozen=True):
     """
-    Gaia magnitude limits for the photometry targets and contaminant catalogue.
+    Gaia magnitude limits selecting which catalogue stars are measured and flagged.
 
-    The derived ``contaminant_mag_limit`` property exposes the resulting
-    contaminant-catalogue depth (``gaia_mag_limit + contaminant_mag_offset``);
-    tune ``contaminant_mag_offset`` rather than setting it directly.
+    These knobs do not perform source *detection* (that is the instrument's
+    ``thresh``/``detection_opening``); they choose which Gaia stars become
+    photometry *targets* and which deeper stars are treated as potential
+    *contaminants*. The derived ``contaminant_mag_limit`` property exposes the
+    resulting contaminant-catalogue depth (``gaia_mag_limit +
+    contaminant_mag_offset``); tune ``contaminant_mag_offset`` rather than setting
+    it directly.
 
     Attributes
     ----------
@@ -156,25 +163,19 @@ class QualityConfig(BaseModel, frozen=True):
         Maximum allowed centroid drift in units of FWHM.
     drift_cap_pix : float
         Absolute pixel cap on the allowed centroid drift.
-    contamination_tolerance : float
-        Maximum fractional bright-neighbour spillover into the aperture before a
-        star is flagged.
-    moffat_beta : float
-        Moffat wing index used to model neighbour spillover.
     """
 
     drift_tolerance_fwhm: Annotated[float, Field(gt=0)] = 1.0
     drift_cap_pix: Annotated[float, Field(gt=0)] = 4.0
-    contamination_tolerance: Annotated[float, Field(gt=0)] = 0.01
-    moffat_beta: Annotated[float, Field(gt=0)] = 3.0
 
 
 class InstrumentConfig(BaseModel, frozen=True):
     """
-    Per-telescope detection and FWHM settings (pixel-scale dependent).
+    Per-telescope detection, FWHM, PSF, and sensitivity settings.
 
     The defaults are the Seestar50 values. Change these only when pointing a
-    different telescope at the sky; they depend on the plate scale and the PSF.
+    different telescope at the sky; they depend on the plate scale, the PSF, and
+    the instrument's sensitivity to contamination.
 
     Attributes
     ----------
@@ -185,11 +186,21 @@ class InstrumentConfig(BaseModel, frozen=True):
     fwhm_cutout_half : int
         Half-width (px) of the square cutout used to build the PSF for the FWHM
         fit.
+    contamination_tolerance : float
+        Maximum fractional bright-neighbour spillover into the aperture before a
+        star is flagged. How much spillover is acceptable depends on the
+        instrument's sensitivity, so it is an instrument setting rather than a
+        per-run science knob.
+    moffat_beta : float
+        Moffat wing index used to model neighbour spillover -- a property of the
+        instrument PSF.
     """
 
     thresh: Annotated[float, Field(gt=0)] = 0.5
     detection_opening: Annotated[int, Field(ge=1)] = 3
     fwhm_cutout_half: Annotated[int, Field(ge=1)] = 25
+    contamination_tolerance: Annotated[float, Field(gt=0)] = 0.01
+    moffat_beta: Annotated[float, Field(gt=0)] = 3.0
 
 
 class PhotometryConfig(BaseModel, frozen=True):
@@ -204,15 +215,17 @@ class PhotometryConfig(BaseModel, frozen=True):
     ----------
     apertures : ApertureConfig
         Aperture/annulus geometry.
-    detection : DetectionConfig
-        Gaia magnitude limits.
+    source_selection : SourceSelectionConfig
+        Gaia magnitude limits selecting the measured and flagged stars.
     quality : QualityConfig
-        Centroid-drift and contamination cuts.
+        Centroid-drift cuts.
     instrument : InstrumentConfig
-        Per-telescope detection/FWHM settings.
+        Per-telescope detection, FWHM, PSF, and contamination settings.
     """
 
     apertures: ApertureConfig = Field(default_factory=ApertureConfig)
-    detection: DetectionConfig = Field(default_factory=DetectionConfig)
+    source_selection: SourceSelectionConfig = Field(
+        default_factory=SourceSelectionConfig
+    )
     quality: QualityConfig = Field(default_factory=QualityConfig)
     instrument: InstrumentConfig = Field(default_factory=InstrumentConfig)

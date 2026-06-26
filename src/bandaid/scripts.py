@@ -177,10 +177,10 @@ def prepare_batch(
     # stars that can *contaminate* them (a deeper list down to
     # contaminant_mag_limit). A real star fainter than the photometry limit still
     # spills into a brighter target's aperture, so flagging runs against the
-    # deeper list -- but only targets are ever flagged/dropped. DetectionConfig
-    # has already defaulted, finiteness-checked, and clamped these for us.
-    gaia_mag_limit = config.detection.gaia_mag_limit
-    contaminant_mag_limit = config.detection.contaminant_mag_limit
+    # deeper list -- but only targets are ever flagged/dropped.
+    # SourceSelectionConfig has already defaulted and finiteness-checked these.
+    gaia_mag_limit = config.source_selection.gaia_mag_limit
+    contaminant_mag_limit = config.source_selection.contaminant_mag_limit
 
     target = mags <= gaia_mag_limit
     contaminant = mags <= contaminant_mag_limit
@@ -203,8 +203,8 @@ def prepare_batch(
         radecs[contaminant],
         mags[contaminant],
         fwhm_arcsec,
-        tolerance=config.quality.contamination_tolerance,
-        beta=config.quality.moffat_beta,
+        tolerance=config.instrument.contamination_tolerance,
+        beta=config.instrument.moffat_beta,
         target_mask=target[contaminant],
     )
     flagged_target = flagged[target[contaminant]]

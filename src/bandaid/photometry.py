@@ -124,8 +124,8 @@ ANNULUS = _DEFAULT_APERTURES.annulus
 # Bright-neighbor rejection. A star is flagged if any brighter neighbor's PSF
 # wings would contribute more than CONTAMINATION_TOLERANCE of the target flux
 # inside the 1*FWHM aperture, modeled as a Moffat profile of index MOFFAT_BETA.
-CONTAMINATION_TOLERANCE = _DEFAULT_QUALITY.contamination_tolerance
-MOFFAT_BETA = _DEFAULT_QUALITY.moffat_beta
+CONTAMINATION_TOLERANCE = _DEFAULT_INSTRUMENT.contamination_tolerance
+MOFFAT_BETA = _DEFAULT_INSTRUMENT.moffat_beta
 
 # Centroid-drift check. A star is flagged if its measured centroid wandered
 # more than `min(DRIFT_TOLERANCE_FWHM * fwhm, DRIFT_CAP_PIX)` pixels from its

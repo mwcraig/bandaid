@@ -33,10 +33,10 @@ import logging
 from .catalog import cached_gaia_radecs
 from .config import (
     ApertureConfig,
-    DetectionConfig,
     InstrumentConfig,
     PhotometryConfig,
     QualityConfig,
+    SourceSelectionConfig,
 )
 from .exceptions import (
     BandaidError,
