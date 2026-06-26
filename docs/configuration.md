@@ -45,8 +45,8 @@ These are ordinary analysis choices and are safe to set for any run.
 | `apertures`        | `annulus_width`          | `3.0`    | Radial width of the background annulus, in FWHM  |
 | `source_selection` | `gaia_mag_limit`         | `15.0`   | Magnitude limit for the photometry targets       |
 | `source_selection` | `contaminant_mag_offset` | `3.0`    | Contaminant-catalog depth below `gaia_mag_limit` |
-| `quality`          | `drift_tolerance_fwhm`   | `1.0`    | Max centroid drift, in FWHM                      |
-| `quality`          | `drift_cap_pix`          | `4.0`    | Absolute pixel cap on centroid drift             |
+| `drift`            | `drift_tolerance_fwhm`   | `1.0`    | Max centroid drift, in FWHM                      |
+| `drift`            | `drift_cap_pix`          | `4.0`    | Absolute pixel cap on centroid drift             |
 
 ### Tier 2 — Instrument / per-telescope (advanced)
 
@@ -75,7 +75,7 @@ so they remain locked module constants in `bandaid.photometry`.
 Construction enforces the invariants the pipeline relies on, for example:
 
 - aperture radii, `gap`, and `annulus_width` must all be positive, and
-- the quality cuts and `gaia_mag_limit` must be finite.
+- the drift cuts and `gaia_mag_limit` must be finite.
 
 Several values are **derived** rather than set directly, so the invariants the
 pipeline cares about hold by construction instead of needing a validator:

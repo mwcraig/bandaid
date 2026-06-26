@@ -126,9 +126,9 @@ def prepare_batch(
     config : PhotometryConfig or None, optional
         Photometry configuration carried on the returned `BatchPrep` and applied
         to every frame. Its ``instrument`` settings drive the first-frame FWHM
-        detection, its ``quality`` settings drive contamination flagging here, and
-        its ``detection`` settings supply the Gaia target/contaminant magnitude
-        limits. If None (default), a default ``PhotometryConfig`` is used.
+        detection and the contamination flagging here, and its ``source_selection``
+        settings supply the Gaia target/contaminant magnitude limits. If None
+        (default), a default ``PhotometryConfig`` is used.
     append_l4 : bool, optional
         Whether to add a full-frame "L4" luminance channel to the Bayer masks.
         Default False.

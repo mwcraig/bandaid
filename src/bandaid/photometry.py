@@ -32,9 +32,9 @@ from twirl import compute_wcs
 
 from .config import (
     ApertureConfig,
+    DriftConfig,
     InstrumentConfig,
     PhotometryConfig,
-    QualityConfig,
 )
 from .exceptions import (
     FrameMetadataError,
@@ -99,7 +99,7 @@ MIN_STARS_FOR_PAIRS = 2
 # leaf-function signatures and any existing callers continue to read them. The
 # config object is the single source of truth for these values.
 _DEFAULT_APERTURES = ApertureConfig()
-_DEFAULT_QUALITY = QualityConfig()
+_DEFAULT_DRIFT = DriftConfig()
 _DEFAULT_INSTRUMENT = InstrumentConfig()
 
 # Source-detection threshold (in units of the background sigma) passed to
@@ -134,8 +134,8 @@ MOFFAT_BETA = _DEFAULT_INSTRUMENT.moffat_beta
 # licensing an enormous shift. These defaults are empirical starting points and are
 # meant to be tuned against real frames (override via the kwargs on
 # `centroid_drift_flag` / `build_photometry_table`).
-DRIFT_TOLERANCE_FWHM = _DEFAULT_QUALITY.drift_tolerance_fwhm  # max drift, in FWHM
-DRIFT_CAP_PIX = _DEFAULT_QUALITY.drift_cap_pix  # absolute pixel cap on allowed drift
+DRIFT_TOLERANCE_FWHM = _DEFAULT_DRIFT.drift_tolerance_fwhm  # max drift, in FWHM
+DRIFT_CAP_PIX = _DEFAULT_DRIFT.drift_cap_pix  # absolute pixel cap on allowed drift
 
 
 def min_separation_fwhm(delta_mag, tolerance=CONTAMINATION_TOLERANCE, beta=MOFFAT_BETA):
@@ -1316,7 +1316,7 @@ def build_photometry_table(
     mask : numpy.ndarray or None
         Bayer mask to apply to the image data.
     config : PhotometryConfig or None, optional
-        Photometry configuration supplying the apertures/quality defaults. Any of
+        Photometry configuration supplying the apertures/drift defaults. Any of
         the explicit keyword overrides below take precedence over it. If None
         (default), a default ``PhotometryConfig`` is used.
     radii : array-like or float or None, optional
@@ -1330,11 +1330,11 @@ def build_photometry_table(
     drift_tolerance : float or None, optional
         Maximum allowed centroid drift in units of FWHM, passed to
         `centroid_drift_flag`. If None (default), taken from
-        ``config.quality.drift_tolerance_fwhm``.
+        ``config.drift.drift_tolerance_fwhm``.
     drift_cap : float or None, optional
         Absolute pixel cap on the allowed centroid drift, passed to
         `centroid_drift_flag`. If None (default), taken from
-        ``config.quality.drift_cap_pix``.
+        ``config.drift.drift_cap_pix``.
 
     Returns
     -------
@@ -1354,9 +1354,9 @@ def build_photometry_table(
     if annulus is None:
         annulus = config.apertures.annulus
     if drift_tolerance is None:
-        drift_tolerance = config.quality.drift_tolerance_fwhm
+        drift_tolerance = config.drift.drift_tolerance_fwhm
     if drift_cap is None:
-        drift_cap = config.quality.drift_cap_pix
+        drift_cap = config.drift.drift_cap_pix
     phot = measure_photometry(
         img.calibrated_data,
         img.centroid_coords,

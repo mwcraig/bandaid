@@ -8,8 +8,8 @@ classes that this module makes explicit:
 - **Science knobs** a user legitimately sets per run -- aperture radii, the
   background annulus, and the Gaia magnitude limits (`ApertureConfig`,
   `SourceSelectionConfig`).
-- **Quality cuts** that flag/drop suspect measurements -- centroid drift
-  (`QualityConfig`).
+- **Centroid-drift cuts** that flag/drop measurements whose centroid wandered
+  (`DriftConfig`).
 - **Instrument / per-telescope** settings that depend on the pixel scale, the
   PSF, and the instrument's sensitivity, and should change only when pointing a
   different telescope at the sky -- the detection threshold, the
@@ -153,9 +153,9 @@ class SourceSelectionConfig(BaseModel, frozen=True):
         return self.gaia_mag_limit + self.contaminant_mag_offset
 
 
-class QualityConfig(BaseModel, frozen=True):
+class DriftConfig(BaseModel, frozen=True):
     """
-    Quality cuts applied to per-star measurements.
+    Centroid-drift cuts applied to per-star measurements.
 
     Attributes
     ----------
@@ -217,7 +217,7 @@ class PhotometryConfig(BaseModel, frozen=True):
         Aperture/annulus geometry.
     source_selection : SourceSelectionConfig
         Gaia magnitude limits selecting the measured and flagged stars.
-    quality : QualityConfig
+    drift : DriftConfig
         Centroid-drift cuts.
     instrument : InstrumentConfig
         Per-telescope detection, FWHM, PSF, and contamination settings.
@@ -227,5 +227,5 @@ class PhotometryConfig(BaseModel, frozen=True):
     source_selection: SourceSelectionConfig = Field(
         default_factory=SourceSelectionConfig
     )
-    quality: QualityConfig = Field(default_factory=QualityConfig)
+    drift: DriftConfig = Field(default_factory=DriftConfig)
     instrument: InstrumentConfig = Field(default_factory=InstrumentConfig)

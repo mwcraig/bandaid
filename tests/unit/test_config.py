@@ -15,9 +15,9 @@ from pydantic import ValidationError
 
 from bandaid.config import (
     ApertureConfig,
+    DriftConfig,
     InstrumentConfig,
     PhotometryConfig,
-    QualityConfig,
     SourceSelectionConfig,
 )
 
@@ -60,9 +60,9 @@ class TestDefaultsMatchLegacyConstants:
             == EXPECTED_GAIA_MAG_LIMIT + EXPECTED_CONTAMINANT_OFFSET
         )
 
-    def test_quality(self):
+    def test_drift(self):
         """Centroid-drift cuts default to the legacy literal values."""
-        cfg = QualityConfig()
+        cfg = DriftConfig()
         assert cfg.drift_tolerance_fwhm == EXPECTED_DRIFT_TOLERANCE_FWHM
         assert cfg.drift_cap_pix == EXPECTED_DRIFT_CAP_PIX
 
@@ -80,7 +80,7 @@ class TestDefaultsMatchLegacyConstants:
         cfg = PhotometryConfig()
         assert isinstance(cfg.apertures, ApertureConfig)
         assert isinstance(cfg.source_selection, SourceSelectionConfig)
-        assert isinstance(cfg.quality, QualityConfig)
+        assert isinstance(cfg.drift, DriftConfig)
         assert isinstance(cfg.instrument, InstrumentConfig)
 
 
@@ -172,7 +172,7 @@ class TestValidators:
     def test_negative_drift_cap_rejected(self):
         """A negative pixel cap on centroid drift is rejected."""
         with pytest.raises(ValidationError):
-            QualityConfig(drift_cap_pix=-1.0)
+            DriftConfig(drift_cap_pix=-1.0)
 
 
 class TestOverrides:
