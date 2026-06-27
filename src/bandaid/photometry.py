@@ -10,10 +10,8 @@ resulting tables into a ``StarList``.
 
 import contextlib
 import io
-import json
 import logging
 from dataclasses import dataclass
-from importlib.resources import files as package_files
 
 import astropy.units as u
 import numpy as np
@@ -33,7 +31,7 @@ from twirl import compute_wcs
 from .config import (
     ApertureConfig,
     DriftConfig,
-    InstrumentConfig,
+    InstrumentProfile,
     PhotometryConfig,
 )
 from .exceptions import (
@@ -43,6 +41,7 @@ from .exceptions import (
     WCSSolveError,
 )
 from .image2sl_qt import bayer_balance_image
+from .instruments import load_instrument
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +99,7 @@ MIN_STARS_FOR_PAIRS = 2
 # config object is the single source of truth for these values.
 _DEFAULT_APERTURES = ApertureConfig()
 _DEFAULT_DRIFT = DriftConfig()
-_DEFAULT_INSTRUMENT = InstrumentConfig()
+_DEFAULT_INSTRUMENT = InstrumentProfile()
 
 # Source-detection threshold (in units of the background sigma) passed to
 # `detection.stars_detection`.
@@ -564,6 +563,7 @@ def calibration_sequence(
     detect_on_bayer_balanced=False,
     cnn=None,
     fwhm_cutout_half=_FWHM_CUTOUT_HALF,
+    profile=None,
 ) -> tuple:
     """
     Find sources and compute FWHM for an image.
@@ -592,6 +592,10 @@ def calibration_sequence(
     fwhm_cutout_half : int, optional
         Half-width (px) of the square cutout used to build the effective PSF for
         the FWHM fit. By default ``_FWHM_CUTOUT_HALF``.
+    profile : InstrumentProfile or None, optional
+        The instrument whose ``header_map`` resolves the frame metadata, passed
+        through to `metadata_from_header`. Defaults to the bundled Seestar50
+        profile.
 
     Returns
     -------
@@ -613,7 +617,7 @@ def calibration_sequence(
     header = fits.getheader(file)
 
     try:
-        metadata = metadata_from_header(header)
+        metadata = metadata_from_header(header, profile=profile)
     except FrameMetadataError as exc:
         # metadata_from_header has only the header, not the path; label it here.
         exc.file = file
@@ -729,14 +733,61 @@ def _airmass_from_header(header):
     return float(airmass)
 
 
-def metadata_from_header(header):
+def _resolve_template_value(key, value, header, defaults):
     """
-    Build a metadata dictionary from a JSON template and a FITS header.
+    Resolve one ``header_map`` directive against a FITS header.
+
+    Parameters
+    ----------
+    key : str
+        The metadata key being resolved (used in error messages).
+    value : object
+        The directive: ``"@KEY"`` header lookup, ``"!KEY func ..."`` function
+        call, or a plain literal passed through untouched.
+    header : astropy.io.fits.Header or dict
+        FITS header to look up values in.
+    defaults : dict
+        Fallback values collected from the template's ``#key`` entries.
+
+    Returns
+    -------
+    object
+        The resolved metadata value.
+
+    Raises
+    ------
+    FrameMetadataError
+        If a ``!`` directive references a header keyword that is missing or has
+        an unexpected shape.
+    """
+    if isinstance(value, str) and value.startswith("@"):
+        return header.get(value[1:], defaults.get(key))
+    if isinstance(value, str) and value.startswith("!"):
+        parts = value[1:].split()
+        header_key = parts[0]
+        index = int(parts[2])
+        # A missing keyword (KeyError) or an unexpected value shape
+        # (AttributeError/IndexError) is a per-frame metadata problem.
+        try:
+            return header[header_key].split()[index]
+        except (KeyError, AttributeError, IndexError) as exc:
+            msg = f"could not read header keyword {header_key!r} for {key!r}"
+            raise FrameMetadataError(msg) from exc
+    return value
+
+
+def metadata_from_header(header, *, profile=None):
+    """
+    Build a metadata dictionary from an instrument's header dialect and a header.
 
     Parameters
     ----------
     header : astropy.io.fits.Header or dict
         FITS header to look up values in.
+    profile : InstrumentProfile or None, optional
+        The instrument whose ``header_map`` resolves the header. Defaults to the
+        bundled Seestar50 profile, preserving the historical behaviour for
+        callers that do not pass one.
 
     Returns
     -------
@@ -749,42 +800,21 @@ def metadata_from_header(header):
         If a required header keyword is missing or cannot be parsed, or if the
         system gain (``egain``) is absent with no template default.
     """
-    json_path = package_files("bandaid").joinpath(
-        "meta_json_files",
-        "Seestar50",
-        "basic.json",
-    )
-    with json_path.open() as f:
-        template = json.load(f)
+    if profile is None:
+        profile = load_instrument("Seestar50")
+    template = profile.header_map
 
     # Collect fallback values from "#key" entries
-    defaults = {}
-    for key, value in template.items():
-        if key.startswith("#"):
-            defaults[key[1:]] = value
+    defaults = {
+        key[1:]: value for key, value in template.items() if key.startswith("#")
+    }
 
-    metadata = {}
-    for key, value in template.items():
-        # Skip comment/internal keys
-        if key.startswith(("_", "#")):
-            continue
-
-        if isinstance(value, str) and value.startswith("@"):
-            header_key = value[1:]
-            metadata[key] = header.get(header_key, defaults.get(key))
-        elif isinstance(value, str) and value.startswith("!"):
-            parts = value[1:].split()
-            header_key = parts[0]
-            index = int(parts[2])
-            # A missing keyword (KeyError) or an unexpected value shape
-            # (AttributeError/IndexError) is a per-frame metadata problem.
-            try:
-                metadata[key] = header[header_key].split()[index]
-            except (KeyError, AttributeError, IndexError) as exc:
-                msg = f"could not read header keyword {header_key!r} for {key!r}"
-                raise FrameMetadataError(msg) from exc
-        else:
-            metadata[key] = value
+    # Comment/internal "_"/"#" keys are skipped; everything else is a directive.
+    metadata = {
+        key: _resolve_template_value(key, value, header, defaults)
+        for key, value in template.items()
+        if not key.startswith(("_", "#"))
+    }
 
     try:
         metadata["width"] = header["NAXIS1"]
@@ -1256,6 +1286,7 @@ def prepare_image(
         detect_on_bayer_balanced=detect_on_bayer_balanced,
         cnn=cnn,
         fwhm_cutout_half=instrument.fwhm_cutout_half,
+        profile=instrument,
     )
 
     if user_specific_metadata is not None:

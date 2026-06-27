@@ -13,8 +13,10 @@ classes that this module makes explicit:
 - **Instrument / per-telescope** settings that depend on the pixel scale, the
   PSF, and the instrument's sensitivity, and should change only when pointing a
   different telescope at the sky -- the detection threshold, the
-  morphological-opening kernel, the FWHM-fit window, and the bright-neighbour
-  contamination model (`InstrumentConfig`).
+  morphological-opening kernel, the FWHM-fit window, the bright-neighbour
+  contamination model, and the per-frame FITS-header dialect (`header_map`)
+  that maps that telescope's headers onto the metadata the pipeline needs
+  (`InstrumentProfile`).
 
 The composing :class:`PhotometryConfig` bundles one of each. It is immutable
 (frozen) so a batch cannot mutate its inputs mid-run, and its fields are
@@ -28,6 +30,7 @@ are deliberately *not* modelled here: mis-setting them stalls or breaks the WCS
 solve, so they stay as locked module constants in :mod:`bandaid.photometry`.
 """
 
+from pathlib import Path
 from typing import Annotated
 
 from pydantic import (
@@ -35,6 +38,25 @@ from pydantic import (
     Field,
     computed_field,
 )
+
+
+def _default_seestar_header_map() -> dict:
+    """
+    Return the Seestar50 per-frame FITS-header dialect.
+
+    Used as the ``header_map`` default for :class:`InstrumentProfile` so a
+    bare profile behaves exactly like the historical hard-coded Seestar
+    template. Imported lazily to avoid a circular import (``instruments``
+    imports this module).
+
+    Returns
+    -------
+    dict
+        The Seestar50 ``header_map`` (the old ``basic.json`` content).
+    """
+    from .instruments import default_header_map  # noqa: PLC0415
+
+    return default_header_map()
 
 
 class ApertureConfig(BaseModel, frozen=True):
@@ -169,16 +191,24 @@ class DriftConfig(BaseModel, frozen=True):
     drift_cap_pix: Annotated[float, Field(gt=0)] = 4.0
 
 
-class InstrumentConfig(BaseModel, frozen=True):
+class InstrumentProfile(BaseModel, frozen=True):
     """
-    Per-telescope detection, FWHM, PSF, and sensitivity settings.
+    A named telescope: detection/FWHM/PSF settings plus its FITS-header dialect.
 
     The defaults are the Seestar50 values. Change these only when pointing a
     different telescope at the sky; they depend on the plate scale, the PSF, and
-    the instrument's sensitivity to contamination.
+    the instrument's sensitivity to contamination. A profile bundles the two
+    halves of "what a telescope is": the detection tuning knobs *and* the
+    ``header_map`` that resolves that telescope's per-frame FITS header into the
+    metadata the pipeline needs. Named profiles live in
+    :mod:`bandaid.instruments`; use :func:`~bandaid.instruments.load_instrument`
+    to fetch a bundled one and :meth:`from_file`/:meth:`to_file` to share a
+    user-tuned profile.
 
     Attributes
     ----------
+    name : str
+        The instrument's name, used as its registry key.
     thresh : float
         Source-detection threshold in units of the background sigma.
     detection_opening : int
@@ -194,13 +224,48 @@ class InstrumentConfig(BaseModel, frozen=True):
     moffat_beta : float
         Moffat wing index used to model neighbour spillover -- a property of the
         instrument PSF.
+    header_map : dict
+        The per-frame FITS-header dialect for this telescope: a mapping of
+        metadata key to a directive resolved by
+        :func:`~bandaid.photometry.metadata_from_header` (``@KEY`` header
+        lookups, ``!`` function calls, ``#key`` fallbacks, and plain literals).
     """
 
+    name: str = "Seestar50"
     thresh: Annotated[float, Field(gt=0)] = 0.5
     detection_opening: Annotated[int, Field(ge=1)] = 3
     fwhm_cutout_half: Annotated[int, Field(ge=1)] = 25
     contamination_tolerance: Annotated[float, Field(gt=0)] = 0.01
     moffat_beta: Annotated[float, Field(gt=0)] = 3.0
+    header_map: dict = Field(default_factory=_default_seestar_header_map)
+
+    @classmethod
+    def from_file(cls, path) -> "InstrumentProfile":
+        """
+        Load a profile from a JSON file written by :meth:`to_file`.
+
+        Parameters
+        ----------
+        path : str or pathlib.Path
+            Path to a JSON file holding a serialised profile.
+
+        Returns
+        -------
+        InstrumentProfile
+            The validated profile.
+        """
+        return cls.model_validate_json(Path(path).read_text())
+
+    def to_file(self, path) -> None:
+        """
+        Serialise this profile to a JSON file readable by :meth:`from_file`.
+
+        Parameters
+        ----------
+        path : str or pathlib.Path
+            Destination path for the serialised profile.
+        """
+        Path(path).write_text(self.model_dump_json(indent=2))
 
 
 class PhotometryConfig(BaseModel, frozen=True):
@@ -219,8 +284,9 @@ class PhotometryConfig(BaseModel, frozen=True):
         Gaia magnitude limits selecting the measured and flagged stars.
     drift : DriftConfig
         Centroid-drift cuts.
-    instrument : InstrumentConfig
-        Per-telescope detection, FWHM, PSF, and contamination settings.
+    instrument : InstrumentProfile
+        The named telescope: detection, FWHM, PSF, and contamination settings
+        plus the per-frame FITS-header dialect.
     """
 
     apertures: ApertureConfig = Field(default_factory=ApertureConfig)
@@ -228,4 +294,4 @@ class PhotometryConfig(BaseModel, frozen=True):
         default_factory=SourceSelectionConfig
     )
     drift: DriftConfig = Field(default_factory=DriftConfig)
-    instrument: InstrumentConfig = Field(default_factory=InstrumentConfig)
+    instrument: InstrumentProfile = Field(default_factory=InstrumentProfile)

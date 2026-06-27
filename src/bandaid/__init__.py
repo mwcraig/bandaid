@@ -34,7 +34,7 @@ from .catalog import cached_gaia_radecs
 from .config import (
     ApertureConfig,
     DriftConfig,
-    InstrumentConfig,
+    InstrumentProfile,
     PhotometryConfig,
     SourceSelectionConfig,
 )
@@ -48,6 +48,11 @@ from .exceptions import (
     WCSSolveError,
 )
 from .image2sl_qt import bayer_balance_image, generate_bayer_masks
+from .instruments import (
+    available_instruments,
+    load_instrument,
+    register_instrument,
+)
 from .logging_setup import configure_logging
 from .photometry import (
     ImageData,

@@ -50,17 +50,48 @@ These are ordinary analysis choices and are safe to set for any run.
 
 ### Tier 2 — Instrument / per-telescope (advanced)
 
-These depend on the plate scale, the PSF, and the instrument's sensitivity. The
-defaults are the Seestar50 values; change them only when pointing a
-**different** telescope at the sky.
+The `instrument` field is an `InstrumentProfile`: a **named telescope** that
+bundles the detection/PSF tuning below with that telescope's per-frame
+FITS-header dialect (`header_map`). These depend on the plate scale, the PSF, and
+the instrument's sensitivity. The defaults are the Seestar50 values; change them
+only when pointing a **different** telescope at the sky.
 
-| Sub-config   | Field                     | Default | Meaning                                                  |
-| ------------ | ------------------------- | ------- | -------------------------------------------------------- |
-| `instrument` | `thresh`                  | `0.5`   | Source-detection threshold, in background sigma          |
-| `instrument` | `detection_opening`       | `3`     | Morphological-opening kernel that gates faint detections |
-| `instrument` | `fwhm_cutout_half`        | `25`    | Half-width (px) of the PSF window for the FWHM fit       |
-| `instrument` | `contamination_tolerance` | `0.01`  | Max neighbour spillover before flagging                  |
-| `instrument` | `moffat_beta`             | `3.0`   | Moffat wing index for the contamination model            |
+| Sub-config   | Field                     | Default       | Meaning                                                  |
+| ------------ | ------------------------- | ------------- | -------------------------------------------------------- |
+| `instrument` | `name`                    | `"Seestar50"` | The telescope's name (its registry key)                  |
+| `instrument` | `thresh`                  | `0.5`         | Source-detection threshold, in background sigma          |
+| `instrument` | `detection_opening`       | `3`           | Morphological-opening kernel that gates faint detections |
+| `instrument` | `fwhm_cutout_half`        | `25`          | Half-width (px) of the PSF window for the FWHM fit       |
+| `instrument` | `contamination_tolerance` | `0.01`        | Max neighbour spillover before flagging                  |
+| `instrument` | `moffat_beta`             | `3.0`         | Moffat wing index for the contamination model            |
+| `instrument` | `header_map`              | Seestar50     | FITS-header dialect resolved by `metadata_from_header`   |
+
+#### Instrument profiles registry
+
+Named profiles live in `bandaid.instruments`. Fetch a bundled one, list what is
+available, or share a user-tuned profile through a file:
+
+```python
+from bandaid import (
+    PhotometryConfig, load_instrument, register_instrument, available_instruments,
+)
+from bandaid.config import InstrumentProfile
+
+available_instruments()                 # -> ['Seestar50']
+profile = load_instrument("Seestar50")
+config = PhotometryConfig(instrument=profile)
+
+# Save / load a tuned profile, or register one so load_instrument finds it by name.
+profile.to_file("my_scope.json")
+mine = InstrumentProfile.from_file("my_scope.json")
+register_instrument(mine)
+```
+
+Adding a telescope is dropping a `meta_json_files/<name>/profile.json` into the
+package (bundling tuning + `header_map`) or registering a profile at runtime — no
+code edits. Note the `header_map` resolves only the *instrument* half of a
+frame's metadata; observer-identity overrides (site, observer code) are applied
+last via the separate `user_specific_metadata` dict passed to `process_batch`.
 
 ### Tier 3 — Solver internals (do not touch)
 

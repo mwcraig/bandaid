@@ -10,10 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - A tiered, pydantic-validated `PhotometryConfig` (with `ApertureConfig`,
-    `SourceSelectionConfig`, `DriftConfig`, and `InstrumentConfig`) makes the
+    `SourceSelectionConfig`, `DriftConfig`, and `InstrumentProfile`) makes the
     photometry tuning parameters configurable. `prepare_batch` accepts a
     `config=` argument carried through the batch pipeline. See
     `docs/configuration.md`.
+- An instrument-profile registry (`bandaid.instruments`) unifies a telescope's
+    detection tuning with its per-frame FITS-header dialect. `InstrumentProfile`
+    carries both (a `header_map` plus the tuning knobs) and serialises to/from a
+    file (`InstrumentProfile.from_file`/`to_file`); `load_instrument`,
+    `register_instrument`, and `available_instruments` resolve profiles by name.
+    The bundled Seestar50 dialect moved from `meta_json_files/Seestar50/basic.json`
+    into `meta_json_files/Seestar50/profile.json`, and `metadata_from_header`
+    takes an optional `profile=`.
 
 ### Changed (breaking)
 
