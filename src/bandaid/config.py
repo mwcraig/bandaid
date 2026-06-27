@@ -30,13 +30,17 @@ are deliberately *not* modelled here: mis-setting them stalls or breaks the WCS
 solve, so they stay as locked module constants in :mod:`bandaid.photometry`.
 """
 
+from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import Annotated
 
 from pydantic import (
     BaseModel,
     Field,
     computed_field,
+    field_serializer,
+    field_validator,
 )
 
 
@@ -224,11 +228,13 @@ class InstrumentProfile(BaseModel, frozen=True):
     moffat_beta : float
         Moffat wing index used to model neighbour spillover -- a property of the
         instrument PSF.
-    header_map : dict
+    header_map : collections.abc.Mapping
         The per-frame FITS-header dialect for this telescope: a mapping of
         metadata key to a directive resolved by
         :func:`~bandaid.photometry.metadata_from_header` (``@KEY`` header
         lookups, ``!`` function calls, ``#key`` fallbacks, and plain literals).
+        Stored as a read-only mapping so a shared/cached profile cannot be
+        mutated in place; serialises back to a plain ``dict``.
     """
 
     name: str = "Seestar50"
@@ -237,7 +243,50 @@ class InstrumentProfile(BaseModel, frozen=True):
     fwhm_cutout_half: Annotated[int, Field(ge=1)] = 25
     contamination_tolerance: Annotated[float, Field(gt=0)] = 0.01
     moffat_beta: Annotated[float, Field(gt=0)] = 3.0
-    header_map: dict = Field(default_factory=_default_seestar_header_map)
+    header_map: Mapping = Field(
+        default_factory=_default_seestar_header_map, validate_default=True
+    )
+
+    @field_validator("header_map", mode="after")
+    @classmethod
+    def _freeze_header_map(cls, value) -> Mapping:
+        """
+        Make ``header_map`` structurally read-only.
+
+        ``frozen=True`` only blocks rebinding the attribute, not mutating the
+        dict it points at. The bundled profiles are cached and shared, so an
+        in-place edit would leak globally; wrapping the mapping in a
+        :class:`~types.MappingProxyType` makes such mutation raise. The values
+        are scalars, so a shallow freeze is sufficient.
+
+        Parameters
+        ----------
+        value : Mapping
+            The validated ``header_map`` contents.
+
+        Returns
+        -------
+        Mapping
+            A read-only view over a private copy of ``value``.
+        """
+        return MappingProxyType(dict(value))
+
+    @field_serializer("header_map")
+    def _serialize_header_map(self, value) -> dict:
+        """
+        Serialise ``header_map`` back to a plain ``dict`` for JSON output.
+
+        Parameters
+        ----------
+        value : Mapping
+            The read-only ``header_map`` view.
+
+        Returns
+        -------
+        dict
+            A plain dict so :meth:`to_file`/``model_dump_json`` round-trip.
+        """
+        return dict(value)
 
     @classmethod
     def from_file(cls, path) -> "InstrumentProfile":

@@ -101,6 +101,19 @@ class TestImmutability:
         with pytest.raises(ValidationError):
             cfg.instrument.detection_opening = 5
 
+    def test_cannot_mutate_header_map(self):
+        """
+        In-place mutation of ``header_map`` raises.
+
+        ``frozen=True`` blocks rebinding the attribute but not mutating the dict
+        it points at; a user editing a shared/cached profile's ``header_map``
+        would otherwise leak across every later use, so the mapping itself is
+        structurally read-only.
+        """
+        cfg = InstrumentProfile()
+        with pytest.raises(TypeError):
+            cfg.header_map["obs_time"] = "@NOPE"
+
 
 class TestValidators:
     """Validators reject the values that would break the pipeline."""

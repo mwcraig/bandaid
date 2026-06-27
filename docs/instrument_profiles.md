@@ -53,7 +53,7 @@ resolves the directives against a frame's FITS header.
 | `"@KEY"`         | `"obs_time": "@DATE-OBS"`           | Take the value of FITS header keyword `KEY`. Falls back to a `#`-default (below) if missing. |
 | `"!KEY index N"` | `"tel_manufac": "!CREATOR index 0"` | Split header keyword `KEY` on whitespace and take the `N`-th token (0-based).                |
 | literal          | `"pixscale": 2.4`                   | Use the literal value as-is. Used for hardware constants the header does not carry.          |
-| `"#key": value`  | `"#stack": 1`                       | A **fallback** for `key`: used only when the `@`/`!` lookup for `key` finds nothing.         |
+| `"#key": value`  | `"#stack": 1`                       | A **fallback** for `key`: used only when the `@` lookup for `key` finds nothing.             |
 | `"_anything"`    | `"_note": "..."`                    | A comment. Ignored entirely.                                                                 |
 
 Notes:
@@ -62,20 +62,27 @@ Notes:
     bridges the two (`"site_lat": "@SITELAT"`).
 - The `!` form currently supports the `index` selector only (the function word is
     a label; the integer after it is the token index). A header keyword that is
-    missing or not a string raises `FrameMetadataError` for that frame.
+    missing or not a string raises `FrameMetadataError` for that frame; unlike
+    `@`, the `!` form does **not** consult a `#`-default.
 - `metadata_from_header` always adds `width`/`height` from `NAXIS1`/`NAXIS2`, so
     you do **not** put those in the `header_map`.
 
 ## Adding a telescope
 
-You can add an instrument two ways.
+The supported, user-facing way to add an instrument is to **register it at
+runtime**: build an `InstrumentProfile` (or load one from your own JSON file) and
+register it in-process. Nothing is written into the installed package.
 
-**1. Bundle it** — drop a `profile.json` into the package so it is discoverable
-by name with no code change:
+```python
+from bandaid import register_instrument
+from bandaid.config import InstrumentProfile
 
-```text
-src/bandaid/meta_json_files/<Name>/profile.json
+# Author a profile file once (see the field list below), then load + register it.
+register_instrument(InstrumentProfile.from_file("my_scope.json"))
 ```
+
+After this, `load_instrument("MyScope")` returns it and `available_instruments()`
+lists it alongside `Seestar50`. A `my_scope.json` looks like:
 
 ```json
 {
@@ -103,18 +110,17 @@ src/bandaid/meta_json_files/<Name>/profile.json
 }
 ```
 
-`load_instrument("MyScope")` then returns it, and `available_instruments()`
-lists it alongside `Seestar50`.
+!!! note "Want your telescope bundled? Open a PR."
 
-**2. Register it at runtime** — build an `InstrumentProfile` (or load one from a
-user file) and register it in-process:
-
-```python
-from bandaid import register_instrument
-from bandaid.config import InstrumentProfile
-
-register_instrument(InstrumentProfile.from_file("my_scope.json"))
-```
+    We're happy to ship common instruments so they resolve by name with no
+    runtime registration. **This is a contributor workflow, not an end-user one:**
+    it means adding a file to the installed package, which you should not do by
+    hand in a `site-packages`/virtualenv install. Instead, drop the same
+    `profile.json` into the source tree at
+    `src/bandaid/meta_json_files/<Name>/profile.json` and open a pull request. The
+    registry discovers it automatically — see
+    [`available_instruments`](#the-registry) — so no other code changes are
+    needed.
 
 ### Keys a profile should provide
 

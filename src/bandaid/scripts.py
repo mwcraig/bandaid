@@ -158,6 +158,7 @@ def prepare_batch(
             opening=instrument.detection_opening,
             cnn=cnn,
             fwhm_cutout_half=instrument.fwhm_cutout_half,
+            profile=instrument,
         )
     except TooFewStarsError as exc:
         msg = f"too few stars detected in {first_file!r} to prepare the batch"

@@ -11,12 +11,29 @@ extended, and that a profile round-trips through ``to_file``/``from_file``.
 
 import pytest
 
+from bandaid import instruments
 from bandaid.config import InstrumentProfile
 from bandaid.instruments import (
     available_instruments,
     load_instrument,
     register_instrument,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_registry():
+    """
+    Restore the in-process profile registry after each test.
+
+    ``register_instrument`` mutates a module-level dict, so without this a
+    registered profile would leak into later tests (e.g. the exact-set check on
+    ``available_instruments``). Snapshotting that private dict is the only way to
+    reset it -- the registry exposes no public "clear" hook by design.
+    """
+    saved = dict(instruments._REGISTERED)  # noqa: SLF001
+    yield
+    instruments._REGISTERED.clear()  # noqa: SLF001
+    instruments._REGISTERED.update(saved)  # noqa: SLF001
 
 
 class TestLoadInstrument:
@@ -52,15 +69,28 @@ class TestAvailableInstruments:
         """Seestar50 is discoverable as a bundled profile."""
         assert "Seestar50" in available_instruments()
 
+    def test_lists_exactly_the_bundled_profiles(self):
+        """
+        The bundled set is exactly the profile directories shipped.
+
+        Pins the *complete* discovered set (not just membership) so adding or
+        dropping a bundled ``meta_json_files/<name>/profile.json`` is a
+        deliberate, reviewed change to this list rather than a silent one.
+        """
+        assert set(available_instruments()) == {"Seestar50"}
+
 
 class TestRegister:
     """A user can register a custom profile and load it back by name."""
 
     def test_register_then_load(self):
         """A registered profile is returned by ``load_instrument`` and listed."""
-        custom = InstrumentProfile(name="MyScope", thresh=1.5)
+        custom_thresh = 1.5
+        custom = InstrumentProfile(name="MyScope", thresh=custom_thresh)
         register_instrument(custom)
-        assert load_instrument("MyScope") is custom
+        loaded = load_instrument("MyScope")
+        assert loaded is custom
+        assert loaded.thresh == custom_thresh
         assert "MyScope" in available_instruments()
 
 

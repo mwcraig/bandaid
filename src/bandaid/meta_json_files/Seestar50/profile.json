@@ -6,7 +6,7 @@
     "contamination_tolerance": 0.01,
     "moffat_beta": 3.0,
     "header_map": {
-        "_note": "This is a adj json file for the Seestar50, raw and stacked",
+        "_note": "Header map for the Seestar50, raw and stacked frames.",
         "obs_time": "@DATE-OBS",
         "site_lat": "@SITELAT",
         "site_lon": "@SITELONG",

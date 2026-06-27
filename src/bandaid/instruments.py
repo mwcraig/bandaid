@@ -93,25 +93,22 @@ def _load_bundled(name):
     return InstrumentProfile.model_validate_json(_profile_path(name).read_text())
 
 
-def default_header_map(name="Seestar50"):
+def default_header_map():
     """
-    Return just the ``header_map`` of a bundled profile.
+    Return the bundled Seestar50 ``header_map`` (the bare-class default).
 
     Reads the profile file directly (without constructing an
     :class:`~bandaid.config.InstrumentProfile`) so it can serve as the
-    ``header_map`` default factory for that class without recursing.
-
-    Parameters
-    ----------
-    name : str, optional
-        The instrument name, by default ``"Seestar50"``.
+    ``header_map`` default factory for that class without recursing. Seestar50
+    is the bare-class default instrument; the ``header_map`` of any other
+    bundled profile is reached via ``load_instrument(name).header_map``.
 
     Returns
     -------
     dict
-        The instrument's ``header_map`` (its per-frame FITS-header dialect).
+        The Seestar50 ``header_map`` (its per-frame FITS-header dialect).
     """
-    return json.loads(_profile_path(name).read_text())["header_map"]
+    return json.loads(_profile_path("Seestar50").read_text())["header_map"]
 
 
 def load_instrument(name):
