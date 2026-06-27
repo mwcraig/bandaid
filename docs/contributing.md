@@ -2,15 +2,14 @@
 
 ## Adding a bundled instrument profile
 
-bandaid ships a small set of built-in telescopes (currently just the Seestar50)
-so they resolve by name with no runtime registration. We welcome pull requests
-adding more.
+We welcome pull requests adding built-in telescopes. Bundling a scope ships it
+with bandaid so it resolves by name for everyone, with no runtime registration —
+today the built-in set is just the Seestar50, and we'd happily grow it.
 
-This is a **contributor workflow**: it adds a file to the package *source*, so it
-is done in a checkout of the repository — not by hand-editing an installed
-`site-packages`/virtualenv copy. An end user who just wants to run their own
-telescope should register a profile at runtime instead; see
-[Instrument profiles](instrument_profiles.md#adding-a-telescope).
+You'll add one profile file to the package source, so this is done in a checkout
+of the repository. (Just want to run your own telescope without contributing it?
+Register a profile at runtime instead — see
+[Instrument profiles](instrument_profiles.md#adding-a-telescope).)
 
 To bundle a telescope:
 

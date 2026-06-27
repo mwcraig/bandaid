@@ -110,11 +110,11 @@ lists it alongside `Seestar50`. A `my_scope.json` looks like:
 }
 ```
 
-To ship a telescope as a **built-in** — resolvable by name with no runtime
-registration — see
-[Adding a bundled instrument profile](contributing.md#adding-a-bundled-instrument-profile).
-That is a contributor workflow (it adds a file to the package source), not
-something to hand-edit into an installed package, and we welcome PRs.
+**We'd love to bundle your telescope.** If you've tuned a profile for a scope
+that isn't built in yet, a pull request adding it ships it with bandaid so it
+resolves by name for everyone — no runtime registration needed. See
+[Adding a bundled instrument profile](contributing.md#adding-a-bundled-instrument-profile)
+for the short walkthrough.
 
 ### Keys a profile should provide
 
