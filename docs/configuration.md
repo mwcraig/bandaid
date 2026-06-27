@@ -89,9 +89,11 @@ register_instrument(mine)
 
 Adding a telescope is dropping a `meta_json_files/<name>/profile.json` into the
 package (bundling tuning + `header_map`) or registering a profile at runtime — no
-code edits. Note the `header_map` resolves only the *instrument* half of a
-frame's metadata; observer-identity overrides (site, observer code) are applied
-last via the separate `user_specific_metadata` dict passed to `process_batch`.
+code edits. See [Instrument profiles](instrument_profiles.md) for the
+`header_map` directive syntax and a worked add-a-telescope example. Note the
+`header_map` resolves only the *instrument* half of a frame's metadata;
+observer-identity overrides (site, observer code) are applied last via the
+separate `user_specific_metadata` dict passed to `process_batch`.
 
 ### Tier 3 — Solver internals (do not touch)
 
