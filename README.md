@@ -27,6 +27,26 @@ To use bandaid in your code:
 >>> bandaid.hello_world()
 ```
 
+## Command-line usage
+
+Installing bandaid also provides a `bandaid` command for reducing a night of
+frames without writing any Python:
+
+```bash
+# Reduce every FITS frame in a directory, writing .star files + a QA manifest
+$ bandaid process night-of-2026-06-27/ -o out/
+
+# Inspect instruments and configuration
+$ bandaid instrument list
+$ bandaid config init -o config.json
+
+# Fetch the default Ballet centroider weights
+$ bandaid weights
+```
+
+See the [command-line usage guide](docs/command_line.md) for every subcommand and
+option.
+
 ## Data-quality flags
 
 Photometry tables carry per-star boolean flags so untrustworthy measurements can

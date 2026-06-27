@@ -7,6 +7,11 @@ sky-dominated stars (noise-limited), and bright stars on a one-shot-colour senso
 by the residual bayer checkerboard left after balancing). bandaid retrains the CNN in
 two warm-started phases to address these.
 
+To simply *use* the published stock weights — no training — run
+[`bandaid weights`](command_line.md#bandaid-weights-get-the-default-ballet-weights),
+which downloads and prints their cached path so you can reuse them with
+`bandaid process --weights`. This page is about training your own.
+
 The synthetic-data generator and the training utilities live in
 `bandaid.ballet_training`; the two phases are runnable as modules under
 `bandaid.train_ballet_*`. Evaluation is a standalone script, `eval_realistic_weights.py`.
