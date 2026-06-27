@@ -110,17 +110,11 @@ lists it alongside `Seestar50`. A `my_scope.json` looks like:
 }
 ```
 
-!!! note "Want your telescope bundled? Open a PR."
-
-    We're happy to ship common instruments so they resolve by name with no
-    runtime registration. **This is a contributor workflow, not an end-user one:**
-    it means adding a file to the installed package, which you should not do by
-    hand in a `site-packages`/virtualenv install. Instead, drop the same
-    `profile.json` into the source tree at
-    `src/bandaid/meta_json_files/<Name>/profile.json` and open a pull request. The
-    registry discovers it automatically — see
-    [`available_instruments`](#the-registry) — so no other code changes are
-    needed.
+To ship a telescope as a **built-in** — resolvable by name with no runtime
+registration — see
+[Adding a bundled instrument profile](contributing.md#adding-a-bundled-instrument-profile).
+That is a contributor workflow (it adds a file to the package source), not
+something to hand-edit into an installed package, and we welcome PRs.
 
 ### Keys a profile should provide
 

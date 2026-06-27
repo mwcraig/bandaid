@@ -65,10 +65,6 @@ class TestLoadInstrument:
 class TestAvailableInstruments:
     """``available_instruments`` lists the bundled profiles."""
 
-    def test_lists_seestar(self):
-        """Seestar50 is discoverable as a bundled profile."""
-        assert "Seestar50" in available_instruments()
-
     def test_lists_exactly_the_bundled_profiles(self):
         """
         The bundled set is exactly the profile directories shipped.

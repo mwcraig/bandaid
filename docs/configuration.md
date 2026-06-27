@@ -87,11 +87,12 @@ mine = InstrumentProfile.from_file("my_scope.json")
 register_instrument(mine)
 ```
 
-Adding a telescope is dropping a `meta_json_files/<name>/profile.json` into the
-package (bundling tuning + `header_map`) or registering a profile at runtime — no
-code edits. See [Instrument profiles](instrument_profiles.md) for the
-`header_map` directive syntax and a worked add-a-telescope example. Note the
-`header_map` resolves only the *instrument* half of a frame's metadata;
+Add a telescope at runtime by registering a profile or loading one from a file —
+no code edits. See [Instrument profiles](instrument_profiles.md) for the
+`header_map` directive syntax and a worked add-a-telescope example; to contribute
+a *bundled* instrument, see
+[Adding a bundled instrument profile](contributing.md#adding-a-bundled-instrument-profile).
+Note the `header_map` resolves only the *instrument* half of a frame's metadata;
 observer-identity overrides (site, observer code) are applied last via the
 separate `user_specific_metadata` dict passed to `process_batch`.
 
