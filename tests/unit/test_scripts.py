@@ -16,7 +16,7 @@ from astropy.table import Table
 from st_pipeline.schema_definition import StarListSet
 
 from bandaid import scripts
-from bandaid.config import PhotometryConfig, SourceSelectionConfig
+from bandaid.config import InstrumentProfile, PhotometryConfig, SourceSelectionConfig
 from bandaid.exceptions import (
     BatchPrepError,
     FrameError,
@@ -74,9 +74,10 @@ def _patch_prep(monkeypatch, *, metadata=None, radecs_mags=None, fwhm_pix=2.0):
 
     calls = {}
 
-    def fake_calibration_sequence(file, *, cnn=None, **_kwargs: object):
+    def fake_calibration_sequence(file, *, cnn=None, profile=None, **_kwargs: object):
         calls["calibration_file"] = file
         calls["calibration_cnn"] = cnn
+        calls["calibration_profile"] = profile
         return np.zeros((4, 4)), metadata, np.zeros((3, 2)), fwhm_pix, object()
 
     def fake_cached_gaia_radecs(center, fov):
@@ -103,6 +104,23 @@ class TestPrepareBatch:
         np.testing.assert_array_equal(prep.radecs, radecs)
         assert prep.cnn is cnn
         assert set(prep.bayer_masks) == {"TR", "TB", "TG"}
+
+    def test_first_frame_resolved_with_config_instrument_profile(self, monkeypatch):
+        """
+        The config's instrument is threaded into the first-frame calibration.
+
+        Without this, ``prepare_batch`` would resolve the first frame's metadata
+        with the bundled-Seestar50 fallback rather than ``config.instrument`` --
+        wrong for any other telescope.
+        """
+        calls, *_ = _patch_prep(monkeypatch)
+        instrument = InstrumentProfile(name="MyScope")
+        scripts.prepare_batch(
+            "frame1.fits",
+            cnn=object(),
+            config=PhotometryConfig(instrument=instrument),
+        )
+        assert calls["calibration_profile"] is instrument
 
     def test_append_l4_adds_luminance_channel(self, monkeypatch):
         """``append_l4`` adds the full-frame "L4" channel as a None mask."""

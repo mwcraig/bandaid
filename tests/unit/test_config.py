@@ -16,7 +16,7 @@ from pydantic import ValidationError
 from bandaid.config import (
     ApertureConfig,
     DriftConfig,
-    InstrumentConfig,
+    InstrumentProfile,
     PhotometryConfig,
     SourceSelectionConfig,
 )
@@ -68,12 +68,20 @@ class TestDefaultsMatchLegacyConstants:
 
     def test_instrument(self):
         """Detection/FWHM/PSF settings default to the legacy literal values."""
-        cfg = InstrumentConfig()
+        cfg = InstrumentProfile()
         assert cfg.thresh == EXPECTED_THRESH
         assert cfg.detection_opening == EXPECTED_DETECTION_OPENING
         assert cfg.fwhm_cutout_half == EXPECTED_FWHM_CUTOUT_HALF
         assert cfg.contamination_tolerance == EXPECTED_CONTAMINATION_TOLERANCE
         assert cfg.moffat_beta == EXPECTED_MOFFAT_BETA
+
+    def test_instrument_carries_seestar_header_map(self):
+        """A bare profile defaults to the Seestar50 name and header dialect."""
+        cfg = InstrumentProfile()
+        assert cfg.name == "Seestar50"
+        # The header_map is the per-frame FITS dialect (the old basic.json).
+        assert cfg.header_map["obs_time"] == "@DATE-OBS"
+        assert "egain" in cfg.header_map
 
     def test_photometry_config_composes_defaults(self):
         """PhotometryConfig nests one of each sub-config with default values."""
@@ -81,7 +89,7 @@ class TestDefaultsMatchLegacyConstants:
         assert isinstance(cfg.apertures, ApertureConfig)
         assert isinstance(cfg.source_selection, SourceSelectionConfig)
         assert isinstance(cfg.drift, DriftConfig)
-        assert isinstance(cfg.instrument, InstrumentConfig)
+        assert isinstance(cfg.instrument, InstrumentProfile)
 
 
 class TestImmutability:
@@ -92,6 +100,19 @@ class TestImmutability:
         cfg = PhotometryConfig()
         with pytest.raises(ValidationError):
             cfg.instrument.detection_opening = 5
+
+    def test_cannot_mutate_header_map(self):
+        """
+        In-place mutation of ``header_map`` raises.
+
+        ``frozen=True`` blocks rebinding the attribute but not mutating the dict
+        it points at; a user editing a shared/cached profile's ``header_map``
+        would otherwise leak across every later use, so the mapping itself is
+        structurally read-only.
+        """
+        cfg = InstrumentProfile()
+        with pytest.raises(TypeError):
+            cfg.header_map["obs_time"] = "@NOPE"
 
 
 class TestValidators:
@@ -181,7 +202,7 @@ class TestOverrides:
     def test_instrument_override(self):
         """A custom detection opening is preserved on the nested config."""
         opening = 5
-        cfg = PhotometryConfig(instrument=InstrumentConfig(detection_opening=opening))
+        cfg = PhotometryConfig(instrument=InstrumentProfile(detection_opening=opening))
         assert cfg.instrument.detection_opening == opening
 
     def test_aperture_override(self):
