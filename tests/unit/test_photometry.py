@@ -22,7 +22,7 @@ from astropy.wcs import WCS
 from eloy import detection
 
 from bandaid import measure_photometry
-from bandaid.config import InstrumentConfig, PhotometryConfig
+from bandaid.config import InstrumentProfile, PhotometryConfig
 from bandaid.exceptions import (
     FrameMetadataError,
     NoUsableStarsError,
@@ -30,6 +30,7 @@ from bandaid.exceptions import (
     WCSSolveError,
 )
 from bandaid.image2sl_qt import generate_bayer_masks
+from bandaid.instruments import load_instrument
 from bandaid.photometry import (
     ANNULUS,
     DETECTION_OPENING,
@@ -726,7 +727,7 @@ class TestPrepareImage:
         )
 
         config = PhotometryConfig(
-            instrument=InstrumentConfig(
+            instrument=InstrumentProfile(
                 thresh=expected_thresh,
                 detection_opening=expected_opening,
             ),
@@ -1280,6 +1281,19 @@ class TestMetadataFromHeader:
         default_stack = 1
         metadata = metadata_from_header(_seestar_header(with_stackcnt=False))
         assert metadata["stack"] == default_stack
+
+    def test_explicit_profile_header_map_is_used(self):
+        """An explicit ``profile=`` header_map overrides the default dialect."""
+        expected_exposure = 42.0
+        base = load_instrument("Seestar50")
+        # Re-point the exposure binding at a different header keyword.
+        custom_map = {**base.header_map, "exposure": "@MYEXP"}
+        profile = InstrumentProfile(name="Custom", header_map=custom_map)
+
+        header = _seestar_header()
+        header["MYEXP"] = expected_exposure
+        metadata = metadata_from_header(header, profile=profile)
+        assert metadata["exposure"] == expected_exposure
 
 
 class TestEloyToStarlist:
