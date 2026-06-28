@@ -8,6 +8,7 @@ with the heavy/network dependencies (``calibration_sequence``,
 """
 
 import csv
+import os
 
 import numpy as np
 import pytest
@@ -837,6 +838,35 @@ class TestExpandFramePaths:
         frame.write_bytes(b"")
 
         assert scripts.expand_frame_paths([str(frame)]) == [str(frame.resolve())]
+
+    def test_directory_with_fits_named_subdir_is_skipped(self, tmp_path):
+        """A sub-directory whose name ends in a FITS suffix is not a frame."""
+        night = tmp_path / "night"
+        night.mkdir()
+        (night / "a.fit").write_bytes(b"")
+        (night / "bundle.fits").mkdir()  # a directory, not a frame
+
+        result = scripts.expand_frame_paths([str(night)])
+
+        assert result == [str((night / "a.fit").resolve())]
+
+    def test_glob_matching_fits_named_dir_is_skipped(self, tmp_path):
+        """A glob that catches a FITS-named directory keeps only real files."""
+        night = tmp_path / "night"
+        night.mkdir()
+        (night / "a.fit").write_bytes(b"")
+        (night / "bundle.fit").mkdir()
+
+        result = scripts.expand_frame_paths([str(night / "*.fit")])
+
+        assert result == [str((night / "a.fit").resolve())]
+
+    def test_literal_non_regular_file_raises_value_error(self, tmp_path):
+        """A literal FITS-named path that is not a regular file is rejected."""
+        fifo = tmp_path / "pipe.fits"
+        os.mkfifo(fifo)  # exists, ends in .fits, but is not a frame
+        with pytest.raises(ValueError, match="FITS"):
+            scripts.expand_frame_paths([str(fifo)])
 
 
 class TestReduceFrames:

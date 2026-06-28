@@ -33,6 +33,8 @@ from .config import InstrumentProfile, PhotometryConfig
 from .instruments import available_instruments, load_instrument
 from .scripts import QA_MANIFEST_FILENAME, reduce_frames
 
+__all__ = ["main"]
+
 
 def _build_config(instrument, profile, config_file):
     """
@@ -336,12 +338,23 @@ def config_init(output_file):
     ----------
     output_file : str or None
         Destination path; None prints the config to standard output.
+
+    Raises
+    ------
+    click.ClickException
+        If the config cannot be written to ``output_file``.
     """
     text = PhotometryConfig().model_dump_json(indent=2)
     if output_file is None:
         click.echo(text)
     else:
-        Path(output_file).write_text(text)
+        # A bad destination (unwritable path, missing parent) should read as a
+        # clean CLI error, not a raw OSError traceback.
+        try:
+            Path(output_file).write_text(text)
+        except OSError as exc:
+            msg = f"could not write config to {output_file}: {exc}"
+            raise click.ClickException(msg) from exc
         click.echo(f"Wrote default config to {output_file}")
 
 
@@ -390,10 +403,21 @@ def weights(output_file):
     ----------
     output_file : str or None
         Destination to copy the weights to, in addition to printing the path.
+
+    Raises
+    ------
+    click.ClickException
+        If the weights cannot be copied to ``output_file``.
     """
     cached = download_weights()
     if output_file is not None:
-        shutil.copy(cached, output_file)
+        # A bad destination (unwritable path, missing parent, full disk) should
+        # read as a clean CLI error, not a raw OSError traceback.
+        try:
+            shutil.copy(cached, output_file)
+        except OSError as exc:
+            msg = f"could not copy weights to {output_file}: {exc}"
+            raise click.ClickException(msg) from exc
         click.echo(f"Copied default weights to {output_file}")
     else:
         click.echo(str(cached))

@@ -63,6 +63,15 @@ QA_MANIFEST_COLUMNS = (
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "BatchPrep",
+    "check_frame_consistency",
+    "expand_frame_paths",
+    "prepare_batch",
+    "process_batch",
+    "reduce_frames",
+]
+
 # Filename endings treated as FITS frames when expanding directory/glob arguments.
 # Seestar writes ``.fit``; the others (and their gzip-compressed forms, which
 # astropy opens transparently) are accepted for telescopes that use them.
@@ -98,25 +107,13 @@ def _is_fits(path):
 
 def expand_frame_paths(paths):
     """
-    Expand the raw ``FILES`` arguments into a sorted list of frame paths.
-
-    Each argument may be a directory (expanded to the FITS frames it contains), a
-    glob pattern (expanded against the filesystem, then filtered to FITS frames),
-    or a literal file path. Directory and glob matches that are not FITS frames
-    are silently skipped; a literal path is validated to exist and look like a
-    frame so a typo fails here with a clear error rather than as a traceback deep
-    in ``prepare_batch``.
-
-    The combined result is de-duplicated by *resolved* path -- so the same file
-    reached two ways (a directory and an explicit path, ``a.fit`` vs
-    ``./a.fit``) appears once, while two distinct files that merely share a
-    basename in different directories are both kept -- and returned sorted so a
-    batch is processed in a deterministic order.
+    Expand the raw positional path arguments into a sorted list of frame paths.
 
     Parameters
     ----------
     paths : collections.abc.Iterable of str
-        The raw positional arguments: directories, globs, and/or file paths.
+        The raw positional arguments: directories, glob patterns, and/or file
+        paths.
 
     Returns
     -------
@@ -129,24 +126,43 @@ def expand_frame_paths(paths):
         If a literal (non-glob) path does not exist.
     ValueError
         If a literal path exists but is not a FITS frame.
+
+    Notes
+    -----
+    Each argument may be a directory (expanded to the FITS frames it contains), a
+    glob pattern (expanded against the filesystem, then filtered to FITS frames),
+    or a literal file path. Directory and glob matches that are not FITS *files*
+    are silently skipped -- including a directory or symlink whose name merely
+    ends in a FITS suffix (e.g. ``bundle.fits/``), which would otherwise blow up
+    later in ``fits.getheader``. A literal path is validated to exist and to be a
+    FITS file, so a typo fails here with a clear error rather than as a traceback
+    deep in ``prepare_batch``.
+
+    The combined result is de-duplicated by *resolved* path -- so the same file
+    reached two ways (a directory and an explicit path, ``a.fit`` vs ``./a.fit``)
+    appears once, while two distinct files that merely share a basename in
+    different directories are both kept -- and returned sorted so a batch is
+    processed in a deterministic order.
     """
     # Map resolved path -> the path object, so duplicates collapse by identity.
     seen = {}
     for raw in paths:
         path = Path(raw)
         if path.is_dir():
-            candidates = [child for child in path.iterdir() if _is_fits(child)]
+            candidates = [
+                child for child in path.iterdir() if child.is_file() and _is_fits(child)
+            ]
         elif glob.has_magic(raw):
             candidates = [
-                Path(match)
-                for match in glob.glob(raw)  # noqa: PTH207 -- need glob-pattern support
-                if _is_fits(match)
+                match
+                for match in map(Path, glob.glob(raw))  # noqa: PTH207 -- need glob
+                if match.is_file() and _is_fits(match)
             ]
         else:
             if not path.exists():
                 msg = f"no such file: {raw}"
                 raise FileNotFoundError(msg)
-            if not _is_fits(path):
+            if not path.is_file() or not _is_fits(path):
                 msg = f"{raw} is not a FITS frame (expected one of {_FITS_SUFFIXES})"
                 raise ValueError(msg)
             candidates = [path]

@@ -269,6 +269,17 @@ def test_config_init_file(runner, tmp_path):
     assert config.instrument.name == "Seestar50"
 
 
+def test_config_init_unwritable_is_clean_error(runner, tmp_path):
+    """``config init -o`` to an unwritable path fails as a clean CLI error."""
+    out = tmp_path / "nonexistent" / "config.json"  # parent dir does not exist
+
+    result = runner.invoke(cli.main, ["config", "init", "-o", str(out)])
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert str(out) in result.output
+
+
 def test_config_validate_good(runner, tmp_path):
     """``config validate`` accepts a valid config file with exit 0."""
     good = tmp_path / "good.json"
@@ -313,6 +324,20 @@ def test_weights_copy(runner, monkeypatch, tmp_path):
 
     assert result.exit_code == 0, result.output
     assert dest.read_bytes() == b"npzdata"
+    assert str(dest) in result.output
+
+
+def test_weights_copy_unwritable_is_clean_error(runner, monkeypatch, tmp_path):
+    """``weights -o`` to an unwritable destination fails as a clean CLI error."""
+    cached = tmp_path / "centroid_15x15.npz"
+    cached.write_bytes(b"npzdata")
+    monkeypatch.setattr(cli, "download_weights", lambda: str(cached))
+
+    dest = tmp_path / "nonexistent" / "copied.npz"  # parent dir does not exist
+    result = runner.invoke(cli.main, ["weights", "-o", str(dest)])
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
     assert str(dest) in result.output
 
 
