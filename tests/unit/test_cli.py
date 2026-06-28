@@ -1,10 +1,10 @@
 """
 Unit tests for the ``bandaid`` command-line interface in :mod:`bandaid.cli`.
 
-The CLI is a thin dressing over :func:`bandaid.scripts.reduce_frames`: it turns
+The CLI is a thin dressing over :func:`bandaid.scripts.photometer_frames`: it turns
 command-line flags into a `PhotometryConfig` and a metadata dict, then delegates
 the file-expansion + ``prepare_batch`` → ``process_batch`` flow to that function.
-These tests monkeypatch ``reduce_frames`` out and assert the flag-to-argument
+These tests monkeypatch ``photometer_frames`` out and assert the flag-to-argument
 wiring and the clean-error handling; the engine itself is covered in
 ``test_scripts.py``. The instrument/config commands run against the real bundled
 ``Seestar50`` profile and the real ``PhotometryConfig`` (both offline).
@@ -36,9 +36,9 @@ def extra_instrument():
 
 
 @pytest.fixture
-def patched_reduce(monkeypatch):
+def patched_photometer(monkeypatch):
     """
-    Patch ``cli.reduce_frames`` and record how the CLI called it.
+    Patch ``cli.photometer_frames`` and record how the CLI called it.
 
     Returns a dict the test can inspect: every keyword the CLI forwarded plus the
     positional ``files`` argument. The fake returns a ``(frames, results)`` pair
@@ -46,17 +46,17 @@ def patched_reduce(monkeypatch):
     """
     calls = {}
 
-    def fake_reduce(files, **kwargs: object):
+    def fake_photometer(files, **kwargs: object):
         calls["files"] = list(files)
         calls.update(kwargs)
         return ["frame1", "frame2"], {"frame1": "frame1.star"}
 
-    monkeypatch.setattr(cli, "reduce_frames", fake_reduce)
+    monkeypatch.setattr(cli, "photometer_frames", fake_photometer)
     return calls
 
 
-def test_process_forwards_every_flag(runner, patched_reduce, tmp_path):
-    """All process flags reach ``reduce_frames`` with the right values."""
+def test_process_forwards_every_flag(runner, patched_photometer, tmp_path):
+    """All process flags reach ``photometer_frames`` with the right values."""
     frame_dir = tmp_path / "night"
     frame_dir.mkdir()
     (frame_dir / "a.fit").write_bytes(b"")
@@ -89,24 +89,24 @@ def test_process_forwards_every_flag(runner, patched_reduce, tmp_path):
     )
 
     assert result.exit_code == 0, result.output
-    # The raw argument is forwarded; reduce_frames does the expansion.
-    assert patched_reduce["files"] == [str(frame_dir)]
-    assert patched_reduce["weights"] == str(weights)
-    assert patched_reduce["user_specific_metadata"] == {"observer": "MWC"}
-    assert patched_reduce["output_dir"] == str(out_dir)
-    assert patched_reduce["append_l4"] is False
-    assert patched_reduce["fail_fast"] is True
-    assert patched_reduce["output_suffix"] == ".starlist"
-    assert patched_reduce["write_qa_manifest"] is False
+    # The raw argument is forwarded; photometer_frames does the expansion.
+    assert patched_photometer["files"] == [str(frame_dir)]
+    assert patched_photometer["weights"] == str(weights)
+    assert patched_photometer["user_specific_metadata"] == {"observer": "MWC"}
+    assert patched_photometer["output_dir"] == str(out_dir)
+    assert patched_photometer["append_l4"] is False
+    assert patched_photometer["fail_fast"] is True
+    assert patched_photometer["output_suffix"] == ".starlist"
+    assert patched_photometer["write_qa_manifest"] is False
     # The config carries the default (Seestar50) instrument.
-    config = patched_reduce["config"]
+    config = patched_photometer["config"]
     assert isinstance(config, PhotometryConfig)
     assert config.instrument.name == "Seestar50"
     # The summary reflects the returned (results, frames) counts.
     assert "Processed 1 of 2 frames" in result.output
 
 
-def test_process_uses_robust_defaults(runner, patched_reduce, tmp_path):
+def test_process_uses_robust_defaults(runner, patched_photometer, tmp_path):
     """Omitting options downloads weights, appends L4, and uses robust defaults."""
     frame = tmp_path / "a.fit"
     frame.write_bytes(b"")
@@ -114,15 +114,15 @@ def test_process_uses_robust_defaults(runner, patched_reduce, tmp_path):
     result = runner.invoke(cli.main, ["process", str(frame)])
 
     assert result.exit_code == 0, result.output
-    assert patched_reduce["weights"] is None
-    assert patched_reduce["user_specific_metadata"] == {}
+    assert patched_photometer["weights"] is None
+    assert patched_photometer["user_specific_metadata"] == {}
     # append_l4 now defaults ON.
-    assert patched_reduce["append_l4"] is True
-    assert patched_reduce["fail_fast"] is False
-    assert patched_reduce["write_qa_manifest"] is True
+    assert patched_photometer["append_l4"] is True
+    assert patched_photometer["fail_fast"] is False
+    assert patched_photometer["write_qa_manifest"] is True
 
 
-def test_process_forwards_multiple_directories(runner, patched_reduce, tmp_path):
+def test_process_forwards_multiple_directories(runner, patched_photometer, tmp_path):
     """Several directory arguments are all forwarded for expansion."""
     n1 = tmp_path / "n1"
     n2 = tmp_path / "n2"
@@ -134,11 +134,11 @@ def test_process_forwards_multiple_directories(runner, patched_reduce, tmp_path)
     result = runner.invoke(cli.main, ["process", str(n1), str(n2)])
 
     assert result.exit_code == 0, result.output
-    assert patched_reduce["files"] == [str(n1), str(n2)]
+    assert patched_photometer["files"] == [str(n1), str(n2)]
 
 
 def test_process_instrument_override(
-    runner, patched_reduce, extra_instrument, tmp_path
+    runner, patched_photometer, extra_instrument, tmp_path
 ):
     """``--instrument`` selects a NON-default profile, proving the override took."""
     frame = tmp_path / "a.fit"
@@ -149,11 +149,11 @@ def test_process_instrument_override(
     )
 
     assert result.exit_code == 0, result.output
-    config = patched_reduce["config"]
+    config = patched_photometer["config"]
     assert config.instrument.name == extra_instrument.name
 
 
-def test_process_profile_file_override(runner, patched_reduce, tmp_path):
+def test_process_profile_file_override(runner, patched_photometer, tmp_path):
     """``--profile FILE`` loads an unbundled profile onto the config."""
     profile = InstrumentProfile(name="MyScope")
     profile_file = tmp_path / "scope.json"
@@ -167,7 +167,7 @@ def test_process_profile_file_override(runner, patched_reduce, tmp_path):
     )
 
     assert result.exit_code == 0, result.output
-    config = patched_reduce["config"]
+    config = patched_photometer["config"]
     assert config.instrument.name == "MyScope"
 
 

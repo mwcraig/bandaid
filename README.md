@@ -29,11 +29,11 @@ To use bandaid in your code:
 
 ## Command-line usage
 
-Installing bandaid also provides a `bandaid` command for reducing a night of
+Installing bandaid also provides a `bandaid` command for photometering a night of
 frames without writing any Python:
 
 ```bash
-# Reduce every FITS frame in a directory, writing .star files + a QA manifest
+# Photometer every FITS frame in a directory, writing .star files + a QA manifest
 $ bandaid process night-of-2026-06-27/ -o out/
 
 # Inspect instruments and configuration

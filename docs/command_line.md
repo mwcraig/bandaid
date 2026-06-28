@@ -2,25 +2,25 @@
 
 Installing bandaid puts a `bandaid` command on your path. It wraps the same
 batch-photometry flow you would otherwise drive from a notebook
-(`prepare_batch` → `process_batch`), so you can reduce a night of frames and
+(`prepare_batch` → `process_batch`), so you can photometer a night of frames and
 inspect instruments/configuration without writing any Python.
 
 ```bash
 $ bandaid --help
 ```
 
-To drive the same reduction from Python, call `bandaid.reduce_frames` (defined in
+To drive the same flow from Python, call `bandaid.photometer_frames` (defined in
 `bandaid.scripts`), which performs the identical file-expansion + `prepare_batch`
 → `process_batch` flow this command wraps.
 
-## `bandaid process` — reduce a batch of frames
+## `bandaid process` — photometer a batch of frames
 
 The main command. Point it at your frames and it builds the Ballet centroider,
 prepares the batch from the first frame, photometers every frame, and writes a
 `.star` file per frame plus a QA manifest.
 
 ```bash
-# Reduce every FITS frame in a directory, writing results to ./out
+# Photometer every FITS frame in a directory, writing results to ./out
 $ bandaid process night-of-2026-06-27/ -o out/
 
 # Or pass a glob / explicit files
@@ -38,7 +38,7 @@ preparation.
 
 | Option                             | Default          | Meaning                                                                    |
 | ---------------------------------- | ---------------- | -------------------------------------------------------------------------- |
-| `FILES...`                         | —                | Frames to reduce: directories, globs, and/or paths.                        |
+| `FILES...`                         | —                | Frames to photometer: directories, globs, and/or paths.                    |
 | `-o, --output-dir DIR`             | `.`              | Where to write the `.star` files and QA manifest.                          |
 | `--instrument NAME`                | `Seestar50`      | A bundled/registered instrument profile (see `bandaid instrument list`).   |
 | `--profile FILE`                   | —                | An instrument-profile JSON file (alternative to `--instrument`).           |

@@ -67,9 +67,9 @@ __all__ = [
     "BatchPrep",
     "check_frame_consistency",
     "expand_frame_paths",
+    "photometer_frames",
     "prepare_batch",
     "process_batch",
-    "reduce_frames",
 ]
 
 # Filename endings treated as FITS frames when expanding directory/glob arguments.
@@ -687,7 +687,7 @@ def process_batch(
     return results
 
 
-def reduce_frames(
+def photometer_frames(
     files,
     *,
     config=None,
@@ -701,7 +701,7 @@ def reduce_frames(
     write_qa_manifest=True,
 ):
     """
-    Expand a set of file arguments and reduce them into per-frame photometry.
+    Expand a set of file arguments and measure per-frame photometry for each.
 
     The high-level convenience behind ``bandaid process``: it does the file-name
     expansion (`expand_frame_paths`), builds the Ballet centroider, and runs

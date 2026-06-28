@@ -869,8 +869,8 @@ class TestExpandFramePaths:
             scripts.expand_frame_paths([str(fifo)])
 
 
-class TestReduceFrames:
-    """Unit tests for the high-level ``reduce_frames`` convenience entry point."""
+class TestPhotometerFrames:
+    """Unit tests for the high-level ``photometer_frames`` convenience entry point."""
 
     def test_expands_builds_cnn_and_wires_both_steps(self, monkeypatch, tmp_path):
         """It expands the args, builds the CNN from weights, and threads both steps."""
@@ -908,7 +908,7 @@ class TestReduceFrames:
         monkeypatch.setattr(scripts, "process_batch", fake_process)
 
         config = PhotometryConfig()
-        frames, results = scripts.reduce_frames(
+        frames, results = scripts.photometer_frames(
             [str(night)],
             config=config,
             weights=str(weights),
@@ -942,7 +942,7 @@ class TestReduceFrames:
         empty = tmp_path / "empty"
         empty.mkdir()
         with pytest.raises(ValueError, match="no FITS"):
-            scripts.reduce_frames([str(empty)])
+            scripts.photometer_frames([str(empty)])
 
     def test_defaults_download_weights_and_append_l4(self, monkeypatch, tmp_path):
         """Omitting options downloads weights, appends L4, and uses robust defaults."""
@@ -967,7 +967,7 @@ class TestReduceFrames:
             lambda files, prep, **kwargs: calls.update(kwargs=kwargs) or {},
         )
 
-        scripts.reduce_frames([str(frame)])
+        scripts.photometer_frames([str(frame)])
 
         assert calls["ballet"] is None
         assert calls["append_l4"] is True
@@ -1003,7 +1003,7 @@ class TestReduceFrames:
             scripts.fits, "getheader", lambda _file: dict(_CONSISTENT_HEADER)
         )
 
-        frames, results = scripts.reduce_frames(inputs, output_dir=str(out))
+        frames, results = scripts.photometer_frames(inputs, output_dir=str(out))
 
         written = sorted(
             p.name for p in out.iterdir() if p.name != scripts.QA_MANIFEST_FILENAME

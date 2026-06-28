@@ -10,10 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - A `bandaid` command-line interface (`bandaid process`, `instrument`, `config`,
-    `weights`) for reducing a night of frames and inspecting instruments/config
-    without writing Python. See `docs/command_line.md`. The same flow is available
-    from Python as `bandaid.reduce_frames` (with `expand_frame_paths` for the
-    directory/glob/path expansion); both are re-exported from the package root.
+    `weights`) for running photometry on a night of frames and inspecting
+    instruments/config without writing Python. See `docs/command_line.md`. The
+    same flow is available from Python as `bandaid.photometer_frames` (with
+    `expand_frame_paths` for the directory/glob/path expansion); both are
+    re-exported from the package root.
     `bandaid process` expands directories, globs, and paths (de-duplicated by
     resolved path, filtered to FITS frames including `.gz` forms) and writes a
     distinct `.star` file per frame even when input basenames collide.

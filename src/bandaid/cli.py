@@ -2,22 +2,23 @@
 The ``bandaid`` command-line interface.
 
 A thin glue layer over the existing photometry functions so an observer can
-reduce a night of frames and inspect instruments/config without writing Python.
+photometer a night of frames and inspect instruments/config without writing
+Python.
 The heavy lifting lives in :mod:`bandaid.scripts`, :mod:`bandaid.instruments`,
 and :mod:`bandaid.config`; this module only parses arguments and handles I/O.
 
 The four command groups are:
 
-* ``bandaid process`` -- reduce a batch of frames (the main command).
+* ``bandaid process`` -- photometer a batch of frames (the main command).
 * ``bandaid instrument list`` / ``show`` -- inspect instrument profiles.
 * ``bandaid config init`` / ``validate`` -- create and check a photometry config.
 * ``bandaid weights`` -- fetch/print the default Ballet centroider weights.
 
-The names ``reduce_frames``, ``download_weights``, ``available_instruments``,
+The names ``photometer_frames``, ``download_weights``, ``available_instruments``,
 ``load_instrument``, ``InstrumentProfile``, and ``PhotometryConfig`` are imported
 into this module's namespace so the network/heavy ones can be monkeypatched in
 tests. The file-expansion and ``prepare_batch`` -> ``process_batch`` flow lives
-in :func:`bandaid.scripts.reduce_frames`; this module only turns flags into a
+in :func:`bandaid.scripts.photometer_frames`; this module only turns flags into a
 config + metadata and delegates to it.
 """
 
@@ -31,7 +32,7 @@ from pydantic import ValidationError
 
 from .config import InstrumentProfile, PhotometryConfig
 from .instruments import available_instruments, load_instrument
-from .scripts import QA_MANIFEST_FILENAME, reduce_frames
+from .scripts import QA_MANIFEST_FILENAME, photometer_frames
 
 __all__ = ["main"]
 
@@ -137,7 +138,7 @@ def _load_metadata(metadata_file):
 @click.group()
 @click.version_option(package_name="bandaid")
 def main():
-    """Reduce Smart Telescope frames and inspect instruments/config."""
+    """Photometer Smart Telescope frames and inspect instruments/config."""
 
 
 @main.command()
@@ -219,7 +220,7 @@ def process(
     qa_manifest,
 ):
     """
-    Reduce a batch of FITS frames into per-frame .star photometry files.
+    Photometer a batch of FITS frames into per-frame .star photometry files.
 
     FILES may be directories (expanded to their FITS frames), glob patterns, or
     individual frame paths. The first frame seeds the once-per-batch preparation
@@ -228,7 +229,7 @@ def process(
     Parameters
     ----------
     files : tuple of str
-        Positional FITS files, globs, and/or directories to reduce.
+        Positional FITS files, globs, and/or directories to photometer.
     output_dir : str
         Directory to write the per-frame ``.star`` files (and QA manifest) into.
     instrument : str or None
@@ -259,10 +260,11 @@ def process(
     config = _build_config(instrument, profile, config_file)
     metadata = _load_metadata(metadata_file)
 
-    # The file expansion + prepare/process flow lives in scripts.reduce_frames;
-    # surface its argument errors (no frames, bad path) as clean CLI errors.
+    # The file expansion + prepare/process flow lives in
+    # scripts.photometer_frames; surface its argument errors (no frames, bad
+    # path) as clean CLI errors.
     try:
-        frames, results = reduce_frames(
+        frames, results = photometer_frames(
             files,
             config=config,
             weights=weights,
