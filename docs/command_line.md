@@ -9,8 +9,9 @@ inspect instruments/configuration without writing any Python.
 $ bandaid --help
 ```
 
-The command is a thin layer: every option maps directly onto an existing
-function, and no photometry logic lives in the CLI.
+To drive the same reduction from Python, call `bandaid.reduce_frames` (defined in
+`bandaid.scripts`), which performs the identical file-expansion + `prepare_batch`
+→ `process_batch` flow this command wraps.
 
 ## `bandaid process` — reduce a batch of frames
 
@@ -27,9 +28,13 @@ $ bandaid process "night/*.fit" -o out/
 ```
 
 Frame arguments may be **directories** (expanded to the FITS frames they
-contain), **glob patterns**, or **individual file paths**. The combined list is
-de-duplicated and sorted so the batch order is deterministic. The first frame
-seeds the once-per-batch preparation.
+contain), **glob patterns** (filtered to FITS frames), or **individual file
+paths**. The combined list is sorted so the batch order is deterministic, and
+de-duplicated by *resolved* path: the same file reached two ways (a directory and
+an explicit path, `a.fit` vs `./a.fit`) is processed once, while two distinct
+files that merely share a name in different directories are both kept — and
+written to distinct `.star` files. The first frame seeds the once-per-batch
+preparation.
 
 | Option                             | Default          | Meaning                                                                    |
 | ---------------------------------- | ---------------- | -------------------------------------------------------------------------- |
@@ -39,8 +44,8 @@ seeds the once-per-batch preparation.
 | `--profile FILE`                   | —                | An instrument-profile JSON file (alternative to `--instrument`).           |
 | `--config FILE`                    | —                | A full `PhotometryConfig` JSON file (see `bandaid config init`).           |
 | `--weights PATH`                   | downloads        | Ballet centroider weights; omit to download the defaults from HuggingFace. |
-| `--metadata FILE`                  | `{}`             | A JSON object of per-frame user metadata to record.                        |
-| `--append-l4 / --no-append-l4`     | off              | Add a full-frame L4 luminance channel to the Bayer masks.                  |
+| `--user-metadata FILE`             | `{}`             | A JSON object of per-frame user-specific metadata to record.               |
+| `--append-l4 / --no-append-l4`     | on               | Add a full-frame L4 luminance channel to the Bayer masks.                  |
 | `--fail-fast / --no-fail-fast`     | `--no-fail-fast` | Re-raise unexpected per-frame errors instead of skipping the frame.        |
 | `--output-suffix SUFFIX`           | `.star`          | Suffix for the per-frame output files.                                     |
 | `--qa-manifest / --no-qa-manifest` | on               | Write a per-frame QA manifest alongside the `.star` files.                 |
