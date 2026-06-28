@@ -67,7 +67,7 @@ from .photometry import (
     neighbor_contamination_flag,
     prepare_image,
 )
-from .scripts import prepare_batch
+from .scripts import expand_frame_paths, prepare_batch, process_batch, reduce_frames
 
 # Libraries should not configure logging; attach a NullHandler so the package
 # can emit records without forcing handler configuration on the host
