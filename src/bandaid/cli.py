@@ -13,63 +13,25 @@ The four command groups are:
 * ``bandaid config init`` / ``validate`` -- create and check a photometry config.
 * ``bandaid weights`` -- fetch/print the default Ballet centroider weights.
 
-The names ``Ballet``, ``download_weights``, ``prepare_batch``,
-``process_batch``, ``available_instruments``, ``load_instrument``,
-``InstrumentProfile``, and ``PhotometryConfig`` are imported into this module's
-namespace so the network/heavy ones can be monkeypatched in tests.
+The names ``reduce_frames``, ``download_weights``, ``available_instruments``,
+``load_instrument``, ``InstrumentProfile``, and ``PhotometryConfig`` are imported
+into this module's namespace so the network/heavy ones can be monkeypatched in
+tests. The file-expansion and ``prepare_batch`` -> ``process_batch`` flow lives
+in :func:`bandaid.scripts.reduce_frames`; this module only turns flags into a
+config + metadata and delegates to it.
 """
 
-import glob
 import json
 import shutil
 from pathlib import Path
 
 import click
-from eloy.ballet.model import Ballet, download_weights
+from eloy.ballet.model import download_weights
 from pydantic import ValidationError
 
 from .config import InstrumentProfile, PhotometryConfig
 from .instruments import available_instruments, load_instrument
-from .scripts import QA_MANIFEST_FILENAME, prepare_batch, process_batch
-
-# FITS extensions used when expanding a directory argument to its frames. Seestar
-# writes ``.fit``; the others are accepted for telescopes that use them.
-_FITS_SUFFIXES = frozenset({".fit", ".fits", ".fts"})
-
-
-def _expand_files(paths):
-    """
-    Expand the positional ``FILES`` arguments to a sorted list of frame paths.
-
-    Each argument may be a directory (expanded to the FITS frames it contains), a
-    glob pattern (expanded against the filesystem), or a literal path (kept as
-    is). The combined result is de-duplicated and sorted so a batch is processed
-    in a deterministic order regardless of how the shell passed the arguments.
-
-    Parameters
-    ----------
-    paths : collections.abc.Iterable of str
-        The raw positional arguments: directories, globs, and/or file paths.
-
-    Returns
-    -------
-    list of str
-        The expanded, de-duplicated, lexically sorted frame paths.
-    """
-    files = []
-    for raw in paths:
-        path = Path(raw)
-        if path.is_dir():
-            files.extend(
-                str(child)
-                for child in path.iterdir()
-                if child.suffix.lower() in _FITS_SUFFIXES
-            )
-        elif glob.has_magic(raw):
-            files.extend(glob.glob(raw))  # noqa: PTH207 -- need glob-pattern support
-        else:
-            files.append(raw)
-    return sorted(set(files))
+from .scripts import QA_MANIFEST_FILENAME, reduce_frames
 
 
 def _build_config(instrument, profile, config_file):
@@ -99,21 +61,30 @@ def _build_config(instrument, profile, config_file):
     Raises
     ------
     click.ClickException
-        If ``--instrument`` and ``--profile`` are given together, or a named
-        instrument cannot be resolved.
+        If ``--instrument`` and ``--profile`` are given together, a named
+        instrument cannot be resolved, or a ``--config``/``--profile`` file fails
+        validation.
     """
     if instrument is not None and profile is not None:
         msg = "use only one of --instrument and --profile, not both"
         raise click.ClickException(msg)
 
     if config_file is not None:
-        config = PhotometryConfig.model_validate_json(Path(config_file).read_text())
+        # A malformed/invalid config should read as a clean CLI error, matching
+        # ``config validate``, not a raw pydantic traceback.
+        try:
+            config = PhotometryConfig.model_validate_json(Path(config_file).read_text())
+        except ValidationError as exc:
+            raise click.ClickException(str(exc)) from exc
     else:
         config = PhotometryConfig()
 
     override = None
     if profile is not None:
-        override = InstrumentProfile.from_file(profile)
+        try:
+            override = InstrumentProfile.from_file(profile)
+        except ValidationError as exc:
+            raise click.ClickException(str(exc)) from exc
     elif instrument is not None:
         try:
             override = load_instrument(instrument)
@@ -127,21 +98,38 @@ def _build_config(instrument, profile, config_file):
 
 def _load_metadata(metadata_file):
     """
-    Load the per-frame user metadata for ``process_batch``.
+    Load the per-frame user-specific metadata for the batch.
+
+    This is the ``user_specific_metadata`` recorded with every frame's output
+    (the observer-identity layer threaded through `process_batch`).
 
     Parameters
     ----------
     metadata_file : str or None
-        Path passed to ``--metadata`` holding a JSON object, or None.
+        Path passed to ``--user-metadata`` holding a JSON object, or None.
 
     Returns
     -------
     dict
-        The parsed metadata, or an empty dict when ``--metadata`` is omitted.
+        The parsed metadata, or an empty dict when ``--user-metadata`` is omitted.
+
+    Raises
+    ------
+    click.ClickException
+        If the file is not valid JSON, or is valid JSON that is not an object
+        (which would later break when the metadata is merged via ``dict.update``).
     """
     if metadata_file is None:
         return {}
-    return json.loads(Path(metadata_file).read_text())
+    try:
+        data = json.loads(Path(metadata_file).read_text())
+    except json.JSONDecodeError as exc:
+        msg = f"--user-metadata is not valid JSON: {exc}"
+        raise click.ClickException(msg) from exc
+    if not isinstance(data, dict):
+        msg = "--user-metadata must be a JSON object"
+        raise click.ClickException(msg)
+    return data
 
 
 @click.group()
@@ -185,15 +173,15 @@ def main():
     help="Path to Ballet centroider weights; omit to download the defaults.",
 )
 @click.option(
-    "--metadata",
+    "--user-metadata",
     "metadata_file",
     default=None,
     type=click.Path(exists=True, dir_okay=False),
-    help="Path to a JSON object of per-frame user metadata.",
+    help="Path to a JSON object of per-frame user-specific metadata.",
 )
 @click.option(
     "--append-l4/--no-append-l4",
-    default=False,
+    default=True,
     show_default=True,
     help="Add a full-frame L4 luminance channel to the Bayer masks.",
 )
@@ -250,7 +238,7 @@ def process(
     weights : str or None
         Path to Ballet centroider weights; None downloads the defaults.
     metadata_file : str or None
-        Path to a JSON object of per-frame user metadata.
+        Path to a JSON object of per-frame user-specific metadata.
     append_l4 : bool
         Whether to add a full-frame L4 luminance channel to the Bayer masks.
     fail_fast : bool
@@ -263,27 +251,28 @@ def process(
     Raises
     ------
     click.ClickException
-        If the arguments expand to no FITS frames.
+        If the arguments expand to no FITS frames, a path argument is missing or
+        not a FITS frame, or a config/profile/metadata file fails validation.
     """
-    frames = _expand_files(files)
-    if not frames:
-        msg = "no FITS frames found in the given files/directories"
-        raise click.ClickException(msg)
-
     config = _build_config(instrument, profile, config_file)
-    cnn = Ballet(model_file=weights)
     metadata = _load_metadata(metadata_file)
 
-    prep = prepare_batch(frames[0], cnn=cnn, config=config, append_l4=append_l4)
-    results = process_batch(
-        frames,
-        prep,
-        user_specific_metadata=metadata,
-        output_dir=output_dir,
-        output_suffix=output_suffix,
-        fail_fast=fail_fast,
-        write_qa_manifest=qa_manifest,
-    )
+    # The file expansion + prepare/process flow lives in scripts.reduce_frames;
+    # surface its argument errors (no frames, bad path) as clean CLI errors.
+    try:
+        frames, results = reduce_frames(
+            files,
+            config=config,
+            weights=weights,
+            user_specific_metadata=metadata,
+            append_l4=append_l4,
+            output_dir=output_dir,
+            output_suffix=output_suffix,
+            fail_fast=fail_fast,
+            write_qa_manifest=qa_manifest,
+        )
+    except (ValueError, FileNotFoundError) as exc:
+        raise click.ClickException(str(exc)) from exc
 
     click.echo(f"Processed {len(results)} of {len(frames)} frames into {output_dir}")
     if qa_manifest:
@@ -392,8 +381,9 @@ def weights(output_file):
     """
     Print (and optionally copy) the default Ballet centroider weights.
 
-    The weights are downloaded from HuggingFace on first use and cached
-    thereafter; this prints the cached ``.npz`` path so it can be reused with
+    The weights are downloaded from HuggingFace on first use; caching is handled
+    by the HuggingFace hub cache (under ``HF_HOME``/``~/.cache/huggingface``), not
+    by bandaid, so this simply prints the cached ``.npz`` path for reuse with
     ``bandaid process --weights``.
 
     Parameters
