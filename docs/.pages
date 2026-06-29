@@ -1,5 +1,6 @@
 nav:
   - index.md
+  - Command-line usage: command_line.md
   - Configuration: configuration.md
   - Instrument profiles: instrument_profiles.md
   - Training the Ballet centroider: training_the_ballet_centroider.md

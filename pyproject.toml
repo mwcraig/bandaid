@@ -39,6 +39,7 @@ keywords = []
 dependencies = [
     "astropy",
     "astroquery",
+    "click",
     "python-dateutil",
     # Pin eloy to a specific commit on mwcraig's fork until the fix is merged in
     "eloy[jax] @ git+https://github.com/mwcraig/eloy@a056c91a945772e0520a89695f8fcd16fda36870",
@@ -59,6 +60,9 @@ train = [
     "optax",
     "tqdm",
 ]
+
+[project.scripts]
+bandaid = "bandaid.cli:main"
 
 [project.urls]
 Documentation = "https://bandaid.readthedocs.io"

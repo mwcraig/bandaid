@@ -15,6 +15,7 @@ functions: no shared mutable state, no "is it done yet?" bookkeeping.
 """
 
 import csv
+import glob
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,6 +23,7 @@ from pathlib import Path
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
+from eloy.ballet.model import Ballet
 from st_pipeline.schema_definition import StarListSet
 
 from .catalog import cached_gaia_radecs
@@ -59,6 +61,113 @@ QA_MANIFEST_COLUMNS = (
 )
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "BatchPrep",
+    "check_frame_consistency",
+    "expand_frame_paths",
+    "photometer_frames",
+    "prepare_batch",
+    "process_batch",
+]
+
+# Filename endings treated as FITS frames when expanding directory/glob arguments.
+# Seestar writes ``.fit``; the others (and their gzip-compressed forms, which
+# astropy opens transparently) are accepted for telescopes that use them.
+_FITS_SUFFIXES = (
+    ".fit",
+    ".fits",
+    ".fts",
+    ".fit.gz",
+    ".fits.gz",
+    ".fts.gz",
+)
+
+
+def _is_fits(path):
+    """
+    Return whether ``path`` ends with a recognised FITS suffix.
+
+    Uses the whole name (not :attr:`pathlib.Path.suffix`) so the compound
+    compressed forms such as ``.fits.gz`` are matched as well.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        The path to test.
+
+    Returns
+    -------
+    bool
+        True if the name ends with one of `_FITS_SUFFIXES`.
+    """
+    return str(path).lower().endswith(_FITS_SUFFIXES)
+
+
+def expand_frame_paths(paths):
+    """
+    Expand the raw positional path arguments into a sorted list of frame paths.
+
+    Parameters
+    ----------
+    paths : collections.abc.Iterable of str
+        The raw positional arguments: directories, glob patterns, and/or file
+        paths.
+
+    Returns
+    -------
+    list of str
+        The expanded, de-duplicated, lexically sorted (resolved) frame paths.
+
+    Raises
+    ------
+    FileNotFoundError
+        If a literal (non-glob) path does not exist.
+    ValueError
+        If a literal path exists but is not a FITS frame.
+
+    Notes
+    -----
+    Each argument may be a directory (expanded to the FITS frames it contains), a
+    glob pattern (expanded against the filesystem, then filtered to FITS frames),
+    or a literal file path. Directory and glob matches that are not FITS *files*
+    are silently skipped -- including a directory or symlink whose name merely
+    ends in a FITS suffix (e.g. ``bundle.fits/``), which would otherwise blow up
+    later in ``fits.getheader``. A literal path is validated to exist and to be a
+    FITS file, so a typo fails here with a clear error rather than as a traceback
+    deep in ``prepare_batch``.
+
+    The combined result is de-duplicated by *resolved* path -- so the same file
+    reached two ways (a directory and an explicit path, ``a.fit`` vs ``./a.fit``)
+    appears once, while two distinct files that merely share a basename in
+    different directories are both kept -- and returned sorted so a batch is
+    processed in a deterministic order.
+    """
+    # Map resolved path -> the path object, so duplicates collapse by identity.
+    seen = {}
+    for raw in paths:
+        path = Path(raw)
+        if path.is_dir():
+            candidates = [
+                child for child in path.iterdir() if child.is_file() and _is_fits(child)
+            ]
+        elif glob.has_magic(raw):
+            candidates = [
+                match
+                for match in map(Path, glob.glob(raw))  # noqa: PTH207 -- need glob
+                if match.is_file() and _is_fits(match)
+            ]
+        else:
+            if not path.exists():
+                msg = f"no such file: {raw}"
+                raise FileNotFoundError(msg)
+            if not path.is_file() or not _is_fits(path):
+                msg = f"{raw} is not a FITS frame (expected one of {_FITS_SUFFIXES})"
+                raise ValueError(msg)
+            candidates = [path]
+        for candidate in candidates:
+            seen.setdefault(candidate.resolve(), candidate)
+    return [str(resolved) for resolved in sorted(seen)]
 
 
 @dataclass(frozen=True)
@@ -379,6 +488,97 @@ def _write_qa_manifest(path, records):
             )
 
 
+def _unique_output_paths(files, output_dir, suffix):
+    """
+    Map each input frame to a unique output path under ``output_dir``.
+
+    Parameters
+    ----------
+    files : list of str or pathlib.Path
+        The input frames, in the order they will be written.
+    output_dir : str or pathlib.Path
+        Directory the output paths live in.
+    suffix : str
+        Suffix for the output files (e.g. ``".star"``).
+
+    Returns
+    -------
+    dict
+        Mapping of each input frame to its unique output `~pathlib.Path`.
+
+    Notes
+    -----
+    Output names are kept flat and clean in the common case and grow structure
+    only when needed:
+
+    * When every frame comes from a single directory -- the typical "one night,
+      one folder" run -- the basenames are already unique, so each output is a
+      flat ``output_dir/<stem><suffix>``.
+    * When frames come from a mix of directories the source tree is mirrored as
+      ``output_dir/<dirname>/<stem><suffix>``, so identically named frames from
+      different directories stay distinct without munging the file name. Two
+      distinct source directories that share a basename are disambiguated with a
+      numeric suffix on the subdirectory.
+
+    A residual basename collision within a single output directory (e.g. the same
+    frame referenced twice, or two inputs differing only by extension) falls back
+    to a numeric suffix on the file name.
+    """
+    output_dir = Path(output_dir)
+    paths = [Path(file) for file in files]
+    parents = [path.resolve().parent for path in paths]
+
+    # A single source directory writes flat names; a mix mirrors the tree, so
+    # assign each distinct directory a unique subdirectory name up front.
+    subdir_for = {}
+    if len(set(parents)) > 1:
+        used_subdirs = set()
+        for parent in sorted(set(parents), key=str):
+            base = parent.name or "root"
+            name = base
+            index = 1
+            while name in used_subdirs:
+                name = f"{base}_{index}"
+                index += 1
+            used_subdirs.add(name)
+            subdir_for[parent] = name
+
+    mapping = {}
+    used = set()
+    for file, path, parent in zip(files, paths, parents, strict=True):
+        target_dir = output_dir / subdir_for[parent] if subdir_for else output_dir
+        stem = path.stem
+        name = stem + suffix
+        index = 1
+        while target_dir / name in used:
+            name = f"{stem}_{index}{suffix}"
+            index += 1
+        used.add(target_dir / name)
+        mapping[file] = target_dir / name
+    return mapping
+
+
+def _ensure_output_dirs(output_dir, output_paths):
+    """
+    Create ``output_dir`` and every subdirectory the planned outputs require.
+
+    Doing this once, up front, makes a missing or unwritable parent fail fast
+    rather than partway through the batch, and creates the per-source-directory
+    subdirectories the mirrored-tree layout needs (see `_unique_output_paths`).
+
+    Parameters
+    ----------
+    output_dir : str or pathlib.Path
+        The root output directory.
+    output_paths : dict
+        Mapping of input frame to planned output `~pathlib.Path`, as returned by
+        `_unique_output_paths`.
+    """
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    for output_path in output_paths.values():
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+
 def process_batch(
     files,
     prep,
@@ -407,7 +607,10 @@ def process_batch(
         Directory to write the per-frame photometry results to. Default None,
         which runs in in-memory mode and returns the photometry tables instead
         of writing files. When a directory is given it is created if it does not
-        already exist.
+        already exist. Frames from a single source directory are written flat as
+        ``<stem><output_suffix>``; frames from a mix of directories mirror the
+        source tree as ``<dirname>/<stem><output_suffix>`` so identically named
+        frames stay distinct (see `_unique_output_paths`).
 
     output_suffix : str, optional
         Suffix for the output files. Default ".star".
@@ -456,10 +659,18 @@ def process_batch(
     # end when in write-to-disk mode and the caller has not opted out.
     write_manifest = output_dir is not None and write_qa_manifest
     manifest_records = []
-    # Create the output directory once, before the loop, so a missing parent
-    # fails fast instead of partway through the batch.
+    # Materialize the frames so the output names can be planned up front: two
+    # frames sharing a basename must not collide on disk (see _unique_output_paths).
+    files = list(files)
+    output_paths = (
+        _unique_output_paths(files, output_dir, output_suffix)
+        if output_dir is not None
+        else {}
+    )
+    # Create the output directory (and the mirrored-tree subdirectories) up
+    # front so a missing or unwritable parent fails fast.
     if output_dir is not None:
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        _ensure_output_dirs(output_dir, output_paths)
     for file in files:
         try:
             check_frame_consistency(file, fits.getheader(file), prep)
@@ -506,7 +717,7 @@ def process_batch(
             # abort the run rather than be skipped as a "bad frame".
             manifest_records.append(_qa_record_ok(file, by_filter))
             if output_dir is not None:
-                output_path = Path(output_dir) / (Path(file).stem + output_suffix)
+                output_path = output_paths[file]
                 star_lists = [
                     eloy_to_starlist(tab, tab.meta["full_image_meta"])
                     for tab in by_filter.values()
@@ -523,3 +734,90 @@ def process_batch(
     if write_manifest:
         _write_qa_manifest(Path(output_dir) / qa_manifest_name, manifest_records)
     return results
+
+
+def photometer_frames(
+    files,
+    *,
+    config=None,
+    cnn=None,
+    weights=None,
+    user_specific_metadata=None,
+    append_l4=True,
+    output_dir=".",
+    output_suffix=".star",
+    fail_fast=False,
+    write_qa_manifest=True,
+):
+    """
+    Expand a set of file arguments and measure per-frame photometry for each.
+
+    The high-level convenience behind ``bandaid process``: it does the file-name
+    expansion (`expand_frame_paths`), builds the Ballet centroider, and runs
+    `prepare_batch` (seeded from the first frame) followed by `process_batch`.
+    Driving the whole flow from Python is one call to this function; the CLI is a
+    thin dressing over it.
+
+    Parameters
+    ----------
+    files : collections.abc.Iterable of str
+        Raw positional arguments -- directories, glob patterns, and/or file paths
+        -- expanded by `expand_frame_paths`.
+    config : PhotometryConfig or None, optional
+        Configuration carried through the batch. None (default) uses a default
+        `PhotometryConfig` (Seestar50).
+    cnn : object or None, optional
+        A pre-built Ballet centroider. None (default) builds one from ``weights``.
+    weights : str or None, optional
+        Path to Ballet weights used when ``cnn`` is None; None downloads the
+        defaults from HuggingFace.
+    user_specific_metadata : dict or None, optional
+        Per-frame user metadata recorded with each output. None (default) is an
+        empty dict.
+    append_l4 : bool, optional
+        Whether to add a full-frame L4 luminance channel to the Bayer masks.
+        Default True.
+    output_dir : str or pathlib.Path or None, optional
+        Directory to write the per-frame ``.star`` files (and QA manifest) into.
+        Default ``"."``; None runs in in-memory mode (see `process_batch`).
+    output_suffix : str, optional
+        Suffix for the per-frame output files. Default ``".star"``.
+    fail_fast : bool, optional
+        Whether to re-raise unexpected per-frame errors instead of skipping the
+        frame. Default False (the robust mode for unattended runs).
+    write_qa_manifest : bool, optional
+        Whether to write a per-frame QA manifest alongside the outputs. Default
+        True.
+
+    Returns
+    -------
+    tuple of (list of str, dict)
+        The expanded frame list and the `process_batch` result mapping (each
+        successfully-processed frame to its output, see `process_batch`).
+
+    Raises
+    ------
+    ValueError
+        If the arguments expand to no FITS frames. `expand_frame_paths` may also
+        raise `ValueError`/`FileNotFoundError` for a malformed path argument.
+    """
+    frames = expand_frame_paths(files)
+    if not frames:
+        msg = "no FITS frames found in the given files/directories"
+        raise ValueError(msg)
+
+    config = config or PhotometryConfig()
+    if cnn is None:
+        cnn = Ballet(model_file=weights)
+
+    prep = prepare_batch(frames[0], cnn=cnn, config=config, append_l4=append_l4)
+    results = process_batch(
+        frames,
+        prep,
+        user_specific_metadata=user_specific_metadata or {},
+        output_dir=output_dir,
+        output_suffix=output_suffix,
+        fail_fast=fail_fast,
+        write_qa_manifest=write_qa_manifest,
+    )
+    return frames, results
