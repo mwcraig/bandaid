@@ -220,6 +220,11 @@ class InstrumentProfile(BaseModel, frozen=True):
     fwhm_cutout_half : int
         Half-width (px) of the square cutout used to build the PSF for the FWHM
         fit.
+    fwhm_n_stars : int
+        Cap on how many of the brightest unsaturated detections feed the single
+        FWHM fit. The fit needs only a handful of well-exposed stars; feeding
+        every faint detection both slows the CNN re-centroiding and inflates the
+        FWHM (the CNN mis-centroids faint sources, smearing the stacked PSF).
     contamination_tolerance : float
         Maximum fractional bright-neighbour spillover into the aperture before a
         star is flagged. How much spillover is acceptable depends on the
@@ -241,6 +246,7 @@ class InstrumentProfile(BaseModel, frozen=True):
     thresh: Annotated[float, Field(gt=0)] = 0.5
     detection_opening: Annotated[int, Field(ge=1)] = 3
     fwhm_cutout_half: Annotated[int, Field(ge=1)] = 25
+    fwhm_n_stars: Annotated[int, Field(ge=1)] = 25
     contamination_tolerance: Annotated[float, Field(gt=0)] = 0.01
     moffat_beta: Annotated[float, Field(gt=0)] = 3.0
     header_map: Mapping = Field(

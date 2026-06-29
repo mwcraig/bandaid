@@ -586,6 +586,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "pytest-raises" },
     { name = "pytest-randomly" },
+    { name = "pytest-remotedata" },
     { name = "pytest-xdist" },
     { name = "ruff" },
 ]
@@ -603,6 +604,7 @@ tests = [
     { name = "pytest-cov" },
     { name = "pytest-raises" },
     { name = "pytest-randomly" },
+    { name = "pytest-remotedata" },
     { name = "pytest-xdist" },
 ]
 types = [
@@ -644,6 +646,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "pytest-raises" },
     { name = "pytest-randomly" },
+    { name = "pytest-remotedata" },
     { name = "pytest-xdist" },
     { name = "ruff", specifier = "==0.15.15" },
 ]
@@ -661,6 +664,7 @@ tests = [
     { name = "pytest-cov" },
     { name = "pytest-raises" },
     { name = "pytest-randomly" },
+    { name = "pytest-remotedata" },
     { name = "pytest-xdist" },
 ]
 types = [{ name = "mypy" }]
@@ -4984,6 +4988,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c4/1d/258a4bf1109258c00c35043f40433be5c16647387b6e7cd5582d638c116b/pytest_randomly-4.0.1.tar.gz", hash = "sha256:174e57bb12ac2c26f3578188490bd333f0e80620c3f47340158a86eca0593cd8", size = 14130, upload-time = "2025-09-12T15:23:00.085Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/33/3e/a4a9227807b56869790aad3e24472a554b585974fe7e551ea350f50897ae/pytest_randomly-4.0.1-py3-none-any.whl", hash = "sha256:e0dfad2fd4f35e07beff1e47c17fbafcf98f9bf4531fd369d9260e2f858bfcb7", size = 8304, upload-time = "2025-09-12T15:22:58.946Z" },
+]
+
+[[package]]
+name = "pytest-remotedata"
+version = "0.4.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ff/b7/e39d14f37df7303fd6643db638db0e7722a8d168212d6deb36244f844b68/pytest-remotedata-0.4.1.tar.gz", hash = "sha256:05c08bf638cdd1ed66eb01738a1647c3c714737c3ec3abe009d2c1f793b4bb59", size = 13279, upload-time = "2023-09-26T04:00:14.367Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/02/70/9d5e2a5020c4721115b48fa6efa765ffff1cd679ed89049fa4c9a3c62f55/pytest_remotedata-0.4.1-py3-none-any.whl", hash = "sha256:4e840bd8733091c2a84e52528ee2c2a98aa2d4a26376ba20448f211bccd30a35", size = 8583, upload-time = "2023-09-26T04:00:12.927Z" },
 ]
 
 [[package]]

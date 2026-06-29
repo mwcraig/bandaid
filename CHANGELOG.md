@@ -33,6 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     The bundled Seestar50 dialect moved from `meta_json_files/Seestar50/basic.json`
     into `meta_json_files/Seestar50/profile.json`, and `metadata_from_header`
     takes an optional `profile=`.
+- An optional `remote_data`-marked smoke test (`pytest-remotedata` test
+    dependency) drives the real Ballet CNN on a bundled frame end-to-end,
+    downloading the centroider weights from HuggingFace. It is skipped by default
+    and runs only under `pytest --remote-data=any`, in a dedicated, non-blocking
+    CI job. The plugin's socket-blocking also guards the rest of the suite from
+    accidental network access.
 
 ### Changed (breaking)
 
@@ -44,6 +50,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     keyword arguments. Set these via
     `config=PhotometryConfig(source_selection=SourceSelectionConfig(gaia_mag_limit=...))`
     instead.
+
+### Fixed
+
+- The per-frame FWHM fit now uses only the brightest unsaturated detections
+    (`InstrumentProfile.fwhm_n_stars`, default 25) instead of every detection.
+    Bayer-balanced detection yields thousands of faint sources whose CNN
+    re-centroiding both dominated the per-frame runtime (~4x slower) and inflated
+    the fitted FWHM (~8.6 px vs the true ~2.8 px), over-sizing every
+    FWHM-scaled aperture. Capping recovers the true FWHM and the original speed
+    without changing which stars are photometered.
 
 ## [0.1.0] - (1979-01-01)
 

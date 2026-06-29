@@ -93,6 +93,7 @@ tests = [
     "pytest-cov",
     "pytest-raises",
     "pytest-randomly",
+    "pytest-remotedata",
     "pytest-xdist",
 ]
 # Pinned to match the pre-commit hook revs in .pre-commit-config.yaml so local
@@ -142,7 +143,10 @@ source = "vcs"
 ######## Configure pytest for your test suite ########
 [tool.pytest.ini_options]
 testpaths = ["tests"] # Tells pytest what directory tests are in
-markers = ["raises"] # Tells pytest to not raise a warning if you use @pytest.mark.raises
+markers = [
+    "raises", # Tells pytest to not raise a warning if you use @pytest.mark.raises
+    "remote_data: marks tests that require network access (run with --remote-data)",
+]
 
 [tool.coverage.paths]
 source = [

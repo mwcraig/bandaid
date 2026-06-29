@@ -41,3 +41,27 @@ jobs:
         run: uv sync --group tests --python ${{ matrix.python-version }}
       - name: Run pytest
         run: uv run pytest
+
+  remote-tests:
+    name: remote-data (CNN weights)
+    runs-on: ubuntu-latest
+    # A HuggingFace outage must not block merges: this job is informative only.
+    continue-on-error: true
+    # Bound the network I/O so a hung download can't tie up a runner; the weights
+    # are a small .npz, so this is generous headroom rather than a tight budget.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Configure git auth for private dependency
+        run: |
+          git config --global \
+            url."https://x-access-token:${{ secrets.ST_PIPELINE_TOKEN }}@github.com/".insteadOf \
+            "https://github.com/"
+      - name: Install dependencies
+        run: uv sync --group tests --python 3.12
+      - name: Run remote-data tests
+        run: uv run pytest -m remote_data --remote-data=any
