@@ -16,8 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `expand_frame_paths` for the directory/glob/path expansion); both are
     re-exported from the package root.
     `bandaid process` expands directories, globs, and paths (de-duplicated by
-    resolved path, filtered to FITS frames including `.gz` forms) and writes a
-    distinct `.star` file per frame even when input basenames collide.
+    resolved path, filtered to FITS frames including `.gz` forms). Frames from a
+    single directory are written flat as `<stem>.star`; frames from a mix of
+    directories mirror the source tree as `<dirname>/<stem>.star`, keeping
+    identically named frames distinct without mangling their names.
 - A tiered, pydantic-validated `PhotometryConfig` (with `ApertureConfig`,
     `SourceSelectionConfig`, `DriftConfig`, and `InstrumentProfile`) makes the
     photometry tuning parameters configurable. `prepare_batch` accepts a

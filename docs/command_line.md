@@ -32,9 +32,16 @@ contain), **glob patterns** (filtered to FITS frames), or **individual file
 paths**. The combined list is sorted so the batch order is deterministic, and
 de-duplicated by *resolved* path: the same file reached two ways (a directory and
 an explicit path, `a.fit` vs `./a.fit`) is processed once, while two distinct
-files that merely share a name in different directories are both kept — and
-written to distinct `.star` files. The first frame seeds the once-per-batch
-preparation.
+files that merely share a name in different directories are both kept. The first
+frame seeds the once-per-batch preparation.
+
+Output names follow the input layout. When every frame comes from a **single
+directory** — the typical one-night run — the results are written flat as
+`<stem>.star` directly in the output directory. When frames come from a **mix of
+directories**, the output mirrors the source tree as `<dirname>/<stem>.star`, so
+identically named frames from different directories stay distinct without
+mangling their names (two source directories that share a name are disambiguated
+with a numeric suffix on the subdirectory).
 
 | Option                             | Default          | Meaning                                                                    |
 | ---------------------------------- | ---------------- | -------------------------------------------------------------------------- |

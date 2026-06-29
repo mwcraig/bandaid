@@ -17,7 +17,6 @@ functions: no shared mutable state, no "is it done yet?" bookkeeping.
 import csv
 import glob
 import logging
-from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -493,12 +492,6 @@ def _unique_output_paths(files, output_dir, suffix):
     """
     Map each input frame to a unique output path under ``output_dir``.
 
-    The output name is normally ``<stem><suffix>``, but two input frames that
-    share a basename (e.g. ``img.fit`` from different directories) would both map
-    to the same ``<stem><suffix>`` and the second would silently overwrite the
-    first. Such collisions are disambiguated by prefixing the parent directory
-    name, falling back to a numeric suffix if that is still not enough.
-
     Parameters
     ----------
     files : list of str or pathlib.Path
@@ -512,28 +505,78 @@ def _unique_output_paths(files, output_dir, suffix):
     -------
     dict
         Mapping of each input frame to its unique output `~pathlib.Path`.
+
+    Notes
+    -----
+    Output names are kept flat and clean in the common case and grow structure
+    only when needed:
+
+    * When every frame comes from a single directory -- the typical "one night,
+      one folder" run -- the basenames are already unique, so each output is a
+      flat ``output_dir/<stem><suffix>``.
+    * When frames come from a mix of directories the source tree is mirrored as
+      ``output_dir/<dirname>/<stem><suffix>``, so identically named frames from
+      different directories stay distinct without munging the file name. Two
+      distinct source directories that share a basename are disambiguated with a
+      numeric suffix on the subdirectory.
+
+    A residual basename collision within a single output directory (e.g. the same
+    frame referenced twice, or two inputs differing only by extension) falls back
+    to a numeric suffix on the file name.
     """
     output_dir = Path(output_dir)
-    stem_counts = Counter(Path(file).stem for file in files)
+    paths = [Path(file) for file in files]
+    parents = [path.resolve().parent for path in paths]
+
+    # A single source directory writes flat names; a mix mirrors the tree, so
+    # assign each distinct directory a unique subdirectory name up front.
+    subdir_for = {}
+    if len(set(parents)) > 1:
+        used_subdirs = set()
+        for parent in sorted(set(parents), key=str):
+            base = parent.name or "root"
+            name = base
+            index = 1
+            while name in used_subdirs:
+                name = f"{base}_{index}"
+                index += 1
+            used_subdirs.add(name)
+            subdir_for[parent] = name
+
     mapping = {}
     used = set()
-    for file in files:
-        path = Path(file)
+    for file, path, parent in zip(files, paths, parents, strict=True):
+        target_dir = output_dir / subdir_for[parent] if subdir_for else output_dir
         stem = path.stem
-        # A unique basename keeps the plain <stem>; a shared one is prefixed with
-        # its parent directory so same-named frames stay distinct on disk. A bare
-        # relative path in the cwd has an empty parent.name, so fall back to the
-        # resolved directory name to avoid an uninformative "_<stem>" prefix.
-        parent = path.parent.name or path.resolve().parent.name
-        base = stem if stem_counts[stem] == 1 else f"{parent}_{stem}"
-        name = base + suffix
+        name = stem + suffix
         index = 1
-        while name in used:
-            name = f"{base}_{index}{suffix}"
+        while target_dir / name in used:
+            name = f"{stem}_{index}{suffix}"
             index += 1
-        used.add(name)
-        mapping[file] = output_dir / name
+        used.add(target_dir / name)
+        mapping[file] = target_dir / name
     return mapping
+
+
+def _ensure_output_dirs(output_dir, output_paths):
+    """
+    Create ``output_dir`` and every subdirectory the planned outputs require.
+
+    Doing this once, up front, makes a missing or unwritable parent fail fast
+    rather than partway through the batch, and creates the per-source-directory
+    subdirectories the mirrored-tree layout needs (see `_unique_output_paths`).
+
+    Parameters
+    ----------
+    output_dir : str or pathlib.Path
+        The root output directory.
+    output_paths : dict
+        Mapping of input frame to planned output `~pathlib.Path`, as returned by
+        `_unique_output_paths`.
+    """
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    for output_path in output_paths.values():
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def process_batch(
@@ -564,7 +607,10 @@ def process_batch(
         Directory to write the per-frame photometry results to. Default None,
         which runs in in-memory mode and returns the photometry tables instead
         of writing files. When a directory is given it is created if it does not
-        already exist.
+        already exist. Frames from a single source directory are written flat as
+        ``<stem><output_suffix>``; frames from a mix of directories mirror the
+        source tree as ``<dirname>/<stem><output_suffix>`` so identically named
+        frames stay distinct (see `_unique_output_paths`).
 
     output_suffix : str, optional
         Suffix for the output files. Default ".star".
@@ -621,10 +667,10 @@ def process_batch(
         if output_dir is not None
         else {}
     )
-    # Create the output directory once, before the loop, so a missing parent
-    # fails fast instead of partway through the batch.
+    # Create the output directory (and the mirrored-tree subdirectories) up
+    # front so a missing or unwritable parent fails fast.
     if output_dir is not None:
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        _ensure_output_dirs(output_dir, output_paths)
     for file in files:
         try:
             check_frame_consistency(file, fits.getheader(file), prep)

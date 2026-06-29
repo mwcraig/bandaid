@@ -9,6 +9,7 @@ with the heavy/network dependencies (``calibration_sequence``,
 
 import csv
 import os
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -585,10 +586,10 @@ class TestProcessBatchToDisk:
             p.name for p in tmp_path.iterdir() if p.name != scripts.QA_MANIFEST_FILENAME
         ] == ["frame1.star"]
 
-    def test_same_basename_different_dirs_write_distinct_files(
+    def test_same_basename_different_dirs_mirror_source_tree(
         self, monkeypatch, tmp_path, by_filter
     ):
-        """Identically named frames from different dirs do not overwrite."""
+        """Same-named frames from different dirs are written under mirrored subdirs."""
         monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
 
         inputs = ["n1/img.fits", "n2/img.fits"]
@@ -599,24 +600,49 @@ class TestProcessBatchToDisk:
             output_dir=tmp_path,
         )
 
-        written = sorted(
-            p.name for p in tmp_path.iterdir() if p.name != scripts.QA_MANIFEST_FILENAME
-        )
-        # Two inputs share the basename "img"; both must produce a distinct file.
-        assert len(written) == len(inputs)
-        assert len(set(written)) == len(written)
+        # A mix of source directories mirrors the tree: <dirname>/<stem>.star,
+        # keeping clean basenames while staying distinct on disk.
+        written = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*.star"))
+        assert written == [Path("n1/img.star"), Path("n2/img.star")]
         # Both inputs are kept in the result, each mapped to its own output path.
         assert set(results) == set(inputs)
         assert len({str(v) for v in results.values()}) == len(results)
 
-    def test_same_stem_current_dir_uses_informative_prefix(
+    def test_distinct_dirs_sharing_a_basename_get_unique_subdirs(
         self, monkeypatch, tmp_path, by_filter
     ):
-        """Same-stem frames in the cwd disambiguate with the dir name, not ``_``."""
+        """Two different source dirs with the same name still mirror distinctly."""
         monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
-        # Running from tmp_path makes the inputs bare relative paths whose
-        # ``parent.name`` is "" -- the prefix must fall back to the resolved
-        # directory name rather than producing a leading-underscore name.
+
+        # Both parent directories are named "night" but live in different trees.
+        (tmp_path / "a" / "night").mkdir(parents=True)
+        (tmp_path / "b" / "night").mkdir(parents=True)
+        inputs = [
+            str(tmp_path / "a" / "night" / "img.fits"),
+            str(tmp_path / "b" / "night" / "img.fits"),
+        ]
+        out = tmp_path / "out"
+
+        results = scripts.process_batch(
+            inputs,
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=out,
+        )
+
+        written = sorted(p.relative_to(out) for p in out.rglob("*.star"))
+        # The colliding "night" subdir name is disambiguated with a numeric suffix.
+        assert written == [Path("night/img.star"), Path("night_1/img.star")]
+        assert len({str(v) for v in results.values()}) == len(results)
+
+    def test_same_stem_one_dir_falls_back_to_numeric_suffix(
+        self, monkeypatch, tmp_path, by_filter
+    ):
+        """Two single-dir inputs differing only by extension stay distinct + flat."""
+        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+        # Both inputs live in the same directory (the cwd), so the layout stays
+        # flat; their shared stem "img" is disambiguated with a numeric suffix
+        # rather than a leading-underscore or directory prefix.
         monkeypatch.chdir(tmp_path)
 
         inputs = ["img.fit", "img.fits"]
@@ -630,11 +656,7 @@ class TestProcessBatchToDisk:
         written = sorted(
             p.name for p in tmp_path.iterdir() if p.name != scripts.QA_MANIFEST_FILENAME
         )
-        # Two same-stem inputs each produce a distinct, non-hidden, dir-prefixed name.
-        assert len(written) == len(inputs)
-        assert len(set(written)) == len(written)
-        assert not any(name.startswith("_") for name in written)
-        assert all(name.startswith(f"{tmp_path.name}_img") for name in written)
+        assert written == ["img.star", "img_1.star"]
 
     def test_custom_output_suffix_is_honored(self, monkeypatch, tmp_path, by_filter):
         """An explicit ``output_suffix`` replaces the default ``.star``."""
@@ -1032,11 +1054,10 @@ class TestPhotometerFrames:
 
         frames, results = scripts.photometer_frames(inputs, output_dir=str(out))
 
-        written = sorted(
-            p.name for p in out.iterdir() if p.name != scripts.QA_MANIFEST_FILENAME
-        )
+        # Two source directories => mirrored tree, so each frame lands under its
+        # own <dirname>/ subdir instead of overwriting a shared flat name.
+        written = sorted(p.relative_to(out) for p in out.rglob("*.star"))
         assert len(frames) == len(inputs)
-        assert len(written) == len(frames)
-        assert len(set(written)) == len(written)
+        assert written == [Path("n1/img.star"), Path("n2/img.star")]
         assert len(results) == len(frames)
         assert len({str(v) for v in results.values()}) == len(results)
