@@ -20,6 +20,7 @@ from astropy.stats import gaussian_fwhm_to_sigma, sigma_clipped_stats
 from astropy.table import Table
 from astropy.wcs import WCS
 from eloy import detection
+from eloy.ballet.model import Ballet
 
 from bandaid import measure_photometry
 from bandaid.config import InstrumentProfile, PhotometryConfig
@@ -2297,6 +2298,34 @@ class TestSmokeRealFrame:
 
         # The fit calibration_sequence already ran (default cap) lands near the
         # true PSF, not the inflated ~8 px an uncapped CNN fit produced.
+        sane_fwhm_ceiling = 6.0  # true PSF ~2.8 px; well clear of the ~8 px inflation
+        assert 0 < fwhm < sane_fwhm_ceiling
+
+    @pytest.mark.remote_data
+    def test_real_ballet_cnn_fwhm_smoke(self):
+        """
+        Drive the *live* Ballet CNN on a real frame end-to-end.
+
+        Every other test stubs the CNN, so this is the only coverage of the real
+        ``Ballet`` path the FWHM cap exists to protect: weights download ->
+        JAX inference -> ``ballet_centroid`` -> ePSF registration -> brightest-N
+        cap -> a sane FWHM. It guards against eloy API / weight-format drift the
+        stubbed tests are blind to. ``Ballet()`` downloads ``centroid_15x15.npz``
+        from the public ``lgrcia/ballet`` HuggingFace repo (no auth) on first run.
+        """
+        calibrated, metadata, coords, _, _ = calibration_sequence(
+            str(_REAL_FRAME),
+            threshold=THRESH,
+        )
+        max_adu = metadata["largest_usable_adu_value"]
+        cnn = Ballet()
+
+        n_cap = InstrumentProfile().fwhm_n_stars
+        fwhm = _fwhm_from_coords(
+            calibrated, coords, max_adu=max_adu, cnn=cnn, n_stars=n_cap
+        )
+
+        assert fwhm is not None
         sane_fwhm_ceiling = 6.0  # true PSF ~2.8 px; well clear of the ~8 px inflation
         assert 0 < fwhm < sane_fwhm_ceiling
 

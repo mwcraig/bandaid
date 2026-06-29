@@ -33,6 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     The bundled Seestar50 dialect moved from `meta_json_files/Seestar50/basic.json`
     into `meta_json_files/Seestar50/profile.json`, and `metadata_from_header`
     takes an optional `profile=`.
+- An optional `remote_data`-marked smoke test (`pytest-remotedata` test
+    dependency) drives the real Ballet CNN on a bundled frame end-to-end,
+    downloading the centroider weights from HuggingFace. It is skipped by default
+    and runs only under `pytest --remote-data=any`, in a dedicated, non-blocking
+    CI job. The plugin's socket-blocking also guards the rest of the suite from
+    accidental network access.
 
 ### Changed (breaking)
 
