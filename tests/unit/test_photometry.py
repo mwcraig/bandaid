@@ -1826,6 +1826,46 @@ class TestCalculateL4Quantities:
         for stale in ("fluxes", "total_bkg", "bkgd_std"):
             assert stale not in final_data.colnames
 
+    def test_zero_denominators_do_not_warn(self):
+        """
+        Zero aperture area / error make the L4 divisions NaN without warning.
+
+        Dropped or blocked stars can sum to zero aperture area and zero error,
+        so the ``bkgd_count`` (``.../aperture_area``) and ``snr``
+        (``tot_count/count_err``) divisions legitimately hit ``0/0``. The NaN is
+        an expected intermediate filtered downstream, so the function must not
+        spray ``RuntimeWarning: invalid value encountered in divide``.
+        """
+        egain = 0.5
+
+        def _filter_table(tot, area, bkgd, bkgd_std, peak):
+            t = Table()
+            t["tot_count"] = np.array(tot, dtype=float)
+            t["aperture_area"] = np.array(area, dtype=float)
+            t["bkgd_count"] = np.array(bkgd, dtype=float)
+            t["bkgd_std"] = np.array(bkgd_std, dtype=float)
+            t["peak_count"] = np.array(peak, dtype=float)
+            return t
+
+        # Every channel of the single star has zero aperture area and zero
+        # error: aperture_area sums to 0 (bkgd_count = 0/0) and count_err is
+        # sqrt(0) = 0 (snr = 0/0).
+        by_filter = {
+            "TR": _filter_table([0.0], [0.0], [5.0], [0.0], [0.0]),
+            "TG": _filter_table([0.0], [0.0], [4.0], [0.0], [0.0]),
+            "TB": _filter_table([0.0], [0.0], [6.0], [0.0], [0.0]),
+        }
+        final_data = Table()
+
+        with warnings.catch_warnings():
+            # Promote the specific RuntimeWarning to an error so the test fails
+            # if the function emits it; other warnings are left untouched.
+            warnings.simplefilter("error", RuntimeWarning)
+            calculate_l4_quantities(final_data, by_filter, egain)
+
+        assert np.isnan(final_data["bkgd_count"][0])
+        assert np.isnan(final_data["snr"][0])
+
 
 # --- Synthetic-FITS helpers for the detect/align/centroid pipeline tests ---
 
