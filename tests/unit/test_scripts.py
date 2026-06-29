@@ -609,6 +609,33 @@ class TestProcessBatchToDisk:
         assert set(results) == set(inputs)
         assert len({str(v) for v in results.values()}) == len(results)
 
+    def test_same_stem_current_dir_uses_informative_prefix(
+        self, monkeypatch, tmp_path, by_filter
+    ):
+        """Same-stem frames in the cwd disambiguate with the dir name, not ``_``."""
+        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+        # Running from tmp_path makes the inputs bare relative paths whose
+        # ``parent.name`` is "" -- the prefix must fall back to the resolved
+        # directory name rather than producing a leading-underscore name.
+        monkeypatch.chdir(tmp_path)
+
+        inputs = ["img.fit", "img.fits"]
+        scripts.process_batch(
+            inputs,
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+        )
+
+        written = sorted(
+            p.name for p in tmp_path.iterdir() if p.name != scripts.QA_MANIFEST_FILENAME
+        )
+        # Two same-stem inputs each produce a distinct, non-hidden, dir-prefixed name.
+        assert len(written) == len(inputs)
+        assert len(set(written)) == len(written)
+        assert not any(name.startswith("_") for name in written)
+        assert all(name.startswith(f"{tmp_path.name}_img") for name in written)
+
     def test_custom_output_suffix_is_honored(self, monkeypatch, tmp_path, by_filter):
         """An explicit ``output_suffix`` replaces the default ``.star``."""
         monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())

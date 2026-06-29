@@ -521,8 +521,11 @@ def _unique_output_paths(files, output_dir, suffix):
         path = Path(file)
         stem = path.stem
         # A unique basename keeps the plain <stem>; a shared one is prefixed with
-        # its parent directory so same-named frames stay distinct on disk.
-        base = stem if stem_counts[stem] == 1 else f"{path.parent.name}_{stem}"
+        # its parent directory so same-named frames stay distinct on disk. A bare
+        # relative path in the cwd has an empty parent.name, so fall back to the
+        # resolved directory name to avoid an uninformative "_<stem>" prefix.
+        parent = path.parent.name or path.resolve().parent.name
+        base = stem if stem_counts[stem] == 1 else f"{parent}_{stem}"
         name = base + suffix
         index = 1
         while name in used:
