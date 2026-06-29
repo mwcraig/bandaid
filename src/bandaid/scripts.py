@@ -693,7 +693,7 @@ def process_batch(
         # Per-frame progress. Invisible by default (the package logger has only a
         # NullHandler); `bandaid process --verbose` routes it to the terminal via
         # configure_logging, alongside the skip/error warnings logged below.
-        logger.info("processing %d/%d: %s", idx, len(files), Path(file).name)
+        logger.info("processing %d/%d: %s", idx, len(files), file)
         try:
             check_frame_consistency(file, fits.getheader(file), prep)
             by_filter = process_one_image(

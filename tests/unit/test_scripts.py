@@ -435,7 +435,10 @@ class TestProcessBatch:
             lambda *_a, **_k: {"TR": Table({"tot_count": [1.0]})},
         )
 
-        files = ["a.fits", "b.fits", "c.fits"]
+        # Identically-named frames from different directories (a supported
+        # mirrored-tree batch): the line logs the full path, not just the
+        # basename, so the two "a.fits" frames stay distinguishable.
+        files = ["night1/a.fits", "night2/a.fits", "night2/b.fits"]
         with caplog.at_level(logging.INFO, logger="bandaid"):
             scripts.process_batch(files, _dummy_prep(), user_specific_metadata={})
 
@@ -445,9 +448,9 @@ class TestProcessBatch:
             if record.getMessage().startswith("processing ")
         ]
         assert progress == [
-            "processing 1/3: a.fits",
-            "processing 2/3: b.fits",
-            "processing 3/3: c.fits",
+            "processing 1/3: night1/a.fits",
+            "processing 2/3: night2/a.fits",
+            "processing 3/3: night2/b.fits",
         ]
 
     def test_failed_frames_are_skipped(self, monkeypatch):

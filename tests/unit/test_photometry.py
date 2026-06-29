@@ -347,8 +347,8 @@ def test_measure_photometry_negative_net_count_no_warning():
     mask = np.zeros_like(image, dtype=bool)
 
     with warnings.catch_warnings():
-        # Turn the specific RuntimeWarning into an error so the test fails if the
-        # function emits it; other warnings are left untouched.
+        # Promote RuntimeWarning specifically to an error so the test fails if
+        # the function emits it; other warning categories are left untouched.
         warnings.simplefilter("error", RuntimeWarning)
         photom = measure_photometry(image, coords, coords, fwhm, egain, mask)
 
@@ -1858,8 +1858,8 @@ class TestCalculateL4Quantities:
         final_data = Table()
 
         with warnings.catch_warnings():
-            # Promote the specific RuntimeWarning to an error so the test fails
-            # if the function emits it; other warnings are left untouched.
+            # Promote RuntimeWarning specifically to an error so the test fails
+            # if the function emits it; other warning categories are left untouched.
             warnings.simplefilter("error", RuntimeWarning)
             calculate_l4_quantities(final_data, by_filter, egain)
 
