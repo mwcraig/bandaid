@@ -43,6 +43,7 @@ from bandaid.photometry import (
     WCS_MATCH_TOLERANCE,
     ImageData,
     _airmass_from_header,
+    _brightest_unsaturated,
     _fwhm_from_coords,
     align,
     build_photometry_table,
@@ -526,6 +527,116 @@ class TestFwhmFromCoords:
         fwhm = _fwhm_from_coords(image, true_coords, max_adu=50000, cnn=None)
         assert fwhm == pytest.approx(inject_fwhm, rel=0.05)
 
+    def test_cap_prevents_faint_junk_from_inflating_fwhm(
+        self, make_test_image, monkeypatch
+    ):
+        """
+        Capping the fit to the brightest sources recovers the true FWHM.
+
+        With every detection fed to the fit, a realistic CNN mis-centroids the
+        many faint junk sources (large random shifts) and the misregistered
+        cutouts smear the stack, inflating the FWHM. Restricting the fit to the
+        brightest ``n_stars`` -- selected *before* centroiding -- drops the junk
+        and recovers the injected ~3 px.
+        """
+        inject_fwhm = 3.0
+        sigma = inject_fwhm * gaussian_fwhm_to_sigma
+        rng = np.random.default_rng(SEED)
+        # 25 bright stars on a grid, plus a large block of faint junk sources.
+        gx, gy = np.meshgrid(np.arange(40, 280, 48.0), np.arange(40, 280, 48.0))
+        bx, by = gx.ravel(), gy.ravel()
+        n_faint = 200
+        fx = rng.uniform(20.0, 280.0, n_faint)
+        fy = rng.uniform(20.0, 280.0, n_faint)
+        xs = np.concatenate([bx, fx])
+        ys = np.concatenate([by, fy])
+        src = Table(
+            {
+                "amplitude": [500.0] * bx.size + [30.0] * n_faint,
+                "x_mean": xs,
+                "y_mean": ys,
+                "x_stddev": [sigma] * xs.size,
+                "y_stddev": [sigma] * ys.size,
+            },
+        )
+        image = make_test_image(
+            image_size=(300, 300),
+            source_properties=src,
+            include_noise=True,
+            noise_mean=100.0,
+            noise_stddev=2.0,
+            seed=SEED,
+        )
+        all_coords = np.column_stack([xs, ys])
+
+        # Realistic CNN: accurate on bright sources, large random shifts on the
+        # faint ones, keyed off the local peak so it is order-independent. The
+        # floor sits between the bright (~600) and faint (~130) peak levels.
+        bright_peak_floor = 300.0
+        shift_rng = np.random.default_rng(SEED + 1)
+
+        def realistic_cnn(data, coords, _cnn):
+            coords = np.asarray(coords, dtype=float)
+            iy = np.clip(np.round(coords[:, 1]).astype(int), 0, data.shape[0] - 1)
+            ix = np.clip(np.round(coords[:, 0]).astype(int), 0, data.shape[1] - 1)
+            faint = data[iy, ix] < bright_peak_floor
+            out = coords.copy()
+            out[faint] += shift_rng.uniform(-3.0, 3.0, size=(int(faint.sum()), 2))
+            return out
+
+        monkeypatch.setattr("bandaid.photometry.ballet_centroid", realistic_cnn)
+        fwhm = _fwhm_from_coords(
+            image, all_coords, max_adu=50000, cnn=object(), n_stars=bx.size
+        )
+        assert fwhm == pytest.approx(inject_fwhm, rel=0.1)
+
+    def test_cap_applied_before_centroiding(self, make_test_image, monkeypatch):
+        """
+        The brightest-N cut runs *before* the expensive ``ballet_centroid`` call.
+
+        That ordering is what realizes the speed win, so spy on the CNN and assert
+        it never sees more than ``n_stars`` coordinates even when handed ~1000.
+        """
+        n_stars = 50
+        image, _, _ = _grid_star_image(make_test_image, 3.0)
+        rng = np.random.default_rng(SEED)
+        coords = np.column_stack(
+            [rng.uniform(30.0, 270.0, 1000), rng.uniform(30.0, 270.0, 1000)]
+        )
+        seen = {}
+
+        def spy(_data, received, _cnn):
+            seen["n"] = len(received)
+            return np.asarray(received, dtype=float)
+
+        monkeypatch.setattr("bandaid.photometry.ballet_centroid", spy)
+        _fwhm_from_coords(image, coords, max_adu=50000, cnn=object(), n_stars=n_stars)
+        assert seen["n"] <= n_stars
+
+    def test_brightest_unsaturated_keeps_high_peak_drops_saturated(self):
+        """The helper returns the highest-peak coords and drops saturated/empty."""
+        data = np.full((60, 60), 5.0)
+        # coords are (x, y); the peak is read at data[y, x].
+        data[10, 15] = 100.0  # (x=15, y=10) brightest
+        data[20, 25] = 60.0  # (x=25, y=20) second
+        data[30, 35] = 30.0  # (x=35, y=30) third
+        data[40, 45] = 70000.0  # (x=45, y=40) saturated -> dropped
+        data[50, 55] = -3.0  # (x=55, y=50) negative -> dropped
+        coords = np.array(
+            [[15, 10], [25, 20], [35, 30], [45, 40], [55, 50]], dtype=float
+        )
+
+        top2 = _brightest_unsaturated(data, coords, max_adu=50000, n=2)
+        assert {tuple(c) for c in top2} == {(15.0, 10.0), (25.0, 20.0)}
+
+        # n exceeds the count: keep all unsaturated, still drop saturated/empty.
+        keep_all = _brightest_unsaturated(data, coords, max_adu=50000, n=10)
+        assert {tuple(c) for c in keep_all} == {
+            (15.0, 10.0),
+            (25.0, 20.0),
+            (35.0, 30.0),
+        }
+
 
 class TestCalibrationSequenceCnn:
     """`calibration_sequence` threads its optional ``cnn`` to the FWHM helper."""
@@ -561,6 +672,36 @@ class TestCalibrationSequenceCnn:
 
         assert captured["cnn"] is sentinel
         assert fwhm == stub_fwhm
+
+    def test_fwhm_n_stars_is_passed_to_fwhm_helper(self, tmp_path, monkeypatch):
+        """``fwhm_n_stars`` reaches the FWHM helper as its ``n_stars`` cap."""
+
+        class _Region:
+            def __init__(self, y, x) -> None:
+                self.centroid = (y, x)
+
+        monkeypatch.setattr(
+            "bandaid.photometry.detection.stars_detection",
+            lambda data, threshold, opening: [
+                _Region(10 * i, 10 * i) for i in range(1, 6)
+            ],
+        )
+        captured = {}
+        requested_n_stars = 7
+
+        def _spy(_data, _coords, _max_adu, *, n_stars=None, **_kwargs: object):
+            captured["n_stars"] = n_stars
+            return 2.5
+
+        monkeypatch.setattr("bandaid.photometry._fwhm_from_coords", _spy)
+
+        path = tmp_path / "frame.fits"
+        fits.PrimaryHDU(np.zeros((200, 200)), header=_seestar_header()).writeto(
+            path, output_verify="silentfix"
+        )
+        calibration_sequence(path, fwhm_n_stars=requested_n_stars)
+
+        assert captured["n_stars"] == requested_n_stars
 
 
 class TestCentroidDriftFlag:
@@ -700,11 +841,13 @@ class TestPrepareImage:
         """
         expected_thresh = 0.9
         expected_opening = 7
+        expected_fwhm_n_stars = 33
         captured = {}
 
         def _spy_calibration_sequence(_file, *_args: object, **kwargs: object):
             captured["threshold"] = kwargs.get("threshold")
             captured["opening"] = kwargs.get("opening")
+            captured["fwhm_n_stars"] = kwargs.get("fwhm_n_stars")
             calibrated = np.zeros((10, 10))
             coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
             return calibrated, {"creator": "spy"}, coords, 2.0, None
@@ -730,6 +873,7 @@ class TestPrepareImage:
             instrument=InstrumentProfile(
                 thresh=expected_thresh,
                 detection_opening=expected_opening,
+                fwhm_n_stars=expected_fwhm_n_stars,
             ),
         )
         prepare_image(
@@ -741,6 +885,7 @@ class TestPrepareImage:
 
         assert captured["threshold"] == expected_thresh
         assert captured["opening"] == expected_opening
+        assert captured["fwhm_n_stars"] == expected_fwhm_n_stars
 
 
 def _make_tan_wcs(image_size=(500, 500), crval=(10.0, 20.0)):
@@ -2127,6 +2272,33 @@ class TestSmokeRealFrame:
             + result["TB"]["tot_count"]
         )
         np.testing.assert_allclose(result["L4"]["tot_count"], rgb_sum, equal_nan=True)
+
+    def test_fwhm_cap_keeps_real_frame_fwhm_small(self):
+        """
+        The brightest-N cap bounds the real-frame FWHM fit and keeps it small.
+
+        On genuine pixels the fit must (a) feed at most ``fwhm_n_stars`` of the
+        detections to the PSF stack and (b) recover a sane, small FWHM near the
+        true PSF (~2.8 px) -- a regression guard against the re-inflation an
+        uncapped fit over thousands of faint detections would smear back in.
+        """
+        calibrated, metadata, coords, fwhm, _ = calibration_sequence(
+            str(_REAL_FRAME),
+            threshold=THRESH,
+        )
+        max_adu = metadata["largest_usable_adu_value"]
+        n_cap = InstrumentProfile().fwhm_n_stars
+
+        # The cap selects at most n_cap unsaturated detections (fewer than the
+        # full detection list) to build the PSF the FWHM is fit from.
+        kept = _brightest_unsaturated(calibrated, coords, max_adu, n_cap)
+        assert 0 < len(kept) <= n_cap
+        assert len(kept) <= len(coords)
+
+        # The fit calibration_sequence already ran (default cap) lands near the
+        # true PSF, not the inflated ~8 px an uncapped CNN fit produced.
+        sane_fwhm_ceiling = 6.0  # true PSF ~2.8 px; well clear of the ~8 px inflation
+        assert 0 < fwhm < sane_fwhm_ceiling
 
 
 class TestEloyToStarlistGuard:

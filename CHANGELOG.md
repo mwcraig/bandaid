@@ -45,6 +45,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `config=PhotometryConfig(source_selection=SourceSelectionConfig(gaia_mag_limit=...))`
     instead.
 
+### Fixed
+
+- The per-frame FWHM fit now uses only the brightest unsaturated detections
+    (`InstrumentProfile.fwhm_n_stars`, default 50) instead of every detection.
+    Bayer-balanced detection yields thousands of faint sources whose CNN
+    re-centroiding both dominated the per-frame runtime (~4x slower) and inflated
+    the fitted FWHM (~8.6 px vs the true ~2.8 px), over-sizing every
+    FWHM-scaled aperture. Capping recovers the true FWHM and the original speed
+    without changing which stars are photometered.
+
 ## [0.1.0] - (1979-01-01)
 
 - First release

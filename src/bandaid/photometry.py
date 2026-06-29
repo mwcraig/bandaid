@@ -113,6 +113,11 @@ DETECTION_OPENING = _DEFAULT_INSTRUMENT.detection_opening
 # Half-width (px) of the square cutout used to build the effective PSF for the
 # FWHM fit; 25 reproduces the long-standing 50x50 calibration window.
 _FWHM_CUTOUT_HALF = _DEFAULT_INSTRUMENT.fwhm_cutout_half
+# Cap on how many of the brightest unsaturated detections feed the FWHM fit. The
+# fit needs only a few well-exposed stars; the thousands of faint detections that
+# bayer-balanced detection now yields just slow the CNN re-centroiding and inflate
+# the FWHM (faint sources are mis-centroided, smearing the stacked PSF).
+_FWHM_N_STARS = _DEFAULT_INSTRUMENT.fwhm_n_stars
 
 # Relative radii and annulus are multiplied by each image's FWHM to determine the
 # actual aperture sizes. Only one radius is needed for STWG, but it must be in an
@@ -501,8 +506,50 @@ def _registered_epsf(data, coords_xy, max_adu, half=_FWHM_CUTOUT_HALF):
     return np.nanmedian(stack, 0)
 
 
+def _brightest_unsaturated(data, coords_xy, max_adu, n):
+    """
+    Keep the ``n`` highest-peak unsaturated detections for the FWHM fit.
+
+    The peak is read at each detection's (rounded, in-bounds) centroid pixel.
+    Sources whose peak reaches saturation (``>= max_adu``) or is non-positive are
+    dropped -- the same predicate :func:`_registered_epsf` applies per cutout --
+    and the surviving coords are returned highest-peak first, truncated to ``n``
+    (all of them when ``len(coords_xy) <= n``).
+
+    Parameters
+    ----------
+    data : numpy.ndarray
+        2D image.
+    coords_xy : numpy.ndarray, shape (N, 2)
+        Detected source centers as ``(x, y)`` in pixels.
+    max_adu : float
+        Saturation ceiling; detections at or above it are excluded.
+    n : int
+        Maximum number of detections to retain.
+
+    Returns
+    -------
+    numpy.ndarray, shape (M, 2)
+        The retained ``(x, y)`` coords, ``M <= n``, ordered brightest first.
+    """
+    coords_xy = np.asarray(coords_xy, dtype=float)
+    ix = np.clip(np.round(coords_xy[:, 0]).astype(int), 0, data.shape[1] - 1)
+    iy = np.clip(np.round(coords_xy[:, 1]).astype(int), 0, data.shape[0] - 1)
+    peaks = data[iy, ix]
+    usable = np.flatnonzero((peaks > 0) & (peaks < max_adu))
+    # Sort the usable detections by descending peak and keep the top n.
+    brightest = usable[np.argsort(peaks[usable])[::-1][:n]]
+    return coords_xy[brightest]
+
+
 def _fwhm_from_coords(
-    data, coords_xy, max_adu, *, cnn=None, fwhm_cutout_half=_FWHM_CUTOUT_HALF
+    data,
+    coords_xy,
+    max_adu,
+    *,
+    cnn=None,
+    fwhm_cutout_half=_FWHM_CUTOUT_HALF,
+    n_stars=_FWHM_N_STARS,
 ):
     """
     Fit the image FWHM (px) from the effective PSF of the given sources.
@@ -531,12 +578,18 @@ def _fwhm_from_coords(
     fwhm_cutout_half : int, optional
         Half-width (px) of the square cutout used to build the effective PSF.
         Defaults to ``_FWHM_CUTOUT_HALF`` (a 50x50 window).
+    n_stars : int, optional
+        Cap on how many of the brightest unsaturated detections feed the fit. The
+        cut is applied *before* the CNN re-centroiding so the cost scales with the
+        cap, not the (now thousands of) detections, and so faint mis-centroided
+        sources cannot smear the stacked PSF. Defaults to ``_FWHM_N_STARS``.
 
     Returns
     -------
     float or None
         FWHM in pixels, or None if no source was usable for the fit.
     """
+    coords_xy = _brightest_unsaturated(data, coords_xy, max_adu, n_stars)
     if cnn is not None:
         coords_xy = ballet_centroid(data, np.asarray(coords_xy, dtype=float), cnn)
         epsf = _registered_epsf(data, coords_xy, max_adu, half=fwhm_cutout_half)
@@ -563,6 +616,7 @@ def calibration_sequence(
     detect_on_bayer_balanced=False,
     cnn=None,
     fwhm_cutout_half=_FWHM_CUTOUT_HALF,
+    fwhm_n_stars=_FWHM_N_STARS,
     profile=None,
 ) -> tuple:
     """
@@ -592,6 +646,10 @@ def calibration_sequence(
     fwhm_cutout_half : int, optional
         Half-width (px) of the square cutout used to build the effective PSF for
         the FWHM fit. By default ``_FWHM_CUTOUT_HALF``.
+    fwhm_n_stars : int, optional
+        Cap on how many of the brightest unsaturated detections feed the FWHM
+        fit; forwarded to `_fwhm_from_coords` as its ``n_stars``. By default
+        ``_FWHM_N_STARS``.
     profile : InstrumentProfile or None, optional
         The instrument whose ``header_map`` resolves the frame metadata, passed
         through to `metadata_from_header`. Defaults to the bundled Seestar50
@@ -655,6 +713,7 @@ def calibration_sequence(
         max_adu,
         cnn=cnn,
         fwhm_cutout_half=fwhm_cutout_half,
+        n_stars=fwhm_n_stars,
     )
     if fwhm is None:
         msg = "all detected sources are saturated"
@@ -1286,6 +1345,7 @@ def prepare_image(
         detect_on_bayer_balanced=detect_on_bayer_balanced,
         cnn=cnn,
         fwhm_cutout_half=instrument.fwhm_cutout_half,
+        fwhm_n_stars=instrument.fwhm_n_stars,
         profile=instrument,
     )
 

@@ -37,6 +37,7 @@ EXPECTED_MOFFAT_BETA = 3.0
 EXPECTED_THRESH = 0.5
 EXPECTED_DETECTION_OPENING = 3
 EXPECTED_FWHM_CUTOUT_HALF = 25
+EXPECTED_FWHM_N_STARS = 50
 
 
 class TestDefaultsMatchLegacyConstants:
@@ -72,6 +73,7 @@ class TestDefaultsMatchLegacyConstants:
         assert cfg.thresh == EXPECTED_THRESH
         assert cfg.detection_opening == EXPECTED_DETECTION_OPENING
         assert cfg.fwhm_cutout_half == EXPECTED_FWHM_CUTOUT_HALF
+        assert cfg.fwhm_n_stars == EXPECTED_FWHM_N_STARS
         assert cfg.contamination_tolerance == EXPECTED_CONTAMINATION_TOLERANCE
         assert cfg.moffat_beta == EXPECTED_MOFFAT_BETA
 
@@ -90,6 +92,7 @@ class TestDefaultsMatchLegacyConstants:
         assert isinstance(cfg.source_selection, SourceSelectionConfig)
         assert isinstance(cfg.drift, DriftConfig)
         assert isinstance(cfg.instrument, InstrumentProfile)
+        assert cfg.instrument.fwhm_n_stars == EXPECTED_FWHM_N_STARS
 
 
 class TestImmutability:
@@ -149,6 +152,12 @@ class TestValidators:
         """A zero aperture radius is rejected."""
         with pytest.raises(ValidationError):
             ApertureConfig(radii=[0.0])
+
+    @pytest.mark.parametrize("n_stars", [0, -1])
+    def test_non_positive_fwhm_n_stars_rejected(self, n_stars):
+        """A zero or negative FWHM star cap is rejected at construction."""
+        with pytest.raises(ValidationError):
+            InstrumentProfile(fwhm_n_stars=n_stars)
 
     def test_contaminant_default_tracks_gaia(self):
         """The derived contaminant limit follows a custom Gaia limit by +3."""
