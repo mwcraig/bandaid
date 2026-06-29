@@ -143,15 +143,11 @@ class TestValidators:
         assert max(cfg.radii) < cfg.inner_annulus < cfg.outer_annulus
         assert tuple(cfg.annulus) == (cfg.inner_annulus, cfg.outer_annulus)
 
-    def test_negative_radius_rejected(self):
-        """A negative aperture radius is rejected."""
+    @pytest.mark.parametrize("radius", [-1.0, 0.0])
+    def test_non_positive_radius_rejected(self, radius):
+        """A zero or negative aperture radius is rejected at construction."""
         with pytest.raises(ValidationError):
-            ApertureConfig(radii=[-1.0])
-
-    def test_zero_radius_rejected(self):
-        """A zero aperture radius is rejected."""
-        with pytest.raises(ValidationError):
-            ApertureConfig(radii=[0.0])
+            ApertureConfig(radii=[radius])
 
     @pytest.mark.parametrize("n_stars", [0, -1])
     def test_non_positive_fwhm_n_stars_rejected(self, n_stars):

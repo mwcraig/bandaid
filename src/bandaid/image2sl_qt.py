@@ -125,76 +125,12 @@ def bayer_balance_image(image):
     summed_numbers = sum(len(temp) for temp in tempexes)
     target_mean = summed_temps / summed_numbers
 
-    m = temp1x.std()
-    factor = target_stdev / m
-    temp1 = temp1 * factor
-    temp1x = temp1x * factor
-    m = temp1x.mean()
-    temp1 = temp1 - (m - target_mean)
-
-    m = temp2x.std()
-    factor = target_stdev / m
-    temp2 = temp2 * factor
-    temp2x = temp2x * factor
-    m = temp2x.mean()
-    temp2 = temp2 - (m - target_mean)
-
-    m = temp3x.std()
-    factor = target_stdev / m
-    temp3 = temp3 * factor
-    temp3x = temp3x * factor
-    m = temp3x.mean()
-    temp3 = temp3 - (m - target_mean)
-
-    m = temp4x.std()
-    factor = target_stdev / m
-    temp4 = temp4 * factor
-    temp4x = temp4x * factor
-    m = temp4x.mean()
-    temp4 = temp4 - (m - target_mean)
-
-    image[0::2, 0::2] = temp1
-    image[0::2, 1::2] = temp2
-    image[1::2, 0::2] = temp3
-    image[1::2, 1::2] = temp4
-
-
-# def remove_background(image, metadata, do_color_balance=False):
-#     """
-#     Calculate and remove the background from an image
-
-#     Parameters
-#     ----------
-#     image : np.ndarray
-#         The image. The background will be estimated and then
-#         subtracted from each pixel
-#     do_color_balance : bool
-#         If True, the four pixel color channels will be adjusted
-#         with a linear transformation to achieve a flat gray
-#         background that has the same noise level in each color
-#         channel.
-#     """
-#     egain = self.metadata['egain']
-
-#     if do_color_balance:
-#         bayer_balance_image(image)
-#     (self.bkgd_mean,
-#         median,
-#         self.std) = sigma_clipped_stats(image, sigma=3.0)
-#     sigma_clip = SigmaClip(sigma=3.0)
-#     bkg_estimator = MedianBackground()
-#     full_background = Background2D(image,
-#                                     (int(self.width/8),int(self.height/8)),
-#                                     filter_size=(3,3),
-#                                     exclude_percentile=80,
-#                                     sigma_clip=sigma_clip,
-#                                     bkg_estimator=bkg_estimator)
-#     background = full_background.background
-#     image -= background
-#     (self.bkgd_mean,
-#         _dummy,
-#         bkgd_std) = sigma_clipped_stats(background, sigma=3.0)
-#     print("background.median = ", full_background.background_median,
-#             ", background.rms = ", full_background.background_rms_median)
-#     self.noise_bkgd_per_pixel = full_background.background_rms_median * egain
-#     self.background = background
+    # Rescale each CFA sub-grid to the common stdev, then shift its rescaled mean
+    # onto the common mean, so all four channels end up with the same background
+    # grayness and noise. The four sub-grids are disjoint pixels, so the order and
+    # the write-back are independent.
+    slices = [(0, 0), (0, 1), (1, 0), (1, 1)]
+    for (row, col), tempx in zip(slices, tempexes, strict=True):
+        factor = target_stdev / tempx.std()
+        scaled = image[row::2, col::2] * factor
+        image[row::2, col::2] = scaled - ((tempx * factor).mean() - target_mean)
