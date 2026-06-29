@@ -23,6 +23,7 @@ config + metadata and delegates to it.
 """
 
 import json
+import logging
 import shutil
 from pathlib import Path
 
@@ -32,9 +33,13 @@ from pydantic import ValidationError
 
 from .config import InstrumentProfile, PhotometryConfig
 from .instruments import available_instruments, load_instrument
-from .scripts import QA_MANIFEST_FILENAME, photometer_frames
+from .logging_setup import configure_logging
+from .scripts import QA_MANIFEST_FILENAME, _quiet_hf_xet, photometer_frames
 
 __all__ = ["main"]
+
+#: ``-v`` count at or above which ``process`` logs at DEBUG rather than INFO.
+_DEBUG_VERBOSITY = 2
 
 
 def _build_config(instrument, profile, config_file):
@@ -206,6 +211,12 @@ def main():
     show_default=True,
     help="Write a per-frame QA manifest alongside the .star files.",
 )
+@click.option(
+    "-v",
+    "--verbose",
+    count=True,
+    help="Show per-frame progress in the terminal (-vv for debug detail).",
+)
 def process(
     files,
     output_dir,
@@ -218,6 +229,7 @@ def process(
     fail_fast,
     output_suffix,
     qa_manifest,
+    verbose,
 ):
     """
     Photometer a batch of FITS frames into per-frame .star photometry files.
@@ -250,6 +262,9 @@ def process(
         Suffix for the per-frame output files.
     qa_manifest : bool
         Whether to write a per-frame QA manifest alongside the ``.star`` files.
+    verbose : int
+        Verbosity count from ``-v``: 0 stays quiet, 1 streams per-frame progress
+        at INFO, 2+ adds DEBUG detail.
 
     Raises
     ------
@@ -257,6 +272,13 @@ def process(
         If the arguments expand to no FITS frames, a path argument is missing or
         not a FITS frame, or a config/profile/metadata file fails validation.
     """
+    if verbose:
+        # Route bandaid's per-frame progress (and any skip/error) records to the
+        # terminal. Default (no -v) leaves the package logger on its NullHandler.
+        configure_logging(
+            level=logging.DEBUG if verbose >= _DEBUG_VERBOSITY else logging.INFO
+        )
+
     config = _build_config(instrument, profile, config_file)
     metadata = _load_metadata(metadata_file)
 
@@ -411,6 +433,7 @@ def weights(output_file):
     click.ClickException
         If the weights cannot be copied to ``output_file``.
     """
+    _quiet_hf_xet()
     cached = download_weights()
     if output_file is not None:
         # A bad destination (unwritable path, missing parent, full disk) should

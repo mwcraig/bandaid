@@ -17,6 +17,7 @@ functions: no shared mutable state, no "is it done yet?" bookkeeping.
 import csv
 import glob
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -82,6 +83,23 @@ _FITS_SUFFIXES = (
     ".fits.gz",
     ".fts.gz",
 )
+
+
+def _quiet_hf_xet():
+    """
+    Best-effort: silence the native ``hf_xet`` unauthenticated-request warning.
+
+    On the first weights download, ``hf_hub_download`` routes through the native
+    ``hf_xet`` accelerator, which prints a "sending unauthenticated requests to
+    the HF Hub ... faster downloads" line straight to stderr -- not a Python
+    warning or log record, so it cannot be filtered the usual way. Disabling xet
+    keeps the download working (the ``.npz`` is tiny and cached once) and avoids
+    that line. ``setdefault`` so a user who set ``HF_HUB_DISABLE_XET`` (or who
+    wants xet) is never overridden; setting ``HF_TOKEN`` is the fully-correct fix
+    -- it both keeps xet acceleration and silences the warning. Best-effort
+    because the exact behaviour depends on the installed ``hf_xet`` version.
+    """
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 
 def _is_fits(path):
@@ -671,7 +689,11 @@ def process_batch(
     # front so a missing or unwritable parent fails fast.
     if output_dir is not None:
         _ensure_output_dirs(output_dir, output_paths)
-    for file in files:
+    for idx, file in enumerate(files, 1):
+        # Per-frame progress. Invisible by default (the package logger has only a
+        # NullHandler); `bandaid process --verbose` routes it to the terminal via
+        # configure_logging, alongside the skip/error warnings logged below.
+        logger.info("processing %d/%d: %s", idx, len(files), file)
         try:
             check_frame_consistency(file, fits.getheader(file), prep)
             by_filter = process_one_image(
@@ -808,6 +830,7 @@ def photometer_frames(
 
     config = config or PhotometryConfig()
     if cnn is None:
+        _quiet_hf_xet()
         cnn = Ballet(model_file=weights)
 
     prep = prepare_batch(frames[0], cnn=cnn, config=config, append_l4=append_l4)

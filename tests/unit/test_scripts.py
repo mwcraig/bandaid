@@ -8,6 +8,7 @@ with the heavy/network dependencies (``calibration_sequence``,
 """
 
 import csv
+import logging
 import os
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from bandaid.exceptions import (
     WCSSolveError,
 )
 from bandaid.photometry import neighbor_contamination_flag_sky
+from bandaid.scripts import _quiet_hf_xet
 
 
 def _batch_metadata():
@@ -425,6 +427,32 @@ class TestProcessBatch:
             assert masks is prep.bayer_masks
             assert phot_coords is prep.photometry_coords
 
+    def test_emits_progress_log_per_frame(self, monkeypatch, caplog):
+        """Each frame logs a ``processing i/N: name`` line at INFO for --verbose."""
+        monkeypatch.setattr(
+            scripts,
+            "process_one_image",
+            lambda *_a, **_k: {"TR": Table({"tot_count": [1.0]})},
+        )
+
+        # Identically-named frames from different directories (a supported
+        # mirrored-tree batch): the line logs the full path, not just the
+        # basename, so the two "a.fits" frames stay distinguishable.
+        files = ["night1/a.fits", "night2/a.fits", "night2/b.fits"]
+        with caplog.at_level(logging.INFO, logger="bandaid"):
+            scripts.process_batch(files, _dummy_prep(), user_specific_metadata={})
+
+        progress = [
+            record.getMessage()
+            for record in caplog.records
+            if record.getMessage().startswith("processing ")
+        ]
+        assert progress == [
+            "processing 1/3: night1/a.fits",
+            "processing 2/3: night2/a.fits",
+            "processing 3/3: night2/b.fits",
+        ]
+
     def test_failed_frames_are_skipped(self, monkeypatch):
         """A frame whose ``process_one_image`` raises a FrameError is omitted."""
         prep = _dummy_prep()
@@ -480,6 +508,22 @@ class TestProcessBatch:
         )
 
         assert list(results) == ["good.fits"]
+
+
+class TestQuietHfXet:
+    """Unit tests for the best-effort ``_quiet_hf_xet`` HF-warning silencer."""
+
+    def test_sets_disable_xet_when_unset(self, monkeypatch):
+        """With no user setting, xet is disabled to avoid its stderr warning."""
+        monkeypatch.delenv("HF_HUB_DISABLE_XET", raising=False)
+        _quiet_hf_xet()
+        assert os.environ["HF_HUB_DISABLE_XET"] == "1"
+
+    def test_preserves_user_value(self, monkeypatch):
+        """A user who set the var (e.g. to keep xet) is never overridden."""
+        monkeypatch.setenv("HF_HUB_DISABLE_XET", "0")
+        _quiet_hf_xet()
+        assert os.environ["HF_HUB_DISABLE_XET"] == "0"
 
 
 @pytest.fixture

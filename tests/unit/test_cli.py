@@ -11,6 +11,7 @@ wiring and the clean-error handling; the engine itself is covered in
 """
 
 import json
+import logging
 
 import pytest
 from click.testing import CliRunner
@@ -104,6 +105,54 @@ def test_process_forwards_every_flag(runner, patched_photometer, tmp_path):
     assert config.instrument.name == "Seestar50"
     # The summary reflects the returned (results, frames) counts.
     assert "Processed 1 of 2 frames" in result.output
+
+
+@pytest.fixture
+def spy_configure_logging(monkeypatch):
+    """Record the level ``cli.configure_logging`` is called with (if at all)."""
+    calls = []
+    monkeypatch.setattr(cli, "configure_logging", lambda **kwargs: calls.append(kwargs))
+    return calls
+
+
+@pytest.mark.usefixtures("patched_photometer")
+def test_process_quiet_by_default_skips_logging_setup(
+    runner, spy_configure_logging, tmp_path
+):
+    """Without --verbose the CLI leaves logging unconfigured (quiet)."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+
+    result = runner.invoke(cli.main, ["process", str(frame)])
+
+    assert result.exit_code == 0, result.output
+    assert spy_configure_logging == []
+
+
+@pytest.mark.usefixtures("patched_photometer")
+def test_process_verbose_enables_info_logging(runner, spy_configure_logging, tmp_path):
+    """``-v`` routes bandaid records to the terminal at INFO."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+
+    result = runner.invoke(cli.main, ["process", str(frame), "-v"])
+
+    assert result.exit_code == 0, result.output
+    assert spy_configure_logging == [{"level": logging.INFO}]
+
+
+@pytest.mark.usefixtures("patched_photometer")
+def test_process_double_verbose_enables_debug_logging(
+    runner, spy_configure_logging, tmp_path
+):
+    """``-vv`` drops to DEBUG for extra detail."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+
+    result = runner.invoke(cli.main, ["process", str(frame), "-vv"])
+
+    assert result.exit_code == 0, result.output
+    assert spy_configure_logging == [{"level": logging.DEBUG}]
 
 
 def test_process_uses_robust_defaults(runner, patched_photometer, tmp_path):

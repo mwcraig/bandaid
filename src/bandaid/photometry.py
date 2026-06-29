@@ -1648,43 +1648,49 @@ def calculate_l4_quantities(final_data, by_filter_data, egain):
         + by_filter_data["TB"]["aperture_area"]
     )
 
-    # Background is the weighted average of the individual filter backgrounds
-    final_data["bkgd_count"] = (
-        by_filter_data["TR"]["bkgd_count"] * by_filter_data["TR"]["aperture_area"]
-        + by_filter_data["TG"]["bkgd_count"] * by_filter_data["TG"]["aperture_area"]
-        + by_filter_data["TB"]["bkgd_count"] * by_filter_data["TB"]["aperture_area"]
-    ) / final_data["aperture_area"]
+    # Dropped or blocked stars can sum to zero aperture area, zero error, or a
+    # negative net count, so the divisions and sqrt below legitimately produce
+    # NaN/inf. Those are expected intermediates filtered downstream (see the NaN
+    # contract in `measure_photometry`, which guards its own divisions the same
+    # way at egain/SNR time), so silence the matching RuntimeWarnings here too.
+    with np.errstate(invalid="ignore", divide="ignore"):
+        # Background is the weighted average of the individual filter backgrounds
+        final_data["bkgd_count"] = (
+            by_filter_data["TR"]["bkgd_count"] * by_filter_data["TR"]["aperture_area"]
+            + by_filter_data["TG"]["bkgd_count"] * by_filter_data["TG"]["aperture_area"]
+            + by_filter_data["TB"]["bkgd_count"] * by_filter_data["TB"]["aperture_area"]
+        ) / final_data["aperture_area"]
 
-    # For peak count, create a numpy array of the individual filter peak counts
-    # and take the max along the filter axis
-    final_data["peak_count"] = np.max(
-        [
-            by_filter_data["TR"]["peak_count"],
-            by_filter_data["TG"]["peak_count"],
-            by_filter_data["TB"]["peak_count"],
-        ],
-        axis=0,
-    )
-
-    # For error, add the individual filter background errors in quadrature,
-    # multiplied by the aperture areas, then add in quadrature to the Poisson
-    # error from the total count.
-    final_data["count_err"] = np.sqrt(
-        (
-            by_filter_data["TR"]["bkgd_std"] ** 2
-            * by_filter_data["TR"]["aperture_area"]
-            + by_filter_data["TG"]["bkgd_std"] ** 2
-            * by_filter_data["TG"]["aperture_area"]
-            + by_filter_data["TB"]["bkgd_std"] ** 2
-            * by_filter_data["TB"]["aperture_area"]
+        # For peak count, create a numpy array of the individual filter peak
+        # counts and take the max along the filter axis
+        final_data["peak_count"] = np.max(
+            [
+                by_filter_data["TR"]["peak_count"],
+                by_filter_data["TG"]["peak_count"],
+                by_filter_data["TB"]["peak_count"],
+            ],
+            axis=0,
         )
-        + final_data["tot_count"] / egain  # Poisson error from total count
-    )
 
-    # Recompute SNR from the recombined L4 count and error. The table arrives
-    # here from a full-frame photometry pass, so its snr column otherwise still
-    # reflects the discarded full-frame measurement instead of the channel sum.
-    final_data["snr"] = final_data["tot_count"] / final_data["count_err"]
+        # For error, add the individual filter background errors in quadrature,
+        # multiplied by the aperture areas, then add in quadrature to the Poisson
+        # error from the total count.
+        final_data["count_err"] = np.sqrt(
+            (
+                by_filter_data["TR"]["bkgd_std"] ** 2
+                * by_filter_data["TR"]["aperture_area"]
+                + by_filter_data["TG"]["bkgd_std"] ** 2
+                * by_filter_data["TG"]["aperture_area"]
+                + by_filter_data["TB"]["bkgd_std"] ** 2
+                * by_filter_data["TB"]["aperture_area"]
+            )
+            + final_data["tot_count"] / egain  # Poisson error from total count
+        )
+
+        # Recompute SNR from the recombined L4 count and error. The table arrives
+        # here from a full-frame photometry pass, so its snr column otherwise
+        # still reflects the discarded full-frame measurement, not the channel sum.
+        final_data["snr"] = final_data["tot_count"] / final_data["count_err"]
 
     # fluxes/total_bkg/bkgd_std are not recombined across TR/TG/TB and have no
     # L4-consistent meaning, so drop them rather than leave the stale full-frame
