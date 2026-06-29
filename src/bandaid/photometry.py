@@ -954,7 +954,6 @@ def good_star_mask(eloy_table, metadata):
     numpy.ndarray
         Boolean array, ``True`` for rows that pass the filter.
     """
-    # REPLACE THIS WITH FILTERING FROM IMAGE2SL_QT
     good = ~np.isnan(eloy_table["tot_count"])
     good &= eloy_table["tot_count"] > 0
     good &= np.isfinite(eloy_table["count_err"])
