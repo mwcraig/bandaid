@@ -246,7 +246,7 @@ class InstrumentProfile(BaseModel, frozen=True):
     thresh: Annotated[float, Field(gt=0)] = 0.5
     detection_opening: Annotated[int, Field(ge=1)] = 3
     fwhm_cutout_half: Annotated[int, Field(ge=1)] = 25
-    fwhm_n_stars: Annotated[int, Field(ge=1)] = 50
+    fwhm_n_stars: Annotated[int, Field(ge=1)] = 25
     contamination_tolerance: Annotated[float, Field(gt=0)] = 0.01
     moffat_beta: Annotated[float, Field(gt=0)] = 3.0
     header_map: Mapping = Field(

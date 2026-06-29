@@ -543,7 +543,7 @@ class TestFwhmFromCoords:
         inject_fwhm = 3.0
         sigma = inject_fwhm * gaussian_fwhm_to_sigma
         rng = np.random.default_rng(SEED)
-        # 25 bright stars on a grid, plus a large block of faint junk sources.
+        # 5x5 grid (25 bright stars), plus a large block of faint junk sources.
         gx, gy = np.meshgrid(np.arange(40, 280, 48.0), np.arange(40, 280, 48.0))
         bx, by = gx.ravel(), gy.ravel()
         n_faint = 200
@@ -2279,7 +2279,7 @@ class TestSmokeRealFrame:
         The brightest-N cap bounds the real-frame FWHM fit and keeps it small.
 
         On genuine pixels the fit must (a) feed at most ``fwhm_n_stars`` of the
-        detections to the PSF stack and (b) recover a sane, small FWHM near the
+        detections to the PSF stack and (b) recover a small FWHM near the
         true PSF (~2.8 px) -- a regression guard against the re-inflation an
         uncapped fit over thousands of faint detections would smear back in.
         """
@@ -2298,8 +2298,8 @@ class TestSmokeRealFrame:
 
         # The fit calibration_sequence already ran (default cap) lands near the
         # true PSF, not the inflated ~8 px an uncapped CNN fit produced.
-        sane_fwhm_ceiling = 6.0  # true PSF ~2.8 px; well clear of the ~8 px inflation
-        assert 0 < fwhm < sane_fwhm_ceiling
+        fwhm_ceiling = 6.0  # true PSF ~2.8 px; well clear of the ~8 px inflation
+        assert 0 < fwhm < fwhm_ceiling
 
     @pytest.mark.remote_data
     def test_real_ballet_cnn_fwhm_smoke(self):
@@ -2309,7 +2309,7 @@ class TestSmokeRealFrame:
         Every other test stubs the CNN, so this is the only coverage of the real
         ``Ballet`` path the FWHM cap exists to protect: weights download ->
         JAX inference -> ``ballet_centroid`` -> ePSF registration -> brightest-N
-        cap -> a sane FWHM. It guards against eloy API / weight-format drift the
+        cap -> a small FWHM. It guards against eloy API / weight-format drift the
         stubbed tests are blind to. ``Ballet()`` downloads ``centroid_15x15.npz``
         from the public ``lgrcia/ballet`` HuggingFace repo (no auth) on first run.
         """
@@ -2326,8 +2326,8 @@ class TestSmokeRealFrame:
         )
 
         assert fwhm is not None
-        sane_fwhm_ceiling = 6.0  # true PSF ~2.8 px; well clear of the ~8 px inflation
-        assert 0 < fwhm < sane_fwhm_ceiling
+        fwhm_ceiling = 6.0  # true PSF ~2.8 px; well clear of the ~8 px inflation
+        assert 0 < fwhm < fwhm_ceiling
 
 
 class TestEloyToStarlistGuard:

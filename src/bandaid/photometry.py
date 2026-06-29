@@ -512,9 +512,12 @@ def _brightest_unsaturated(data, coords_xy, max_adu, n):
 
     The peak is read at each detection's (rounded, in-bounds) centroid pixel.
     Sources whose peak reaches saturation (``>= max_adu``) or is non-positive are
-    dropped -- the same predicate :func:`_registered_epsf` applies per cutout --
-    and the surviving coords are returned highest-peak first, truncated to ``n``
-    (all of them when ``len(coords_xy) <= n``).
+    dropped -- a cheap single-pixel brightness pre-filter, *not* the full
+    per-cutout test :func:`_registered_epsf` applies (which reads the peak from
+    the cutout max and also excludes off-edge and non-finite cutouts; that test
+    still runs downstream on the survivors). The surviving coords are returned
+    highest-peak first, truncated to ``n`` (all of them when
+    ``len(coords_xy) <= n``).
 
     Parameters
     ----------
@@ -532,7 +535,9 @@ def _brightest_unsaturated(data, coords_xy, max_adu, n):
     numpy.ndarray, shape (M, 2)
         The retained ``(x, y)`` coords, ``M <= n``, ordered brightest first.
     """
-    coords_xy = np.asarray(coords_xy, dtype=float)
+    # reshape(-1, 2) keeps empty (-> (0, 2)) and single ((2,) -> (1, 2)) inputs
+    # from collapsing to a 1-D array that the column indexing below would reject.
+    coords_xy = np.asarray(coords_xy, dtype=float).reshape(-1, 2)
     ix = np.clip(np.round(coords_xy[:, 0]).astype(int), 0, data.shape[1] - 1)
     iy = np.clip(np.round(coords_xy[:, 1]).astype(int), 0, data.shape[0] - 1)
     peaks = data[iy, ix]

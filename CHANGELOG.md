@@ -54,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The per-frame FWHM fit now uses only the brightest unsaturated detections
-    (`InstrumentProfile.fwhm_n_stars`, default 50) instead of every detection.
+    (`InstrumentProfile.fwhm_n_stars`, default 25) instead of every detection.
     Bayer-balanced detection yields thousands of faint sources whose CNN
     re-centroiding both dominated the per-frame runtime (~4x slower) and inflated
     the fitted FWHM (~8.6 px vs the true ~2.8 px), over-sizing every
