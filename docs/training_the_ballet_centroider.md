@@ -1,5 +1,12 @@
 # Training the Ballet centroider
 
+!!! note "Advanced / optional"
+
+    Most users never need this page — the default Ballet weights, downloaded
+    automatically on first run, are what nearly everyone should use. Train your
+    own only if you have a specific reason to. To just *use* the stock weights,
+    see [Installation](installation.md#the-ballet-weights-first-run).
+
 bandaid centroids stars with **Ballet**, a small CNN that regresses the sub-pixel
 `(x, y)` offset of a star within a cutout. The stock weights were trained on clean,
 bright synthetic stars, which left two weaknesses on real smart-telescope frames: faint,
