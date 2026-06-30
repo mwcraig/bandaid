@@ -29,18 +29,6 @@ its purpose, and any important notes.
 """
 
 import logging
-import warnings
-
-# st_pipeline warns at import time when it cannot read its own version (a broken
-# editable/dev install). It is expected, non-actionable noise for our use, and it
-# fires the moment a submodule below first imports st_pipeline -- before that
-# submodule could wrap its own import -- so silence just that one message here,
-# ahead of the submodule imports that pull st_pipeline in.
-warnings.filterwarnings(
-    "ignore",
-    message="could not determine st_pipeline package version",
-    category=UserWarning,
-)
 
 from .catalog import cached_gaia_radecs
 from .config import (

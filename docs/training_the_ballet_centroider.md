@@ -27,7 +27,7 @@ pip install -e ".[train]"
 ```
 
 The scripts also import `bandaid` itself, which pulls in the photometry stack
-(`st_pipeline`, etc.). Run them in an environment where both `import bandaid` and
+(`aavso-starlist-schema`, etc.). Run them in an environment where both `import bandaid` and
 `import eloy` succeed.
 
 !!! note "Output paths default to the author's machine"
