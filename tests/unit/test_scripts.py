@@ -14,9 +14,9 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from aavso_starlist_schema import StarListSet
 from astropy.coordinates import SkyCoord
 from astropy.table import Table
-from st_pipeline.schema_definition import StarListSet
 
 from bandaid import scripts
 from bandaid.config import InstrumentProfile, PhotometryConfig, SourceSelectionConfig

@@ -22,10 +22,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+from aavso_starlist_schema import StarListSet
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from eloy.ballet.model import Ballet
-from st_pipeline.schema_definition import StarListSet
 
 from .catalog import cached_gaia_radecs
 from .config import PhotometryConfig

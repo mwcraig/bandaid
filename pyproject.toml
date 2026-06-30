@@ -47,7 +47,7 @@ dependencies = [
     "photutils",
     "pydantic>=2",
     "twirl",
-    "st-pipeline @ git+https://github.com/AAVSO/ST_Pipeline_Dev.git"
+    "aavso-starlist-schema @ git+https://github.com/mwcraig/aavso-starlist-schema.git"
 ]
 
 [project.optional-dependencies]

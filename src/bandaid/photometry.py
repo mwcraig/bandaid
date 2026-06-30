@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 import astropy.units as u
 import numpy as np
+from aavso_starlist_schema import StarList
 from astropy.coordinates import AltAz, EarthLocation, SkyCoord, search_around_sky
 from astropy.io import fits
 from astropy.stats import SigmaClip
@@ -25,7 +26,6 @@ from eloy import centroid, detection, photometry, psf, utils
 from eloy.centroid import ballet_centroid
 from photutils.aperture import ApertureStats, CircularAnnulus, CircularAperture
 from scipy.ndimage import shift as ndshift
-from st_pipeline.schema_definition import StarList
 from twirl import compute_wcs
 
 from .config import (
