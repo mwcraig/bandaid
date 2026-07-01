@@ -119,16 +119,25 @@ A writer that wants AAVSO-starlist semantics can still call
 `good_star_mask` / `eloy_to_starlist` itself (see `bandaid.writers` for the
 default `write_starlist_set`).
 
-To make a writer selectable from the command line, register it under a name and
-pass `--output-format`:
+### Choosing a writer on the command line
 
-```python
-from bandaid import register_writer
-register_writer("csv", write_csv)   # then: bandaid process … --output-format csv
+`--output-format` selects among the writers bandaid registers **at import** —
+today that is just `starlist` (the default). Any writer shipped inside the
+package is registered the same way and is selectable by name:
+
+```console
+bandaid process night/ --output-format starlist
 ```
 
 `--output-format` defaults to `starlist`; an unknown name is a clean CLI error
 listing the registered writers.
+
+A *custom* writer, though, is only reachable through the Python API
+(`write_frame=`, above). `register_writer` mutates an in-process registry, and
+`bandaid process` runs in its own process — so a writer you register in your own
+Python session is **not** visible to a separate `bandaid` command. To record a
+custom format, drive the batch from Python with `write_frame=` rather than
+registering for the CLI.
 
 ## `qa_manifest.csv`
 
