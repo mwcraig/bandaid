@@ -57,13 +57,13 @@ plugins:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/
+      link: https://github.com/mwcraig/bandaid
       name: AAVSO STWG
 
 copyright: Copyright &copy 2026 AAVSO
 
-repo_url: https://github.com//bandaid
-repo_name: /bandaid
+repo_url: https://github.com/mwcraig/bandaid
+repo_name: mwcraig/bandaid
 
 watch:
   - src/bandaid

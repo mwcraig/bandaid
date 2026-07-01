@@ -56,6 +56,7 @@ with a numeric suffix on the subdirectory).
 | `--fail-fast / --no-fail-fast`     | `--no-fail-fast` | Re-raise unexpected per-frame errors instead of skipping the frame.        |
 | `--output-suffix SUFFIX`           | `.star`          | Suffix for the per-frame output files.                                     |
 | `--qa-manifest / --no-qa-manifest` | on               | Write a per-frame QA manifest alongside the `.star` files.                 |
+| `-v, --verbose`                    | off              | Stream per-frame progress to the terminal (`-v` = INFO, `-vv` = DEBUG).    |
 
 `--config` loads the full configuration; an explicit `--instrument` or
 `--profile` then overrides only its instrument. Use one of `--instrument` /
@@ -64,6 +65,12 @@ with a numeric suffix on the subdirectory).
 The default `--no-fail-fast` is the friendlier choice for unattended overnight
 runs: a single bad frame is logged and skipped rather than aborting the batch.
 Pass `--fail-fast` while debugging so unexpected errors surface immediately.
+
+By default the command is quiet. Pass `-v` to stream per-frame progress (and any
+skip/error messages) to the terminal as the batch runs, or `-vv` for debug-level
+detail — the most direct way to see why a single frame was skipped (see
+[Troubleshooting](troubleshooting.md)). New to the command? Start with the
+[getting-started tutorial](getting_started.md).
 
 ## `bandaid instrument` — inspect instrument profiles
 

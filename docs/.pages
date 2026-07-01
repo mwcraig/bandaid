@@ -1,8 +1,14 @@
 nav:
   - index.md
-  - Command-line usage: command_line.md
+  - Installation: installation.md
+  - Getting started: getting_started.md
   - Configuration: configuration.md
   - Instrument profiles: instrument_profiles.md
-  - Training the Ballet centroider: training_the_ballet_centroider.md
+  - Understanding the output: outputs.md
   - Centroid-drift check: centroid_drift_check.md
+  - Training the Ballet centroider: training_the_ballet_centroider.md
+  - Troubleshooting: troubleshooting.md
+  - Command-line usage: command_line.md
+  - API reference: api.md
+  - Contributing: contributing.md
   - Code style: code_style.md

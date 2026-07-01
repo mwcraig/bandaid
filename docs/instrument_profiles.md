@@ -4,7 +4,8 @@ An **instrument profile** is bandaid's model of a single telescope. It bundles
 the two telescope-specific things the pipeline needs:
 
 - the **detection / PSF tuning** knobs (`thresh`, `detection_opening`,
-    `fwhm_cutout_half`, `contamination_tolerance`, `moffat_beta`), and
+    `fwhm_cutout_half`, `fwhm_n_stars`, `contamination_tolerance`, `moffat_beta`),
+    and
 - the **header map** — a small mapping that tells the pipeline how to read that
     telescope's per-frame FITS headers into the metadata it needs.
 
@@ -69,20 +70,60 @@ Notes:
 
 ## Adding a telescope
 
-The supported, user-facing way to add an instrument is to **register it at
-runtime**: build an `InstrumentProfile` (or load one from your own JSON file) and
-register it in-process. Nothing is written into the installed package.
+### Start from the bundled profile
 
-```python
-from bandaid import register_instrument
-from bandaid.config import InstrumentProfile
+Don't author a profile from a blank file — dump the Seestar50 and edit it. It is
+already a complete, working example of every field and the `header_map`:
 
-# Author a profile file once (see the field list below), then load + register it.
-register_instrument(InstrumentProfile.from_file("my_scope.json"))
+```bash
+$ bandaid instrument show Seestar50 > my_scope.json
 ```
 
-After this, `load_instrument("MyScope")` returns it and `available_instruments()`
-lists it alongside `Seestar50`. A `my_scope.json` looks like:
+Change the `name`, the plate scale / FOV, and the `header_map` directives to match
+your telescope's headers, leaving the detection/PSF knobs at their defaults until
+you have a reason to tune them.
+
+### Three ways to use your profile
+
+From quickest to most permanent:
+
+1. **Ad-hoc file** — point a single run at the JSON, no registration needed:
+
+    ```bash
+    $ bandaid process frames/ --profile my_scope.json
+    ```
+
+    ```python
+    from bandaid import PhotometryConfig
+    from bandaid.config import InstrumentProfile
+
+    config = PhotometryConfig(instrument=InstrumentProfile.from_file("my_scope.json"))
+    ```
+
+1. **Register it in-process** — load it once, then refer to it by name for the
+    rest of the session. Nothing is written into the installed package:
+
+    ```python
+    from bandaid import register_instrument, load_instrument
+    from bandaid.config import InstrumentProfile
+
+    register_instrument(InstrumentProfile.from_file("my_scope.json"))
+    load_instrument("MyScope")          # now resolves by name
+    ```
+
+    This registration lives only in the current Python session — a separate
+    `bandaid process --instrument MyScope` invocation is a new process with an
+    empty registry, so it won't see it. For the CLI, use the ad-hoc
+    `--profile my_scope.json` shown above, or bundle the profile (below) to
+    resolve it by name everywhere.
+
+1. **Bundle it (contributor path)** — drop
+    `src/bandaid/meta_json_files/<Name>/profile.json` into the source tree and
+    update the bundled-names test; it is then auto-discovered for everyone with no
+    other code changes. See
+    [Adding a bundled instrument profile](contributing.md#adding-a-bundled-instrument-profile).
+
+A `my_scope.json` looks like:
 
 ```json
 {
@@ -90,6 +131,7 @@ lists it alongside `Seestar50`. A `my_scope.json` looks like:
     "thresh": 0.5,
     "detection_opening": 3,
     "fwhm_cutout_half": 25,
+    "fwhm_n_stars": 25,
     "contamination_tolerance": 0.01,
     "moffat_beta": 3.0,
     "header_map": {
@@ -115,6 +157,34 @@ that isn't built in yet, a pull request adding it ships it with bandaid so it
 resolves by name for everyone — no runtime registration needed. See
 [Adding a bundled instrument profile](contributing.md#adding-a-bundled-instrument-profile)
 for the short walkthrough.
+
+### Validate before a long run
+
+Catch a typo before it fails deep in an overnight batch. Validate the profile (as
+part of a full config) up front:
+
+```bash
+$ bandaid config validate my_config.json
+```
+
+`InstrumentProfile.from_file` raises the same Pydantic errors directly. The common
+ones are out-of-range values — `thresh`, `contamination_tolerance`, and
+`moffat_beta` must be `> 0`; `detection_opening`, `fwhm_cutout_half`, and
+`fwhm_n_stars` must be `>= 1`.
+
+### Verify it parses your headers
+
+Validation checks the profile's *shape*, not that its `header_map` matches your
+FITS files. Confirm the directives actually resolve by running a **single frame**
+with `-vv` and checking that metadata (pixel scale, gain, RA/Dec) resolved and a
+`.star` file was written:
+
+```bash
+$ bandaid process one_frame.fit --profile my_scope.json -o /tmp/check -vv
+```
+
+A `FrameMetadataError` here means a `header_map` directive points at a keyword
+your headers don't carry — see [Troubleshooting](troubleshooting.md).
 
 ### Keys a profile should provide
 

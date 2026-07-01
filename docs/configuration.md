@@ -62,6 +62,7 @@ only when pointing a **different** telescope at the sky.
 | `instrument` | `thresh`                  | `0.5`         | Source-detection threshold, in background sigma          |
 | `instrument` | `detection_opening`       | `3`           | Morphological-opening kernel that gates faint detections |
 | `instrument` | `fwhm_cutout_half`        | `25`          | Half-width (px) of the PSF window for the FWHM fit       |
+| `instrument` | `fwhm_n_stars`            | `25`          | Cap on the brightest detections fed to the FWHM fit      |
 | `instrument` | `contamination_tolerance` | `0.01`        | Max neighbour spillover before flagging                  |
 | `instrument` | `moffat_beta`             | `3.0`         | Moffat wing index for the contamination model            |
 | `instrument` | `header_map`              | Seestar50     | FITS-header dialect resolved by `metadata_from_header`   |
