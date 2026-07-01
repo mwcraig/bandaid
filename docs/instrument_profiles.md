@@ -111,8 +111,11 @@ From quickest to most permanent:
     load_instrument("MyScope")          # now resolves by name
     ```
 
-    On the CLI the registered name is then usable as
-    `bandaid process frames/ --instrument MyScope`.
+    This registration lives only in the current Python session — a separate
+    `bandaid process --instrument MyScope` invocation is a new process with an
+    empty registry, so it won't see it. For the CLI, use the ad-hoc
+    `--profile my_scope.json` shown above, or bundle the profile (below) to
+    resolve it by name everywhere.
 
 1. **Bundle it (contributor path)** — drop
     `src/bandaid/meta_json_files/<Name>/profile.json` into the source tree and

@@ -33,6 +33,25 @@ $ bandaid process night-of-2026-06-27/ -o out/ -v
 debug detail). The first frame takes the longest — that is the once-per-batch
 preparation from idea 2 — and the rest follow quickly.
 
+## The Ballet weights (first run)
+
+The Ballet centroider needs trained weights. The **first** time you run a
+photometry batch, bandaid downloads the default weights from HuggingFace and the
+HuggingFace hub caches them, so subsequent runs reuse the cached copy with no
+network access.
+
+To pre-fetch the weights (handy before going offline, or to confirm the download
+works) use the `weights` command, which prints the cached path:
+
+```bash
+$ bandaid weights
+/Users/you/.cache/huggingface/.../ballet_weights.npz
+```
+
+If you trained or downloaded your own weights, point any run at them with
+`--weights` (CLI) or `weights=` (Python) — see
+[Training the Ballet centroider](training_the_ballet_centroider.md).
+
 ## What lands in `out/`
 
 ```text
@@ -52,8 +71,8 @@ separate star list for each Bayer filter — red (`TR`), green (`TG`), blue
 
 ## Read the QA manifest
 
-`qa_manifest.csv` has one row per input frame and is the fastest way to sanity-
-check a night. The columns:
+`qa_manifest.csv` has one row per input frame and is the fastest way to check a
+night at a glance. The columns:
 
 | Column         | What it tells you                                                |
 | -------------- | ---------------------------------------------------------------- |
@@ -71,13 +90,11 @@ straight at the bad frames — see [Troubleshooting](troubleshooting.md).
 
 ## The same run from Python
 
-The CLI is a thin wrapper over one function, `photometer_frames`:
-
 ```python
 from bandaid import photometer_frames
 
 frames, results = photometer_frames(
-    "night-of-2026-06-27/",
+    ["night-of-2026-06-27/"],
     output_dir="out/",
 )
 # frames  -> the expanded, sorted list of input frames

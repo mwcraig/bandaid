@@ -46,13 +46,14 @@ The same run from Python is one call:
 ```python
 from bandaid import photometer_frames
 
-frames, results = photometer_frames("night-of-2026-06-27/", output_dir="out/")
+frames, results = photometer_frames(["night-of-2026-06-27/"], output_dir="out/")
 ```
 
 See the [documentation](https://bandaid.readthedocs.io/) for the full guide —
-[installation](docs/installation.md), a [getting-started tutorial](docs/getting_started.md),
-the [command-line reference](docs/command_line.md), and
-[configuration](docs/configuration.md).
+[installation](https://bandaid.readthedocs.io/en/latest/installation/), a
+[getting-started tutorial](https://bandaid.readthedocs.io/en/latest/getting_started/),
+the [command-line reference](https://bandaid.readthedocs.io/en/latest/command_line/), and
+[configuration](https://bandaid.readthedocs.io/en/latest/configuration/).
 
 ## Data-quality flags
 
@@ -61,8 +62,10 @@ what each quality check does:
 
 - `centroid_drift` — the star's measured centroid wandered too far from its
     aligned/expected position (bad WCS, too-faint star, or an obstruction). See the
-    [centroid-drift check](docs/centroid_drift_check.md). This is **flag-only**: the
-    column is written, but no rows are dropped.
+    [centroid-drift check](https://bandaid.readthedocs.io/en/latest/centroid_drift_check/).
+    This is **flag-only** — no rows are dropped — and it lives on the in-memory
+    photometry table (run from Python with `output_dir=None`), not in the `.star`
+    files.
 - Contamination — a bright neighbor's PSF wings spill into the aperture.
     `prepare_batch` flags contaminated *targets* (via
     `neighbor_contamination_flag_sky`) and **drops them from the photometry list
@@ -80,7 +83,8 @@ uvx pre-commit run --all-files
 ```
 
 Run the same command locally before pushing, or `uvx pre-commit install` to run it
-automatically on every commit. See the [code style guide](docs/code_style.md) for the
+automatically on every commit. See the
+[code style guide](https://bandaid.readthedocs.io/en/latest/code_style/) for the
 linting policy and the individual commands.
 
 ## Copyright

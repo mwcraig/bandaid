@@ -2,8 +2,6 @@
 
 bandaid turns a folder of Smart Telescope (Seestar) FITS frames into AAVSO-style
 photometry — `.star` files you can submit or analyze — without writing any code.
-It is a deliberately temporary solution: the bandaid gets ripped off on
-**August 1, 2026**.
 
 ## How bandaid thinks
 
@@ -18,13 +16,6 @@ Three ideas explain almost everything in these docs:
 - **One `.star` file per frame** — each bundles a separate star list for every
     Bayer filter (red/green/blue, plus a luminance channel) — plus a single
     `qa_manifest.csv` summarizing the run.
-
-## Who this is for
-
-An intermediate Python user — comfortable with pip, virtual environments, and the
-REPL — who has a folder of Seestar frames and wants photometry out. You do not
-need to be an expert in photometry internals; the docs focus on *using the
-tools*, not on the algorithms.
 
 ## Get started
 

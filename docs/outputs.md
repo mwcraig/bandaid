@@ -76,7 +76,7 @@ writing files:
 ```python
 from bandaid import photometer_frames
 
-frames, results = photometer_frames("night/", output_dir=None)
+frames, results = photometer_frames(["night/"], output_dir=None)
 table = results[frames[0]]["TR"]   # an astropy Table with all columns
 table.colnames                     # tot_count, count_err, sky, snr, centroid_drift, …
 ```
@@ -101,7 +101,7 @@ blank), so the manifest accounts for **every** input frame, not just the
 successful ones. `status` values other than `ok` map directly to the entries in
 [Troubleshooting](troubleshooting.md).
 
-## Data-quality flags (read this honestly)
+## Data-quality flags
 
 bandaid is conservative about *changing* your data, so it is important to know
 exactly what each quality check does.
