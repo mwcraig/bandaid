@@ -16,7 +16,10 @@ It is a deliberately temporary solution: the bandaid gets ripped off on
     all of it.
 - **One `.star` file per frame** — each bundles a separate star list for every
     Bayer filter (red/green/blue, plus a luminance channel) — plus a single
-    `qa_manifest.csv` summarizing the run.
+    `qa_manifest.csv` summarizing the run. The `.star` format is the default; a
+    pluggable **frame writer** (`write_frame=` / `--output-format`) lets you
+    record any format you like — see
+    [Understanding the output](https://bandaid.readthedocs.io/en/latest/outputs/).
 
 ## Get started
 

@@ -81,6 +81,55 @@ table = results[frames[0]]["TR"]   # an astropy Table with all columns
 table.colnames                     # tot_count, count_err, sky, snr, centroid_drift, …
 ```
 
+### Writing a different format: custom writers
+
+The `.star` writer is just the default; the *how each frame is recorded to disk*
+step is pluggable. A **frame writer** is any callable
+`write(frame_result, output_path)` where:
+
+- `frame_result` is the frame's `{filter: astropy Table}` mapping — the same rich
+    tables as in-memory mode (`sky`, `snr`, `airmass`, `centroid_drift`, … — a
+    *superset* of the `.star` fields), each carrying `meta["full_image_meta"]` and
+    `meta["fwhm"]`;
+- `output_path` is the resolved per-frame path (`<stem>` + `output_suffix`); a
+    writer that emits one file per filter derives per-filter names from it;
+- the return value is stored as that frame's entry in the results mapping
+    (usually the `Path`, or list of paths, actually written).
+
+Pass one to `photometer_frames` (or `process_batch`) via `write_frame`. This
+reuses bandaid's per-frame streaming, output-path/collision handling, and QA
+manifest — you only supply the serialization. For example, one CSV of the rich
+table per filter:
+
+```python
+from bandaid import photometer_frames
+
+def write_csv(frame_result, output_path):
+    written = []
+    for filter_name, table in frame_result.items():
+        path = output_path.with_suffix(f".{filter_name}.csv")
+        table.write(path, format="ascii.csv", overwrite=True)
+        written.append(path)
+    return written
+
+photometer_frames(["night/"], write_frame=write_csv, output_suffix="")
+```
+
+A writer that wants AAVSO-starlist semantics can still call
+`good_star_mask` / `eloy_to_starlist` itself (see `bandaid.writers` for the
+default `write_starlist_set`).
+
+To make a writer selectable from the command line, register it under a name and
+pass `--output-format`:
+
+```python
+from bandaid import register_writer
+register_writer("csv", write_csv)   # then: bandaid process … --output-format csv
+```
+
+`--output-format` defaults to `starlist`; an unknown name is a clean CLI error
+listing the registered writers.
+
 ## `qa_manifest.csv`
 
 One row per input frame, written once per run. It is the fastest way to find the

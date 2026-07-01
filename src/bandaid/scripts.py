@@ -22,7 +22,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from aavso_starlist_schema import StarListSet
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from eloy.ballet.model import Ballet
@@ -40,11 +39,11 @@ from .image2sl_qt import generate_bayer_masks
 from .photometry import (
     N_GAIA_STARS_ALIGN_RETRY,
     calibration_sequence,
-    eloy_to_starlist,
     good_star_mask,
     neighbor_contamination_flag_sky,
     process_one_image,
 )
+from .writers import write_starlist_set
 
 # Per-frame QA manifest written alongside the starlists in write-to-disk mode.
 # The columns are the run-quality signals the pipeline already computes; a
@@ -604,6 +603,7 @@ def process_batch(
     user_specific_metadata,
     output_dir=None,
     output_suffix=".star",
+    write_frame=write_starlist_set,
     fail_fast=True,
     write_qa_manifest=True,
     qa_manifest_name=QA_MANIFEST_FILENAME,
@@ -632,6 +632,15 @@ def process_batch(
 
     output_suffix : str, optional
         Suffix for the output files. Default ".star".
+    write_frame : collections.abc.Callable, optional
+        The per-frame writer used in write-to-disk mode:
+        ``write(frame_result, output_path)`` records one frame's
+        ``{filter: Table}`` result and returns what to store as the frame's entry
+        in the result mapping (see `bandaid.writers`). Default
+        `write_starlist_set` (one `StarListSet` JSON per frame). Ignored in
+        in-memory mode (``output_dir`` is None). A writer exception propagates as
+        it does for the default writer -- the write step stays outside the
+        per-frame error handling, since a write failure is systemic.
     fail_fast : bool, optional
         How to handle an *unexpected* error (one that is not a `FrameError`)
         while processing a frame. If True (default), re-raise it so genuine
@@ -739,14 +748,7 @@ def process_batch(
             # abort the run rather than be skipped as a "bad frame".
             manifest_records.append(_qa_record_ok(file, by_filter))
             if output_dir is not None:
-                output_path = output_paths[file]
-                star_lists = [
-                    eloy_to_starlist(tab, tab.meta["full_image_meta"])
-                    for tab in by_filter.values()
-                ]
-                star_list_set = StarListSet(star_lists=star_lists)
-                output_path.write_text(star_list_set.model_dump_json(indent=2))
-                results[file] = output_path
+                results[file] = write_frame(by_filter, output_paths[file])
             else:
                 results[file] = by_filter
 
@@ -768,6 +770,7 @@ def photometer_frames(
     append_l4=True,
     output_dir=".",
     output_suffix=".star",
+    write_frame=write_starlist_set,
     fail_fast=False,
     write_qa_manifest=True,
 ):
@@ -804,6 +807,9 @@ def photometer_frames(
         Default ``"."``; None runs in in-memory mode (see `process_batch`).
     output_suffix : str, optional
         Suffix for the per-frame output files. Default ``".star"``.
+    write_frame : collections.abc.Callable, optional
+        Per-frame writer used in write-to-disk mode (see `process_batch` and
+        `bandaid.writers`). Default `write_starlist_set` (the ``.star`` format).
     fail_fast : bool, optional
         Whether to re-raise unexpected per-frame errors instead of skipping the
         frame. Default False (the robust mode for unattended runs).
@@ -840,6 +846,7 @@ def photometer_frames(
         user_specific_metadata=user_specific_metadata or {},
         output_dir=output_dir,
         output_suffix=output_suffix,
+        write_frame=write_frame,
         fail_fast=fail_fast,
         write_qa_manifest=write_qa_manifest,
     )

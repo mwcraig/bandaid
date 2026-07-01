@@ -849,6 +849,98 @@ class TestProcessBatchToDisk:
         assert (tmp_path / "run_quality.csv").exists()
         assert not (tmp_path / scripts.QA_MANIFEST_FILENAME).exists()
 
+    def test_custom_write_frame_gets_rich_tables_and_path(
+        self, monkeypatch, tmp_path, by_filter
+    ):
+        """A custom ``write_frame`` is called once per frame with the rich tables."""
+        calls = []
+
+        def spy_writer(frame_result, output_path):
+            calls.append((frame_result, output_path))
+            output_path.write_text("recorded")
+            return output_path
+
+        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+
+        scripts.process_batch(
+            ["a.fits", "b.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+            write_frame=spy_writer,
+        )
+
+        # One call per frame, each handed its resolved output path.
+        assert [path for _result, path in calls] == [
+            tmp_path / "a.star",
+            tmp_path / "b.star",
+        ]
+        # The writer receives the rich astropy tables (not pre-built StarLists):
+        # the full {filter: Table} mapping, each table keeping its columns + meta.
+        frame_result, _path = calls[0]
+        assert set(frame_result) == {"TR", "TG"}
+        table = frame_result["TR"]
+        assert isinstance(table, Table)
+        assert "tot_count" in table.colnames
+        assert "full_image_meta" in table.meta
+
+    def test_write_frame_return_value_lands_in_results(
+        self, monkeypatch, tmp_path, by_filter
+    ):
+        """Whatever ``write_frame`` returns is stored as ``results[file]``."""
+        sentinel = tmp_path / "somewhere" / "custom.out"
+
+        def writer(_frame_result, _output_path):
+            return sentinel
+
+        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+
+        results = scripts.process_batch(
+            ["a.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+            write_frame=writer,
+        )
+
+        assert results == {"a.fits": sentinel}
+
+    def test_write_frame_not_called_in_memory_mode(self, monkeypatch, by_filter):
+        """In-memory mode ignores ``write_frame`` and returns the tables."""
+
+        def boom(_frame_result, _output_path):
+            msg = "write_frame must not run in in-memory mode"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+
+        results = scripts.process_batch(
+            ["a.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=None,
+            write_frame=boom,
+        )
+
+        assert set(results) == {"a.fits"}
+        assert set(results["a.fits"]) == {"TR", "TG"}
+
+    def test_default_write_frame_writes_starlist(
+        self, monkeypatch, tmp_path, by_filter
+    ):
+        """With no ``write_frame`` given, the default still writes a StarListSet."""
+        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+
+        scripts.process_batch(
+            ["frame1.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+        )
+
+        # A valid StarListSet document, exactly as before the writer seam existed.
+        StarListSet.model_validate_json((tmp_path / "frame1.star").read_text())
+
 
 class TestExpandFramePaths:
     """Unit tests for the ``expand_frame_paths`` file-name convenience."""
