@@ -81,6 +81,64 @@ table = results[frames[0]]["TR"]   # an astropy Table with all columns
 table.colnames                     # tot_count, count_err, sky, snr, centroid_drift, …
 ```
 
+### Writing a different format: custom writers
+
+The `.star` writer is just the default; the *how each frame is recorded to disk*
+step is pluggable. A **frame writer** is any callable
+`write(frame_result, output_path)` where:
+
+- `frame_result` is the frame's `{filter: astropy.table.Table}` mapping — the same rich
+    tables as in-memory mode (`sky`, `snr`, `airmass`, `centroid_drift`, … — a
+    *superset* of the `.star` fields), each carrying `meta["full_image_meta"]` and
+    `meta["fwhm"]`;
+- `output_path` is the resolved per-frame path (`<stem>` + `output_suffix`); a
+    writer that emits one file per filter derives per-filter names from it;
+- the return value is stored as that frame's entry in the results mapping
+    (usually the `Path`, or list of paths, actually written).
+
+Pass one to `photometer_frames` (or `process_batch`) via `write_frame`. This
+reuses bandaid's per-frame streaming, output-path/collision handling, and QA
+manifest — you only supply the serialization. For example, one CSV of the rich
+table per filter:
+
+```python
+from bandaid import photometer_frames
+
+def write_csv(frame_result, output_path):
+    written = []
+    for filter_name, table in frame_result.items():
+        path = output_path.with_suffix(f".{filter_name}.csv")
+        table.write(path, format="ascii.csv", overwrite=True)
+        written.append(path)
+    return written
+
+photometer_frames(["night/"], write_frame=write_csv, output_suffix="")
+```
+
+A writer that wants AAVSO-starlist semantics can still call
+`good_star_mask` / `eloy_to_starlist` itself (see `bandaid.writers` for the
+default `write_starlist_set`).
+
+### Choosing a writer on the command line
+
+`--output-format` selects among the writers bandaid registers **at import** —
+today that is just `starlist` (the default). Any writer shipped inside the
+package is registered the same way and is selectable by name:
+
+```console
+bandaid process night/ --output-format starlist
+```
+
+`--output-format` defaults to `starlist`; an unknown name is a clean CLI error
+listing the registered writers.
+
+A *custom* writer, though, is only reachable through the Python API
+(`write_frame=`, above). `register_writer` mutates an in-process registry, and
+`bandaid process` runs in its own process — so a writer you register in your own
+Python session is **not** visible to a separate `bandaid` command. To record a
+custom format, drive the batch from Python with `write_frame=` rather than
+registering for the CLI.
+
 ## `qa_manifest.csv`
 
 One row per input frame, written once per run. It is the fastest way to find the

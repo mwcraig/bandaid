@@ -19,6 +19,7 @@ from click.testing import CliRunner
 from bandaid import cli
 from bandaid.config import InstrumentProfile, PhotometryConfig
 from bandaid.instruments import _REGISTERED, register_instrument
+from bandaid.writers import write_starlist_set
 
 
 @pytest.fixture
@@ -83,6 +84,8 @@ def test_process_forwards_every_flag(runner, patched_photometer, tmp_path):
             str(out_dir),
             "--no-append-l4",
             "--fail-fast",
+            "--output-format",
+            "starlist",
             "--output-suffix",
             ".starlist",
             "--no-qa-manifest",
@@ -97,6 +100,8 @@ def test_process_forwards_every_flag(runner, patched_photometer, tmp_path):
     assert patched_photometer["output_dir"] == str(out_dir)
     assert patched_photometer["append_l4"] is False
     assert patched_photometer["fail_fast"] is True
+    # --output-format resolves to the registered writer callable, not the name.
+    assert patched_photometer["write_frame"] is write_starlist_set
     assert patched_photometer["output_suffix"] == ".starlist"
     assert patched_photometer["write_qa_manifest"] is False
     # The config carries the default (Seestar50) instrument.
@@ -229,6 +234,20 @@ def test_process_no_files_errors(runner, tmp_path):
 
     assert result.exit_code == 1
     assert "no fits" in result.output.lower()
+
+
+@pytest.mark.usefixtures("patched_photometer")
+def test_process_unknown_output_format_is_clean_error(runner, tmp_path):
+    """An unregistered ``--output-format`` is a clean Click error, not a crash."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+
+    result = runner.invoke(
+        cli.main, ["process", str(frame), "--output-format", "no-such-format"]
+    )
+
+    assert result.exit_code == 1
+    assert "no-such-format" in result.output
 
 
 def test_process_bad_config_is_clean_error(runner, tmp_path):

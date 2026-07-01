@@ -35,6 +35,7 @@ from .config import InstrumentProfile, PhotometryConfig
 from .instruments import available_instruments, load_instrument
 from .logging_setup import configure_logging
 from .scripts import QA_MANIFEST_FILENAME, _quiet_hf_xet, photometer_frames
+from .writers import get_writer
 
 __all__ = ["main"]
 
@@ -200,6 +201,12 @@ def main():
     help="Re-raise unexpected per-frame errors instead of skipping the frame.",
 )
 @click.option(
+    "--output-format",
+    default="starlist",
+    show_default=True,
+    help="Name of a registered output writer (e.g. starlist).",
+)
+@click.option(
     "--output-suffix",
     default=".star",
     show_default=True,
@@ -209,7 +216,7 @@ def main():
     "--qa-manifest/--no-qa-manifest",
     default=True,
     show_default=True,
-    help="Write a per-frame QA manifest alongside the .star files.",
+    help="Write a per-frame QA manifest alongside the per-frame output files.",
 )
 @click.option(
     "-v",
@@ -227,6 +234,7 @@ def process(
     metadata_file,
     append_l4,
     fail_fast,
+    output_format,
     output_suffix,
     qa_manifest,
     verbose,
@@ -258,6 +266,8 @@ def process(
         Whether to add a full-frame L4 luminance channel to the Bayer masks.
     fail_fast : bool
         Whether to re-raise unexpected per-frame errors instead of skipping.
+    output_format : str
+        Name of a registered output writer to record each frame with.
     output_suffix : str
         Suffix for the per-frame output files.
     qa_manifest : bool
@@ -281,6 +291,12 @@ def process(
 
     config = _build_config(instrument, profile, config_file)
     metadata = _load_metadata(metadata_file)
+    # Resolve the output format up front so an unknown name fails before any
+    # (expensive) frame processing, as a clean CLI error rather than a traceback.
+    try:
+        write_frame = get_writer(output_format)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
 
     # The file expansion + prepare/process flow lives in
     # scripts.photometer_frames; surface its argument errors (no frames, bad
@@ -294,6 +310,7 @@ def process(
             append_l4=append_l4,
             output_dir=output_dir,
             output_suffix=output_suffix,
+            write_frame=write_frame,
             fail_fast=fail_fast,
             write_qa_manifest=qa_manifest,
         )
