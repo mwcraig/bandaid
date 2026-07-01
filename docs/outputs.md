@@ -87,7 +87,7 @@ The `.star` writer is just the default; the *how each frame is recorded to disk*
 step is pluggable. A **frame writer** is any callable
 `write(frame_result, output_path)` where:
 
-- `frame_result` is the frame's `{filter: astropy Table}` mapping — the same rich
+- `frame_result` is the frame's `{filter: astropy.table.Table}` mapping — the same rich
     tables as in-memory mode (`sky`, `snr`, `airmass`, `centroid_drift`, … — a
     *superset* of the `.star` fields), each carrying `meta["full_image_meta"]` and
     `meta["fwhm"]`;

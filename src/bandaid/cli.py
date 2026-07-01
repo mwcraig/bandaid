@@ -216,7 +216,7 @@ def main():
     "--qa-manifest/--no-qa-manifest",
     default=True,
     show_default=True,
-    help="Write a per-frame QA manifest alongside the .star files.",
+    help="Write a per-frame QA manifest alongside the per-frame output files.",
 )
 @click.option(
     "-v",
