@@ -12,13 +12,17 @@ import logging
 import os
 from pathlib import Path
 
+import astropy.units as u
 import numpy as np
 import pytest
 from aavso_starlist_schema import StarListSet
 from astropy.coordinates import SkyCoord
-from astropy.table import Table
+from astropy.table import MaskedColumn, Table
+from astropy.time import Time
+from dateutil import parser
 
 from bandaid import scripts
+from bandaid.catalog import GAIA_DR2_EPOCH
 from bandaid.config import (
     ApertureConfig,
     InstrumentProfile,
@@ -41,6 +45,7 @@ def _batch_metadata():
     return {
         "ra": 10.0,
         "dec": 0.0,
+        "obs_time": "2026-04-28T03:03:43.270038",
         "fov_rad": 0.74,
         "pixscale": 2.4,
         "width": 1080,
@@ -89,9 +94,10 @@ def _patch_prep(monkeypatch, *, metadata=None, radecs_mags=None, fwhm_pix=2.0):
         calls["calibration_profile"] = profile
         return np.zeros((4, 4)), metadata, np.zeros((3, 2)), fwhm_pix, object()
 
-    def fake_cached_gaia_radecs(center, fov):
+    def fake_cached_gaia_radecs(center, fov, *, obs_epoch=None):
         calls["center"] = center
         calls["fov"] = fov
+        calls["obs_epoch"] = obs_epoch
         return radecs, mags
 
     monkeypatch.setattr(scripts, "calibration_sequence", fake_calibration_sequence)
@@ -176,6 +182,148 @@ class TestPrepareBatch:
         assert calls["center"] == (metadata["ra"], metadata["dec"])
         # fov_rad is a field *radius*; the query takes the full field (2 * radius).
         assert calls["fov"] == pytest.approx(2 * metadata["fov_rad"])
+
+    def test_obs_epoch_forwarded_to_gaia_query(self, monkeypatch):
+        """
+        The first frame's ``obs_time`` is forwarded to Gaia as ``obs_epoch``.
+
+        Gaia DR2 positions are J2015.5; without the epoch, ``cached_gaia_radecs``
+        returns catalog-epoch positions and every high-proper-motion star is
+        mis-placed in the forced-photometry target list. Fixes
+        https://github.com/mwcraig/bandaid/issues/56.
+        """
+        calls, metadata, *_ = _patch_prep(monkeypatch)
+
+        scripts.prepare_batch("frame1.fits", cnn=object())
+
+        assert calls["obs_epoch"] == Time(parser.parse(metadata["obs_time"]))
+
+    def test_non_iso_obs_time_parsed_with_dateutil(self, monkeypatch):
+        """
+        A dateutil-parseable but non-ISO ``obs_time`` still yields the epoch.
+
+        ``Time()`` alone rejects sloppy header dates like ``2026/04/28``;
+        mirroring ``build_photometry_table``'s dateutil parsing keeps the Gaia
+        epoch exactly as tolerant as the rest of the pipeline.
+        """
+        metadata = _batch_metadata()
+        metadata["obs_time"] = "2026/04/28 03:03:43"
+        calls, *_ = _patch_prep(monkeypatch, metadata=metadata)
+
+        scripts.prepare_batch("frame1.fits", cnn=object())
+
+        assert calls["obs_epoch"] == Time("2026-04-28T03:03:43")
+
+    def test_missing_obs_time_raises_clear_metadata_error(self, monkeypatch):
+        """
+        A frame without DATE-OBS fails with a metadata error, not a Gaia one.
+
+        The Seestar profile has no default for ``obs_time``, so a frame missing
+        DATE-OBS resolves it to None. Feeding that to the Gaia query would fail
+        inside the query's ``except Exception`` wrapper and surface as a
+        misleading "could not query Gaia" BatchPrepError; the metadata must be
+        validated first instead.
+        """
+        metadata = _batch_metadata()
+        metadata["obs_time"] = None
+        _patch_prep(monkeypatch, metadata=metadata)
+
+        with pytest.raises(FrameMetadataError, match="obs_time"):
+            scripts.prepare_batch("frame1.fits", cnn=object())
+
+    @pytest.mark.parametrize(
+        "bad_obs_time",
+        [
+            "not a date at all",
+            # dateutil raises OverflowError (not ValueError) for all-digit
+            # strings too large for a C long -- e.g. a corrupted numeric
+            # DATE-OBS (PR #71 review).
+            "999999999999999999",
+        ],
+    )
+    def test_unparseable_obs_time_raises_clear_metadata_error(
+        self, monkeypatch, bad_obs_time
+    ):
+        """An unparseable ``obs_time`` fails as a metadata error, not a Gaia one."""
+        metadata = _batch_metadata()
+        metadata["obs_time"] = bad_obs_time
+        _patch_prep(monkeypatch, metadata=metadata)
+
+        with pytest.raises(FrameMetadataError, match="obs_time"):
+            scripts.prepare_batch("frame1.fits", cnn=object())
+
+    def test_high_pm_star_propagated_to_obs_epoch(
+        self, monkeypatch, gaia_table, fake_vizier
+    ):
+        """
+        End to end, a high-PM star lands at its observation-epoch position.
+
+        Runs the *real* ``cached_gaia_radecs`` with only ``catalog.Vizier``
+        patched (network-free). The brightest fixture star is given an extreme
+        proper motion (1000 mas/yr, ~10.9 arcsec over 2015.5 -> 2026.3) and the
+        faintest a *masked* one. The prep's positions must match an independent
+        ``SkyCoord.apply_space_motion`` computation -- so the high-PM star has
+        moved well off its raw J2015.5 catalog position and the masked-PM star
+        is propagated with zero proper motion. Fixes
+        https://github.com/mwcraig/bandaid/issues/56.
+        """
+        assert fake_vizier is not None  # patching Vizier is the fixture's job
+        # An extreme-PM bright star and a masked-PM faint star. Fixture mags
+        # (8.8, 13.5, 14.1) are within gaia_mag_limit and the stars are ~arcmin
+        # apart, so none are dropped by the mag cut or contamination flagging.
+        gaia_table["pmRA"] = MaskedColumn(
+            [1000.0, -0.957, 0.0], unit=u.mas / u.yr, mask=[False, False, True]
+        )
+        gaia_table["pmDE"] = MaskedColumn(
+            [12.364, -1.993, 0.0], unit=u.mas / u.yr, mask=[False, False, True]
+        )
+
+        metadata = _batch_metadata()
+        # Point the fake frame at the fixture stars.
+        metadata["ra"], metadata["dec"] = 239.9, 25.9
+        monkeypatch.setattr(scripts, "N_GAIA_STARS_ALIGN_RETRY", 1)
+        monkeypatch.setattr(
+            scripts,
+            "calibration_sequence",
+            lambda file, **_kwargs: (
+                np.zeros((4, 4)),
+                metadata,
+                np.zeros((3, 2)),
+                2.0,
+                object(),
+            ),
+        )
+
+        prep = scripts.prepare_batch("frame1.fits", cnn=object())
+
+        # Independent cross-check, masked proper motions treated as zero.
+        expected = SkyCoord(
+            ra=gaia_table["RA_ICRS"],
+            dec=gaia_table["DE_ICRS"],
+            pm_ra_cosdec=[1000.0, -0.957, 0.0] * (u.mas / u.yr),
+            pm_dec=[12.364, -1.993, 0.0] * (u.mas / u.yr),
+            obstime=Time(GAIA_DR2_EPOCH, format="jyear"),
+        ).apply_space_motion(new_obstime=Time(parser.parse(metadata["obs_time"])))
+        np.testing.assert_allclose(
+            prep.radecs[:, 0], expected.ra.deg, rtol=0, atol=1e-9
+        )
+        np.testing.assert_allclose(
+            prep.radecs[:, 1], expected.dec.deg, rtol=0, atol=1e-9
+        )
+
+        # The regression guard: the high-PM star is NOT at its raw catalog
+        # position -- 1000 mas/yr over ~10.8 yr accumulates ~10.9 arcsec.
+        raw = SkyCoord(gaia_table["RA_ICRS"][0], gaia_table["DE_ICRS"][0], unit="deg")
+        propagated = SkyCoord(prep.radecs[0, 0], prep.radecs[0, 1], unit="deg")
+        assert raw.separation(propagated) > 9 * u.arcsec
+
+        # The masked-PM star stays at its catalog position (zero PM applied).
+        np.testing.assert_allclose(
+            prep.radecs[2],
+            [gaia_table["RA_ICRS"][2], gaia_table["DE_ICRS"][2]],
+            rtol=0,
+            atol=1e-9,
+        )
 
     def test_contaminated_stars_dropped_from_photometry_coords(self, monkeypatch):
         """The contaminated pair is removed from ``photometry_coords``."""

@@ -1,7 +1,40 @@
+from unittest.mock import MagicMock
+
+import astropy.units as u
+import numpy as np
 import pytest
 from astropy.modeling.models import Gaussian2D
 from astropy.table import Table
 from photutils.datasets import make_model_image, make_noise_image
+
+from bandaid import catalog
+
+
+@pytest.fixture
+def gaia_table():
+    """A table shaped like the real ``I/345/gaia2`` result, brightest-first."""
+    t = Table()
+    t["Gmag"] = np.array([8.8, 13.5, 14.1]) * u.mag
+    t["RA_ICRS"] = np.array([239.8756, 239.9220, 239.8684]) * u.deg
+    t["DE_ICRS"] = np.array([25.9202, 25.8932, 25.8698]) * u.deg
+    t["pmRA"] = np.array([-4.220, -0.957, 2.839]) * (u.mas / u.yr)
+    t["pmDE"] = np.array([12.364, -1.993, -7.168]) * (u.mas / u.yr)
+    return t
+
+
+@pytest.fixture
+def fake_vizier(monkeypatch, gaia_table):
+    """
+    Patch in a Vizier stand-in returning ``gaia_table``; yield the class mock.
+
+    The returned mock records construction args in ``fake_vizier.call_args`` and
+    the query call in ``fake_vizier.return_value.query_region.call_args``.
+    """
+    instance = MagicMock(name="vizier_instance")
+    instance.query_region.return_value = [gaia_table]
+    vizier_cls = MagicMock(name="Vizier", return_value=instance)
+    monkeypatch.setattr(catalog, "Vizier", vizier_cls)
+    return vizier_cls
 
 
 @pytest.fixture
