@@ -5,7 +5,7 @@
     Most users never need this page — the default Ballet weights, downloaded
     automatically on first run, are what nearly everyone should use. Train your
     own only if you have a specific reason to. To just *use* the stock weights,
-    see [Installation](installation.md#the-ballet-weights-first-run).
+    see [Getting started](getting_started.md#the-ballet-weights-first-run).
 
 bandaid centroids stars with **Ballet**, a small CNN that regresses the sub-pixel
 `(x, y)` offset of a star within a cutout. The stock weights were trained on clean,

@@ -70,7 +70,7 @@ $ bandaid process night/ -o out/ --weights ballet_weights.npz
 ```
 
 From Python, pass `weights="ballet_weights.npz"` to `photometer_frames`. See
-[Installation](installation.md#the-ballet-weights-first-run).
+[Getting started](getting_started.md#the-ballet-weights-first-run).
 
 ## Header field missing (`FrameMetadataError`)
 

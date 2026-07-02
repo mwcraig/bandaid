@@ -218,5 +218,6 @@ Observer-specific values — site location and observer code — are a separate,
 telescope-independent layer applied **last**, via the `user_specific_metadata`
 dict passed to `process_batch`. Those overrides win over whatever the header
 provided. See the metadata layering described on
-[`process_batch`](configuration.md). Building a richer "personal.json" loader for
-that layer is intentionally out of scope of the profile registry.
+[`process_batch`](api.md#bandaid.process_batch). Building a richer
+"personal.json" loader for that layer is intentionally out of scope of the
+profile registry.

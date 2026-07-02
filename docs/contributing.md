@@ -32,6 +32,7 @@ To bundle a telescope:
         "thresh": 0.5,
         "detection_opening": 3,
         "fwhm_cutout_half": 25,
+        "fwhm_n_stars": 25,
         "contamination_tolerance": 0.01,
         "moffat_beta": 3.0,
         "header_map": {

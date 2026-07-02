@@ -54,6 +54,7 @@ with a numeric suffix on the subdirectory).
 | `--user-metadata FILE`             | `{}`             | A JSON object of per-frame user-specific metadata to record.               |
 | `--append-l4 / --no-append-l4`     | on               | Add a full-frame L4 luminance channel to the Bayer masks.                  |
 | `--fail-fast / --no-fail-fast`     | `--no-fail-fast` | Re-raise unexpected per-frame errors instead of skipping the frame.        |
+| `--output-format NAME`             | `starlist`       | A registered output writer (see [Understanding the output](outputs.md)).   |
 | `--output-suffix SUFFIX`           | `.star`          | Suffix for the per-frame output files.                                     |
 | `--qa-manifest / --no-qa-manifest` | on               | Write a per-frame QA manifest alongside the `.star` files.                 |
 | `-v, --verbose`                    | off              | Stream per-frame progress to the terminal (`-v` = INFO, `-vv` = DEBUG).    |
