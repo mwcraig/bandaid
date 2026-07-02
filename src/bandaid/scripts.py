@@ -252,9 +252,12 @@ def prepare_batch(
     config : PhotometryConfig or None, optional
         Photometry configuration carried on the returned `BatchPrep` and applied
         to every frame. Its ``instrument`` settings drive the first-frame FWHM
-        detection and the contamination flagging here, and its ``source_selection``
-        settings supply the Gaia target/contaminant magnitude limits. If None
-        (default), a default ``PhotometryConfig`` is used.
+        detection and the contamination flagging here (evaluated at the largest
+        ``apertures`` radius, with the first-frame FWHM padded by the
+        instrument's ``contamination_seeing_margin``), and its
+        ``source_selection`` settings supply the Gaia target/contaminant
+        magnitude limits. If None (default), a default ``PhotometryConfig`` is
+        used.
     append_l4 : bool, optional
         Whether to add a full-frame "L4" luminance channel to the Bayer masks.
         Default False.
@@ -330,14 +333,23 @@ def prepare_batch(
         raise BatchPrepError(msg)
 
     fwhm_arcsec = fwhm_pix * metadata["pixscale"]
+    # The flag is computed once, from the first frame's FWHM, but applied to
+    # every frame of the batch, so evaluate it at a pessimistically softened
+    # seeing (FWHM * contamination_seeing_margin): pairs that would become
+    # contaminated as seeing degrades during the night are dropped up front.
+    # https://github.com/mwcraig/bandaid/issues/64
+    flag_fwhm_arcsec = fwhm_arcsec * instrument.contamination_seeing_margin
     # Asymmetric flagging: only targets can be flagged, but the deeper contaminant
     # list supplies the (possibly fainter) neighbors that can contaminate them.
+    # The contamination model scales with the aperture area, so it is evaluated
+    # at the largest configured aperture radius.
     flagged = neighbor_contamination_flag_sky(
         radecs[contaminant],
         mags[contaminant],
-        fwhm_arcsec,
-        tolerance=config.instrument.contamination_tolerance,
-        beta=config.instrument.moffat_beta,
+        flag_fwhm_arcsec,
+        tolerance=instrument.contamination_tolerance,
+        beta=instrument.moffat_beta,
+        aperture_radius_fwhm=max(config.apertures.radii),
         target_mask=target[contaminant],
     )
     flagged_target = flagged[target[contaminant]]

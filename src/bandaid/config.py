@@ -227,12 +227,21 @@ class InstrumentProfile(BaseModel, frozen=True):
         FWHM (the CNN mis-centroids faint sources, smearing the stacked PSF).
     contamination_tolerance : float
         Maximum fractional bright-neighbour spillover into the aperture before a
-        star is flagged. How much spillover is acceptable depends on the
+        star is flagged, relative to the target flux the aperture encloses (the
+        *measured* flux). How much spillover is acceptable depends on the
         instrument's sensitivity, so it is an instrument setting rather than a
         per-run science knob.
     moffat_beta : float
         Moffat wing index used to model neighbour spillover -- a property of the
         instrument PSF.
+    contamination_seeing_margin : float
+        Seeing-pessimism factor for the once-per-batch bright-neighbour
+        contamination flag. The flag is computed from the *first* frame's FWHM
+        but applied to every frame of the batch, so it is evaluated at
+        ``first-frame FWHM * contamination_seeing_margin``: pairs that would
+        become contaminated as seeing softens during the night are dropped up
+        front. Must be ``>= 1``; ``1.0`` evaluates the flag at exactly the
+        first frame's seeing.
     header_map : collections.abc.Mapping
         The per-frame FITS-header dialect for this telescope: a mapping of
         metadata key to a directive resolved by
@@ -249,6 +258,9 @@ class InstrumentProfile(BaseModel, frozen=True):
     fwhm_n_stars: Annotated[int, Field(ge=1)] = 25
     contamination_tolerance: Annotated[float, Field(gt=0)] = 0.01
     moffat_beta: Annotated[float, Field(gt=0)] = 3.0
+    # ge=1: a sub-unity margin would *un*-flag pairs the measured first-frame
+    # seeing already contaminates, silently shipping blended photometry.
+    contamination_seeing_margin: Annotated[float, Field(ge=1.0)] = 1.25
     header_map: Mapping = Field(
         default_factory=_default_seestar_header_map, validate_default=True
     )

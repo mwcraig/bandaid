@@ -19,7 +19,12 @@ from astropy.coordinates import SkyCoord
 from astropy.table import Table
 
 from bandaid import scripts
-from bandaid.config import InstrumentProfile, PhotometryConfig, SourceSelectionConfig
+from bandaid.config import (
+    ApertureConfig,
+    InstrumentProfile,
+    PhotometryConfig,
+    SourceSelectionConfig,
+)
 from bandaid.exceptions import (
     BatchPrepError,
     FrameError,
@@ -27,7 +32,7 @@ from bandaid.exceptions import (
     TooFewStarsError,
     WCSSolveError,
 )
-from bandaid.photometry import neighbor_contamination_flag_sky
+from bandaid.photometry import min_separation_fwhm, neighbor_contamination_flag_sky
 from bandaid.scripts import _quiet_hf_xet
 
 
@@ -187,6 +192,82 @@ class TestPrepareBatch:
         np.testing.assert_allclose(prep.photometry_coords.ra.deg, expected.ra.deg)
         np.testing.assert_allclose(prep.photometry_coords.dec.deg, expected.dec.deg)
 
+    def test_configured_aperture_radius_reaches_contamination_flagging(
+        self, monkeypatch
+    ):
+        """
+        The contamination flag is evaluated at ``max(config.apertures.radii)``.
+
+        An equal-magnitude pair placed between the 1-FWHM and 2-FWHM aperture
+        contamination thresholds is kept with the default ``radii=(1.0,)`` but
+        dropped when the run is configured with ``radii=(2.0,)``: spillover into
+        an aperture scales with its area, so a larger aperture needs a larger
+        clean separation. The seeing margin is pinned to 1.0 in both runs to
+        isolate the radius effect. Fixes
+        https://github.com/mwcraig/bandaid/issues/53.
+        """
+        fwhm_pix = 2.0
+        fwhm_arcsec = fwhm_pix * _batch_metadata()["pixscale"]
+        sep_r1 = float(min_separation_fwhm(0.0)) * fwhm_arcsec
+        sep_r2 = float(min_separation_fwhm(0.0, aperture_radius_fwhm=2.0)) * fwhm_arcsec
+        sep_arcsec = 0.5 * (sep_r1 + sep_r2)
+        radecs = np.array([[10.0, 0.0], [10.0 + sep_arcsec / 3600.0, 0.0], [10.2, 0.0]])
+        mags = np.array([12.0, 12.0, 10.0])
+        _patch_prep(monkeypatch, radecs_mags=(radecs, mags), fwhm_pix=fwhm_pix)
+        no_margin = InstrumentProfile(contamination_seeing_margin=1.0)
+
+        kept = scripts.prepare_batch(
+            "frame1.fits",
+            cnn=object(),
+            config=PhotometryConfig(instrument=no_margin),
+        )
+        np.testing.assert_allclose(kept.photometry_coords.ra.deg, radecs[:, 0])
+
+        dropped = scripts.prepare_batch(
+            "frame1.fits",
+            cnn=object(),
+            config=PhotometryConfig(
+                apertures=ApertureConfig(radii=(2.0,)), instrument=no_margin
+            ),
+        )
+        np.testing.assert_allclose(dropped.photometry_coords.ra.deg, radecs[[2], 0])
+
+    def test_contamination_seeing_margin_flags_pessimistically(self, monkeypatch):
+        """
+        The batch flag is evaluated at ``first_frame_fwhm * seeing margin``.
+
+        The flag is computed once, from the first frame's FWHM, and applied all
+        night. An equal-magnitude pair placed 15% outside its contamination
+        threshold at that FWHM is clean with ``contamination_seeing_margin=1.0``
+        but is flagged (and dropped for the whole batch) with a margin of 1.3,
+        because seeing only 15% softer than the first frame would contaminate
+        it. Fixes https://github.com/mwcraig/bandaid/issues/64.
+        """
+        fwhm_pix = 2.0
+        fwhm_arcsec = fwhm_pix * _batch_metadata()["pixscale"]
+        sep_arcsec = 1.15 * float(min_separation_fwhm(0.0)) * fwhm_arcsec
+        radecs = np.array([[10.0, 0.0], [10.0 + sep_arcsec / 3600.0, 0.0], [10.2, 0.0]])
+        mags = np.array([12.0, 12.0, 10.0])
+        _patch_prep(monkeypatch, radecs_mags=(radecs, mags), fwhm_pix=fwhm_pix)
+
+        kept = scripts.prepare_batch(
+            "frame1.fits",
+            cnn=object(),
+            config=PhotometryConfig(
+                instrument=InstrumentProfile(contamination_seeing_margin=1.0)
+            ),
+        )
+        np.testing.assert_allclose(kept.photometry_coords.ra.deg, radecs[:, 0])
+
+        flagged = scripts.prepare_batch(
+            "frame1.fits",
+            cnn=object(),
+            config=PhotometryConfig(
+                instrument=InstrumentProfile(contamination_seeing_margin=1.3)
+            ),
+        )
+        np.testing.assert_allclose(flagged.photometry_coords.ra.deg, radecs[[2], 0])
+
     def test_default_gaia_mag_limit_drops_faint_stars(self, monkeypatch):
         """Stars fainter than the default limit of 15 are cut; 15.0 itself is kept."""
         radecs = np.array([[10.0, 0.0], [10.1, 0.0], [10.2, 0.0], [10.3, 0.0]])
@@ -220,7 +301,7 @@ class TestPrepareBatch:
         A real star fainter than the photometry limit still flags a brighter target.
 
         The mag-16 star sits ~1 arcsec from the mag-14 star -- well inside the
-        ~7 arcsec the contamination model requires for that pair at this FWHM. It
+        ~7.5 arcsec the contamination model requires for that pair at this FWHM. It
         is fainter than the photometry limit of 15, so it is *not* a photometry
         target, but it is within the default contaminant limit (gaia_mag_limit + 3
         = 18), so it still contaminates the mag-14 target. The mag-14 star is
