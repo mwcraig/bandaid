@@ -18,6 +18,7 @@ from astropy.io import fits
 from astropy.nddata import CCDData
 from astropy.stats import gaussian_fwhm_to_sigma, sigma_clipped_stats
 from astropy.table import Table
+from astropy.time import Time
 from astropy.wcs import WCS
 from eloy import detection
 from eloy.ballet.model import Ballet
@@ -55,6 +56,7 @@ from bandaid.photometry import (
     centroid_drift_flag,
     centroid_stars,
     eloy_to_starlist,
+    good_star_mask,
     metadata_from_header,
     min_separation_fwhm,
     neighbor_contamination_flag,
@@ -1414,6 +1416,55 @@ class TestBuildPhotometryTable:
             [False, False, True],
         )
 
+    # --- Regression tests for issue #57: ``time`` is the mid-exposure JD. ---
+
+    def _time_column(self, monkeypatch, metadata):
+        """Build a one-star table with the given metadata; return its ``time``."""
+        monkeypatch.setattr(
+            "bandaid.photometry.measure_photometry",
+            _fake_phot_factory(1),
+        )
+        img = _make_image_data(_make_tan_wcs(), np.array([[250.0, 250.0]]), None)
+        img.metadata = metadata
+        table = build_photometry_table(img, mask=None)
+        return float(table["time"][0])
+
+    def test_time_is_mid_exposure_for_stacked_frames(self, monkeypatch):
+        """``time`` is DATE-OBS plus half the effective exposure of the stack."""
+        # 60 subs of 10 s: mid-exposure is 300 s after the DATE-OBS start
+        # ("2020-01-01T00:00:00" in _make_image_data). Recording the start
+        # would be wrong by 5 minutes for this stack (issue #57).
+        exposure = 10.0
+        stack = 60
+        start_jd = Time("2020-01-01T00:00:00").jd
+
+        time = self._time_column(
+            monkeypatch,
+            {"egain": 1.0, "exposure": exposure, "stack": stack},
+        )
+
+        expected = start_jd + exposure * stack / 2.0 / 86400.0
+        assert time == pytest.approx(expected, abs=1e-9)
+        # And it is distinguishable from the old start-time convention.
+        assert time != pytest.approx(start_jd, abs=1.0 / 86400.0)
+
+    def test_time_mid_exposure_defaults_to_single_sub(self, monkeypatch):
+        """Without a ``stack`` count, ``time`` shifts by half one exposure."""
+        exposure = 10.0
+        start_jd = Time("2020-01-01T00:00:00").jd
+
+        time = self._time_column(monkeypatch, {"egain": 1.0, "exposure": exposure})
+
+        assert time == pytest.approx(start_jd + exposure / 2.0 / 86400.0, abs=1e-9)
+
+    def test_time_falls_back_to_start_when_exposure_unknown(self, monkeypatch):
+        """With no exposure metadata the DATE-OBS start time is recorded."""
+        start_jd = Time("2020-01-01T00:00:00").jd
+
+        time = self._time_column(monkeypatch, {"egain": 1.0})
+
+        assert time == pytest.approx(start_jd, abs=1e-9)
+
     # --- Regression tests for issue #52: the broken ``sky`` column is gone; ---
     # --- ``bkgd_count`` is the correct per-star per-pixel background.       ---
 
@@ -1817,6 +1868,57 @@ class TestMetadataFromHeader:
         header["MYEXP"] = expected_exposure
         metadata = metadata_from_header(header, profile=profile)
         assert metadata["exposure"] == expected_exposure
+
+
+class TestGoodStarMask:
+    """
+    In-bounds tests for ``good_star_mask`` pixel-center bounds (issue #57).
+
+    Coordinates are pixel centers: pixel 0 spans [-0.5, 0.5), so a star is
+    on-frame when its center lies in [-0.5, width - 0.5) (and likewise in y).
+    The old ``> 0`` / ``< width`` test dropped a star centered on column 0 and
+    admitted a center up to a pixel past the last column.
+    """
+
+    def _mask_for_xy(self, eloy_table, starlist_metadata, x, y):
+        """Return the good_star_mask for a single otherwise-good star at x, y."""
+        row = {
+            "x": x,
+            "y": y,
+            "ra": 10.0,
+            "dec": 20.0,
+            "tot_count": 100.0,
+            "count_err": 5.0,
+            "bkgd_count": 1.0,
+            "peak_count": 200.0,
+        }
+        return good_star_mask(eloy_table([row]), starlist_metadata)
+
+    @pytest.mark.parametrize(
+        ("x", "y"),
+        [
+            (0.0, 30.0),  # centered on column 0 -- dropped by the old x > 0
+            (20.0, 0.0),  # centered on row 0 -- dropped by the old y > 0
+            (-0.5, 30.0),  # left edge of pixel 0: still on-frame
+            (99.4, 30.0),  # inside the last column (width 100)
+        ],
+    )
+    def test_on_frame_centers_survive(self, eloy_table, starlist_metadata, x, y):
+        """Stars whose centers lie on the frame pass the bounds test."""
+        assert self._mask_for_xy(eloy_table, starlist_metadata, x, y)[0]
+
+    @pytest.mark.parametrize(
+        ("x", "y"),
+        [
+            (99.5, 30.0),  # at/past the right edge of the last column
+            (20.0, 99.6),  # past the bottom edge -- admitted by the old y < height
+            (-0.6, 30.0),  # past the left edge of pixel 0
+            (20.0, -0.6),
+        ],
+    )
+    def test_off_frame_centers_dropped(self, eloy_table, starlist_metadata, x, y):
+        """Stars whose centers fall off the frame fail the bounds test."""
+        assert not self._mask_for_xy(eloy_table, starlist_metadata, x, y)[0]
 
 
 class TestEloyToStarlist:
