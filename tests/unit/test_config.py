@@ -34,6 +34,7 @@ EXPECTED_DRIFT_TOLERANCE_FWHM = 1.0
 EXPECTED_DRIFT_CAP_PIX = 4.0
 EXPECTED_CONTAMINATION_TOLERANCE = 0.01
 EXPECTED_MOFFAT_BETA = 3.0
+EXPECTED_CONTAMINATION_SEEING_MARGIN = 1.25
 EXPECTED_THRESH = 0.5
 EXPECTED_DETECTION_OPENING = 3
 EXPECTED_FWHM_CUTOUT_HALF = 25
@@ -76,6 +77,7 @@ class TestDefaultsMatchLegacyConstants:
         assert cfg.fwhm_n_stars == EXPECTED_FWHM_N_STARS
         assert cfg.contamination_tolerance == EXPECTED_CONTAMINATION_TOLERANCE
         assert cfg.moffat_beta == EXPECTED_MOFFAT_BETA
+        assert cfg.contamination_seeing_margin == EXPECTED_CONTAMINATION_SEEING_MARGIN
 
     def test_instrument_carries_seestar_header_map(self):
         """A bare profile defaults to the Seestar50 name and header dialect."""
@@ -154,6 +156,18 @@ class TestValidators:
         """A zero or negative FWHM star cap is rejected at construction."""
         with pytest.raises(ValidationError):
             InstrumentProfile(fwhm_n_stars=n_stars)
+
+    @pytest.mark.parametrize("margin", [0.99, 0.0, -1.0])
+    def test_sub_unity_seeing_margin_rejected(self, margin):
+        """
+        A seeing margin below 1 is rejected at construction.
+
+        The margin pads the first frame's FWHM before the once-per-batch
+        contamination flagging; a value below 1 would *un*-flag pairs that the
+        measured seeing already contaminates, so it is rejected up front.
+        """
+        with pytest.raises(ValidationError, match="contamination_seeing_margin"):
+            InstrumentProfile(contamination_seeing_margin=margin)
 
     def test_contaminant_default_tracks_gaia(self):
         """The derived contaminant limit follows a custom Gaia limit by +3."""

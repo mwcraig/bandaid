@@ -23,7 +23,7 @@ from eloy import detection
 from eloy.ballet.model import Ballet
 
 from bandaid import measure_photometry
-from bandaid.config import InstrumentProfile, PhotometryConfig
+from bandaid.config import ApertureConfig, InstrumentProfile, PhotometryConfig
 from bandaid.exceptions import (
     FrameMetadataError,
     NoUsableStarsError,
@@ -34,8 +34,10 @@ from bandaid.image2sl_qt import generate_bayer_masks
 from bandaid.instruments import load_instrument
 from bandaid.photometry import (
     ANNULUS,
+    CONTAMINATION_TOLERANCE,
     DETECTION_OPENING,
     MIN_DETECTED_STARS,
+    MOFFAT_BETA,
     N_GAIA_STARS_ALIGN,
     N_GAIA_STARS_ALIGN_RETRY,
     N_IMAGE_STARS_ALIGN,
@@ -442,6 +444,65 @@ def test_min_separation_fwhm():
 
     # Now a case where the neighbor is the same brightness as the target.
     assert min_separation_fwhm(0, tolerance=0.01) == pytest.approx(2.176, rel=0.01)
+
+
+def _min_sep_fwhm_general(delta_mag, r_ap_fwhm, tolerance, beta):
+    """
+    Independently re-derive the minimum separation for a general aperture radius.
+
+    Models the neighbor (total flux ``F_n``) as a Moffat profile of index
+    ``beta`` and approximates its intensity as constant across the target
+    aperture of radius ``R = r_ap_fwhm * FWHM`` (the same approximation the
+    shipped model uses), then solves ``f_spill = tolerance * F_target`` for the
+    separation. Reference implementation from
+    https://github.com/mwcraig/bandaid/issues/53.
+
+    Parameters
+    ----------
+    delta_mag : float or array-like
+        How many magnitudes brighter the neighbor is than the target.
+    r_ap_fwhm : float
+        Aperture radius in units of the FWHM.
+    tolerance : float
+        Maximum tolerated fractional flux contamination.
+    beta : float
+        Moffat wing index.
+
+    Returns
+    -------
+    ndarray
+        Required separation in units of FWHM.
+    """
+    a = 4.0 * (2.0 ** (1.0 / beta) - 1.0)
+    flux_ratio = 10.0 ** (0.4 * np.asarray(delta_mag))
+    rhs = ((beta - 1.0) * flux_ratio * r_ap_fwhm**2 * a / tolerance) ** (1.0 / beta)
+    return np.sqrt(np.maximum((rhs - 1.0) / a, 0.0))
+
+
+def test_min_separation_fwhm_matches_general_radius_derivation():
+    """
+    ``aperture_radius_fwhm`` reproduces the general-radius Moffat derivation.
+
+    The default must stay the historical ``R = 1 FWHM`` special case, and any
+    other radius must match the independent re-derivation: spillover into an
+    aperture scales with its area, so the required separation grows with the
+    radius. Regression test for
+    https://github.com/mwcraig/bandaid/issues/53.
+    """
+    dm = np.array([0.0, 2.5, 5.0, 10.0])
+    # The default is the historical R = 1 FWHM special case.
+    np.testing.assert_allclose(
+        min_separation_fwhm(dm),
+        _min_sep_fwhm_general(dm, 1.0, CONTAMINATION_TOLERANCE, MOFFAT_BETA),
+    )
+    # Any other radius matches the general derivation, not the R = 1 case.
+    for r_ap in (0.5, 2.0):
+        np.testing.assert_allclose(
+            min_separation_fwhm(dm, aperture_radius_fwhm=r_ap),
+            _min_sep_fwhm_general(dm, r_ap, CONTAMINATION_TOLERANCE, MOFFAT_BETA),
+        )
+    # A bigger aperture sweeps up more of the neighbor -> larger separation.
+    assert min_separation_fwhm(5.0, aperture_radius_fwhm=2.0) > min_separation_fwhm(5.0)
 
 
 def _grid_star_image(make_test_image, fwhm, *, jitter=1.0, seed=SEED):
@@ -1277,6 +1338,30 @@ class TestNeighborContaminationFlag:
         flag = neighbor_contamination_flag(coords, mags, fwhm=fwhm)
         assert not flag.any()
 
+    def test_aperture_radius_widens_the_flagged_region(self):
+        """
+        A pair clean for the default 1-FWHM aperture is flagged at 2 FWHM.
+
+        The pair sits between the equal-magnitude thresholds for the two radii,
+        so it is clean at the default ``aperture_radius_fwhm=1.0`` but flagged
+        once the aperture (into which the neighbor spills) doubles. Regression
+        test for https://github.com/mwcraig/bandaid/issues/53.
+        """
+        fwhm = 2.0
+        r_ap = 2.0
+        sep_r1 = min_separation_fwhm(0.0) * fwhm
+        sep_r2 = min_separation_fwhm(0.0, aperture_radius_fwhm=r_ap) * fwhm
+        coords = np.array([[0.0, 0.0], [0.5 * (sep_r1 + sep_r2), 0.0]])
+        mags = np.array([12.0, 12.0])
+
+        assert not neighbor_contamination_flag(coords, mags, fwhm=fwhm).any()
+        np.testing.assert_array_equal(
+            neighbor_contamination_flag(
+                coords, mags, fwhm=fwhm, aperture_radius_fwhm=r_ap
+            ),
+            [True, True],
+        )
+
 
 class TestNeighborContaminationFlagSky:
     """Unit tests for the sky-space flag ``neighbor_contamination_flag_sky``."""
@@ -1418,6 +1503,50 @@ class TestNeighborContaminationFlagSky:
             radecs, mags, fwhm_arcsec, target_mask=target_mask
         )
         np.testing.assert_array_equal(asymmetric, [True, False, False])
+
+    def test_flagging_scales_with_the_configured_aperture_radius(self):
+        """
+        A pair contaminated for a configured 2-FWHM aperture is flagged as such.
+
+        Adapted from the repro in https://github.com/mwcraig/bandaid/issues/53:
+        the pair sits between the required separations for a 1-FWHM and a
+        2-FWHM aperture, so it is clean at the default radius but must be
+        flagged when the configured ``max(config.apertures.radii)`` is passed
+        through ``aperture_radius_fwhm``.
+        """
+        config = PhotometryConfig(apertures=ApertureConfig(radii=(2.0,)))
+        r_ap = max(config.apertures.radii)
+        tol = config.instrument.contamination_tolerance
+        beta = config.instrument.moffat_beta
+        dm = 5.0  # neighbor 5 mag brighter than the target
+
+        sep_r1 = float(min_separation_fwhm(dm, tolerance=tol, beta=beta))
+        sep_r2 = float(
+            min_separation_fwhm(dm, tolerance=tol, beta=beta, aperture_radius_fwhm=r_ap)
+        )
+        assert sep_r2 > sep_r1
+
+        # Put the pair between the two thresholds: clean for R_ap = 1 FWHM,
+        # contaminated for the configured R_ap = 2 FWHM.
+        d_fwhm = 0.5 * (sep_r1 + sep_r2)
+        fwhm_arcsec = 8.0
+        radecs = np.array([[10.0, 0.0], [10.0 + d_fwhm * fwhm_arcsec / 3600.0, 0.0]])
+        mags = np.array([15.0, 15.0 - dm])
+
+        clean = neighbor_contamination_flag_sky(
+            radecs, mags, fwhm_arcsec, tolerance=tol, beta=beta
+        )
+        assert not clean[0]
+
+        flagged = neighbor_contamination_flag_sky(
+            radecs,
+            mags,
+            fwhm_arcsec,
+            tolerance=tol,
+            beta=beta,
+            aperture_radius_fwhm=r_ap,
+        )
+        assert flagged[0]
 
 
 def _seestar_header(*, with_stackcnt=True):
