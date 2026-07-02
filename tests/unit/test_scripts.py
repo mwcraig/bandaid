@@ -126,6 +126,36 @@ class TestPrepareBatch:
         )
         assert calls["calibration_profile"] is instrument
 
+    def test_first_frame_fwhm_uses_the_per_frame_detection_settings(self, monkeypatch):
+        """
+        The batch-gating FWHM is measured with the per-frame detection settings.
+
+        ``prepare_batch`` must hand ``calibration_sequence`` the same
+        ``detect_on_bayer_balanced=True`` and ``fwhm_n_stars`` that every
+        per-frame call uses (``photometry.process_one_image``); otherwise the
+        FWHM that sizes the contamination radii is measured in a different
+        detection regime than the photometry it protects. Fixes
+        https://github.com/mwcraig/bandaid/issues/55.
+        """
+        captured = {}
+        fwhm_n_stars = 7
+
+        def fake_calibration_sequence(_file, **kwargs: object):
+            captured.update(kwargs)
+            msg = "stop after capturing the call"
+            raise TooFewStarsError(msg)
+
+        monkeypatch.setattr(scripts, "calibration_sequence", fake_calibration_sequence)
+
+        config = PhotometryConfig(
+            instrument=InstrumentProfile(name="Seestar50", fwhm_n_stars=fwhm_n_stars)
+        )
+        with pytest.raises(BatchPrepError):
+            scripts.prepare_batch("first.fits", cnn=object(), config=config)
+
+        assert captured.get("detect_on_bayer_balanced") is True
+        assert captured.get("fwhm_n_stars") == fwhm_n_stars
+
     def test_append_l4_adds_luminance_channel(self, monkeypatch):
         """``append_l4`` adds the full-frame "L4" channel as a None mask."""
         _patch_prep(monkeypatch)

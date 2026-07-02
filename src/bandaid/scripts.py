@@ -278,12 +278,18 @@ def prepare_batch(
     try:
         # Pass the CNN so the FWHM (which sizes the photometry aperture) is measured
         # by re-centroiding detections, decoupling it from the detection opening.
+        # detect_on_bayer_balanced and fwhm_n_stars must match the per-frame call
+        # in process_one_image (which detects on bayer-balanced data by default),
+        # so the batch-gating FWHM is measured in the same detection regime as
+        # the photometry it protects.
         _, metadata, _, fwhm_pix, _ = calibration_sequence(
             first_file,
             threshold=instrument.thresh,
             opening=instrument.detection_opening,
+            detect_on_bayer_balanced=True,
             cnn=cnn,
             fwhm_cutout_half=instrument.fwhm_cutout_half,
+            fwhm_n_stars=instrument.fwhm_n_stars,
             profile=instrument,
         )
     except TooFewStarsError as exc:
