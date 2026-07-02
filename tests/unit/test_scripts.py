@@ -231,6 +231,27 @@ class TestPrepareBatch:
         with pytest.raises(FrameMetadataError, match="obs_time"):
             scripts.prepare_batch("frame1.fits", cnn=object())
 
+    @pytest.mark.parametrize(
+        "bad_obs_time",
+        [
+            "not a date at all",
+            # dateutil raises OverflowError (not ValueError) for all-digit
+            # strings too large for a C long -- e.g. a corrupted numeric
+            # DATE-OBS (PR #71 review).
+            "999999999999999999",
+        ],
+    )
+    def test_unparseable_obs_time_raises_clear_metadata_error(
+        self, monkeypatch, bad_obs_time
+    ):
+        """An unparseable ``obs_time`` fails as a metadata error, not a Gaia one."""
+        metadata = _batch_metadata()
+        metadata["obs_time"] = bad_obs_time
+        _patch_prep(monkeypatch, metadata=metadata)
+
+        with pytest.raises(FrameMetadataError, match="obs_time"):
+            scripts.prepare_batch("frame1.fits", cnn=object())
+
     def test_high_pm_star_propagated_to_obs_epoch(
         self, monkeypatch, gaia_table, fake_vizier
     ):

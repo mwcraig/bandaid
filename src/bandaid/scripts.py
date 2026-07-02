@@ -325,7 +325,9 @@ def prepare_batch(
     # pipeline (Time() alone is stricter than dateutil).
     try:
         obs_epoch = Time(parser.parse(obs_time))
-    except (ValueError, TypeError) as exc:
+    # OverflowError: dateutil raises it for all-digit strings too large for a
+    # C long (e.g. a corrupted numeric DATE-OBS), documented in parser.parse.
+    except (ValueError, TypeError, OverflowError) as exc:
         msg = f"could not parse observation time (obs_time) {obs_time!r}"
         raise FrameMetadataError(msg, file=first_file) from exc
 
