@@ -847,6 +847,32 @@ class TestProcessBatchToDisk:
 
         assert float(rows[0]["sky_median"]) == pytest.approx(5.0)
 
+    def test_qa_manifest_sky_median_ignores_nan_bkgd_count(
+        self, monkeypatch, tmp_path, by_filter
+    ):
+        """
+        A NaN ``bkgd_count`` (edge-of-frame annulus) stays out of ``sky_median``.
+
+        Per the NaN contract in `bandaid.photometry.measure_photometry`, an
+        edge-of-frame or fully-masked annulus yields NaN; one such star must not
+        poison the frame's QA value.
+        """
+        result = by_filter()
+        result["TR"]["bkgd_count"] = [np.nan, 7.0]
+        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: result)
+
+        scripts.process_batch(
+            ["a.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+        )
+
+        with (tmp_path / scripts.QA_MANIFEST_FILENAME).open(newline="") as f:
+            rows = list(csv.DictReader(f))
+
+        assert float(rows[0]["sky_median"]) == pytest.approx(7.0)
+
     def test_qa_manifest_can_be_disabled(self, monkeypatch, tmp_path, by_filter):
         """``write_qa_manifest=False`` writes only starlists, no manifest."""
         monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
