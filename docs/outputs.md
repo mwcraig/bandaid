@@ -38,14 +38,14 @@ StarListSet
 
 The per-star fields in each `staritems` row:
 
-| Field        | Meaning                                                                                                                         |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| `tot_count`  | Background-subtracted total counts in the aperture (the flux).                                                                  |
-| `count_err`  | Uncertainty on `tot_count` from the noise model.                                                                                |
-| `bkgd_count` | Background counts under the star.                                                                                               |
-| `peak_count` | Peak pixel value in the star's own channel, within ~2 FWHM of the measured centroid — useful for spotting near-saturated stars. |
-| `x`, `y`     | Measured centroid position in pixels.                                                                                           |
-| `ra`, `dec`  | Sky position (degrees) of the measured star.                                                                                    |
+| Field        | Meaning                                                                                                                                                                                                        |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tot_count`  | Background-subtracted total counts in the aperture (the flux).                                                                                                                                                 |
+| `count_err`  | Uncertainty on `tot_count` from the noise model.                                                                                                                                                               |
+| `bkgd_count` | Background counts under the star.                                                                                                                                                                              |
+| `peak_count` | Peak pixel value in the star's own channel, within ~2 FWHM of the measured centroid — useful for spotting near-saturated stars. For the synthetic `L4` list this is the maximum of the three channels' values. |
+| `x`, `y`     | Measured centroid position in pixels.                                                                                                                                                                          |
+| `ra`, `dec`  | Sky position (degrees) of the measured star.                                                                                                                                                                   |
 
 Per-frame, per-filter quantities such as the measured `fwhm` live on the
 enclosing `StarList`, not on each star.
