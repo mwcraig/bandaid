@@ -144,20 +144,28 @@ registering for the CLI.
 One row per input frame, written once per run. It is the fastest way to find the
 bad frames in a night without opening every `.star` file.
 
-| Column         | Meaning                                                                                      |
-| -------------- | -------------------------------------------------------------------------------------------- |
-| `file`         | The input frame this row describes.                                                          |
-| `status`       | `ok`, `skipped: <FrameError type>`, or `error: <type>`.                                      |
-| `n_detected`   | Stars detected in the frame.                                                                 |
-| `sky_median`   | Median sky background — rises with clouds, moonlight, or haze.                               |
-| `fwhm`         | Measured FWHM (seeing); a spike flags a soft or trailed frame.                               |
-| `wcs_solved`   | `True` if a WCS solved; `False` on a plate-solve failure; blank if the frame failed earlier. |
-| `n_good_stars` | Stars that survived filtering and reached the `.star` output.                                |
+| Column             | Meaning                                                                                                                                                                                                               |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `file`             | The input frame this row describes.                                                                                                                                                                                   |
+| `status`           | `ok`, `skipped: <FrameError type>`, or `error: <type>`.                                                                                                                                                               |
+| `n_detected`       | Stars detected in the frame.                                                                                                                                                                                          |
+| `sky_median`       | Median sky background — rises with clouds, moonlight, or haze.                                                                                                                                                        |
+| `fwhm`             | Measured FWHM (seeing); a spike flags a soft or trailed frame.                                                                                                                                                        |
+| `wcs_solved`       | `True` if a WCS solved; `False` on a plate-solve failure; blank if the frame failed earlier.                                                                                                                          |
+| `n_good_stars`     | Stars that survived filtering and reached the `.star` output.                                                                                                                                                         |
+| `n_centroid_drift` | Stars with the `centroid_drift` flag set (see below) — a frame-health signal on its own.                                                                                                                              |
+| `n_drift_rejected` | The subset of `n_centroid_drift` that also passes `good_star_mask` — the stars a future gate on this flag would actually remove, since most drifted stars are already dropped by the existing flux/error/bounds cuts. |
 
 A frame that was skipped or errored still gets a row (with its diagnostics left
 blank), so the manifest accounts for **every** input frame, not just the
 successful ones. `status` values other than `ok` map directly to the entries in
 [Troubleshooting](troubleshooting.md).
+
+`n_centroid_drift` and `n_drift_rejected` are diagnostic counts only, not a
+filter: the flag does not remove any rows (see `centroid_drift` below), and
+manifest data produced before the proper-motion fix (#56) overcounts both
+columns, since the flag fired preferentially on high-proper-motion stars whose
+*catalog* position was stale rather than on genuine drift.
 
 ## Data-quality flags
 

@@ -74,19 +74,26 @@ separate star list for each Bayer filter — red (`TR`), green (`TG`), blue
 `qa_manifest.csv` has one row per input frame and is the fastest way to check a
 night at a glance. The columns:
 
-| Column         | What it tells you                                                |
-| -------------- | ---------------------------------------------------------------- |
-| `file`         | The input frame.                                                 |
-| `status`       | `ok`, `skipped: <reason>`, or `error: <type>`.                   |
-| `n_detected`   | How many stars were detected in the frame.                       |
-| `sky_median`   | Median sky background — climbs as clouds or moonlight roll in.   |
-| `fwhm`         | Measured FWHM (seeing). A spike flags a soft/trailed frame.      |
-| `wcs_solved`   | Whether a WCS was solved (`False` on a plate-solve failure).     |
-| `n_good_stars` | Stars that survived photometry filtering and reached the output. |
+| Column             | What it tells you                                                                                                    |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `file`             | The input frame.                                                                                                     |
+| `status`           | `ok`, `skipped: <reason>`, or `error: <type>`.                                                                       |
+| `n_detected`       | How many stars were detected in the frame.                                                                           |
+| `sky_median`       | Median sky background — climbs as clouds or moonlight roll in.                                                       |
+| `fwhm`             | Measured FWHM (seeing). A spike flags a soft/trailed frame.                                                          |
+| `wcs_solved`       | Whether a WCS was solved (`False` on a plate-solve failure).                                                         |
+| `n_good_stars`     | Stars that survived photometry filtering and reached the output.                                                     |
+| `n_centroid_drift` | Stars whose measured centroid wandered too far from its expected position (flagged, not dropped).                    |
+| `n_drift_rejected` | Of those, how many also passed filtering and reached the output — the count a future gate on this flag would remove. |
 
 A healthy night is mostly `status=ok` with steady `fwhm` and `sky_median`. Rows
 with `status` other than `ok`, or a sudden jump in `fwhm`/`sky_median`, point you
 straight at the bad frames — see [Troubleshooting](troubleshooting.md).
+
+`n_centroid_drift` and `n_drift_rejected` are diagnostic only — see
+[Understanding the output](outputs.md#qa_manifestcsv) for the full
+interpretation, including the note that manifest data from before the
+proper-motion fix (#56) overcounts both.
 
 ## The same run from Python
 
