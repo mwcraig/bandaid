@@ -54,10 +54,20 @@ def generate_bayer_masks(shape, metadata, *, append_l4=False):
     """
     pattern = metadata["bayerpat"]
 
-    # now re-jumble based on roworder and ybaryoff
+    # Re-anchor the 2x2 pattern on the stored array. Per the standard FITS
+    # convention (N.I.N.A./SGP writers, Siril/ASTAP readers) the CFA color of
+    # image pixel (x, y) is
+    #
+    #     pattern[(y + YBAYROFF) % 2][(x + XBAYROFF) % 2]
+    #
+    # so an odd YBAYROFF swaps the pattern's top and bottom rows -- the same
+    # transform as a bottom-up roworder, and the two cancel when both apply --
+    # while an odd XBAYROFF swaps the columns within each row.
     if metadata["roworder"] == "bottom-up":
         pattern = pattern[2:4] + pattern[0:2]
-    if metadata["ybayroff"] != 0:
+    if metadata["ybayroff"] % 2 != 0:
+        pattern = pattern[2:4] + pattern[0:2]
+    if metadata.get("xbayroff", 0) % 2 != 0:
         pattern = pattern[1] + pattern[0] + pattern[3] + pattern[2]
 
     img_slice = {}
