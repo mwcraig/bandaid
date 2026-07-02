@@ -227,7 +227,8 @@ class InstrumentProfile(BaseModel, frozen=True):
         FWHM (the CNN mis-centroids faint sources, smearing the stacked PSF).
     contamination_tolerance : float
         Maximum fractional bright-neighbour spillover into the aperture before a
-        star is flagged. How much spillover is acceptable depends on the
+        star is flagged, relative to the target flux the aperture encloses (the
+        *measured* flux). How much spillover is acceptable depends on the
         instrument's sensitivity, so it is an instrument setting rather than a
         per-run science knob.
     moffat_beta : float

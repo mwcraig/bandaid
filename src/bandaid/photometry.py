@@ -127,9 +127,9 @@ ANNULUS = _DEFAULT_APERTURES.annulus
 
 # Bright-neighbor rejection. A star is flagged if any brighter neighbor's PSF
 # wings would contribute more than CONTAMINATION_TOLERANCE of the target flux
-# inside the photometry aperture (1*FWHM by default; see the
-# ``aperture_radius_fwhm`` parameter of `min_separation_fwhm`), modeled as a
-# Moffat profile of index MOFFAT_BETA.
+# the photometry aperture encloses (1*FWHM by default; see the
+# ``aperture_radius_fwhm`` parameter of `min_separation_fwhm`) -- i.e. of the
+# *measured* target flux -- modeled as a Moffat profile of index MOFFAT_BETA.
 CONTAMINATION_TOLERANCE = _DEFAULT_INSTRUMENT.contamination_tolerance
 MOFFAT_BETA = _DEFAULT_INSTRUMENT.moffat_beta
 
@@ -156,7 +156,9 @@ def min_separation_fwhm(
     Models the neighbor as a Moffat PSF and approximates its intensity as
     constant across the target aperture (good for d >~ 2*FWHM). Returns the
     separation at which the neighbor's spillover into the aperture equals
-    `tolerance` times the target flux.
+    `tolerance` times the target flux the aperture actually encloses -- the
+    *measured* target flux, not the target's total flux, so `tolerance` bounds
+    the fractional contamination of the measurement itself.
 
     Parameters
     ----------
@@ -166,10 +168,11 @@ def min_separation_fwhm(
         brighter than the target, so a dim star with a bright neighbor has a
         positive ``delta_mag`` and requires a large separation; a faint neighbor
         gives a negative ``delta_mag`` and requires essentially none. For
-        example, ``delta_mag=10`` (neighbor 10 mag brighter) needs ~11 FWHM of
-        separation, while ``delta_mag=-10`` needs zero.
+        example, ``delta_mag=10`` (neighbor 10 mag brighter) needs ~11.6 FWHM
+        of separation, while ``delta_mag=-10`` needs zero.
     tolerance : float, optional
-        Maximum tolerated fractional flux contamination.
+        Maximum tolerated fractional flux contamination, relative to the
+        target flux enclosed by the aperture (the measured flux).
     beta : float, optional
         Moffat wing index. Smaller beta -> wider wings -> larger separation.
     aperture_radius_fwhm : float, optional
@@ -190,9 +193,16 @@ def min_separation_fwhm(
     # a_factor itself, which is its R = 1 FWHM special case -- multiplies the
     # flux ratio (https://github.com/mwcraig/bandaid/issues/53).
     aperture_area_factor = aperture_radius_fwhm**2 * a_factor
+    # Fraction of the target's total Moffat flux the aperture encloses
+    # (analytic: 1 - (1 + (R/alpha)^2)^(1-beta); ~0.76 at R = 1 FWHM for
+    # beta = 3). The measurement in the aperture only contains this fraction
+    # of the target, so the tolerance -- a bound on the contamination of the
+    # *measured* flux -- is normalized by it (point 3 of
+    # https://github.com/mwcraig/bandaid/issues/53).
+    enclosed_fraction = 1.0 - (1.0 + aperture_area_factor) ** (1.0 - beta)
     prefactor = aperture_area_factor * (beta - 1.0)
     flux_ratio = 10.0 ** (0.4 * np.asarray(delta_mag))
-    rhs = (prefactor * flux_ratio / tolerance) ** (1.0 / beta)
+    rhs = (prefactor * flux_ratio / (tolerance * enclosed_fraction)) ** (1.0 / beta)
     return np.sqrt(np.maximum((rhs - 1.0) / a_factor, 0.0))
 
 
@@ -284,7 +294,7 @@ def neighbor_contamination_flag(
 
     Pixel-space front end over `_contamination_flag`: pairwise separations are
     Euclidean pixel distances and the FWHM is in pixels. Equal-brightness pairs
-    are flagged inside ~2.18 FWHM for the default 1*FWHM aperture.
+    are flagged inside ~2.30 FWHM for the default 1*FWHM aperture.
 
     Parameters
     ----------

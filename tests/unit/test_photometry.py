@@ -438,12 +438,12 @@ def test_min_separation_fwhm():
     # Now assume the neighbor is much brighter than the target. Then the minimum
     # separation should be large.
     assert min_separation_fwhm(tenk_flux_ratio, tolerance=0.01) == pytest.approx(
-        11.036,
+        11.558,
         rel=0.01,
     )
 
     # Now a case where the neighbor is the same brightness as the target.
-    assert min_separation_fwhm(0, tolerance=0.01) == pytest.approx(2.176, rel=0.01)
+    assert min_separation_fwhm(0, tolerance=0.01) == pytest.approx(2.299, rel=0.01)
 
 
 def _min_sep_fwhm_general(delta_mag, r_ap_fwhm, tolerance, beta):
@@ -453,9 +453,13 @@ def _min_sep_fwhm_general(delta_mag, r_ap_fwhm, tolerance, beta):
     Models the neighbor (total flux ``F_n``) as a Moffat profile of index
     ``beta`` and approximates its intensity as constant across the target
     aperture of radius ``R = r_ap_fwhm * FWHM`` (the same approximation the
-    shipped model uses), then solves ``f_spill = tolerance * F_target`` for the
-    separation. Reference implementation from
-    https://github.com/mwcraig/bandaid/issues/53.
+    shipped model uses), then solves ``f_spill = tolerance * E * F_target``
+    for the separation, where ``E = 1 - (1 + (R/alpha)^2)^(1 - beta)`` is the
+    fraction of the target's Moffat flux the aperture encloses (~0.76 at
+    R = 1 FWHM for beta = 3): the tolerance bounds contamination of the
+    *measured* (aperture-enclosed) target flux, not its total flux. Reference
+    implementation from https://github.com/mwcraig/bandaid/issues/53,
+    including point 3 of its proposed fix (the enclosed-flux normalization).
 
     Parameters
     ----------
@@ -474,8 +478,12 @@ def _min_sep_fwhm_general(delta_mag, r_ap_fwhm, tolerance, beta):
         Required separation in units of FWHM.
     """
     a = 4.0 * (2.0 ** (1.0 / beta) - 1.0)
+    r_alpha_sq = r_ap_fwhm**2 * a
+    enclosed = 1.0 - (1.0 + r_alpha_sq) ** (1.0 - beta)
     flux_ratio = 10.0 ** (0.4 * np.asarray(delta_mag))
-    rhs = ((beta - 1.0) * flux_ratio * r_ap_fwhm**2 * a / tolerance) ** (1.0 / beta)
+    rhs = ((beta - 1.0) * flux_ratio * r_alpha_sq / (tolerance * enclosed)) ** (
+        1.0 / beta
+    )
     return np.sqrt(np.maximum((rhs - 1.0) / a, 0.0))
 
 
@@ -1303,9 +1311,9 @@ class TestNeighborContaminationFlag:
         assert not flag.any()
 
     def test_equal_brightness_pair_flagged_inside_threshold(self):
-        """Equal-mag neighbors flag both stars inside ~2.18 FWHM, neither outside."""
+        """Equal-mag neighbors flag both stars inside ~2.30 FWHM, neither outside."""
         fwhm = 2.0
-        # min_separation_fwhm(0) ~ 2.176 FWHM -> ~4.35 px at fwhm=2.
+        # min_separation_fwhm(0) ~ 2.30 FWHM -> ~4.60 px at fwhm=2.
         threshold_px = min_separation_fwhm(0.0) * fwhm
 
         close = np.array([[0.0, 0.0], [threshold_px - 0.5, 0.0]])
@@ -1321,7 +1329,7 @@ class TestNeighborContaminationFlag:
     def test_flag_is_asymmetric_for_unequal_brightness(self):
         """A faint star is flagged by a bright neighbor that it does not flag back."""
         fwhm = 2.0
-        # delta_mag=6 needs ~5.9 FWHM (~11.8 px); delta_mag=-6 needs 0. At 6 px the
+        # delta_mag=6 needs ~6.2 FWHM (~12.4 px); delta_mag=-6 needs 0. At 6 px the
         # faint star (bright neighbor) is flagged; the bright star is not.
         mags = np.array([8.0, 14.0])  # star 0 bright, star 1 faint
         coords = np.array([[0.0, 0.0], [6.0, 0.0]])

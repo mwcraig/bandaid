@@ -301,7 +301,7 @@ class TestPrepareBatch:
         A real star fainter than the photometry limit still flags a brighter target.
 
         The mag-16 star sits ~1 arcsec from the mag-14 star -- well inside the
-        ~7 arcsec the contamination model requires for that pair at this FWHM. It
+        ~7.5 arcsec the contamination model requires for that pair at this FWHM. It
         is fainter than the photometry limit of 15, so it is *not* a photometry
         target, but it is within the default contaminant limit (gaia_mag_limit + 3
         = 18), so it still contaminates the mag-14 target. The mag-14 star is
