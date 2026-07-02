@@ -1354,6 +1354,16 @@ class TestAirmassFromMetadata:
         with pytest.raises(FrameMetadataError):
             _airmass_from_metadata(self._metadata(airmass="not-a-number"))
 
+    def test_raises_on_overflowing_obs_time(self):
+        """
+        An all-digit garbage obs_time skips the frame rather than crashing.
+
+        dateutil raises OverflowError (not ValueError) for all-digit strings
+        too large for a C long (PR #71/#74 review).
+        """
+        with pytest.raises(FrameMetadataError):
+            _airmass_from_metadata(self._metadata(obs_time="999999999999999999"))
+
 
 class TestBuildPhotometryTable:
     def test_uses_photometry_coords_when_provided(self, monkeypatch):

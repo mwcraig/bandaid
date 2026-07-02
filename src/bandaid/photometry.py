@@ -834,7 +834,9 @@ def _airmass_from_metadata(metadata):
         ra = float(metadata["ra"])
         dec = float(metadata["dec"])
         obs_datetime = parser.parse(metadata["obs_time"])
-    except (KeyError, ValueError, TypeError) as exc:
+    # OverflowError: dateutil raises it for all-digit strings too large for a
+    # C long (a corrupted numeric obs_time), documented in parser.parse.
+    except (KeyError, ValueError, TypeError, OverflowError) as exc:
         msg = (
             "cannot determine airmass: metadata has no parseable airmass and "
             "is missing/unparseable ra/dec/site_lat/site_lon/obs_time"
