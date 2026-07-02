@@ -60,6 +60,8 @@ QA_MANIFEST_COLUMNS = (
     "fwhm",
     "wcs_solved",
     "n_good_stars",
+    "n_centroid_drift",
+    "n_drift_rejected",
 )
 
 logger = logging.getLogger(__name__)
@@ -466,6 +468,16 @@ def _qa_record_ok(file, by_filter):
     present, else the first), so a frame missing a given column simply records a
     blank for it rather than failing the whole manifest.
 
+    ``n_centroid_drift`` and ``n_drift_rejected`` instrument the
+    `centroid_drift` flag (see `centroid_drift_flag`) without wiring it into
+    filtering: ``n_centroid_drift`` is every flagged star in the frame, and
+    ``n_drift_rejected`` is the subset that is also `good_star_mask`-passing --
+    the marginal effect a future gate would have, since most drifted stars are
+    already dropped by the flux/error/bounds cuts. Data recorded before the
+    proper-motion fix (#56) overcounts both: the flag fired preferentially on
+    high-proper-motion stars whose *catalog* position was stale, not on genuine
+    drift.
+
     Parameters
     ----------
     file : str or Path
@@ -501,8 +513,21 @@ def _qa_record_ok(file, by_filter):
     n_good_stars = None
     has_phot_cols = {"tot_count", "count_err", "x", "y"} <= cols
     has_bounds = {"width", "height"} <= set(full_meta)
+    good = None
     if has_phot_cols and has_bounds:
-        n_good_stars = int(np.sum(good_star_mask(representative, full_meta)))
+        good = good_star_mask(representative, full_meta)
+        n_good_stars = int(np.sum(good))
+
+    # The drift flag is computed from centroid_coords/aligned_coords/fwhm before
+    # channel masking, so it is identical across TR/TG/TB/L4 and the
+    # representative table alone is enough -- no cross-channel bookkeeping.
+    n_centroid_drift = None
+    n_drift_rejected = None
+    if "centroid_drift" in cols:
+        drift = np.asarray(representative["centroid_drift"], dtype=bool)
+        n_centroid_drift = int(np.sum(drift))
+        if good is not None:
+            n_drift_rejected = int(np.sum(drift & good))
 
     return {
         "file": str(file),
@@ -512,6 +537,8 @@ def _qa_record_ok(file, by_filter):
         "fwhm": meta.get("fwhm"),
         "wcs_solved": True,
         "n_good_stars": n_good_stars,
+        "n_centroid_drift": n_centroid_drift,
+        "n_drift_rejected": n_drift_rejected,
     }
 
 

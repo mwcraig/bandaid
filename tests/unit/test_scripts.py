@@ -1062,6 +1062,8 @@ class TestProcessBatchToDisk:
             "fwhm",
             "wcs_solved",
             "n_good_stars",
+            "n_centroid_drift",
+            "n_drift_rejected",
         }
         assert expected_columns <= set(rows[0])
         by_file = {row["file"]: row for row in rows}
@@ -1131,6 +1133,64 @@ class TestProcessBatchToDisk:
             rows = list(csv.DictReader(f))
 
         assert float(rows[0]["sky_median"]) == pytest.approx(7.0)
+
+    def test_qa_manifest_drift_rejected_counts_flagged_star_that_survives_filtering(
+        self, monkeypatch, tmp_path, by_filter
+    ):
+        """
+        A drift-flagged star that still passes ``good_star_mask`` is "rejected" (#60).
+
+        ``n_drift_rejected`` is the marginal effect a future gate would have:
+        stars that are both drift-flagged and would otherwise reach the output.
+        Both fixture rows are already finite/positive/in-bounds ("good"), so
+        flagging one as drifted makes it count in both totals.
+        """
+        result = by_filter()
+        result["TR"]["centroid_drift"] = [True, False]
+        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: result)
+
+        scripts.process_batch(
+            ["a.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+        )
+
+        with (tmp_path / scripts.QA_MANIFEST_FILENAME).open(newline="") as f:
+            rows = list(csv.DictReader(f))
+
+        assert rows[0]["n_centroid_drift"] == "1"
+        assert rows[0]["n_drift_rejected"] == "1"
+
+    def test_qa_manifest_drift_rejected_excludes_star_failing_flux_cut(
+        self, monkeypatch, tmp_path, by_filter
+    ):
+        """
+        A drift-flagged star already dropped by the flux cut is not "rejected" (#60).
+
+        Most drifted stars are already excluded by the existing flux/error/bounds
+        cuts, so ``n_drift_rejected`` must stay 0 for a star that is both
+        drift-flagged and fails ``good_star_mask`` on its own -- only
+        ``n_centroid_drift`` (the raw flag count) should see it.
+        """
+        result = by_filter()
+        # good_star_mask requires tot_count > 0; fail it for the drifted row.
+        result["TR"]["tot_count"] = [-1.0, 300.0]
+        result["TR"]["centroid_drift"] = [True, False]
+        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: result)
+
+        scripts.process_batch(
+            ["a.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+        )
+
+        with (tmp_path / scripts.QA_MANIFEST_FILENAME).open(newline="") as f:
+            rows = list(csv.DictReader(f))
+
+        assert rows[0]["n_centroid_drift"] == "1"
+        assert rows[0]["n_drift_rejected"] == "0"
 
     def test_qa_manifest_can_be_disabled(self, monkeypatch, tmp_path, by_filter):
         """``write_qa_manifest=False`` writes only starlists, no manifest."""
