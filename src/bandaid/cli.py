@@ -273,21 +273,26 @@ def process(
     qa_manifest : bool
         Whether to write a per-frame QA manifest alongside the ``.star`` files.
     verbose : int
-        Verbosity count from ``-v``: 0 stays quiet, 1 streams per-frame progress
-        at INFO, 2+ adds DEBUG detail.
+        Verbosity count from ``-v``: 0 logs only WARNING+ (skips/errors) to
+        stderr, 1 adds per-frame progress at INFO, 2+ adds DEBUG detail.
 
     Raises
     ------
     click.ClickException
         If the arguments expand to no FITS frames, a path argument is missing or
-        not a FITS frame, or a config/profile/metadata file fails validation.
+        not a FITS frame, a config/profile/metadata file fails validation, or
+        every frame in the batch fails.
     """
-    if verbose:
-        # Route bandaid's per-frame progress (and any skip/error) records to the
-        # terminal. Default (no -v) leaves the package logger on its NullHandler.
-        configure_logging(
-            level=logging.DEBUG if verbose >= _DEBUG_VERBOSITY else logging.INFO
-        )
+    # Always route bandaid's records to stderr so per-frame skip/error warnings
+    # are never silently lost: WARNING+ (skips, unexpected errors) shows even
+    # with no -v. -v adds INFO per-frame progress; -vv adds DEBUG detail.
+    if verbose >= _DEBUG_VERBOSITY:
+        level = logging.DEBUG
+    elif verbose:
+        level = logging.INFO
+    else:
+        level = logging.WARNING
+    configure_logging(level=level)
 
     config = _build_config(instrument, profile, config_file)
     metadata = _load_metadata(metadata_file)
@@ -320,6 +325,13 @@ def process(
     click.echo(f"Processed {len(results)} of {len(frames)} frames into {output_dir}")
     if qa_manifest:
         click.echo(f"QA manifest: {Path(output_dir) / QA_MANIFEST_FILENAME}")
+    if frames and not results:
+        # 0 of N succeeded: a fully failed batch must not exit 0, or an
+        # unattended/cron run is indistinguishable from success. A partial
+        # failure (some results) is normal robust-mode operation and still
+        # exits 0; see the per-frame warnings on stderr for what was skipped.
+        msg = f"all {len(frames)} frames failed; see the QA manifest for details"
+        raise click.ClickException(msg)
 
 
 @main.group()

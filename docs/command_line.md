@@ -66,11 +66,14 @@ The default `--no-fail-fast` is the friendlier choice for unattended overnight
 runs: a single bad frame is logged and skipped rather than aborting the batch.
 Pass `--fail-fast` while debugging so unexpected errors surface immediately.
 
-By default the command is quiet. Pass `-v` to stream per-frame progress (and any
-skip/error messages) to the terminal as the batch runs, or `-vv` for debug-level
+Skip/error warnings for individual frames always go to stderr, even with no
+`-v` — a run is never silently missing frames. Pass `-v` to also stream
+per-frame progress to the terminal as the batch runs, or `-vv` for debug-level
 detail — the most direct way to see why a single frame was skipped (see
-[Troubleshooting](troubleshooting.md)). New to the command? Start with the
-[getting-started tutorial](getting_started.md).
+[Troubleshooting](troubleshooting.md)). If **every** frame in the batch fails,
+the command exits with a non-zero status (a partial failure still exits 0,
+since skipping a bad frame is normal robust-mode operation). New to the
+command? Start with the [getting-started tutorial](getting_started.md).
 
 ## `bandaid instrument` — inspect instrument profiles
 
