@@ -57,6 +57,25 @@ def patched_photometer(monkeypatch):
     return calls
 
 
+@pytest.fixture
+def fully_failed_photometer(monkeypatch):
+    """
+    Patch ``cli.photometer_frames`` to simulate every frame in the batch failing.
+
+    Mirrors what `bandaid.scripts.process_batch` does for a skipped/errored frame
+    (a ``bandaid.scripts``-logger WARNING, per scripts.py:725/739) and returns 0
+    results for 2 frames -- a fully failed batch, per issue #58.
+    """
+
+    def fake_photometer(_files, **_kwargs: object):
+        scripts_logger = logging.getLogger("bandaid.scripts")
+        scripts_logger.warning("skipping a.fit: not a FITS file")
+        scripts_logger.warning("skipping b.fit: not a FITS file")
+        return ["a.fit", "b.fit"], {}
+
+    monkeypatch.setattr(cli, "photometer_frames", fake_photometer)
+
+
 def test_process_forwards_every_flag(runner, patched_photometer, tmp_path):
     """All process flags reach ``photometer_frames`` with the right values."""
     frame_dir = tmp_path / "night"
@@ -112,6 +131,54 @@ def test_process_forwards_every_flag(runner, patched_photometer, tmp_path):
     assert "Processed 1 of 2 frames" in result.output
 
 
+@pytest.mark.usefixtures("fully_failed_photometer")
+def test_process_reports_frame_failures_to_stderr_by_default(runner, tmp_path):
+    """
+    Per-frame skip/error warnings reach the terminal even with no ``-v`` (#58).
+
+    Before the fix the ``bandaid`` logger carried only a `logging.NullHandler`
+    until ``-v`` was given, so every skip/error record (logged by
+    `bandaid.scripts.process_batch`) vanished silently by default.
+    """
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+
+    result = runner.invoke(cli.main, ["process", str(frame)])
+
+    assert result.stderr
+    assert "skipping" in result.stderr
+
+
+@pytest.mark.usefixtures("fully_failed_photometer")
+def test_process_exit_code_reflects_a_fully_failed_batch(runner, tmp_path):
+    """
+    0 of N frames succeeding exits non-zero, not silent success (#58).
+
+    Before the fix, a night where every frame failed still printed
+    "Processed 0 of N frames" and exited 0 -- indistinguishable from success
+    for a script or cron job.
+    """
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+
+    result = runner.invoke(cli.main, ["process", str(frame)])
+
+    assert "Processed 0 of 2 frames" in result.output
+    assert result.exit_code != 0
+
+
+@pytest.mark.usefixtures("patched_photometer")
+def test_process_partial_failure_still_exits_zero(runner, tmp_path):
+    """A partially failed batch (some results) is normal robust-mode operation."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+
+    result = runner.invoke(cli.main, ["process", str(frame)])
+
+    assert "Processed 1 of 2 frames" in result.output
+    assert result.exit_code == 0
+
+
 @pytest.fixture
 def spy_configure_logging(monkeypatch):
     """Record the level ``cli.configure_logging`` is called with (if at all)."""
@@ -121,17 +188,17 @@ def spy_configure_logging(monkeypatch):
 
 
 @pytest.mark.usefixtures("patched_photometer")
-def test_process_quiet_by_default_skips_logging_setup(
+def test_process_quiet_by_default_still_logs_warnings(
     runner, spy_configure_logging, tmp_path
 ):
-    """Without --verbose the CLI leaves logging unconfigured (quiet)."""
+    """Without --verbose, WARNING+ (skip/error records) still reach stderr."""
     frame = tmp_path / "a.fit"
     frame.write_bytes(b"")
 
     result = runner.invoke(cli.main, ["process", str(frame)])
 
     assert result.exit_code == 0, result.output
-    assert spy_configure_logging == []
+    assert spy_configure_logging == [{"level": logging.WARNING}]
 
 
 @pytest.mark.usefixtures("patched_photometer")
