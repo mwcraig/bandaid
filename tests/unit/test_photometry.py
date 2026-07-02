@@ -1166,6 +1166,67 @@ class TestBuildPhotometryTable:
             [False, False, True],
         )
 
+    # --- Regression tests for issue #52: the broken ``sky`` column is gone; ---
+    # --- ``bkgd_count`` is the correct per-star per-pixel background.       ---
+
+    @staticmethod
+    def _uniform_frame_image(data, coords) -> ImageData:
+        """Wrap a plain background frame + pixel coords in an ImageData."""
+        img = _make_image_data(_make_tan_wcs(data.shape), coords, None)
+        img.calibrated_data = data
+        return img
+
+    @pytest.mark.parametrize("channel", ["TR", "TG", "TB", "L4"])
+    def test_bkgd_count_is_true_per_pixel_sky_on_every_channel(self, channel):
+        """
+        A uniform frame reports the true per-pixel sky on TR/TG/TB/L4 (#52).
+
+        The removed ``sky`` column under-reported the per-pixel sky by the Bayer
+        fill factor (~2.7x/5.0x/2.3x low on TR/TG/TB); ``bkgd_count`` -- the
+        per-star sigma-clipped annulus background -- is the correct value on
+        every channel, and there must be no ``sky`` column left to mislead.
+        """
+        true_sky = 10.0
+        shape = (256, 256)
+        masks = generate_bayer_masks(
+            shape,
+            {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0},
+            append_l4=True,
+        )
+        coords = np.array([[100.0, 100.0], [150.0, 120.0], [90.0, 160.0]])
+        img = self._uniform_frame_image(np.full(shape, true_sky), coords)
+
+        table = build_photometry_table(img, masks[channel])
+
+        assert "sky" not in table.colnames
+        np.testing.assert_allclose(
+            np.asarray(table["bkgd_count"]),
+            true_sky,
+            rtol=0.05,
+        )
+
+    def test_bkgd_count_is_per_star_not_a_frame_wide_scalar(self):
+        """
+        Stars on either side of a sky step report their own local background.
+
+        The removed ``sky`` column collapsed the whole frame to one scalar; the
+        surviving ``bkgd_count`` must track each star's local annulus (#52).
+        """
+        true_sky = 10.0
+        shape = (256, 256)
+        # Left half sky=10, right half sky=40; one star centered in each half.
+        data = np.full(shape, true_sky)
+        data[:, 128:] = 4 * true_sky
+        coords = np.array([[60.0, 128.0], [200.0, 128.0]])  # (x, y)
+        img = self._uniform_frame_image(data, coords)
+
+        table = build_photometry_table(img, mask=None)
+
+        assert "sky" not in table.colnames
+        bkgd = np.asarray(table["bkgd_count"])
+        assert bkgd[0] != bkgd[1]
+        np.testing.assert_allclose(bkgd, [true_sky, 4 * true_sky], rtol=0.05)
+
 
 class TestNeighborContaminationFlag:
     """Unit tests for the bright-neighbor flag ``neighbor_contamination_flag``."""
@@ -1865,6 +1926,47 @@ class TestCalculateL4Quantities:
 
         assert np.isnan(final_data["bkgd_count"][0])
         assert np.isnan(final_data["snr"][0])
+
+    def test_recombined_l4_table_carries_no_sky_column(self, monkeypatch):
+        """
+        The recombined L4 table has no ``sky`` column at all (#52).
+
+        The L4 table starts as a full-frame ``build_photometry_table`` pass, and
+        ``calculate_l4_quantities`` never stripped ``sky`` (unlike the stale
+        fluxes/total_bkg/bkgd_std), so the recombined table used to carry a
+        stale full-frame ``sky`` value. With the column deleted at the source,
+        it must not appear anywhere in the L4 output.
+        """
+        n_stars = 2
+        monkeypatch.setattr(
+            "bandaid.photometry.measure_photometry",
+            _fake_phot_factory(n_stars),
+        )
+        coords = np.array([[245.0, 250.0], [255.0, 260.0]])
+        # The real L4 input: a full-frame (mask=None) photometry table.
+        final_data = build_photometry_table(
+            _make_image_data(_make_tan_wcs(), coords, None),
+            mask=None,
+        )
+
+        def _filter_table(tot, area, bkgd, bkgd_std, peak):
+            t = Table()
+            t["tot_count"] = np.array(tot, dtype=float)
+            t["aperture_area"] = np.array(area, dtype=float)
+            t["bkgd_count"] = np.array(bkgd, dtype=float)
+            t["bkgd_std"] = np.array(bkgd_std, dtype=float)
+            t["peak_count"] = np.array(peak, dtype=float)
+            return t
+
+        by_filter = {
+            "TR": _filter_table([100, 200], [10, 12], [5, 6], [2, 3], [50, 90]),
+            "TG": _filter_table([110, 210], [11, 13], [4, 7], [1, 2], [70, 80]),
+            "TB": _filter_table([120, 220], [9, 14], [6, 5], [3, 1], [60, 95]),
+        }
+
+        calculate_l4_quantities(final_data, by_filter, egain=0.5)
+
+        assert "sky" not in final_data.colnames
 
 
 # --- Synthetic-FITS helpers for the detect/align/centroid pipeline tests ---

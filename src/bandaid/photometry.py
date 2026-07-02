@@ -1489,9 +1489,6 @@ def build_photometry_table(
     except (KeyError, ValueError, TypeError) as exc:
         msg = "missing or unparseable DATE-OBS header keyword"
         raise FrameMetadataError(msg) from exc
-    data["sky"] = np.mean(
-        phot["total_bkg"] / (np.pi * (np.asarray(radii) * img.fwhm) ** 2),
-    )
     data["airmass"] = _airmass_from_header(img.header)
     data["peak_count"] = phot["peak_count"]
     data["stars_in_exp"] = len(img.coords)

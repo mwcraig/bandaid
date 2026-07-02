@@ -443,7 +443,15 @@ def _qa_record_ok(file, by_filter):
     n_detected = (
         int(representative["stars_in_exp"][0]) if "stars_in_exp" in cols else None
     )
-    sky_median = float(representative["sky"][0]) if "sky" in cols else None
+    # An edge-of-frame or fully-masked annulus yields a NaN bkgd_count (see the
+    # NaN contract in measure_photometry); keep those rows out of the median so
+    # one bad annulus cannot poison the frame's QA value.
+    sky_median = None
+    if "bkgd_count" in cols:
+        bkgd = np.asarray(representative["bkgd_count"])
+        finite = bkgd[np.isfinite(bkgd)]
+        if len(finite):
+            sky_median = float(np.median(finite))
     n_good_stars = None
     has_phot_cols = {"tot_count", "count_err", "x", "y"} <= cols
     has_bounds = {"width", "height"} <= set(full_meta)
