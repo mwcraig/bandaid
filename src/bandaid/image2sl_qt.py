@@ -45,9 +45,7 @@ def generate_bayer_masks(shape, metadata, *, append_l4=True):
         The image metadata dictionary
     append_l4 : bool, optional
         If True, add an "L4" key mapped to None to the returned dict. The None
-        mask signals a full-frame (unmasked) luminance channel. Default True,
-        matching `bandaid.scripts.prepare_batch`, `photometer_frames`, and the
-        CLI (issue #61).
+        mask signals a full-frame (unmasked) luminance channel. Default True.
 
     Returns
     -------
@@ -119,8 +117,7 @@ def bayer_balance_image(image):
     DegenerateBayerChannelError
         If a CFA sub-grid's balancing-window sample is empty (every pixel fell
         outside the ``[0, cutoff)`` window) or has zero variance (a constant
-        sub-frame). Either case would otherwise silently divide by zero and
-        write ``inf``/``NaN`` into the image.
+        sub-frame).
     """
     # Drop the casts to float -- this has already been done
     temp1 = image[0::2, 0::2]

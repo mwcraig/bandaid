@@ -1077,7 +1077,9 @@ class ImageData:
     # and reused by the later calls (one per Bayer channel) that share this
     # same `ImageData`, so the obs_time parse and airmass derivation run once
     # per frame rather than once per channel (issue #61).
-    _time_airmass_cache: tuple = field(default=None, repr=False)
+    _time_airmass_cache: tuple | None = field(
+        default=None, repr=False, init=False, compare=False
+    )
 
     def resolve_time_airmass(self):
         """

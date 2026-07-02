@@ -266,9 +266,7 @@ def prepare_batch(
         used.
     append_l4 : bool, optional
         Whether to add a full-frame "L4" luminance channel to the Bayer masks.
-        Default True, matching `photometer_frames` and the CLI so composing
-        `prepare_batch` + `process_batch` by hand yields the same channels as
-        the CLI for the same inputs.
+        Default True.
 
     Returns
     -------
