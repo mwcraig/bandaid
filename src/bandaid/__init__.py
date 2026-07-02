@@ -22,10 +22,15 @@
 # SOFTWARE.
 
 """
-Add a docstring here for the init module.
+bandaid: forced-aperture AAVSO photometry for Smart Telescope frames.
 
-This might include a very brief description of the package,
-its purpose, and any important notes.
+Turns a folder of Smart Telescope (e.g. Seestar) FITS frames into AAVSO-style
+photometry -- `.star` files -- by doing forced photometry at the positions of a
+magnitude-limited Gaia catalog, rather than detecting sources in the image.
+`photometer_frames` is the top-level entry point; it wraps a one-time
+`prepare_batch` (Gaia catalog, plate scale, Bayer masks, centroiding model) and
+a fast per-frame `process_batch` loop. See the project documentation
+(https://bandaid.readthedocs.io/) for the full guide.
 """
 
 import logging

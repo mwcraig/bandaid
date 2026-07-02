@@ -45,6 +45,6 @@ uvx pydoclint --config=pyproject.toml src/ tests/
 - **Research notebooks (`*.ipynb`) are not linted or formatted** — they are excluded
     in `[tool.ruff]`.
 - **Standalone research / CLI scripts** (the eloy ballet generator and training
-    scripts, plus `eval_realistic_weights.py`, `full_pipeline_stwg_t_cr_bor.py`, and
-    `image2sl_qt.py`) carry targeted per-file-ignores for conventions that are normal
-    there: progress `print`s, lazy imports, and commented-out reference code.
+    scripts, plus `eval_realistic_weights.py` and `image2sl_qt.py`) carry targeted
+    per-file-ignores for conventions that are normal there: progress `print`s, lazy
+    imports, and commented-out reference code.
