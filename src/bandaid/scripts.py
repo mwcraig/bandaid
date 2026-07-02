@@ -24,6 +24,8 @@ from pathlib import Path
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
+from astropy.time import Time
+from dateutil import parser
 from eloy.ballet.model import Ballet
 
 from .catalog import cached_gaia_radecs
@@ -238,8 +240,9 @@ def prepare_batch(
     Compute the once-per-batch photometry inputs from the first frame.
 
     Runs a single detection pass on ``first_file`` (no WCS solve) to obtain the
-    FWHM and image metadata, queries Gaia for the field, drops contaminated
-    sources, and builds the Bayer masks.
+    FWHM and image metadata, queries Gaia for the field (propagating the J2015.5
+    DR2 positions to the frame's observation epoch via proper motions), drops
+    contaminated sources, and builds the Bayer masks.
 
     Parameters
     ----------
@@ -272,6 +275,10 @@ def prepare_batch(
     BatchPrepError
         If too few stars are detected in ``first_file`` to measure an FWHM, so
         the batch preparation cannot be built.
+    FrameMetadataError
+        If the first frame's metadata has no parseable observation time
+        (``obs_time``, usually mapped from ``DATE-OBS``), which is needed to
+        propagate the Gaia positions to the observation epoch.
     """
     # A too-few-stars failure on the *first* frame is fatal for the whole batch
     # (no FWHM/pointing to prepare from), so translate the recoverable
@@ -299,13 +306,38 @@ def prepare_batch(
         msg = f"too few stars detected in {first_file!r} to prepare the batch"
         raise BatchPrepError(msg) from exc
 
+    # Gaia DR2 positions are J2015.5; propagate them to the observation epoch so
+    # high-proper-motion stars are placed where the frames actually see them.
+    # https://github.com/mwcraig/bandaid/issues/56
+    # Validate obs_time up front: a frame without DATE-OBS resolves it to None,
+    # and letting that fail inside the Gaia try block below would surface a
+    # metadata problem as a misleading "could not query Gaia" error.
+    obs_time = metadata.get("obs_time")
+    if obs_time is None:
+        msg = (
+            "no observation time in the first frame's metadata (obs_time, "
+            "usually mapped from DATE-OBS); it is needed to propagate Gaia "
+            "positions to the observation epoch"
+        )
+        raise FrameMetadataError(msg, file=first_file)
+    # dateutil mirrors build_photometry_table's tolerant DATE-OBS parsing, so
+    # the Gaia epoch accepts the same header date forms as the rest of the
+    # pipeline (Time() alone is stricter than dateutil).
+    try:
+        obs_epoch = Time(parser.parse(obs_time))
+    except (ValueError, TypeError) as exc:
+        msg = f"could not parse observation time (obs_time) {obs_time!r}"
+        raise FrameMetadataError(msg, file=first_file) from exc
+
     # fov_rad is a field *radius*; cached_gaia_radecs takes the full field and
     # halves it internally (matching the established twirl.gaia_radecs usage).
     center = (metadata["ra"], metadata["dec"])
     # A Gaia query failure (network/service error) is fatal for the whole batch;
     # surface it as a BatchPrepError instead of a raw astroquery/requests error.
     try:
-        radecs, mags = cached_gaia_radecs(center, 2 * metadata["fov_rad"])
+        radecs, mags = cached_gaia_radecs(
+            center, 2 * metadata["fov_rad"], obs_epoch=obs_epoch
+        )
     except Exception as exc:
         msg = f"could not query Gaia for the field at {center}"
         raise BatchPrepError(msg) from exc

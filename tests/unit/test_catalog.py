@@ -4,7 +4,8 @@ Unit tests for the cached Gaia catalog query in :mod:`bandaid.catalog`.
 These tests never touch the network: they patch ``bandaid.catalog.Vizier`` with a
 ``unittest.mock`` stand-in whose ``query_region`` returns a small in-memory table
 shaped like the real VizieR ``I/345/gaia2`` result (columns ``Gmag, RA_ICRS,
-DE_ICRS, pmRA, pmDE``). They check the reshaping contract that the notebook
+DE_ICRS, pmRA, pmDE``) -- the shared ``gaia_table`` / ``fake_vizier`` fixtures
+from ``tests/conftest.py``. They check the reshaping contract that the notebook
 relies on (matching ``twirl.gaia_radecs``), the optional proper-motion
 propagation via ``SkyCoord.apply_space_motion``, the empty-result path, and that
 the query is issued against the right catalog with the requested row limit and
@@ -12,16 +13,12 @@ sort. Recorded calls are inspected via the mock's ``call_args`` rather than any
 side-effect state.
 """
 
-from unittest.mock import MagicMock
-
 import astropy.units as u
 import numpy as np
 import pytest
 from astropy.coordinates import SkyCoord
-from astropy.table import Table
 from astropy.time import Time
 
-from bandaid import catalog
 from bandaid.catalog import GAIA_DR2_EPOCH, GAIA_DR2_VIZIER_CATALOG, cached_gaia_radecs
 
 # Arbitrary row limit used to assert it is forwarded to Vizier unchanged.
@@ -29,33 +26,6 @@ ROW_LIMIT_PROBE = 1234
 # Floor (deg) the proper-motion shift must exceed; nine years of ~10 mas/yr is
 # ~2.5e-5 deg, comfortably above this.
 PM_SHIFT_FLOOR_DEG = 1e-6
-
-
-@pytest.fixture
-def gaia_table():
-    """A table shaped like the real ``I/345/gaia2`` result, brightest-first."""
-    t = Table()
-    t["Gmag"] = np.array([8.8, 13.5, 14.1]) * u.mag
-    t["RA_ICRS"] = np.array([239.8756, 239.9220, 239.8684]) * u.deg
-    t["DE_ICRS"] = np.array([25.9202, 25.8932, 25.8698]) * u.deg
-    t["pmRA"] = np.array([-4.220, -0.957, 2.839]) * (u.mas / u.yr)
-    t["pmDE"] = np.array([12.364, -1.993, -7.168]) * (u.mas / u.yr)
-    return t
-
-
-@pytest.fixture
-def fake_vizier(monkeypatch, gaia_table):
-    """
-    Patch in a Vizier stand-in returning ``gaia_table``; yield the class mock.
-
-    The returned mock records construction args in ``fake_vizier.call_args`` and
-    the query call in ``fake_vizier.return_value.query_region.call_args``.
-    """
-    instance = MagicMock(name="vizier_instance")
-    instance.query_region.return_value = [gaia_table]
-    vizier_cls = MagicMock(name="Vizier", return_value=instance)
-    monkeypatch.setattr(catalog, "Vizier", vizier_cls)
-    return vizier_cls
 
 
 @pytest.fixture
