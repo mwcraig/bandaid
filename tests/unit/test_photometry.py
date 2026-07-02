@@ -558,6 +558,30 @@ def test_peak_count_respects_the_channel_mask(make_test_image):
         assert np.all(channel_peaks < _PEAK_LEAK_CEILING)
 
 
+@pytest.mark.parametrize("channel", ["TR", "TG", "TB"])
+def test_peak_count_masked_star_at_frame_edge(make_test_image, channel):
+    """
+    A masked peak box hanging off the frame edge reads only in-frame pixels.
+
+    At the (0, 0) corner most of the ~2*FWHM box is out-of-frame padding,
+    which must count as excluded -- never as usable data -- while the
+    surviving in-frame unmasked pixels still supply a finite peak. The corner
+    is far from every source, so each channel must read exactly the sky
+    pedestal.
+    """
+    sky = 10.0
+    image, _ = _bright_neighbor_scene(make_test_image, sky=sky)
+    masks = generate_bayer_masks(
+        image.shape,
+        {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0},
+    )
+    coords = np.array([[0.0, 0.0]])
+
+    photom = _peak_scene_photometry(image, coords, coords, masks[channel])
+
+    assert photom["peak_count"][0] == sky
+
+
 def test_peak_count_nan_for_non_finite_centroid(make_test_image):
     """
     A non-finite centroid yields NaN ``peak_count``; other rows unaffected (#54).

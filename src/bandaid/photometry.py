@@ -1290,27 +1290,35 @@ def measure_photometry(
     # fixed 25x25 unmasked box at the catalog-aligned position let a bright
     # neighbor masquerade as the target's peak and made the per-channel
     # TR/TG/TB peaks bit-identical.
-    peak_image = (
-        calibrated_data if mask is None else np.where(mask, np.nan, calibrated_data)
-    )
     # ~2*FWHM per side, but never below the 2-pixel Bayer period so any fully
     # in-frame box keeps at least one unmasked pixel from every channel.
     box_side = max(int(np.ceil(2 * fwhm)), 2)
     peaks = np.full(centroid_xy.shape[0], np.nan)
     if np.any(finite_centroid):
+        box = (box_side, box_side)
+        peak_cutouts = utils.cutout(
+            calibrated_data,
+            centroid_xy[finite_centroid],
+            box,
+        )
+        if mask is not None:
+            # Apply the channel mask at cutout scale rather than NaN-ing a
+            # full-frame copy of the image. The mask is cut as float because a
+            # boolean array cannot hold the NaN that pads out-of-frame pixels;
+            # only exactly-0.0 (in-frame *and* unmasked) survives the
+            # comparison, so the padding is excluded just like masked pixels.
+            mask_cutouts = utils.cutout(
+                np.asarray(mask, dtype=float),
+                centroid_xy[finite_centroid],
+                box,
+            )
+            peak_cutouts = np.where(mask_cutouts == 0.0, peak_cutouts, np.nan)
         with warnings.catch_warnings():
             # A star at the frame edge can leave the box without any unmasked
             # pixel; nanmax then returns NaN -- an expected intermediate per
             # the NaN contract -- so silence its all-NaN RuntimeWarning.
             warnings.simplefilter("ignore", category=RuntimeWarning)
-            peaks[finite_centroid] = np.nanmax(
-                utils.cutout(
-                    peak_image,
-                    centroid_xy[finite_centroid],
-                    (box_side, box_side),
-                ),
-                axis=(1, 2),
-            )
+            peaks[finite_centroid] = np.nanmax(peak_cutouts, axis=(1, 2))
 
     net_count = flux - total_bkg
     # Background noise per pixel estimated from the annulus standard deviation
