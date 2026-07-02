@@ -41,6 +41,7 @@ To bundle a telescope:
             "dec": "@DEC",
             "bayerpat": "@BAYERPAT",
             "roworder": "top-down",
+            "xbayroff": 0,
             "ybayroff": 0,
             "pixscale": 2.8,
             "fov_rad": 1.7,

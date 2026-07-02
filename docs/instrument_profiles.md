@@ -141,6 +141,7 @@ A `my_scope.json` looks like:
         "dec": "@DEC",
         "bayerpat": "@BAYERPAT",
         "roworder": "top-down",
+        "xbayroff": 0,
         "ybayroff": 0,
         "pixscale": 2.8,
         "fov_rad": 1.7,
@@ -198,7 +199,8 @@ resolve them:
 - `pixscale`, `fov_rad` — plate scale and field of view used for Gaia matching
     and FWHM-in-arcsec reporting.
 - `ra`, `dec` — field center for alignment.
-- `bayerpat`, `roworder`, `ybayroff` — Bayer pattern handling for debayering.
+- `bayerpat`, `roworder`, `xbayroff`, `ybayroff` — Bayer pattern handling for
+    debayering.
 
 Observation-bookkeeping keys (`obs_time`, `site_lat`/`site_lon`/`site_elev`,
 `observer`, `exposure`, `object`, …) flow into the output and should be mapped

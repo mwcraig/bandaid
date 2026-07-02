@@ -29,6 +29,7 @@
         "fov_rad": 0.74,
         "_telescope_probe": "from fits",
         "roworder": "top-down",
+        "xbayroff": 0,
         "ybayroff": 0,
         "stack": "@STACKCNT",
         "#stack": 1,
