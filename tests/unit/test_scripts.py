@@ -555,6 +555,25 @@ class TestPrepareBatch:
             scripts.prepare_batch("frame1.fits", cnn=object())
 
 
+def _consistency_header(**overrides: object) -> dict:
+    """
+    A Seestar-dialect header satisfying ``check_frame_consistency``'s resolution.
+
+    CREATOR is required because the Seestar ``header_map`` resolves
+    ``tel_manufac`` with a ``!CREATOR`` directive; every other key the template
+    references falls back to None when absent.
+    """
+    header = {
+        "NAXIS1": 1080,
+        "NAXIS2": 1920,
+        "RA": 10.0,
+        "DEC": 0.0,
+        "CREATOR": "ZWO Seestar S50",
+    }
+    header.update(overrides)
+    return header
+
+
 class TestCheckFrameConsistency:
     """Unit tests for the per-frame pointing/shape guard."""
 
@@ -573,26 +592,61 @@ class TestCheckFrameConsistency:
 
     def test_consistent_frame_passes(self):
         """A frame matching the prep's shape and pointing is accepted."""
-        header = {"NAXIS1": 1080, "NAXIS2": 1920, "RA": 10.0, "DEC": 0.0}
+        header = _consistency_header()
         scripts.check_frame_consistency("ok.fits", header, self._prep())
 
     def test_shape_mismatch_raises_frameerror(self):
         """A different image shape is rejected."""
-        header = {"NAXIS1": 1000, "NAXIS2": 1920, "RA": 10.0, "DEC": 0.0}
+        header = _consistency_header(NAXIS1=1000)
         with pytest.raises(FrameError, match="shape"):
             scripts.check_frame_consistency("bad.fits", header, self._prep())
 
     def test_offfield_pointing_raises_frameerror(self):
         """A frame pointing beyond the field radius is rejected."""
-        header = {"NAXIS1": 1080, "NAXIS2": 1920, "RA": 12.0, "DEC": 0.0}
+        header = _consistency_header(RA=12.0)
         with pytest.raises(FrameError, match="pointing"):
             scripts.check_frame_consistency("bad.fits", header, self._prep())
 
     def test_missing_keyword_raises_metadata_error(self):
         """A header missing a needed keyword is a metadata error."""
-        header = {"NAXIS1": 1080, "RA": 10.0, "DEC": 0.0}  # no NAXIS2
+        header = _consistency_header()
+        del header["NAXIS2"]
         with pytest.raises(FrameMetadataError):
             scripts.check_frame_consistency("bad.fits", header, self._prep())
+
+    def test_missing_pointing_raises_metadata_error(self):
+        """A header whose dialect resolves no pointing is a metadata error."""
+        # "@RA"/"@DEC" lookups on a header without those keywords resolve to
+        # None rather than raising, so the guard must catch the None itself.
+        header = _consistency_header()
+        del header["RA"]
+        del header["DEC"]
+        with pytest.raises(FrameMetadataError, match="pointing"):
+            scripts.check_frame_consistency("bad.fits", header, self._prep())
+
+    def test_header_map_routes_pointing_keys(self):
+        """Pointing under renamed keywords resolves through the profile (#59)."""
+        # A dialect whose pointing lives under OBJCTRA/OBJCTDEC, with no
+        # RA/DEC in the header at all: the check must consult the header_map,
+        # not the raw Seestar keywords.
+        custom_map = {
+            **dict(InstrumentProfile().header_map),
+            "ra": "@OBJCTRA",
+            "dec": "@OBJCTDEC",
+        }
+        profile = InstrumentProfile(name="Renamed", header_map=custom_map)
+        prep = self._prep(config=PhotometryConfig(instrument=profile))
+        header = _consistency_header(OBJCTRA=10.0, OBJCTDEC=0.0)
+        del header["RA"]
+        del header["DEC"]
+
+        # In-field frame passes...
+        scripts.check_frame_consistency("ok.fits", header, prep)
+
+        # ...and the off-field rejection still fires on the mapped keywords.
+        header["OBJCTRA"] = 50.0
+        with pytest.raises(FrameError, match="pointing"):
+            scripts.check_frame_consistency("bad.fits", header, prep)
 
     def test_inconsistent_frame_is_skipped_by_batch(self, monkeypatch):
         """process_batch skips an off-field frame and keeps the good one."""
@@ -600,7 +654,7 @@ class TestCheckFrameConsistency:
 
         def _header(file):
             ra = 10.0 if file == "good.fits" else 50.0
-            return {"NAXIS1": 1080, "NAXIS2": 1920, "RA": ra, "DEC": 0.0}
+            return _consistency_header(RA=ra)
 
         monkeypatch.setattr(scripts.fits, "getheader", _header)
         monkeypatch.setattr(
@@ -630,7 +684,7 @@ def _dummy_prep():
 
 
 # Header matching _dummy_prep's center/shape, so check_frame_consistency passes.
-_CONSISTENT_HEADER = {"NAXIS1": 1080, "NAXIS2": 1920, "RA": 10.0, "DEC": 0.0}
+_CONSISTENT_HEADER = _consistency_header()
 
 
 @pytest.fixture

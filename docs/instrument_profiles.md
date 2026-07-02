@@ -199,13 +199,17 @@ resolve them:
 - `largest_usable_adu_value` — saturation cut.
 - `pixscale`, `fov_rad` — plate scale and field of view used for Gaia matching
     and FWHM-in-arcsec reporting.
-- `ra`, `dec` — field center for alignment.
+- `ra`, `dec` — field center, used for alignment and for the per-frame
+    pointing-consistency check.
 - `bayerpat`, `roworder`, `xbayroff`, `ybayroff` — Bayer pattern handling for
     debayering.
 
 Observation-bookkeeping keys (`obs_time`, `site_lat`/`site_lon`/`site_elev`,
 `observer`, `exposure`, `object`, …) flow into the output and should be mapped
-when the telescope's header carries them.
+when the telescope's header carries them. `ra`/`dec`, the site keys, and
+`obs_time` also feed the per-frame airmass derivation; map `airmass` (e.g.
+`"airmass": "@AIRMASS"`) if the telescope's header records an airmass you want
+used verbatim instead.
 
 ## What a profile does **not** cover: observer identity
 

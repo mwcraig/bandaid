@@ -46,7 +46,7 @@ from bandaid.photometry import (
     THRESH,
     WCS_MATCH_TOLERANCE,
     ImageData,
-    _airmass_from_header,
+    _airmass_from_metadata,
     _brightest_unsaturated,
     _fwhm_from_coords,
     align,
@@ -1191,8 +1191,11 @@ def _make_image_data(
     if aligned_coords is None:
         aligned_coords = centroid_coords
     header = fits.Header()
-    header["DATE-OBS"] = "2020-01-01T00:00:00"
-    header["AIRMASS"] = 1.2
+    # Deliberately different from the resolved metadata's obs_time/airmass
+    # below: the table must come from the resolved metadata, not a raw header
+    # re-read (issue #59).
+    header["DATE-OBS"] = "1999-12-31T00:00:00"
+    header["AIRMASS"] = 9.9
     return ImageData(
         calibrated_data=np.zeros((50, 50)),
         coords=centroid_coords,
@@ -1202,28 +1205,44 @@ def _make_image_data(
         wcs=wcs,
         header=header,
         input_photometry_coords=input_photometry_coords,
-        metadata={"egain": 1.0},
+        metadata={"egain": 1.0, "airmass": 1.2, "obs_time": "2020-01-01T00:00:00"},
     )
 
 
-class TestAirmassFromHeader:
-    """Airmass is taken from the header when present, otherwise derived (#29)."""
+class TestAirmassFromMetadata:
+    """Airmass comes from the resolved metadata, derived when absent (#29, #59)."""
 
-    def test_uses_header_airmass_when_present(self):
-        """A present AIRMASS keyword is returned verbatim, pointing ignored."""
-        header = fits.Header()
+    @staticmethod
+    def _metadata(**overrides: object) -> dict:
+        """Resolved-metadata dict carrying the keys airmass derivation needs."""
+        metadata = {
+            "airmass": None,
+            "site_lat": 40.0,
+            "site_lon": -105.0,
+            "site_elev": None,
+            "ra": 10.0,
+            "dec": 20.0,
+            "obs_time": "2024-06-01T07:00:00",
+        }
+        metadata.update(overrides)
+        return metadata
+
+    def test_uses_resolved_airmass_when_present(self):
+        """A resolved ``airmass`` value is returned verbatim, pointing ignored."""
+        assert _airmass_from_metadata(self._metadata(airmass=1.37)) == pytest.approx(
+            1.37
+        )
+
+    def test_seestar_header_airmass_resolves_identically(self):
+        """Seestar identity: a header AIRMASS still short-circuits the derivation."""
+        header = _seestar_header()
         header["AIRMASS"] = 1.37
-        # Pointing/site/time are present but must not be consulted.
-        header["RA"] = 10.0
-        header["DEC"] = 20.0
-        header["SITELAT"] = 40.0
-        header["SITELONG"] = -105.0
-        header["DATE-OBS"] = "2024-06-01T07:00:00"
+        metadata = metadata_from_header(header)
+        assert _airmass_from_metadata(metadata) == pytest.approx(1.37)
 
-        assert _airmass_from_header(header) == pytest.approx(1.37)
-
-    def _header_pointing_at_altitude(self, alt_deg):
-        """Build a header whose RA/DEC put the field at ``alt_deg`` altitude."""
+    @staticmethod
+    def _pointing_at_altitude(alt_deg) -> tuple:
+        """RA/Dec (deg) that put the field at ``alt_deg`` altitude for the site."""
         location = EarthLocation(lat=40.0 * u.deg, lon=-105.0 * u.deg, height=0.0 * u.m)
         obstime = "2024-06-01T07:00:00"
         target = SkyCoord(
@@ -1234,14 +1253,12 @@ class TestAirmassFromHeader:
                 location=location,
             )
         ).icrs
+        return target.ra.degree, target.dec.degree
 
-        header = fits.Header()
-        header["RA"] = target.ra.degree
-        header["DEC"] = target.dec.degree
-        header["SITELAT"] = 40.0
-        header["SITELONG"] = -105.0
-        header["DATE-OBS"] = obstime
-        return header
+    def _metadata_pointing_at_altitude(self, alt_deg):
+        """Build metadata whose ra/dec put the field at ``alt_deg`` altitude."""
+        ra, dec = self._pointing_at_altitude(alt_deg)
+        return self._metadata(ra=ra, dec=dec)
 
     @staticmethod
     def _kasten_young(alt_deg) -> float:
@@ -1251,14 +1268,59 @@ class TestAirmassFromHeader:
         )
 
     def test_derives_from_pointing_when_absent(self):
-        """With no AIRMASS, derive the airmass from RA/DEC/site/time (not NaN)."""
+        """With no airmass, derive it from the ra/dec/site/obs_time metadata."""
         # Point ~1 deg from the zenith: a finite, physical (~1) airmass where
         # Kasten-Young and sec(z) coincide.
-        header = self._header_pointing_at_altitude(89.0)
+        metadata = self._metadata_pointing_at_altitude(89.0)
 
-        airmass = _airmass_from_header(header)
+        airmass = _airmass_from_metadata(metadata)
 
         assert np.isfinite(airmass)
+        assert airmass == pytest.approx(self._kasten_young(89.0), rel=1e-6)
+
+    def test_seestar_header_derivation_unchanged(self):
+        """Seestar identity: raw-header keys resolve to the same derived airmass."""
+        ra, dec = self._pointing_at_altitude(89.0)
+        header = _seestar_header()
+        header["RA"] = ra
+        header["DEC"] = dec
+        header["SITELAT"] = 40.0
+        header["SITELONG"] = -105.0
+        header["SITEELEV"] = 0.0
+        header["DATE-OBS"] = "2024-06-01T07:00:00"
+
+        airmass = _airmass_from_metadata(metadata_from_header(header))
+
+        assert airmass == pytest.approx(self._kasten_young(89.0), rel=1e-6)
+
+    def test_header_map_renames_resolve(self):
+        """A dialect with renamed site/pointing/time keywords derives airmass (#59)."""
+        # None of the Seestar keyword names appear in this header; only the
+        # header_map knows where the values live.
+        custom_map = {
+            "obs_time": "@DATE-LOC",
+            "site_lat": "@OBSLAT",
+            "site_lon": "@OBSLON",
+            "site_elev": "@OBSELEV",
+            "ra": "@OBJCTRA",
+            "dec": "@OBJCTDEC",
+            "egain": 1.0,
+        }
+        profile = InstrumentProfile(name="Renamed", header_map=custom_map)
+        ra, dec = self._pointing_at_altitude(89.0)
+        header = fits.Header()
+        header["NAXIS1"] = 50
+        header["NAXIS2"] = 50
+        header["DATE-LOC"] = "2024-06-01T07:00:00"
+        header["OBSLAT"] = 40.0
+        header["OBSLON"] = -105.0
+        header["OBSELEV"] = 0.0
+        header["OBJCTRA"] = ra
+        header["OBJCTDEC"] = dec
+
+        metadata = metadata_from_header(header, profile=profile)
+        airmass = _airmass_from_metadata(metadata)
+
         assert airmass == pytest.approx(self._kasten_young(89.0), rel=1e-6)
 
     def test_high_airmass_uses_kasten_young_not_secz(self):
@@ -1266,9 +1328,9 @@ class TestAirmassFromHeader:
         # Altitude 15 deg (zenith angle 75 deg) is in the range these frames
         # reach, where sec(z) overestimates by ~1.3%. The result must match KY1989
         # and be distinguishable from sec(z).
-        header = self._header_pointing_at_altitude(15.0)
+        metadata = self._metadata_pointing_at_altitude(15.0)
 
-        airmass = _airmass_from_header(header)
+        airmass = _airmass_from_metadata(metadata)
 
         secz = 1.0 / np.cos(np.deg2rad(90.0 - 15.0))
         assert airmass == pytest.approx(self._kasten_young(15.0), rel=1e-4)
@@ -1276,18 +1338,31 @@ class TestAirmassFromHeader:
         assert airmass == pytest.approx(secz, rel=2e-2)
 
     def test_raises_when_inputs_missing(self):
-        """No AIRMASS and no pointing/site/time -> skip the frame, not a NaN."""
-        header = fits.Header()
-        header["DATE-OBS"] = "2024-06-01T07:00:00"
+        """No airmass and no pointing/site/time -> skip the frame, not a NaN."""
         with pytest.raises(FrameMetadataError):
-            _airmass_from_header(header)
+            _airmass_from_metadata({"obs_time": "2024-06-01T07:00:00"})
 
-    def test_raises_on_malformed_header_airmass(self):
-        """A present-but-unparseable AIRMASS skips the frame rather than crashing."""
-        header = fits.Header()
-        header["AIRMASS"] = "not-a-number"
+    def test_raises_when_lookups_resolved_to_none(self):
+        """Metadata keys present but unresolved (None) skip the frame cleanly."""
+        # An "@KEY" directive whose keyword is absent resolves to None; that must
+        # map to the same FrameMetadataError as a missing key.
         with pytest.raises(FrameMetadataError):
-            _airmass_from_header(header)
+            _airmass_from_metadata(self._metadata(site_lat=None))
+
+    def test_raises_on_malformed_airmass(self):
+        """A present-but-unparseable airmass skips the frame rather than crashing."""
+        with pytest.raises(FrameMetadataError):
+            _airmass_from_metadata(self._metadata(airmass="not-a-number"))
+
+    def test_raises_on_overflowing_obs_time(self):
+        """
+        An all-digit garbage obs_time skips the frame rather than crashing.
+
+        dateutil raises OverflowError (not ValueError) for all-digit strings
+        too large for a C long (PR #71/#74 review).
+        """
+        with pytest.raises(FrameMetadataError):
+            _airmass_from_metadata(self._metadata(obs_time="999999999999999999"))
 
 
 class TestBuildPhotometryTable:
@@ -1322,6 +1397,23 @@ class TestBuildPhotometryTable:
         # Rows line up with the per-star x/y (centroid) columns.
         assert len(table) == n_stars
         assert len(table["ra"]) == len(table["x"])
+
+    def test_airmass_comes_from_resolved_metadata(self, monkeypatch):
+        """The airmass column uses img.metadata, not a raw header re-read (#59)."""
+        n_stars = 3
+        monkeypatch.setattr(
+            "bandaid.photometry.measure_photometry",
+            _fake_phot_factory(n_stars),
+        )
+        wcs = _make_tan_wcs()
+        centroid_coords = np.array([[245.0, 250.0], [255.0, 260.0], [250.0, 240.0]])
+        img = _make_image_data(wcs, centroid_coords, input_photometry_coords=None)
+
+        table = build_photometry_table(img, mask=None)
+
+        # _make_image_data plants conflicting values: metadata airmass 1.2 vs a
+        # raw-header AIRMASS of 9.9. Only the resolved metadata may win.
+        np.testing.assert_allclose(table["airmass"], 1.2)
 
     def test_falls_back_to_wcs_when_no_photometry_coords(self, monkeypatch):
         """With no photometry_coords, RA/Dec are derived from the image WCS."""
@@ -1419,21 +1511,23 @@ class TestBuildPhotometryTable:
     # --- Regression tests for issue #57: ``time`` is the mid-exposure JD. ---
 
     def _time_column(self, monkeypatch, metadata):
-        """Build a one-star table with the given metadata; return its ``time``."""
+        """Build a one-star table overlaying the given metadata; return ``time``."""
         monkeypatch.setattr(
             "bandaid.photometry.measure_photometry",
             _fake_phot_factory(1),
         )
         img = _make_image_data(_make_tan_wcs(), np.array([[250.0, 250.0]]), None)
-        img.metadata = metadata
+        # Overlay rather than replace, keeping _make_image_data's baseline
+        # obs_time/airmass so the table can always be built.
+        img.metadata = {**img.metadata, **metadata}
         table = build_photometry_table(img, mask=None)
         return float(table["time"][0])
 
     def test_time_is_mid_exposure_for_stacked_frames(self, monkeypatch):
-        """``time`` is DATE-OBS plus half the effective exposure of the stack."""
-        # 60 subs of 10 s: mid-exposure is 300 s after the DATE-OBS start
-        # ("2020-01-01T00:00:00" in _make_image_data). Recording the start
-        # would be wrong by 5 minutes for this stack (issue #57).
+        """``time`` is the obs_time start plus half the effective stack exposure."""
+        # 60 subs of 10 s: mid-exposure is 300 s after the obs_time start
+        # ("2020-01-01T00:00:00" in _make_image_data's metadata). Recording the
+        # start would be wrong by 5 minutes for this stack (issue #57).
         exposure = 10.0
         stack = 60
         start_jd = Time("2020-01-01T00:00:00").jd
@@ -1458,12 +1552,29 @@ class TestBuildPhotometryTable:
         assert time == pytest.approx(start_jd + exposure / 2.0 / 86400.0, abs=1e-9)
 
     def test_time_falls_back_to_start_when_exposure_unknown(self, monkeypatch):
-        """With no exposure metadata the DATE-OBS start time is recorded."""
+        """With no exposure metadata the obs_time start is recorded."""
         start_jd = Time("2020-01-01T00:00:00").jd
 
         time = self._time_column(monkeypatch, {"egain": 1.0})
 
         assert time == pytest.approx(start_jd, abs=1e-9)
+
+    def test_time_comes_from_resolved_obs_time(self, monkeypatch):
+        """``time`` uses the header_map-resolved obs_time, not raw DATE-OBS (#59)."""
+        # A dialect whose observation time lives under DATE-LOC; the raw header
+        # in _make_image_data still carries a (different) DATE-OBS, which must
+        # not be consulted.
+        custom_map = {"obs_time": "@DATE-LOC", "egain": 1.0, "airmass": 1.5}
+        profile = InstrumentProfile(name="Renamed", header_map=custom_map)
+        header = fits.Header()
+        header["NAXIS1"] = 50
+        header["NAXIS2"] = 50
+        header["DATE-LOC"] = "2021-05-05T05:00:00"
+        metadata = metadata_from_header(header, profile=profile)
+
+        time = self._time_column(monkeypatch, metadata)
+
+        assert time == pytest.approx(Time("2021-05-05T05:00:00").jd, abs=1e-9)
 
     # --- Regression tests for issue #52: the broken ``sky`` column is gone; ---
     # --- ``bkgd_count`` is the correct per-star per-pixel background.       ---
