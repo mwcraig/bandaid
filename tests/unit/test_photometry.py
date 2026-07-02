@@ -428,6 +428,185 @@ def test_measure_photometry_accepts_non_subscriptable_annulus(make_test_image):
     assert photom["annulus_radii"] == pytest.approx(expected)
 
 
+# --- Regression tests for issue #54: peak_count semantics ---
+
+# FWHM of the peak_count test scene; the bright neighbor below sits well
+# outside the ~2*FWHM peak box at this width.
+_PEAK_SCENE_FWHM = 3.0
+
+# Any peak_count above this reveals the ~5000-count neighbor leaking into the
+# box; the measured stars themselves peak at ~110 (amplitude 100 + sky 10).
+_PEAK_LEAK_CEILING = 200.0
+
+
+def _bright_neighbor_scene(make_test_image, fwhm=_PEAK_SCENE_FWHM, sky=10.0):
+    """
+    Build a scene with a faint target, a bright close neighbor, and a control.
+
+    The target (peak ~110 with sky) has a 5000-count neighbor 10 px away --
+    outside the 1-FWHM aperture and the ~2*FWHM peak box, but inside the old
+    fixed 25x25 peak box. An identical isolated control star sits far from
+    both. Both measured stars are centered on even (x, y) pixels, i.e. on R
+    pixels of a top-down RGGB mosaic.
+
+    Parameters
+    ----------
+    make_test_image : callable
+        The ``make_test_image`` fixture factory.
+    fwhm : float, optional
+        FWHM (pixels) of the Gaussian sources.
+    sky : float, optional
+        Constant sky pedestal added to the image.
+
+    Returns
+    -------
+    tuple
+        ``(image, coords)`` where ``coords`` holds the target and the isolated
+        control star (the bright neighbor is deliberately not measured).
+    """
+    shape = (200, 200)
+    sigma = fwhm * gaussian_fwhm_to_sigma
+    source_properties = Table(
+        {
+            "amplitude": [100.0, 5000.0, 100.0],
+            "x_mean": [100.0, 110.0, 40.0],
+            "y_mean": [100.0, 100.0, 40.0],
+            "x_stddev": [sigma] * 3,
+            "y_stddev": [sigma] * 3,
+        },
+    )
+    image = make_test_image(shape, source_properties, include_noise=False) + sky
+    coords = np.array([[100.0, 100.0], [40.0, 40.0]])
+    return image, coords
+
+
+def _peak_scene_photometry(image, centroid_coords, aligned_coords, mask):
+    """
+    Run ``measure_photometry`` on the bright-neighbor scene.
+
+    Parameters
+    ----------
+    image : numpy.ndarray
+        Scene from `_bright_neighbor_scene`.
+    centroid_coords : numpy.ndarray
+        Measured centroid coordinates.
+    aligned_coords : numpy.ndarray
+        Catalog-aligned coordinates.
+    mask : numpy.ndarray or None
+        Bayer channel mask (True = excluded), or None for the full frame.
+
+    Returns
+    -------
+    dict
+        The ``measure_photometry`` output.
+    """
+    return measure_photometry(
+        image,
+        centroid_coords,
+        aligned_coords,
+        _PEAK_SCENE_FWHM,
+        1.0,
+        mask,
+        radii=(1.0,),
+        annulus=(5.0, 8.0),
+    )
+
+
+def test_peak_count_is_the_targets_own_peak(make_test_image):
+    """
+    ``peak_count`` reports the star's own peak, not a bright neighbor's (#54).
+
+    The 5000-count neighbor 10 px away sat inside the old fixed 25x25 box, so
+    the faint target reported peak_count ~5010 instead of its own ~110. The
+    ~2*FWHM box anchored at the measured centroid must not reach it.
+    """
+    image, coords = _bright_neighbor_scene(make_test_image)
+
+    photom = _peak_scene_photometry(image, coords, coords, None)
+
+    peak_target, peak_control = photom["peak_count"]
+    # Both stars peak at ~110 (amplitude 100 + sky 10); anything approaching
+    # the neighbor's ~5000 means the peak box leaked onto the neighbor.
+    assert peak_control < _PEAK_LEAK_CEILING
+    assert peak_target < _PEAK_LEAK_CEILING
+
+
+def test_peak_count_respects_the_channel_mask(make_test_image):
+    """
+    Per-channel ``peak_count`` is the max over that channel's pixels only (#54).
+
+    Both measured stars are centered on R pixels of the RGGB mosaic, so the TR
+    peak reads the central pixel while TG (nearest unmasked pixel 1 px away)
+    and TB (sqrt(2) px away) sample progressively farther down the profile:
+    the channels must come out in that strict order. Before the fix the mask
+    was never applied and the TR/TG/TB columns were bit-identical.
+    """
+    image, coords = _bright_neighbor_scene(make_test_image)
+    masks = generate_bayer_masks(
+        image.shape,
+        {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0},
+    )
+
+    peaks = {
+        name: _peak_scene_photometry(image, coords, coords, mask)["peak_count"]
+        for name, mask in masks.items()
+    }
+
+    for star in range(len(coords)):
+        assert peaks["TR"][star] > peaks["TG"][star] > peaks["TB"][star]
+    # The mask must not reintroduce the neighbor: every channel still reports
+    # the target's own (faint) peak.
+    for channel_peaks in peaks.values():
+        assert np.all(channel_peaks < _PEAK_LEAK_CEILING)
+
+
+@pytest.mark.parametrize("channel", ["TR", "TG", "TB"])
+def test_peak_count_masked_star_at_frame_edge(make_test_image, channel):
+    """
+    A masked peak box hanging off the frame edge reads only in-frame pixels.
+
+    At the (0, 0) corner most of the ~2*FWHM box is out-of-frame padding,
+    which must count as excluded -- never as usable data -- while the
+    surviving in-frame unmasked pixels still supply a finite peak. The corner
+    is far from every source, so each channel must read exactly the sky
+    pedestal.
+    """
+    sky = 10.0
+    image, _ = _bright_neighbor_scene(make_test_image, sky=sky)
+    masks = generate_bayer_masks(
+        image.shape,
+        {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0},
+    )
+    coords = np.array([[0.0, 0.0]])
+
+    photom = _peak_scene_photometry(image, coords, coords, masks[channel])
+
+    assert photom["peak_count"][0] == sky
+
+
+def test_peak_count_nan_for_non_finite_centroid(make_test_image):
+    """
+    A non-finite centroid yields NaN ``peak_count``; other rows unaffected (#54).
+
+    A failed centroid can be NaN, and integer-indexing a cutout there would
+    raise. Per the NaN contract in ``measure_photometry`` the row must instead
+    degrade to NaN (it is dropped downstream by the ``tot_count``/``count_err``
+    filters) while every other row keeps its all-finite-run values.
+    """
+    image, coords = _bright_neighbor_scene(make_test_image)
+    baseline = _peak_scene_photometry(image, coords, coords, None)
+
+    bad_centroids = coords.copy()
+    bad_centroids[0] = np.nan
+    photom = _peak_scene_photometry(image, bad_centroids, coords, None)
+
+    assert np.isnan(photom["peak_count"][0])
+    # The finite row is bit-identical to the all-finite run, for the peak and
+    # for the rest of the per-star outputs.
+    for key in ("peak_count", "tot_count", "count_err", "bkgd_count", "snr"):
+        assert photom[key][1] == baseline[key][1]
+
+
 def test_min_separation_fwhm():
     """Check a few extreme cases for a reasonable minimum separation between sources."""
     tenk_flux_ratio = 10
@@ -1985,6 +2164,50 @@ class TestCalculateL4Quantities:
         np.testing.assert_allclose(final_data["peak_count"], expected_peak)
         np.testing.assert_allclose(final_data["count_err"], expected_err)
         np.testing.assert_allclose(final_data["snr"], expected_snr)
+
+    def test_peak_count_is_a_real_cross_channel_max(self, make_test_image):
+        """
+        The L4 peak max varies with genuinely different channel peaks (#54).
+
+        Before issue #54 the channel mask was never applied to the peak
+        cutout, so the TR/TG/TB ``peak_count`` inputs were bit-identical and
+        the "max across channels" was a no-op. Measured end-to-end through
+        ``measure_photometry`` per channel, the inputs must now differ for
+        every star and the L4 value must be their elementwise maximum.
+        """
+        image, coords = _bright_neighbor_scene(make_test_image)
+        masks = generate_bayer_masks(
+            image.shape,
+            {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0},
+        )
+
+        by_filter = {}
+        for name, mask in masks.items():
+            phot = _peak_scene_photometry(image, coords, coords, mask)
+            t = Table()
+            for col in (
+                "tot_count",
+                "aperture_area",
+                "bkgd_count",
+                "bkgd_std",
+                "peak_count",
+            ):
+                t[col] = phot[col]
+            by_filter[name] = t
+
+        final_data = Table()
+        calculate_l4_quantities(final_data, by_filter, egain=1.0)
+
+        channel_peaks = np.array(
+            [by_filter[c]["peak_count"] for c in ("TR", "TG", "TB")],
+        )
+        # The per-channel inputs genuinely differ for every star ...
+        assert np.all(np.ptp(channel_peaks, axis=0) > 0)
+        # ... so the cross-channel max is a real max, not a no-op.
+        np.testing.assert_array_equal(
+            np.asarray(final_data["peak_count"]),
+            channel_peaks.max(axis=0),
+        )
 
     def test_drops_stale_full_frame_columns(self):
         """

@@ -11,6 +11,7 @@ resulting tables into a ``StarList``.
 import contextlib
 import io
 import logging
+import warnings
 from dataclasses import dataclass
 
 import astropy.units as u
@@ -1182,7 +1183,7 @@ def annulus_sigma_clip_stats(data, coords, r_in, r_out, input_mask=None, sigma=3
 def measure_photometry(
     calibrated_data,
     centroid_coords,
-    aligned_coords,
+    aligned_coords,  # noqa: ARG001 -- retained for API compatibility (issue #54).
     fwhm,
     egain,
     mask,
@@ -1198,9 +1199,12 @@ def measure_photometry(
     calibrated_data : numpy.ndarray
         Calibrated image data.
     centroid_coords : numpy.ndarray
-        Centroided star coordinates.
+        Centroided star coordinates. Every measurement, including the
+        ``peak_count`` box, is anchored here.
     aligned_coords : numpy.ndarray
-        Aligned star coordinates (used for peak measurement).
+        Catalog-aligned star coordinates. Unused; retained for backward
+        compatibility. The peak box used to be anchored here, off-center from
+        where the apertures measure (issue #54).
     fwhm : float
         FWHM of the PSF in pixels.
     egain : float
@@ -1236,6 +1240,16 @@ def measure_photometry(
     downstream by `eloy_to_starlist` (which keeps only rows with ``tot_count > 0``,
     finite ``count_err``, and in-bounds ``x``/``y``). The associated
     ``invalid``/``divide`` RuntimeWarnings are deliberately suppressed.
+
+    A row whose centroid is non-finite (a failed centroid) follows the same
+    contract: every per-star quantity for that row, including ``peak_count``,
+    comes back ``NaN`` instead of raising, and the row is dropped downstream.
+
+    ``peak_count`` is the maximum pixel value in a box of ~2*FWHM per side
+    centered on the measured centroid, with the channel ``mask`` applied
+    (issue #54): each of the TR/TG/TB peaks samples only its own channel's
+    pixels, so a saturated pixel is attributed to the channel it lives in and
+    a bright neighbor outside the box cannot masquerade as the target's peak.
     """
     msg = (
         "annulus must be a 2-element (inner, outer) sequence with "
@@ -1267,9 +1281,17 @@ def measure_photometry(
         raise ValueError(radius_msg)
     annulus_radii = (r_in, r_out)
 
+    # photutils apertures reject non-finite positions outright, but a failed
+    # centroid can legitimately be NaN. Give those rows a harmless in-frame
+    # placeholder for the aperture calls, then NaN out their per-star outputs
+    # below so the rows are dropped downstream per the NaN contract.
+    centroid_xy = np.atleast_2d(np.asarray(centroid_coords, dtype=float))
+    finite_centroid = np.all(np.isfinite(centroid_xy), axis=1)
+    safe_coords = np.where(finite_centroid[:, None], centroid_xy, 0.0)
+
     flux = photometry.aperture_photometry(
         calibrated_data,
-        centroid_coords,
+        safe_coords,
         apertures_radii,
         mask=mask,
     )
@@ -1278,7 +1300,7 @@ def measure_photometry(
             a.area_overlap(calibrated_data, mask=mask)
             for a in [
                 CircularAperture(
-                    centroid_coords,
+                    safe_coords,
                     r=r,
                 )
                 for r in apertures_radii
@@ -1288,16 +1310,60 @@ def measure_photometry(
 
     bkg, bkg_std = annulus_sigma_clip_stats(
         calibrated_data,
-        centroid_coords,
+        safe_coords,
         *annulus_radii,
         input_mask=mask,
     )
+
+    if not np.all(finite_centroid):
+        # Replace the placeholder rows' measurements with the NaN the contract
+        # promises; everything derived from these below inherits the NaN.
+        bad = ~finite_centroid
+        flux = np.asarray(flux, dtype=float)
+        flux[bad] = np.nan
+        aperture_area[bad] = np.nan
+        bkg = np.asarray(bkg, dtype=float)
+        bkg[bad] = np.nan
+        bkg_std = np.asarray(bkg_std, dtype=float)
+        bkg_std[bad] = np.nan
+
     total_bkg = bkg[:, None] * aperture_area
 
-    peaks = np.nanmax(
-        utils.cutout(calibrated_data, aligned_coords, (25, 25)),
-        axis=(1, 2),
-    )
+    # Peak measurement (issue #54): read the peak from the same channel the
+    # flux is measured on (the Bayer mask applied) and at the same location
+    # (the measured centroid), in a box that scales with the PSF. The old
+    # fixed 25x25 unmasked box at the catalog-aligned position let a bright
+    # neighbor masquerade as the target's peak and made the per-channel
+    # TR/TG/TB peaks bit-identical.
+    # ~2*FWHM per side, but never below the 2-pixel Bayer period so any fully
+    # in-frame box keeps at least one unmasked pixel from every channel.
+    box_side = max(int(np.ceil(2 * fwhm)), 2)
+    peaks = np.full(centroid_xy.shape[0], np.nan)
+    if np.any(finite_centroid):
+        box = (box_side, box_side)
+        peak_cutouts = utils.cutout(
+            calibrated_data,
+            centroid_xy[finite_centroid],
+            box,
+        )
+        if mask is not None:
+            # Apply the channel mask at cutout scale rather than NaN-ing a
+            # full-frame copy of the image. The mask is cut as float because a
+            # boolean array cannot hold the NaN that pads out-of-frame pixels;
+            # only exactly-0.0 (in-frame *and* unmasked) survives the
+            # comparison, so the padding is excluded just like masked pixels.
+            mask_cutouts = utils.cutout(
+                np.asarray(mask, dtype=float),
+                centroid_xy[finite_centroid],
+                box,
+            )
+            peak_cutouts = np.where(mask_cutouts == 0.0, peak_cutouts, np.nan)
+        with warnings.catch_warnings():
+            # A star at the frame edge can leave the box without any unmasked
+            # pixel; nanmax then returns NaN -- an expected intermediate per
+            # the NaN contract -- so silence its all-NaN RuntimeWarning.
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            peaks[finite_centroid] = np.nanmax(peak_cutouts, axis=(1, 2))
 
     net_count = flux - total_bkg
     # Background noise per pixel estimated from the annulus standard deviation
