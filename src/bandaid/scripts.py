@@ -42,6 +42,7 @@ from .photometry import (
     N_GAIA_STARS_ALIGN_RETRY,
     calibration_sequence,
     good_star_mask,
+    metadata_from_header,
     neighbor_contamination_flag_sky,
     process_one_image,
 )
@@ -419,6 +420,12 @@ def check_frame_consistency(file, header, prep):
     shape would be photometered against a catalog that no longer covers it,
     producing silently wrong results -- so reject it instead.
 
+    The header is resolved through the batch instrument's ``header_map``
+    (``prep.config.instrument``), the same dialect that resolved the prep's
+    ``center``/``shape`` from the first frame -- so an instrument whose pointing
+    lives under different keywords than the Seestar's is compared consistently
+    (issue #59).
+
     Parameters
     ----------
     file : str or Path
@@ -427,29 +434,36 @@ def check_frame_consistency(file, header, prep):
         The frame's FITS header.
     prep : BatchPrep
         The batch prep whose ``center``, ``fov_rad``, and ``shape`` the frame is
-        checked against.
+        checked against, and whose ``config.instrument`` supplies the
+        ``header_map`` dialect used to read the header.
 
     Raises
     ------
     FrameError
         If the frame's shape or pointing is inconsistent with the prep.
     FrameMetadataError
-        If the header lacks the keywords needed to perform the checks.
+        If the header cannot be resolved into the metadata needed to perform
+        the checks.
     """
     try:
-        shape = (header["NAXIS2"], header["NAXIS1"])
-    except KeyError as exc:
-        msg = f"missing required header keyword {exc.args[0]!r}"
-        raise FrameMetadataError(msg, file=file) from exc
+        metadata = metadata_from_header(header, profile=prep.config.instrument)
+    except FrameMetadataError as exc:
+        # metadata_from_header has only the header, not the path; label it here.
+        exc.file = file
+        raise
+    shape = (metadata["height"], metadata["width"])
     if shape != tuple(prep.shape):
         msg = f"frame shape {shape} does not match batch shape {tuple(prep.shape)}"
         raise FrameError(msg, file=file)
 
-    try:
-        frame_center = SkyCoord(header["RA"], header["DEC"], unit="deg")
-    except KeyError as exc:
-        msg = f"missing pointing header keyword {exc.args[0]!r}"
-        raise FrameMetadataError(msg, file=file) from exc
+    # An "@KEY" directive whose keyword is absent resolves to None rather than
+    # raising, so the missing-pointing case must be caught explicitly.
+    ra = metadata.get("ra")
+    dec = metadata.get("dec")
+    if ra is None or dec is None:
+        msg = "header resolved no pointing (ra/dec) through the instrument header_map"
+        raise FrameMetadataError(msg, file=file)
+    frame_center = SkyCoord(ra, dec, unit="deg")
     center = SkyCoord(prep.center[0], prep.center[1], unit="deg")
     offset = center.separation(frame_center).deg
     if offset > prep.fov_rad:

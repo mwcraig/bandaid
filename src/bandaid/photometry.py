@@ -773,14 +773,18 @@ def calibration_sequence(
     return calibrated_data, metadata, region_coords_xy, fwhm, regions
 
 
-def _airmass_from_header(header):
+def _airmass_from_metadata(metadata):
     """
-    Return the frame airmass, deriving it when the header lacks AIRMASS.
+    Return the frame airmass from the resolved metadata, deriving it if absent.
 
-    Seestar ``.fit`` headers carry no ``AIRMASS`` keyword but do record the
-    pointing (``RA``/``DEC``), site (``SITELAT``/``SITELONG``, optionally
-    ``SITEELEV``) and time (``DATE-OBS``) -- enough to compute the field-center
-    airmass via an AltAz transform. The header value is preferred when present.
+    Seestar ``.fit`` headers carry no airmass but do record the pointing
+    (``ra``/``dec``), site (``site_lat``/``site_lon``, optionally
+    ``site_elev``) and time (``obs_time``) -- enough to compute the field-center
+    airmass via an AltAz transform. A resolved ``airmass`` value (mapped from
+    the header via the instrument's ``header_map``, e.g. ``"@AIRMASS"``) is
+    preferred when present. Working from the resolved metadata rather than raw
+    header keywords keeps this dialect-aware: an instrument whose headers name
+    these quantities differently only needs a ``header_map`` (issue #59).
 
     The relative optical airmass is computed with the Kasten & Young (1989)
     formula, which stays accurate at the high airmass (up to ~4) these frames
@@ -794,40 +798,46 @@ def _airmass_from_header(header):
 
     Parameters
     ----------
-    header : astropy.io.fits.Header or dict
-        FITS header for the frame.
+    metadata : dict
+        The frame metadata resolved by `metadata_from_header`. Uses
+        ``airmass`` when present, otherwise ``ra``, ``dec``, ``site_lat``,
+        ``site_lon``, ``obs_time``, and (optionally) ``site_elev``.
 
     Returns
     -------
     float
-        The header ``AIRMASS`` value, or the derived Kasten-Young airmass.
+        The resolved ``airmass`` value, or the derived Kasten-Young airmass.
 
     Raises
     ------
     FrameMetadataError
-        If the header has neither a parseable ``AIRMASS`` nor the
-        pointing/site/time keywords needed to derive one. Airmass is a standard
+        If the metadata has neither a parseable ``airmass`` nor the
+        pointing/site/time values needed to derive one. Airmass is a standard
         input for extinction work, so an undiagnosable frame is skipped rather
         than carried with a NaN.
     """
-    # Only the header reads and the date-string parse can fail *because of the
-    # header*; keep exactly those inside the try so a well-understood missing or
-    # malformed keyword maps to a skipped frame, while a bug in the astropy
-    # object construction or the airmass formula below surfaces as itself.
+    # Only the metadata reads and the date-string parse can fail *because of
+    # the frame*; keep exactly those inside the try so a well-understood
+    # missing or malformed value maps to a skipped frame, while a bug in the
+    # astropy object construction or the airmass formula below surfaces as
+    # itself. A "@KEY" directive whose keyword is absent resolves to None, so
+    # None values must fail like missing keys -- float(None)/parse(None) raise
+    # TypeError, which is caught below.
     try:
-        airmass = header.get("AIRMASS")
+        airmass = metadata.get("airmass")
         if airmass is not None:
             return float(airmass)
-        site_lat = float(header["SITELAT"])
-        site_lon = float(header["SITELONG"])
-        site_elev = float(header.get("SITEELEV", 0.0))
-        ra = float(header["RA"])
-        dec = float(header["DEC"])
-        obs_datetime = parser.parse(header["DATE-OBS"])
+        site_lat = float(metadata["site_lat"])
+        site_lon = float(metadata["site_lon"])
+        raw_elev = metadata.get("site_elev")
+        site_elev = float(raw_elev) if raw_elev is not None else 0.0
+        ra = float(metadata["ra"])
+        dec = float(metadata["dec"])
+        obs_datetime = parser.parse(metadata["obs_time"])
     except (KeyError, ValueError, TypeError) as exc:
         msg = (
-            "cannot determine AIRMASS: header has no parseable AIRMASS and is "
-            "missing/unparseable RA/DEC/SITELAT/SITELONG/DATE-OBS"
+            "cannot determine airmass: metadata has no parseable airmass and "
+            "is missing/unparseable ra/dec/site_lat/site_lon/obs_time"
         )
         raise FrameMetadataError(msg) from exc
 
@@ -1571,15 +1581,17 @@ def build_photometry_table(
         Photometry table for this image and mask. Includes a boolean
         ``centroid_drift`` column flagging stars whose centroid wandered too far
         from its aligned position (see `centroid_drift_flag`). The ``time``
-        column is the mid-exposure Julian Date: the ``DATE-OBS`` start plus
-        half the effective exposure (``exposure * stack``, so stacked frames
-        are handled correctly); if the exposure is missing from the frame
-        metadata, the start time is recorded (issue #57).
+        column is the mid-exposure Julian Date: the ``obs_time`` start (mapped
+        from the header, usually ``DATE-OBS``, by the instrument's
+        ``header_map``) plus half the effective exposure (``exposure * stack``,
+        so stacked frames are handled correctly); if the exposure is missing
+        from the frame metadata, the start time is recorded (issue #57).
 
     Raises
     ------
     FrameMetadataError
-        If the image header has a missing or unparseable ``DATE-OBS``.
+        If the image metadata has a missing or unparseable observation time
+        (``obs_time``).
     """
     config = config or PhotometryConfig()
     if radii is None:
@@ -1622,21 +1634,26 @@ def build_photometry_table(
     data["count_err"] = phot["count_err"]
     data["snr"] = phot["snr"]
     data["fluxes"] = phot["fluxes"]
+    # The metadata was resolved through the instrument's header_map, so the
+    # time and airmass inputs are dialect-aware (issue #59); the raw header is
+    # not consulted again here. obs_time is usually mapped from DATE-OBS.
+    metadata = img.metadata or {}
     try:
-        start_jd = Time(parser.parse(img.header["DATE-OBS"])).jd
-    except (KeyError, ValueError, TypeError) as exc:
-        msg = "missing or unparseable DATE-OBS header keyword"
+        start_jd = Time(parser.parse(metadata["obs_time"])).jd
+    # OverflowError: dateutil raises it for all-digit strings too large for a
+    # C long (a corrupted numeric obs_time), documented in parser.parse.
+    except (KeyError, ValueError, TypeError, OverflowError) as exc:
+        msg = "missing or unparseable observation time (obs_time) metadata"
         raise FrameMetadataError(msg) from exc
-    # DATE-OBS is the exposure *start*. Record mid-exposure instead: for a
+    # obs_time is the exposure *start*. Record mid-exposure instead: for a
     # stacked frame the effective exposure is exposure * stack, so the start
     # time is wrong by minutes (issue #57). Fall back to the start time when
     # the exposure is not in the metadata; a missing stack count means an
     # unstacked frame (one sub).
-    metadata = img.metadata or {}
     exposure_s = float(metadata.get("exposure") or 0.0)
     n_subs = float(metadata.get("stack") or 1)
     data["time"] = start_jd + exposure_s * n_subs / 2.0 / 86400.0
-    data["airmass"] = _airmass_from_header(img.header)
+    data["airmass"] = _airmass_from_metadata(metadata)
     data["peak_count"] = phot["peak_count"]
     data["stars_in_exp"] = len(img.coords)
     data["ra"] = ra_deg

@@ -7,6 +7,8 @@
     "moffat_beta": 3.0,
     "header_map": {
         "_note": "Header map for the Seestar50, raw and stacked frames.",
+        "_airmass": "used verbatim when present; otherwise derived from ra/dec/site/obs_time",
+        "airmass": "@AIRMASS",
         "obs_time": "@DATE-OBS",
         "site_lat": "@SITELAT",
         "site_lon": "@SITELONG",
