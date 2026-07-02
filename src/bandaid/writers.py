@@ -16,8 +16,9 @@ list of Path``:
 
 * ``frame_result`` is the frame's ``{filter: astropy.table.Table}`` mapping. Each
   table carries the full set of measured columns (``tot_count``, ``count_err``,
-  ``snr``, ``sky``, ``airmass``, ``centroid_drift``, ...) -- a superset of what a
-  ``.star`` file records -- and ``meta["full_image_meta"]`` / ``meta["fwhm"]``.
+  ``snr``, ``bkgd_count``, ``airmass``, ``centroid_drift``, ...) -- a superset
+  of what a ``.star`` file records -- and ``meta["full_image_meta"]`` /
+  ``meta["fwhm"]``.
   A writer that wants AAVSO-starlist semantics can call
   :func:`~bandaid.photometry.good_star_mask` /
   :func:`~bandaid.photometry.eloy_to_starlist` itself.

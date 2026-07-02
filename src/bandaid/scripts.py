@@ -437,7 +437,9 @@ def _qa_record_ok(file, by_filter):
     n_detected = (
         int(representative["stars_in_exp"][0]) if "stars_in_exp" in cols else None
     )
-    sky_median = float(representative["sky"][0]) if "sky" in cols else None
+    sky_median = (
+        float(np.median(representative["bkgd_count"])) if "bkgd_count" in cols else None
+    )
     n_good_stars = None
     has_phot_cols = {"tot_count", "count_err", "x", "y"} <= cols
     has_bounds = {"width", "height"} <= set(full_meta)

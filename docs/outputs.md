@@ -68,7 +68,7 @@ for star_list in star_set.star_lists:
 ### Richer columns: in-memory mode
 
 The written `.star` file holds only the schema fields above. If you want the
-extra per-star diagnostics bandaid computes — `sky`, `snr`, `airmass`, and the
+extra per-star diagnostics bandaid computes — `bkgd_count`, `snr`, `airmass`, and the
 `centroid_drift` flag (below) — run the batch **in memory** from Python by
 passing `output_dir=None`, which returns the full photometry tables instead of
 writing files:
@@ -78,7 +78,7 @@ from bandaid import photometer_frames
 
 frames, results = photometer_frames(["night/"], output_dir=None)
 table = results[frames[0]]["TR"]   # an astropy Table with all columns
-table.colnames                     # tot_count, count_err, sky, snr, centroid_drift, …
+table.colnames                     # tot_count, count_err, bkgd_count, snr, centroid_drift, …
 ```
 
 ### Writing a different format: custom writers
@@ -88,7 +88,7 @@ step is pluggable. A **frame writer** is any callable
 `write(frame_result, output_path)` where:
 
 - `frame_result` is the frame's `{filter: astropy.table.Table}` mapping — the same rich
-    tables as in-memory mode (`sky`, `snr`, `airmass`, `centroid_drift`, … — a
+    tables as in-memory mode (`bkgd_count`, `snr`, `airmass`, `centroid_drift`, … — a
     *superset* of the `.star` fields), each carrying `meta["full_image_meta"]` and
     `meta["fwhm"]`;
 - `output_path` is the resolved per-frame path (`<stem>` + `output_suffix`); a

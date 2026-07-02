@@ -819,6 +819,34 @@ class TestProcessBatchToDisk:
         # A WCS solve failure is recorded as an explicit non-solve.
         assert bad["wcs_solved"] == "False"
 
+    def test_qa_manifest_sky_median_is_median_of_bkgd_count(
+        self, monkeypatch, tmp_path, by_filter
+    ):
+        """
+        ``sky_median`` is the median of the per-star ``bkgd_count`` (#52).
+
+        The broken ``sky`` column is gone, so the manifest derives its sky
+        estimate from ``bkgd_count`` -- the correct per-star per-pixel annulus
+        background -- and is finally an actual median, as the docs describe.
+        """
+        result = by_filter()
+        # Distinct per-star backgrounds in the representative (first) table so
+        # the median is unambiguous: median([2, 8]) = 5.
+        result["TR"]["bkgd_count"] = [2.0, 8.0]
+        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: result)
+
+        scripts.process_batch(
+            ["a.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+        )
+
+        with (tmp_path / scripts.QA_MANIFEST_FILENAME).open(newline="") as f:
+            rows = list(csv.DictReader(f))
+
+        assert float(rows[0]["sky_median"]) == pytest.approx(5.0)
+
     def test_qa_manifest_can_be_disabled(self, monkeypatch, tmp_path, by_filter):
         """``write_qa_manifest=False`` writes only starlists, no manifest."""
         monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
