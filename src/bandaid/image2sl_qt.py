@@ -30,8 +30,10 @@ checkerboard-free image.
 
 import numpy as np
 
+from .exceptions import DegenerateBayerChannelError
 
-def generate_bayer_masks(shape, metadata, *, append_l4=False):
+
+def generate_bayer_masks(shape, metadata, *, append_l4=True):
     """
     Generate mask for each color in a Bayer array.
 
@@ -43,7 +45,9 @@ def generate_bayer_masks(shape, metadata, *, append_l4=False):
         The image metadata dictionary
     append_l4 : bool, optional
         If True, add an "L4" key mapped to None to the returned dict. The None
-        mask signals a full-frame (unmasked) luminance channel. Default False.
+        mask signals a full-frame (unmasked) luminance channel. Default True,
+        matching `bandaid.scripts.prepare_batch`, `photometer_frames`, and the
+        CLI (issue #61).
 
     Returns
     -------
@@ -109,6 +113,14 @@ def bayer_balance_image(image):
     ----------
     image : np.ndarray
         The image to be modified
+
+    Raises
+    ------
+    DegenerateBayerChannelError
+        If a CFA sub-grid's balancing-window sample is empty (every pixel fell
+        outside the ``[0, cutoff)`` window) or has zero variance (a constant
+        sub-frame). Either case would otherwise silently divide by zero and
+        write ``inf``/``NaN`` into the image.
     """
     # Drop the casts to float -- this has already been done
     temp1 = image[0::2, 0::2]
@@ -127,6 +139,27 @@ def bayer_balance_image(image):
     temp4x = temp4[(temp4 >= 0) & (temp4 < cutoff)]
 
     tempexes = [temp1x, temp2x, temp3x, temp4x]
+    slices = [(0, 0), (0, 1), (1, 0), (1, 1)]
+
+    # A degenerate sample (empty, or constant so its stdev is zero) would
+    # otherwise divide by zero below and silently write inf/NaN into the
+    # image, which then propagates into detection. Fail loudly instead.
+    for (row, col), tempx in zip(slices, tempexes, strict=True):
+        if tempx.size == 0:
+            msg = (
+                f"Bayer channel at CFA sub-grid ({row}, {col}) has no pixels "
+                f"in the balancing window [0, {cutoff:.6g}); cannot compute a "
+                "balance factor for this frame."
+            )
+            raise DegenerateBayerChannelError(msg)
+        if tempx.std() == 0:
+            msg = (
+                f"Bayer channel at CFA sub-grid ({row}, {col}) has zero "
+                "variance (a constant sub-frame); cannot compute a balance "
+                "factor for this frame."
+            )
+            raise DegenerateBayerChannelError(msg)
+
     # adjust everything based on the overall mean
     target_stdev = np.mean([temp.std() for temp in tempexes])
     # The temp1x, etc arrays are not all the same size, so just
@@ -139,7 +172,6 @@ def bayer_balance_image(image):
     # onto the common mean, so all four channels end up with the same background
     # grayness and noise. The four sub-grids are disjoint pixels, so the order and
     # the write-back are independent.
-    slices = [(0, 0), (0, 1), (1, 0), (1, 1)]
     for (row, col), tempx in zip(slices, tempexes, strict=True):
         factor = target_stdev / tempx.std()
         scaled = image[row::2, col::2] * factor

@@ -16,6 +16,7 @@ propagate, so it is not silently swallowed as a "bad frame".
 __all__ = [
     "BandaidError",
     "BatchPrepError",
+    "DegenerateBayerChannelError",
     "FrameError",
     "FrameMetadataError",
     "NoUsableStarsError",
@@ -74,6 +75,10 @@ class FrameMetadataError(FrameError):
 
 class NoUsableStarsError(FrameError):
     """No stars survived photometry filtering, so the frame yields no output."""
+
+
+class DegenerateBayerChannelError(FrameError):
+    """A Bayer channel's pixel sample was empty or had zero variance."""
 
 
 class BatchPrepError(BandaidError):

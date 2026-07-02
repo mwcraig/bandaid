@@ -113,12 +113,23 @@ class TestPrepareBatch:
         _, _, radecs, _, _ = _patch_prep(monkeypatch)
         cnn = object()
 
-        prep = scripts.prepare_batch("frame1.fits", cnn=cnn)
+        # append_l4 defaults to True (issue #61); pin it False here so this
+        # test's "three CFA masks" stays decoupled from that default.
+        prep = scripts.prepare_batch("frame1.fits", cnn=cnn, append_l4=False)
 
         assert isinstance(prep, scripts.BatchPrep)
         np.testing.assert_array_equal(prep.radecs, radecs)
         assert prep.cnn is cnn
         assert set(prep.bayer_masks) == {"TR", "TB", "TG"}
+
+    def test_append_l4_true_by_default(self, monkeypatch):
+        """Omitting ``append_l4`` adds the L4 channel (issue #61)."""
+        _patch_prep(monkeypatch)
+
+        prep = scripts.prepare_batch("frame1.fits", cnn=object())
+
+        assert set(prep.bayer_masks) == {"TR", "TB", "TG", "L4"}
+        assert prep.bayer_masks["L4"] is None
 
     def test_first_frame_resolved_with_config_instrument_profile(self, monkeypatch):
         """

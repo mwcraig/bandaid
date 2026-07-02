@@ -26,6 +26,7 @@ from eloy.ballet.model import Ballet
 from bandaid import measure_photometry
 from bandaid.config import ApertureConfig, InstrumentProfile, PhotometryConfig
 from bandaid.exceptions import (
+    DegenerateBayerChannelError,
     FrameMetadataError,
     NoUsableStarsError,
     TooFewStarsError,
@@ -153,7 +154,6 @@ def test_measure_photometry_single_source(make_test_image, include_noise, noise_
     photom = measure_photometry(
         source_image,
         np.array([[source_x, source_y]]),
-        np.array([[source_x, source_y]]),
         fwhm,
         egain,
         mask,
@@ -221,10 +221,9 @@ def test_measure_photometry_default_matches_explicit_constants(make_test_image):
     image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
     egain = 0.3
 
-    default = measure_photometry(image, coords, coords, fwhm, egain, mask)
+    default = measure_photometry(image, coords, fwhm, egain, mask)
     explicit = measure_photometry(
         image,
-        coords,
         coords,
         fwhm,
         egain,
@@ -247,7 +246,6 @@ def test_measure_photometry_custom_radii(make_test_image):
 
     photom = measure_photometry(
         image,
-        coords,
         coords,
         fwhm,
         egain,
@@ -276,7 +274,6 @@ def test_measure_photometry_custom_annulus(make_test_image):
     photom = measure_photometry(
         image,
         coords,
-        coords,
         fwhm,
         egain,
         mask,
@@ -296,7 +293,6 @@ def test_measure_photometry_accepts_list_radii(make_test_image):
     photom = measure_photometry(
         image,
         coords,
-        coords,
         fwhm,
         egain,
         mask,
@@ -313,7 +309,6 @@ def test_measure_photometry_accepts_scalar_radii(make_test_image):
 
     photom = measure_photometry(
         image,
-        coords,
         coords,
         fwhm,
         egain,
@@ -354,7 +349,7 @@ def test_measure_photometry_negative_net_count_no_warning():
         # Promote RuntimeWarning specifically to an error so the test fails if
         # the function emits it; other warning categories are left untouched.
         warnings.simplefilter("error", RuntimeWarning)
-        photom = measure_photometry(image, coords, coords, fwhm, egain, mask)
+        photom = measure_photometry(image, coords, fwhm, egain, mask)
 
     # The NaN contract: negative count survives, SNR is NaN, no warning was raised.
     assert photom["tot_count"][0] < 0
@@ -380,7 +375,6 @@ def test_measure_photometry_rejects_invalid_annulus(make_test_image, bad_annulus
         measure_photometry(
             image,
             coords,
-            coords,
             fwhm,
             egain,
             mask,
@@ -400,7 +394,6 @@ def test_measure_photometry_rejects_aperture_larger_than_annulus(make_test_image
         measure_photometry(
             image,
             coords,
-            coords,
             fwhm,
             egain,
             mask,
@@ -418,7 +411,6 @@ def test_measure_photometry_accepts_non_subscriptable_annulus(make_test_image):
     # must use the unpacked values rather than re-indexing the original.
     photom = measure_photometry(
         image,
-        coords,
         coords,
         fwhm,
         egain,
@@ -482,7 +474,7 @@ def _bright_neighbor_scene(make_test_image, fwhm=_PEAK_SCENE_FWHM, sky=10.0):
     return image, coords
 
 
-def _peak_scene_photometry(image, centroid_coords, aligned_coords, mask):
+def _peak_scene_photometry(image, centroid_coords, mask):
     """
     Run ``measure_photometry`` on the bright-neighbor scene.
 
@@ -492,8 +484,6 @@ def _peak_scene_photometry(image, centroid_coords, aligned_coords, mask):
         Scene from `_bright_neighbor_scene`.
     centroid_coords : numpy.ndarray
         Measured centroid coordinates.
-    aligned_coords : numpy.ndarray
-        Catalog-aligned coordinates.
     mask : numpy.ndarray or None
         Bayer channel mask (True = excluded), or None for the full frame.
 
@@ -505,7 +495,6 @@ def _peak_scene_photometry(image, centroid_coords, aligned_coords, mask):
     return measure_photometry(
         image,
         centroid_coords,
-        aligned_coords,
         _PEAK_SCENE_FWHM,
         1.0,
         mask,
@@ -524,7 +513,7 @@ def test_peak_count_is_the_targets_own_peak(make_test_image):
     """
     image, coords = _bright_neighbor_scene(make_test_image)
 
-    photom = _peak_scene_photometry(image, coords, coords, None)
+    photom = _peak_scene_photometry(image, coords, None)
 
     peak_target, peak_control = photom["peak_count"]
     # Both stars peak at ~110 (amplitude 100 + sky 10); anything approaching
@@ -547,10 +536,11 @@ def test_peak_count_respects_the_channel_mask(make_test_image):
     masks = generate_bayer_masks(
         image.shape,
         {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0},
+        append_l4=False,
     )
 
     peaks = {
-        name: _peak_scene_photometry(image, coords, coords, mask)["peak_count"]
+        name: _peak_scene_photometry(image, coords, mask)["peak_count"]
         for name, mask in masks.items()
     }
 
@@ -578,10 +568,11 @@ def test_peak_count_masked_star_at_frame_edge(make_test_image, channel):
     masks = generate_bayer_masks(
         image.shape,
         {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0},
+        append_l4=False,
     )
     coords = np.array([[0.0, 0.0]])
 
-    photom = _peak_scene_photometry(image, coords, coords, masks[channel])
+    photom = _peak_scene_photometry(image, coords, masks[channel])
 
     assert photom["peak_count"][0] == sky
 
@@ -596,11 +587,11 @@ def test_peak_count_nan_for_non_finite_centroid(make_test_image):
     filters) while every other row keeps its all-finite-run values.
     """
     image, coords = _bright_neighbor_scene(make_test_image)
-    baseline = _peak_scene_photometry(image, coords, coords, None)
+    baseline = _peak_scene_photometry(image, coords, None)
 
     bad_centroids = coords.copy()
     bad_centroids[0] = np.nan
-    photom = _peak_scene_photometry(image, bad_centroids, coords, None)
+    photom = _peak_scene_photometry(image, bad_centroids, None)
 
     assert np.isnan(photom["peak_count"][0])
     # The finite row is bit-identical to the all-finite run, for the peak and
@@ -692,6 +683,12 @@ def test_min_separation_fwhm_matches_general_radius_derivation():
         )
     # A bigger aperture sweeps up more of the neighbor -> larger separation.
     assert min_separation_fwhm(5.0, aperture_radius_fwhm=2.0) > min_separation_fwhm(5.0)
+
+
+def test_min_separation_fwhm_tuning_params_are_keyword_only():
+    """``tolerance``/``beta``/``aperture_radius_fwhm`` cannot be passed positionally."""
+    with pytest.raises(TypeError):
+        min_separation_fwhm(0.0, CONTAMINATION_TOLERANCE)
 
 
 def _grid_star_image(make_test_image, fwhm, *, jitter=1.0, seed=SEED):
@@ -1687,6 +1684,13 @@ class TestNeighborContaminationFlag:
         flag = neighbor_contamination_flag(coords, mags, fwhm=fwhm)
         assert not flag.any()
 
+    def test_tuning_params_are_keyword_only(self):
+        """The tuning params cannot be passed positionally (issue #61)."""
+        coords = np.array([[0.0, 0.0], [1.0, 0.0]])
+        mags = np.array([10.0, 10.0])
+        with pytest.raises(TypeError):
+            neighbor_contamination_flag(coords, mags, 2.0, CONTAMINATION_TOLERANCE)
+
     def test_aperture_radius_widens_the_flagged_region(self):
         """
         A pair clean for the default 1-FWHM aperture is flagged at 2 FWHM.
@@ -1732,6 +1736,13 @@ class TestNeighborContaminationFlagSky:
         mags = np.array([10.0, np.nan])
         flag = neighbor_contamination_flag_sky(radecs, mags, fwhm_arcsec=2.0)
         assert not flag.any()
+
+    def test_tuning_params_are_keyword_only(self):
+        """The tuning params cannot be passed positionally (PR #70 review, #61)."""
+        radecs = np.array([[10.0, 0.0], [10.0 + 0.5 / 3600.0, 0.0]])
+        mags = np.array([10.0, 10.0])
+        with pytest.raises(TypeError):
+            neighbor_contamination_flag_sky(radecs, mags, 2.0, CONTAMINATION_TOLERANCE)
 
     def test_matches_pixel_front_end_on_equator(self):
         """
@@ -2392,11 +2403,12 @@ class TestCalculateL4Quantities:
         masks = generate_bayer_masks(
             image.shape,
             {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0},
+            append_l4=False,
         )
 
         by_filter = {}
         for name, mask in masks.items():
-            phot = _peak_scene_photometry(image, coords, coords, mask)
+            phot = _peak_scene_photometry(image, coords, mask)
             t = Table()
             for col in (
                 "tot_count",
@@ -2780,6 +2792,24 @@ class TestCalibrationSequence:
         assert len(regions) == n_sources
         assert coords.shape == (n_sources, 2)
 
+    def test_attaches_file_when_bayer_balance_is_degenerate(
+        self, make_test_image, tmp_path, monkeypatch
+    ):
+        """A degenerate-channel error from bayer_balance_image gets the file (#61)."""
+
+        def raising_balance(_arr):
+            msg = "zero variance"
+            raise DegenerateBayerChannelError(msg)
+
+        monkeypatch.setattr("bandaid.photometry.bayer_balance_image", raising_balance)
+
+        image = _detectable_image(make_test_image)
+        path = _write_seestar_fits(tmp_path / "degenerate.fits", image)
+
+        with pytest.raises(DegenerateBayerChannelError) as exc_info:
+            calibration_sequence(path, threshold=1, detect_on_bayer_balanced=True)
+        assert exc_info.value.file == path
+
 
 class TestPrepareImageBranches:
     """Branch coverage for ``prepare_image`` beyond the alignment fallback."""
@@ -2839,6 +2869,44 @@ class TestPrepareImageBranches:
         # differs from the untouched calibrated frame).
         assert len(centroid_inputs) == 1
         assert not np.allclose(centroid_inputs[0], img.calibrated_data)
+
+    def test_attaches_file_when_centroiding_bayer_balance_is_degenerate(
+        self, make_test_image, tmp_path, monkeypatch
+    ):
+        """
+        A degenerate-channel error from the centroiding balance pass gets the file.
+
+        ``prepare_image`` calls ``bayer_balance_image`` a second time (for
+        centroiding) after ``calibration_sequence``'s own detection-time call.
+        The fake lets the first (detection) call succeed and only the second
+        (centroiding) call raise, isolating that call site's own file-attaching
+        ``try``/``except`` (issue #61).
+        """
+        _stub_wcs_and_centroid(monkeypatch)
+        image = _detectable_image(make_test_image)
+        path = _write_seestar_fits(tmp_path / "degenerate2.fits", image)
+
+        calls = {"n": 0}
+
+        def flaky_balance(_arr):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return
+            msg = "zero variance"
+            raise DegenerateBayerChannelError(msg)
+
+        monkeypatch.setattr("bandaid.photometry.bayer_balance_image", flaky_balance)
+        expected_call_count = 2  # detection (succeeds), then centroiding (raises)
+
+        with pytest.raises(DegenerateBayerChannelError) as exc_info:
+            prepare_image(
+                path,
+                _REF_RADECS,
+                None,
+                detect_on_bayer_balanced=True,
+            )
+        assert exc_info.value.file == path
+        assert calls["n"] == expected_call_count
 
 
 class TestProcessOneImage:
