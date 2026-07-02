@@ -12,7 +12,7 @@ import contextlib
 import io
 import logging
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import astropy.units as u
 import numpy as np
@@ -36,6 +36,7 @@ from .config import (
     PhotometryConfig,
 )
 from .exceptions import (
+    DegenerateBayerChannelError,
     FrameMetadataError,
     NoUsableStarsError,
     TooFewStarsError,
@@ -147,6 +148,7 @@ DRIFT_CAP_PIX = _DEFAULT_DRIFT.drift_cap_pix  # absolute pixel cap on allowed dr
 
 def min_separation_fwhm(
     delta_mag,
+    *,
     tolerance=CONTAMINATION_TOLERANCE,
     beta=MOFFAT_BETA,
     aperture_radius_fwhm=1.0,
@@ -286,6 +288,7 @@ def neighbor_contamination_flag(
     coords,
     mags,
     fwhm,
+    *,
     tolerance=CONTAMINATION_TOLERANCE,
     beta=MOFFAT_BETA,
     aperture_radius_fwhm=1.0,
@@ -335,6 +338,7 @@ def neighbor_contamination_flag_sky(
     radecs,
     mags,
     fwhm_arcsec,
+    *,
     tolerance=CONTAMINATION_TOLERANCE,
     beta=MOFFAT_BETA,
     aperture_radius_fwhm=1.0,
@@ -720,6 +724,10 @@ def calibration_sequence(
     FrameMetadataError
         If the header is missing a required keyword (propagated from
         `metadata_from_header`, with the source file attached).
+    DegenerateBayerChannelError
+        If ``detect_on_bayer_balanced`` is True and a CFA sub-grid sample is
+        empty or has zero variance (propagated from `bayer_balance_image`,
+        with the source file attached).
 
     """
     data = fits.getdata(file)
@@ -741,7 +749,12 @@ def calibration_sequence(
     # real counts, so balance a *copy* and keep calibrated_data untouched.
     if detect_on_bayer_balanced:
         detection_image = calibrated_data.copy()
-        bayer_balance_image(detection_image)
+        try:
+            bayer_balance_image(detection_image)
+        except DegenerateBayerChannelError as exc:
+            # bayer_balance_image has only the array, not the path; label it.
+            exc.file = file
+            raise
     else:
         detection_image = calibrated_data
 
@@ -773,7 +786,7 @@ def calibration_sequence(
     return calibrated_data, metadata, region_coords_xy, fwhm, regions
 
 
-def _airmass_from_metadata(metadata):
+def _airmass_from_metadata(metadata, *, obs_datetime=None):
     """
     Return the frame airmass from the resolved metadata, deriving it if absent.
 
@@ -802,6 +815,12 @@ def _airmass_from_metadata(metadata):
         The frame metadata resolved by `metadata_from_header`. Uses
         ``airmass`` when present, otherwise ``ra``, ``dec``, ``site_lat``,
         ``site_lon``, ``obs_time``, and (optionally) ``site_elev``.
+    obs_datetime : datetime.datetime or None, optional
+        A pre-parsed ``obs_time``, reused instead of re-parsing
+        ``metadata["obs_time"]``. Callers that already parsed ``obs_time`` for
+        another purpose (e.g. the mid-exposure time column) can pass it here to
+        avoid parsing the same string twice. If None (default), ``obs_time``
+        is parsed from `metadata` as before.
 
     Returns
     -------
@@ -833,7 +852,8 @@ def _airmass_from_metadata(metadata):
         site_elev = float(raw_elev) if raw_elev is not None else 0.0
         ra = float(metadata["ra"])
         dec = float(metadata["dec"])
-        obs_datetime = parser.parse(metadata["obs_time"])
+        if obs_datetime is None:
+            obs_datetime = parser.parse(metadata["obs_time"])
     # OverflowError: dateutil raises it for all-digit strings too large for a
     # C long (a corrupted numeric obs_time), documented in parser.parse.
     except (KeyError, ValueError, TypeError, OverflowError) as exc:
@@ -1053,6 +1073,49 @@ class ImageData:
     header: fits.Header
     input_photometry_coords: object = None
     metadata: dict = None
+    # Populated lazily by the first `resolve_time_airmass` call for this frame
+    # and reused by the later calls (one per Bayer channel) that share this
+    # same `ImageData`, so the obs_time parse and airmass derivation run once
+    # per frame rather than once per channel (issue #61).
+    _time_airmass_cache: tuple | None = field(
+        default=None, repr=False, init=False, compare=False
+    )
+
+    def resolve_time_airmass(self):
+        """
+        Resolve and cache this frame's ``(start_jd, airmass)`` from `metadata`.
+
+        Parsed once per frame and reused by every `build_photometry_table` call
+        for this image (one per Bayer channel), instead of re-parsing
+        ``metadata["obs_time"]`` and re-deriving the airmass on every call
+        (issue #61).
+
+        Returns
+        -------
+        tuple of (float, float)
+            ``(start_jd, airmass)``: the observation start time as a Julian
+            Date, and the frame airmass (see `_airmass_from_metadata`).
+
+        Raises
+        ------
+        FrameMetadataError
+            If ``metadata["obs_time"]`` is missing or unparseable.
+        """
+        if self._time_airmass_cache is None:
+            metadata = self.metadata or {}
+            try:
+                obs_datetime = parser.parse(metadata["obs_time"])
+            # OverflowError: dateutil raises it for all-digit strings too large
+            # for a C long (a corrupted numeric obs_time), per parser.parse.
+            except (KeyError, ValueError, TypeError, OverflowError) as exc:
+                msg = "missing or unparseable observation time (obs_time) metadata"
+                raise FrameMetadataError(msg) from exc
+            start_jd = Time(obs_datetime).jd
+            # Reuse the already-parsed obs_datetime instead of having
+            # _airmass_from_metadata parse metadata["obs_time"] again.
+            airmass = _airmass_from_metadata(metadata, obs_datetime=obs_datetime)
+            self._time_airmass_cache = (start_jd, airmass)
+        return self._time_airmass_cache
 
 
 def align(coords, radecs=None, *, photometry_coords=None, wcs=None):
@@ -1208,7 +1271,6 @@ def annulus_sigma_clip_stats(data, coords, r_in, r_out, input_mask=None, sigma=3
 def measure_photometry(
     calibrated_data,
     centroid_coords,
-    aligned_coords,  # noqa: ARG001 -- retained for API compatibility (issue #54).
     fwhm,
     egain,
     mask,
@@ -1226,10 +1288,6 @@ def measure_photometry(
     centroid_coords : numpy.ndarray
         Centroided star coordinates. Every measurement, including the
         ``peak_count`` box, is anchored here.
-    aligned_coords : numpy.ndarray
-        Catalog-aligned star coordinates. Unused; retained for backward
-        compatibility. The peak box used to be anchored here, off-center from
-        where the apertures measure (issue #54).
     fwhm : float
         FWHM of the PSF in pixels.
     egain : float
@@ -1480,6 +1538,10 @@ def prepare_image(
         If the per-image WCS cannot be solved. The source `file` is attached to
         the error before it propagates. (`calibration_sequence` may also raise
         `TooFewStarsError`, which propagates unchanged.)
+    DegenerateBayerChannelError
+        If ``detect_on_bayer_balanced`` is True and a CFA sub-grid sample is
+        empty or has zero variance (propagated from `bayer_balance_image`,
+        with the source `file` attached).
     """
     # "calibrate" the data and get initial detections for WCS alignment and
     # FWHM estimation. calibration_sequence raises TooFewStarsError (a
@@ -1504,7 +1566,12 @@ def prepare_image(
 
     if detect_on_bayer_balanced:
         working_image = calibrated_data.copy()
-        bayer_balance_image(working_image)
+        try:
+            bayer_balance_image(working_image)
+        except DegenerateBayerChannelError as exc:
+            # bayer_balance_image has only the array, not the path; label it.
+            exc.file = file
+            raise
     else:
         working_image = calibrated_data
 
@@ -1587,13 +1654,11 @@ def build_photometry_table(
         from the header, usually ``DATE-OBS``, by the instrument's
         ``header_map``) plus half the effective exposure (``exposure * stack``,
         so stacked frames are handled correctly); if the exposure is missing
-        from the frame metadata, the start time is recorded (issue #57).
-
-    Raises
-    ------
-    FrameMetadataError
-        If the image metadata has a missing or unparseable observation time
-        (``obs_time``).
+        from the frame metadata, the start time is recorded (issue #57). The
+        start time and airmass are resolved once per frame and cached on
+        ``img`` (see `ImageData.resolve_time_airmass`), which may raise
+        `FrameMetadataError` if the image metadata has a missing or
+        unparseable observation time (``obs_time``); that propagates unchanged.
     """
     config = config or PhotometryConfig()
     if radii is None:
@@ -1607,7 +1672,6 @@ def build_photometry_table(
     phot = measure_photometry(
         img.calibrated_data,
         img.centroid_coords,
-        img.aligned_coords,
         img.fwhm,
         img.metadata["egain"],
         mask,
@@ -1639,14 +1703,13 @@ def build_photometry_table(
     # The metadata was resolved through the instrument's header_map, so the
     # time and airmass inputs are dialect-aware (issue #59); the raw header is
     # not consulted again here. obs_time is usually mapped from DATE-OBS.
+    #
+    # `img` is shared across one `build_photometry_table` call per Bayer
+    # channel (TR/TG/TB/L4); resolve_time_airmass resolves the obs_time parse
+    # and airmass derivation once per frame and caches on `img` for the later
+    # channels, instead of re-parsing/re-deriving on every call (issue #61).
     metadata = img.metadata or {}
-    try:
-        start_jd = Time(parser.parse(metadata["obs_time"])).jd
-    # OverflowError: dateutil raises it for all-digit strings too large for a
-    # C long (a corrupted numeric obs_time), documented in parser.parse.
-    except (KeyError, ValueError, TypeError, OverflowError) as exc:
-        msg = "missing or unparseable observation time (obs_time) metadata"
-        raise FrameMetadataError(msg) from exc
+    start_jd, airmass = img.resolve_time_airmass()
     # obs_time is the exposure *start*. Record mid-exposure instead: for a
     # stacked frame the effective exposure is exposure * stack, so the start
     # time is wrong by minutes (issue #57). Fall back to the start time when
@@ -1655,7 +1718,7 @@ def build_photometry_table(
     exposure_s = float(metadata.get("exposure") or 0.0)
     n_subs = float(metadata.get("stack") or 1)
     data["time"] = start_jd + exposure_s * n_subs / 2.0 / 86400.0
-    data["airmass"] = _airmass_from_metadata(metadata)
+    data["airmass"] = airmass
     data["peak_count"] = phot["peak_count"]
     data["stars_in_exp"] = len(img.coords)
     data["ra"] = ra_deg

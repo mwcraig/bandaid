@@ -14,35 +14,28 @@ import numpy as np
 import pytest
 from astropy.io import fits
 
+from bandaid.exceptions import DegenerateBayerChannelError
 from bandaid.image2sl_qt import bayer_balance_image, generate_bayer_masks
 
 SHAPE = (4, 4)
 METADATA = {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0}
 
 
-def test_append_l4_false_by_default():
-    """Without ``append_l4`` there is no L4 entry, just the three colors."""
+def test_append_l4_true_by_default():
+    """Without ``append_l4`` an "L4" -> None entry is added last (issue #61)."""
     default = generate_bayer_masks(SHAPE, METADATA)
-    explicit_false = generate_bayer_masks(SHAPE, METADATA, append_l4=False)
+    explicit_true = generate_bayer_masks(SHAPE, METADATA, append_l4=True)
+    without_l4 = generate_bayer_masks(SHAPE, METADATA, append_l4=False)
 
     assert isinstance(default, dict)
-    # Key order is preserved (R, B, G).
-    assert list(default) == ["TR", "TB", "TG"]
-    assert "L4" not in default
+    # Key order is preserved (R, B, G), with L4 last.
+    assert list(default) == ["TR", "TB", "TG", "L4"]
+    assert default["L4"] is None
     # Passing the default explicitly behaves the same as omitting it.
-    assert list(explicit_false) == list(default)
-
-
-def test_append_l4_true_appends_entry():
-    """With ``append_l4=True`` an "L4" -> None entry is added last."""
-    default = generate_bayer_masks(SHAPE, METADATA)
-    with_l4 = generate_bayer_masks(SHAPE, METADATA, append_l4=True)
-
-    assert len(with_l4) == len(default) + 1
-    assert "L4" in with_l4
-    assert with_l4["L4"] is None
-    # The L4 entry comes last so the RGB masks are available before it.
-    assert list(with_l4)[-1] == "L4"
+    assert list(explicit_true) == list(default)
+    # append_l4=False still omits the entry entirely.
+    assert list(without_l4) == ["TR", "TB", "TG"]
+    assert "L4" not in without_l4
 
 
 def _assert_valid_positions(mask, positions):
@@ -102,7 +95,7 @@ def test_generate_bayer_masks_roworder_offsets(roworder, xbayroff, ybayroff, exp
         "xbayroff": xbayroff,
         "ybayroff": ybayroff,
     }
-    masks = generate_bayer_masks(SHAPE, metadata)
+    masks = generate_bayer_masks(SHAPE, metadata, append_l4=False)
 
     assert set(masks) == set(expected)
     for color, positions in expected.items():
@@ -145,6 +138,7 @@ def test_masks_select_the_right_colors_for_ybayroff(ybayroff):
     masks = generate_bayer_masks(
         SHAPE,
         {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": ybayroff},
+        append_l4=False,
     )
     for name, mask in masks.items():
         selected = colors[~mask]  # in the mask, False means use/valid
@@ -160,6 +154,7 @@ def test_xbayroff_is_honored():
     masks = generate_bayer_masks(
         SHAPE,
         {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0, "xbayroff": 1},
+        append_l4=False,
     )
     for name, mask in masks.items():
         selected = colors[~mask]
@@ -214,7 +209,7 @@ def test_generate_bayer_masks_against_han_kleijn_conformance_images(fixture_name
         "xbayroff": header.get("XBAYROFF", 0),
         "ybayroff": header.get("YBAYROFF", 0),
     }
-    masks = generate_bayer_masks(data.shape, metadata)
+    masks = generate_bayer_masks(data.shape, metadata, append_l4=False)
 
     n_rows = data.shape[0]
     for color, (top, bottom, left, right) in _BAYER_V6_SOLID_BLOCKS.items():
@@ -328,3 +323,47 @@ def test_bayer_balance_image_ignores_out_of_range_pixels():
     assert np.isfinite(post_means).all()
     sane_mean_ceiling = 1e4
     assert max(post_means) < sane_mean_ceiling
+
+
+def test_bayer_balance_image_raises_on_uniform_image():
+    """
+    A fully uniform (constant) image raises rather than writing inf/NaN.
+
+    Every channel is constant, so its stdev is 0 and the balancing-window
+    cutoff (``mean + 5*std``) collapses onto the shared value; the strict
+    ``< cutoff`` filter then excludes every pixel, so this hits the "empty
+    sample" guard rather than the zero-variance one. Either way,
+    ``bayer_balance_image`` must raise instead of dividing by zero and
+    silently corrupting the image (issue #61).
+    """
+    fill_value = 100.0
+    image = np.full((8, 8), fill_value)
+
+    with pytest.raises(DegenerateBayerChannelError, match="no pixels"):
+        bayer_balance_image(image)
+
+    # The guard must fire before any write-back mutates the array.
+    assert np.all(image == fill_value)
+
+
+def test_bayer_balance_image_raises_on_constant_channel():
+    """One constant CFA sub-grid (zero variance) raises, not just a uniform frame."""
+    image, _ = _make_bayer_imbalanced_image()
+    # Force the (0, 0) sub-grid to a single repeated value -- std() == 0 -- while
+    # leaving the other three channels normally distributed.
+    image[0::2, 0::2] = 42.0
+
+    with pytest.raises(DegenerateBayerChannelError, match="zero"):
+        bayer_balance_image(image)
+
+
+def test_bayer_balance_image_raises_on_empty_channel_sample():
+    """A CFA sub-grid with every pixel excluded by the ``>= 0`` filter raises."""
+    image, _ = _make_bayer_imbalanced_image()
+    # The (0, 0) sub-grid is entirely negative, so the ``0 <= v < cutoff``
+    # balancing window excludes every one of its pixels (an empty sample),
+    # independent of the zero-variance case above (issue #61).
+    image[0::2, 0::2] = -5.0
+
+    with pytest.raises(DegenerateBayerChannelError, match="no pixels"):
+        bayer_balance_image(image)

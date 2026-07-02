@@ -237,7 +237,7 @@ def prepare_batch(
     *,
     cnn,
     config=None,
-    append_l4=False,
+    append_l4=True,
 ):
     """
     Compute the once-per-batch photometry inputs from the first frame.
@@ -266,7 +266,7 @@ def prepare_batch(
         used.
     append_l4 : bool, optional
         Whether to add a full-frame "L4" luminance channel to the Bayer masks.
-        Default False.
+        Default True.
 
     Returns
     -------
