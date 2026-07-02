@@ -786,6 +786,12 @@ def _airmass_from_header(header):
     formula, which stays accurate at the high airmass (up to ~4) these frames
     reach -- where the plane-parallel ``sec(z)`` overestimates by several percent.
 
+    The Kasten & Young formula is written for the *apparent* (refracted)
+    altitude, but the ``AltAz`` frame here is built without atmospheric
+    pressure, so the altitude fed to it is unrefracted. The resulting airmass
+    error is bounded: it vanishes overhead and stays below ~0.5% even at
+    airmass ~4, so no refraction correction is applied (issue #57).
+
     Parameters
     ----------
     header : astropy.io.fits.Header or dict
@@ -981,7 +987,9 @@ def good_star_mask(eloy_table, metadata):
     Boolean mask of rows that survive photometry filtering.
 
     A star is "good" when it has a finite, positive net count and error, lies
-    in-bounds, and is not flagged as contaminated. This is the same predicate
+    in-bounds (its pixel-center coordinate falls within
+    ``[-0.5, width - 0.5)`` in x and ``[-0.5, height - 0.5)`` in y), and is
+    not flagged as contaminated. This is the same predicate
     `eloy_to_starlist` uses to decide which rows reach the output StarList, so
     QA tooling can count good stars without rebuilding the StarList.
 
@@ -1004,11 +1012,16 @@ def good_star_mask(eloy_table, metadata):
     good &= eloy_table["tot_count"] > 0
     good &= np.isfinite(eloy_table["count_err"])
     good &= eloy_table["count_err"] > 0
+    # x/y are pixel-center coordinates: pixel 0 spans [-0.5, 0.5), so a center
+    # is on-frame when it lies in [-0.5, width - 0.5) (and likewise in y). The
+    # old ``> 0`` / ``< width`` test dropped a star centered on column 0 and
+    # admitted one up to a pixel past the last column (issue #57).
+    edge = -0.5  # lower edge of pixel 0 in pixel-center coordinates
     good &= (
-        (eloy_table["x"] > 0)
-        & (eloy_table["x"] < metadata["width"])
-        & (eloy_table["y"] > 0)
-        & (eloy_table["y"] < metadata["height"])
+        (eloy_table["x"] >= edge)
+        & (eloy_table["x"] < metadata["width"] + edge)
+        & (eloy_table["y"] >= edge)
+        & (eloy_table["y"] < metadata["height"] + edge)
     )
     if "contaminated" in eloy_table.colnames:
         good &= ~eloy_table["contaminated"]
@@ -1233,6 +1246,16 @@ def measure_photometry(
 
     Notes
     -----
+    The noise model behind ``count_err``/``snr`` sums, in quadrature, the
+    source Poisson noise and the per-pixel background scatter (the annulus
+    ``bkgd_std``) accumulated over the aperture area. It deliberately omits
+    the uncertainty of the background *estimate* itself (roughly
+    ``bkgd_std / sqrt(n_annulus_pixels)`` times the aperture area), a
+    standard, internally consistent simplification that slightly
+    underestimates the error when the annulus holds few pixels relative to
+    the aperture. The recombined L4 noise model in `calculate_l4_quantities`
+    makes the same simplification (issue #57).
+
     Per-star ``snr`` (and the noise terms feeding it) may be ``NaN`` for faint
     stars whose annulus background over-subtracts (negative ``net_count``) or for
     stars near the frame edge whose annulus statistics are undefined. These
@@ -1547,7 +1570,11 @@ def build_photometry_table(
     Table
         Photometry table for this image and mask. Includes a boolean
         ``centroid_drift`` column flagging stars whose centroid wandered too far
-        from its aligned position (see `centroid_drift_flag`).
+        from its aligned position (see `centroid_drift_flag`). The ``time``
+        column is the mid-exposure Julian Date: the ``DATE-OBS`` start plus
+        half the effective exposure (``exposure * stack``, so stacked frames
+        are handled correctly); if the exposure is missing from the frame
+        metadata, the start time is recorded (issue #57).
 
     Raises
     ------
@@ -1596,10 +1623,19 @@ def build_photometry_table(
     data["snr"] = phot["snr"]
     data["fluxes"] = phot["fluxes"]
     try:
-        data["time"] = Time(parser.parse(img.header["DATE-OBS"])).jd
+        start_jd = Time(parser.parse(img.header["DATE-OBS"])).jd
     except (KeyError, ValueError, TypeError) as exc:
         msg = "missing or unparseable DATE-OBS header keyword"
         raise FrameMetadataError(msg) from exc
+    # DATE-OBS is the exposure *start*. Record mid-exposure instead: for a
+    # stacked frame the effective exposure is exposure * stack, so the start
+    # time is wrong by minutes (issue #57). Fall back to the start time when
+    # the exposure is not in the metadata; a missing stack count means an
+    # unstacked frame (one sub).
+    metadata = img.metadata or {}
+    exposure_s = float(metadata.get("exposure") or 0.0)
+    n_subs = float(metadata.get("stack") or 1)
+    data["time"] = start_jd + exposure_s * n_subs / 2.0 / 86400.0
     data["airmass"] = _airmass_from_header(img.header)
     data["peak_count"] = phot["peak_count"]
     data["stars_in_exp"] = len(img.coords)
