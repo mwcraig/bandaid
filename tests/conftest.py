@@ -4,7 +4,7 @@ import astropy.units as u
 import numpy as np
 import pytest
 from astropy.modeling.models import Gaussian2D
-from astropy.table import Table
+from astropy.table import MaskedColumn, Table
 from photutils.datasets import make_model_image, make_noise_image
 
 from bandaid import catalog
@@ -12,13 +12,25 @@ from bandaid import catalog
 
 @pytest.fixture
 def gaia_table():
-    """A table shaped like the real ``I/345/gaia2`` result, brightest-first."""
+    """
+    A table shaped like the real ``I/345/gaia2`` result, brightest-first.
+
+    The faintest star has *masked* proper motions with NaN beneath the mask,
+    mirroring the astroquery round-trip for DR2 sources without a PM solution:
+    ``MaskedColumn.quantity`` yields a NaN-bearing plain ``Quantity`` for such
+    rows -- not a ``numpy.ma.MaskedArray``, so ``np.ma.filled`` on it is a
+    no-op (https://github.com/mwcraig/bandaid/issues/80).
+    """
     t = Table()
     t["Gmag"] = np.array([8.8, 13.5, 14.1]) * u.mag
     t["RA_ICRS"] = np.array([239.8756, 239.9220, 239.8684]) * u.deg
     t["DE_ICRS"] = np.array([25.9202, 25.8932, 25.8698]) * u.deg
-    t["pmRA"] = np.array([-4.220, -0.957, 2.839]) * (u.mas / u.yr)
-    t["pmDE"] = np.array([12.364, -1.993, -7.168]) * (u.mas / u.yr)
+    t["pmRA"] = MaskedColumn(
+        [-4.220, -0.957, np.nan], unit=u.mas / u.yr, mask=[False, False, True]
+    )
+    t["pmDE"] = MaskedColumn(
+        [12.364, -1.993, np.nan], unit=u.mas / u.yr, mask=[False, False, True]
+    )
     return t
 
 
