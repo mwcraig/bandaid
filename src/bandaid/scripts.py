@@ -582,6 +582,41 @@ def _qa_record_failed(file, status, *, wcs_solved=None):
     return record
 
 
+def _record_frame_skip(file, exc):
+    """
+    Log an expected per-frame failure and build its ``skipped`` manifest row.
+
+    Shared by `process_batch`'s two `FrameError` handlers (the per-frame
+    processing handler and the write-time handler) so a skip is logged and
+    recorded identically wherever the frame-quality error surfaces.
+
+    Parameters
+    ----------
+    file : str or pathlib.Path
+        The input frame being skipped.
+    exc : FrameError
+        The frame-quality error. Some raisers (``build_photometry_table``,
+        ``eloy_to_starlist``) do not know the path, so it is attached here
+        when missing.
+
+    Returns
+    -------
+    dict
+        The frame's ``skipped: <type>`` QA manifest row.
+    """
+    # exc.reason is the human-readable headline; exc_info=exc captures the
+    # traceback and chained __cause__ (e.g. the original twirl traceback) so
+    # no detail is lost.
+    if exc.file is None:
+        exc.file = file
+    logger.warning("skipping %s: %s", file, exc.reason, exc_info=exc)
+    return _qa_record_failed(
+        file,
+        f"skipped: {type(exc).__name__}",
+        wcs_solved=False if isinstance(exc, WCSSolveError) else None,
+    )
+
+
 def _write_qa_manifest(path, records):
     """
     Write the per-frame QA records to a CSV manifest.
@@ -739,9 +774,11 @@ def process_batch(
         ``{filter: Table}`` result and returns what to store as the frame's entry
         in the result mapping (see `bandaid.writers`). Default
         `write_starlist_set` (one `StarListSet` JSON per frame). Ignored in
-        in-memory mode (``output_dir`` is None). A writer exception propagates as
-        it does for the default writer -- the write step stays outside the
-        per-frame error handling, since a write failure is systemic.
+        in-memory mode (``output_dir`` is None). A `FrameError` raised by the
+        writer (e.g. the default writer's `NoUsableStarsError` when no star
+        survives filtering) marks the frame skipped and the batch continues;
+        any other writer exception is treated as a systemic write failure and
+        propagates, aborting the run.
     fail_fast : bool, optional
         How to handle an *unexpected* error (one that is not a `FrameError`)
         while processing a frame. If True (default), re-raise it so genuine
@@ -816,21 +853,8 @@ def process_batch(
                 input_photometry_coords=prep.photometry_coords,
             )
         except FrameError as exc:
-            # Expected per-frame failure: skip the frame and keep going. exc is
-            # the human-readable headline; exc_info=True captures the chained
-            # __cause__ (e.g. the original twirl traceback) so no detail is lost.
-            # Some raisers (build_photometry_table, eloy_to_starlist) do not know
-            # the path, so label the error with the current file here.
-            if exc.file is None:
-                exc.file = file
-            logger.warning("skipping %s: %s", file, exc.reason, exc_info=True)
-            manifest_records.append(
-                _qa_record_failed(
-                    file,
-                    f"skipped: {type(exc).__name__}",
-                    wcs_solved=False if isinstance(exc, WCSSolveError) else None,
-                )
-            )
+            # Expected per-frame failure: skip the frame and keep going.
+            manifest_records.append(_record_frame_skip(file, exc))
             continue
         except Exception as exc:
             # Unexpected error (a bug, not a bad frame): surface it by default;
@@ -844,12 +868,22 @@ def process_batch(
             continue
         else:
             # The frame processed cleanly. Writing its output is deliberately
-            # outside the try: a write failure (bad output_dir, permissions,
-            # full disk) is systemic, not a property of this frame, so it must
-            # abort the run rather than be skipped as a "bad frame".
+            # outside the try above: a write failure (bad output_dir,
+            # permissions, full disk) is systemic, not a property of this
+            # frame, so it must abort the run rather than be skipped as a
+            # "bad frame". A writer can still raise a frame-quality error at
+            # write time, though -- the default writer raises
+            # NoUsableStarsError when no star survives filtering (#78) -- so
+            # split on exception type: a FrameError is this frame's problem
+            # and is skipped like any other, everything else propagates.
             manifest_records.append(_qa_record_ok(file, by_filter))
             if output_dir is not None:
-                results[file] = write_frame(by_filter, output_paths[file])
+                try:
+                    results[file] = write_frame(by_filter, output_paths[file])
+                except FrameError as exc:
+                    # Replace the provisional ok record appended above with
+                    # the skip, so the manifest keeps one row per frame.
+                    manifest_records[-1] = _record_frame_skip(file, exc)
             else:
                 results[file] = by_filter
 
