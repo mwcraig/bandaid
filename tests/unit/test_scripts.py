@@ -1379,6 +1379,67 @@ class TestProcessBatchToDisk:
         # A valid StarListSet document, exactly as before the writer seam existed.
         StarListSet.model_validate_json((tmp_path / "frame1.star").read_text())
 
+    def test_writer_frame_error_skips_frame_not_batch(
+        self, monkeypatch, tmp_path, by_filter
+    ):
+        """A no-usable-stars frame at write time is skipped, not batch-fatal (#78)."""
+
+        def _maybe(file, *_args: object, **_kwargs: object):
+            result = by_filter()
+            if file == "starless.fits":
+                # No row survives good_star_mask (it requires tot_count > 0),
+                # so the default writer raises NoUsableStarsError at write time.
+                for table in result.values():
+                    table["tot_count"] = [-1.0, 0.0]
+            return result
+
+        monkeypatch.setattr(scripts, "process_one_image", _maybe)
+
+        inputs = ["starless.fits", "good.fits"]
+        results = scripts.process_batch(
+            inputs,
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+        )
+
+        # The batch survives the starless frame: the later frame is still
+        # written, and only it appears in the results.
+        assert results == {"good.fits": tmp_path / "good.star"}
+        assert sorted(
+            p.name for p in tmp_path.iterdir() if p.name != scripts.QA_MANIFEST_FILENAME
+        ) == ["good.star"]
+
+        with (tmp_path / scripts.QA_MANIFEST_FILENAME).open(newline="") as f:
+            rows = list(csv.DictReader(f))
+
+        # One row per input frame: the starless frame's provisional ok record
+        # is replaced by the skip, not duplicated alongside it.
+        by_file = {row["file"]: row for row in rows}
+        assert len(rows) == len(by_file) == len(inputs)
+        assert by_file["starless.fits"]["status"] == "skipped: NoUsableStarsError"
+        assert by_file["good.fits"]["status"] == "ok"
+
+    def test_writer_non_frame_error_still_propagates(
+        self, monkeypatch, tmp_path, by_filter
+    ):
+        """A genuine write failure (not a FrameError) still aborts the batch."""
+
+        def denied(_frame_result, _output_path):
+            msg = "simulated unwritable output"
+            raise PermissionError(msg)
+
+        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+
+        with pytest.raises(PermissionError, match="simulated unwritable output"):
+            scripts.process_batch(
+                ["a.fits"],
+                _dummy_prep(),
+                user_specific_metadata={},
+                output_dir=tmp_path,
+                write_frame=denied,
+            )
+
 
 class TestExpandFramePaths:
     """Unit tests for the ``expand_frame_paths`` file-name convenience."""
