@@ -122,10 +122,12 @@ def test_masked_pm_yields_finite_catalog_epoch_positions(
     Fixes https://github.com/mwcraig/bandaid/issues/80.
     """
     # Guard the fixture's realism first: it must mimic the astroquery
-    # round-trip that triggered the bug (plain NaN-bearing Quantity).
+    # round-trip that triggered the bug (plain NaN-bearing Quantity), and the
+    # buggy fill must demonstrably be a no-op on it.
     pm_quantity = gaia_table["pmRA"].quantity
     assert not isinstance(pm_quantity, np.ma.MaskedArray)
     assert np.isnan(pm_quantity.value[2])
+    assert np.isnan(np.ma.filled(pm_quantity, 0 * u.mas / u.yr).value[2])
 
     radecs, mags = cached_gaia_radecs(
         center, 0.2, obs_epoch=Time("2026-04-18T02:39:48")
@@ -147,9 +149,9 @@ def test_literal_nonfinite_pm_treated_as_zero(fake_vizier, center, gaia_table):
     """
     An unmasked non-finite proper-motion value is neutralized to zero.
 
-    Belt and braces for https://github.com/mwcraig/bandaid/issues/80: a
+    Belt and suspenders for https://github.com/mwcraig/bandaid/issues/80: a
     literal NaN/inf PM (no mask at all) means "no proper motion", so the star
-    is propagated with zero PM instead of poisoning its position.
+    is propagated with zero PM instead of yielding a NaN position.
     """
     gaia_table["pmRA"] = np.array([np.inf, -0.957, 2.839]) * (u.mas / u.yr)
     gaia_table["pmDE"] = np.array([np.nan, -1.993, -7.168]) * (u.mas / u.yr)

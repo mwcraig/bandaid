@@ -73,8 +73,8 @@ def _pm_or_zero(column):
     Filling must happen on the *column*: on a real VizieR result the PM columns
     are ``MaskedColumn`` and their ``.quantity`` converts masked entries to NaN
     in a plain `~astropy.units.Quantity` -- not a ``numpy.ma.MaskedArray`` --
-    so ``np.ma.filled`` on it is a no-op and the NaNs poison the propagated
-    positions (https://github.com/mwcraig/bandaid/issues/80). Literal
+    so ``np.ma.filled`` on it is a no-op and the NaNs propagate into the
+    computed positions (https://github.com/mwcraig/bandaid/issues/80). Literal
     non-finite values are neutralized too: a non-finite proper motion means
     "no proper motion".
 
