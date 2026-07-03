@@ -282,11 +282,13 @@ class TestPrepareBatch:
         # An extreme-PM bright star and a masked-PM faint star. Fixture mags
         # (8.8, 13.5, 14.1) are within gaia_mag_limit and the stars are ~arcmin
         # apart, so none are dropped by the mag cut or contamination flagging.
+        # NaN sits beneath the mask, as in the real astroquery round-trip
+        # (https://github.com/mwcraig/bandaid/issues/80).
         gaia_table["pmRA"] = MaskedColumn(
-            [1000.0, -0.957, 0.0], unit=u.mas / u.yr, mask=[False, False, True]
+            [1000.0, -0.957, np.nan], unit=u.mas / u.yr, mask=[False, False, True]
         )
         gaia_table["pmDE"] = MaskedColumn(
-            [12.364, -1.993, 0.0], unit=u.mas / u.yr, mask=[False, False, True]
+            [12.364, -1.993, np.nan], unit=u.mas / u.yr, mask=[False, False, True]
         )
 
         metadata = _batch_metadata()

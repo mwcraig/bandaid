@@ -22,6 +22,7 @@ astropy's :meth:`~astropy.coordinates.SkyCoord.apply_space_motion`.
 import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
+from astropy.table import MaskedColumn
 from astropy.time import Time
 from astroquery.vizier import Vizier
 
@@ -63,6 +64,34 @@ def _fov_to_radius_deg(fov):
     else:
         ra_fov = dec_fov = fov
     return np.min([ra_fov, dec_fov]) / 2
+
+
+def _pm_or_zero(column):
+    """
+    Return a proper-motion column as a Quantity with missing values as zero.
+
+    Filling must happen on the *column*: on a real VizieR result the PM columns
+    are ``MaskedColumn`` and their ``.quantity`` converts masked entries to NaN
+    in a plain `~astropy.units.Quantity` -- not a ``numpy.ma.MaskedArray`` --
+    so ``np.ma.filled`` on it is a no-op and the NaNs poison the propagated
+    positions (https://github.com/mwcraig/bandaid/issues/80). Literal
+    non-finite values are neutralized too: a non-finite proper motion means
+    "no proper motion".
+
+    Parameters
+    ----------
+    column : astropy.table.Column or astropy.table.MaskedColumn
+        The ``pmRA``/``pmDE`` column from the VizieR table.
+
+    Returns
+    -------
+    astropy.units.Quantity
+        The proper motions, with masked or non-finite entries replaced by zero.
+    """
+    if isinstance(column, MaskedColumn):
+        column = column.filled(0)
+    values = np.asarray(column, dtype=float)
+    return np.where(np.isfinite(values), values, 0.0) * column.unit
 
 
 def cached_gaia_radecs(center, fov, *, limit=10000, magnitude=True, obs_epoch=None):
@@ -130,8 +159,8 @@ def cached_gaia_radecs(center, fov, *, limit=10000, magnitude=True, obs_epoch=No
     else:
         # Some DR2 sources lack proper motions; treat missing PM as zero so the
         # space-motion calculation does not fail.
-        pmra = np.ma.filled(table[_PMRA_COL].quantity, 0 * u.mas / u.yr)
-        pmdec = np.ma.filled(table[_PMDEC_COL].quantity, 0 * u.mas / u.yr)
+        pmra = _pm_or_zero(table[_PMRA_COL])
+        pmdec = _pm_or_zero(table[_PMDEC_COL])
         coords = SkyCoord(
             ra=table[_RA_COL].quantity,
             dec=table[_DEC_COL].quantity,
@@ -141,6 +170,16 @@ def cached_gaia_radecs(center, fov, *, limit=10000, magnitude=True, obs_epoch=No
         ).apply_space_motion(new_obstime=Time(obs_epoch))
         ra = coords.ra.deg
         dec = coords.dec.deg
+        # Defensive final guard: if propagation still produced a non-finite
+        # position, fall back to that row's catalog (J2015.5) position --
+        # semantically the same as "no usable proper motion", and immune to
+        # upstream surprises like the masked-to-NaN quantity conversion above.
+        nonfinite = ~(np.isfinite(ra) & np.isfinite(dec))
+        if nonfinite.any():
+            ra = np.where(nonfinite, np.asarray(table[_RA_COL].value, dtype=float), ra)
+            dec = np.where(
+                nonfinite, np.asarray(table[_DEC_COL].value, dtype=float), dec
+            )
 
     radecs = np.array([ra, dec]).T
 
