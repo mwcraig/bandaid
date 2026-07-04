@@ -30,6 +30,7 @@ from bandaid.exceptions import (
     FrameMetadataError,
     NoUsableStarsError,
     TooFewStarsError,
+    WCSScaleError,
     WCSSolveError,
 )
 from bandaid.image2sl_qt import generate_bayer_masks
@@ -1136,12 +1137,18 @@ class TestPrepareImage:
         assert captured["fwhm_n_stars"] == expected_fwhm_n_stars
 
 
-def _make_tan_wcs(image_size=(500, 500), crval=(10.0, 20.0)):
-    """Build a simple TAN WCS centered at ``crval`` for the given image size."""
+def _make_tan_wcs(image_size=(500, 500), crval=(10.0, 20.0), pixscale=2.4):
+    """
+    Build a simple TAN WCS centered at ``crval`` for the given image size.
+
+    ``pixscale`` (arcsec/pixel) sets the plate scale; the 2.4 default matches the
+    Seestar50. Pass a different value to build a wrong-scale WCS for the plate-scale
+    sanity-check tests.
+    """
     wcs = WCS(naxis=2)
     wcs.wcs.crpix = [image_size[1] / 2, image_size[0] / 2]
     wcs.wcs.crval = list(crval)
-    wcs.wcs.cdelt = [-2.4 / 3600, 2.4 / 3600]
+    wcs.wcs.cdelt = [-pixscale / 3600, pixscale / 3600]
     wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
     return wcs
 
@@ -2297,6 +2304,102 @@ class TestAlign:
         assert returned_wcs is sentinel_wcs
         # Shallow pool tried first, then the deeper retry pool -- in that order.
         assert pool_sizes == [N_GAIA_STARS_ALIGN, N_GAIA_STARS_ALIGN_RETRY]
+
+    def test_accepts_wcs_matching_expected_scale(self, monkeypatch):
+        """A solved WCS whose plate scale matches the expectation is accepted."""
+        sentinel_wcs = _make_tan_wcs(pixscale=2.4)
+        monkeypatch.setattr(
+            "bandaid.photometry.compute_wcs",
+            lambda coords, radecs, tolerance: sentinel_wcs,
+        )
+        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
+            N_IMAGE_STARS_ALIGN, 2
+        )
+
+        _, returned_wcs = align(
+            coords, coords.copy(), photometry_coords=None, expected_pixscale=2.4
+        )
+
+        assert returned_wcs is sentinel_wcs
+
+    def test_rejects_wcs_with_wrong_scale(self, monkeypatch):
+        """
+        A solved WCS whose plate scale is far from the expectation is rejected.
+
+        This is the twirl-returns-a-self-consistent-but-wrong-scale case (~4.2 vs
+        the true ~2.4 arcsec/px): compute_wcs returns a non-None WCS, but its scale
+        deviates well beyond WCS_SCALE_TOLERANCE, so align raises WCSScaleError
+        rather than photometering at the wrong pixel positions.
+        """
+        bad_wcs = _make_tan_wcs(pixscale=4.2)
+        monkeypatch.setattr(
+            "bandaid.photometry.compute_wcs",
+            lambda coords, radecs, tolerance: bad_wcs,
+        )
+        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
+            N_IMAGE_STARS_ALIGN, 2
+        )
+
+        with pytest.raises(WCSScaleError, match="scale"):
+            align(coords, coords.copy(), photometry_coords=None, expected_pixscale=2.4)
+
+    def test_scale_check_skipped_when_expected_none(self, monkeypatch):
+        """With expected_pixscale=None the scale check is skipped (back-compat)."""
+        bad_wcs = _make_tan_wcs(pixscale=4.2)
+        monkeypatch.setattr(
+            "bandaid.photometry.compute_wcs",
+            lambda coords, radecs, tolerance: bad_wcs,
+        )
+        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
+            N_IMAGE_STARS_ALIGN, 2
+        )
+
+        _, returned_wcs = align(
+            coords, coords.copy(), photometry_coords=None, expected_pixscale=None
+        )
+
+        assert returned_wcs is bad_wcs
+
+    def test_retries_deeper_pool_on_bad_scale(self, monkeypatch):
+        """
+        A wrong-scale shallow solve retries at the deeper Gaia pool.
+
+        A bad-scale WCS is a failure to retry just like a None/raise: align widens
+        the reference pool and accepts the deeper pool's correctly-scaled solve.
+        """
+        good_wcs = _make_tan_wcs(pixscale=2.4)
+        bad_wcs = _make_tan_wcs(pixscale=4.2)
+        pool_sizes = []
+
+        def fake_compute_wcs(coords, radecs, tolerance):  # noqa: ARG001
+            pool_sizes.append(len(radecs))
+            return bad_wcs if len(radecs) <= N_GAIA_STARS_ALIGN else good_wcs
+
+        monkeypatch.setattr("bandaid.photometry.compute_wcs", fake_compute_wcs)
+
+        n_detected = N_GAIA_STARS_ALIGN_RETRY + 5
+        coords = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
+        radecs = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
+
+        _, returned_wcs = align(
+            coords, radecs, photometry_coords=None, expected_pixscale=2.4
+        )
+
+        assert returned_wcs is good_wcs
+        assert pool_sizes == [N_GAIA_STARS_ALIGN, N_GAIA_STARS_ALIGN_RETRY]
+
+    def test_supplied_wcs_scale_not_checked(self):
+        """A caller-supplied WCS is trusted and not scale-checked."""
+        bad_wcs = _make_tan_wcs(pixscale=4.2)
+        coords = np.array([[250.0, 250.0], [260.0, 260.0]])
+
+        _, returned_wcs = align(coords, radecs=None, wcs=bad_wcs, expected_pixscale=2.4)
+
+        assert returned_wcs is bad_wcs
+
+    def test_wcs_scale_error_is_wcs_solve_error(self):
+        """WCSScaleError is a WCSSolveError so the batch loop still skips the frame."""
+        assert issubclass(WCSScaleError, WCSSolveError)
 
 
 def test_centroid_stars_delegates_to_ballet(monkeypatch):

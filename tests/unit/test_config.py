@@ -36,7 +36,7 @@ EXPECTED_CONTAMINATION_TOLERANCE = 0.01
 EXPECTED_MOFFAT_BETA = 3.0
 EXPECTED_CONTAMINATION_SEEING_MARGIN = 1.25
 EXPECTED_THRESH = 0.5
-EXPECTED_DETECTION_OPENING = 3
+EXPECTED_DETECTION_OPENING = 5
 EXPECTED_FWHM_CUTOUT_HALF = 25
 EXPECTED_FWHM_N_STARS = 25
 
@@ -104,7 +104,7 @@ class TestImmutability:
         """Assigning to a field on a constructed config raises."""
         cfg = PhotometryConfig()
         with pytest.raises(ValidationError):
-            cfg.instrument.detection_opening = 5
+            cfg.instrument.detection_opening = 7
 
     def test_cannot_mutate_header_map(self):
         """
@@ -220,7 +220,7 @@ class TestOverrides:
 
     def test_instrument_override(self):
         """A custom detection opening is preserved on the nested config."""
-        opening = 5
+        opening = 7
         cfg = PhotometryConfig(instrument=InstrumentProfile(detection_opening=opening))
         assert cfg.instrument.detection_opening == opening
 

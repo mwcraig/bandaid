@@ -21,6 +21,7 @@ __all__ = [
     "FrameMetadataError",
     "NoUsableStarsError",
     "TooFewStarsError",
+    "WCSScaleError",
     "WCSSolveError",
 ]
 
@@ -67,6 +68,18 @@ class TooFewStarsError(FrameError):
 
 class WCSSolveError(FrameError):
     """A WCS could not be solved for the frame (twirl failed or found no match)."""
+
+
+class WCSScaleError(WCSSolveError):
+    """
+    The solved WCS has an implausible plate scale for the instrument.
+
+    twirl can return a self-consistent but geometrically wrong WCS (wrong plate
+    scale). This is a subclass of `WCSSolveError` so the batch loop still skips
+    the frame, but distinguishable in logs/manifests from a genuine "no match" so
+    wrong-scale solves can be counted separately (they are dropped, not
+    recovered).
+    """
 
 
 class FrameMetadataError(FrameError):

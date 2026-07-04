@@ -30,7 +30,7 @@ To bundle a telescope:
     {
         "name": "MyScope",
         "thresh": 0.5,
-        "detection_opening": 3,
+        "detection_opening": 5,
         "fwhm_cutout_half": 25,
         "fwhm_n_stars": 25,
         "contamination_tolerance": 0.01,

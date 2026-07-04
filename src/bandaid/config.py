@@ -253,7 +253,7 @@ class InstrumentProfile(BaseModel, frozen=True):
 
     name: str = "Seestar50"
     thresh: Annotated[float, Field(gt=0)] = 0.5
-    detection_opening: Annotated[int, Field(ge=1)] = 3
+    detection_opening: Annotated[int, Field(ge=1)] = 5
     fwhm_cutout_half: Annotated[int, Field(ge=1)] = 25
     fwhm_n_stars: Annotated[int, Field(ge=1)] = 25
     contamination_tolerance: Annotated[float, Field(gt=0)] = 0.01
