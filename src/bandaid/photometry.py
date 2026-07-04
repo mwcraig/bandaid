@@ -1206,11 +1206,16 @@ def _solve_wcs(coords, radecs, expected_pixscale):
         # Plate-scale sanity check: twirl can return a self-consistent but
         # geometrically wrong WCS (~4.2 vs the true ~2.4 arcsec/px) that is not
         # None and does not raise, so nothing downstream would catch it -- the
-        # frame would be photometered at wrong pixel positions. Reject a solve
-        # whose scale is out of tolerance and treat it like any other pool failure
-        # (retry the deeper pool). This only *rejects* wrong-scale frames; making
-        # twirl return the correct solve so they are recovered is deferred --
-        # see https://github.com/mwcraig/bandaid/issues/83.
+        # frame would be photometered at wrong pixel positions. Treat an
+        # out-of-tolerance scale like any other pool failure: null it so the loop
+        # retries the deeper Gaia pool. Because the old code accepted the shallow
+        # pool's first non-None solve, a wrong-scale match was taken as-is and the
+        # deeper pool never tried; nulling it here lets the deeper pool (more Gaia
+        # refs) find the correct quad match instead. On SS Leo this RECOVERS the
+        # wrong-scale frames rather than dropping them -- 173/173 across nights
+        # 20260418+20260421 solved correctly, WCSScaleError never fired. It raises
+        # only if *every* pool solves wrong-scale; recovering that residual is
+        # tracked in https://github.com/mwcraig/bandaid/issues/83.
         if this_wcs is not None and expected_pixscale is not None:
             measured = _wcs_pixscale_arcsec(this_wcs)
             if abs(measured - expected_pixscale) > (
