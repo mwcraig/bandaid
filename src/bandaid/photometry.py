@@ -91,15 +91,9 @@ N_GAIA_STARS_ALIGN_RETRY = 20
 # Pixel tolerance handed to twirl's WCS solve.
 WCS_MATCH_TOLERANCE = 1
 # Maximum fractional deviation of a solved plate scale from the instrument's
-# expected pixscale before the WCS is rejected as a wrong-scale solve. twirl's
-# asterism matcher sometimes returns a self-consistent but geometrically wrong
-# WCS (~4.2 vs the true ~2.4 arcsec/px, >=22% off). On the SS Leo set the deeper
-# Gaia pool solves the correct scale to within ~1.2%, while a genuine but loose
-# shallow-pool fit can drift up to ~18%; 5% sits ~4x above the correct-scale
-# spread and well below the wrong-scale cluster, so it rejects the bad solves --
-# and the loose shallow ones -- and lets the deeper pool recover them. Verified
-# to drop 0 of 286 solvable frames while cutting the worst accepted scale error
-# from ~18% to ~5% (see #83).
+# expected pixscale before the WCS is rejected as a wrong-scale solve. 5% sits
+# well above the correct-scale solve spread and far below twirl's wrong-scale
+# solves; the empirical basis for this value is in #83.
 WCS_SCALE_TOLERANCE = 0.05
 
 # Minimum number of detected stars required before an image can be processed.
