@@ -1143,7 +1143,7 @@ def _make_tan_wcs(image_size=(500, 500), crval=(10.0, 20.0), pixscale=2.4):
 
     ``pixscale`` (arcsec/pixel) sets the plate scale; the 2.4 default matches the
     Seestar50. Pass a different value to build a wrong-scale WCS for the plate-scale
-    sanity-check tests.
+    check tests.
     """
     wcs = WCS(naxis=2)
     wcs.wcs.crpix = [image_size[1] / 2, image_size[0] / 2]

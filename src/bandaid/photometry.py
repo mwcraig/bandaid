@@ -93,9 +93,14 @@ WCS_MATCH_TOLERANCE = 1
 # Maximum fractional deviation of a solved plate scale from the instrument's
 # expected pixscale before the WCS is rejected as a wrong-scale solve. twirl's
 # asterism matcher sometimes returns a self-consistent but geometrically wrong
-# WCS (~4.2 vs the true ~2.4 arcsec/px, ~75% off); 20% comfortably rejects those
-# while tolerating the small scale jitter of a genuine fit.
-WCS_SCALE_TOLERANCE = 0.2
+# WCS (~4.2 vs the true ~2.4 arcsec/px, >=22% off). On the SS Leo set the deeper
+# Gaia pool solves the correct scale to within ~1.2%, while a genuine but loose
+# shallow-pool fit can drift up to ~18%; 5% sits ~4x above the correct-scale
+# spread and well below the wrong-scale cluster, so it rejects the bad solves --
+# and the loose shallow ones -- and lets the deeper pool recover them. Verified
+# to drop 0 of 286 solvable frames while cutting the worst accepted scale error
+# from ~18% to ~5% (see #83).
+WCS_SCALE_TOLERANCE = 0.05
 
 # Minimum number of detected stars required before an image can be processed.
 MIN_DETECTED_STARS = 3
@@ -1143,18 +1148,9 @@ def _solve_wcs(coords, radecs, expected_pixscale):
     """
     Solve a WCS from detections and Gaia references, with a plate-scale check.
 
-    Feed the brightest N_IMAGE_STARS_ALIGN detections and the brightest Gaia
-    reference RA/Decs to twirl's asterism (quad) matcher. twirl matches by
-    geometric shape, so the two lists need NOT be in the same order or even the
-    same length -- there is no per-index correspondence. The slices are
-    independent so the matcher can be handed more references than detections.
-
-    Try the cheap shallow Gaia pool first and only widen to the deeper retry pool
-    if it fails: the larger pool's asterism search costs ~ C(N, 4), so the ~99% of
-    frames that solve immediately should not pay for it. A pool that returns None,
-    raises a too-few-stars error, or (when `expected_pixscale` is given) solves at
-    the wrong plate scale is a failure to retry; the last failure decides the
-    error if every pool fails.
+    Extracted from :func:`align` so the alignment path stays under ruff's C901
+    complexity limit; kept private because the scale-checked, shallow-then-deep
+    pool solve is an implementation detail of `align`.
 
     Parameters
     ----------
@@ -1177,6 +1173,17 @@ def _solve_wcs(coords, radecs, expected_pixscale):
     WCSScaleError
         If every pool solves at a plate scale out of tolerance (a subclass of
         `WCSSolveError`).
+
+    Notes
+    -----
+    twirl matches by geometric (quad) shape, so `coords` and `radecs` need not be
+    in the same order or even the same length -- there is no per-index
+    correspondence, and the matcher may be handed more references than detections.
+    The cheap shallow Gaia pool is tried first and only widens to the deeper retry
+    pool on failure (the pool-size strategy is described at ``N_GAIA_STARS_ALIGN``);
+    a pool that returns None, raises a too-few-stars error, or solves at the wrong
+    plate scale is a failure to retry, and the last failure decides which error is
+    raised if every pool fails.
     """
     this_wcs = None
     last_exc = None
@@ -1185,9 +1192,7 @@ def _solve_wcs(coords, radecs, expected_pixscale):
         last_exc = None
         last_bad_scale = None
         try:
-            # twirl's asterism matcher prints timing/diagnostic lines straight to
-            # stdout (e.g. "Match took ... us"); redirect them to /dev/null so the
-            # pipeline and notebooks stay quiet.
+            # twirl prints timing/diagnostic lines to stdout; silence them.
             with contextlib.redirect_stdout(io.StringIO()):
                 this_wcs = compute_wcs(
                     coords[0:N_IMAGE_STARS_ALIGN],
@@ -1195,27 +1200,16 @@ def _solve_wcs(coords, radecs, expected_pixscale):
                     tolerance=WCS_MATCH_TOLERANCE,
                 )
         except (IndexError, ValueError) as exc:
-            # twirl's two too-few-stars exits: an IndexError when cross_match finds
-            # zero pairs (empty float index array), or a ValueError out of
-            # fit_wcs_from_points when too few matched points reach scipy's
-            # least-squares fitter (the original SS Leo failure). Surface either as
-            # a recoverable frame error; anything else is an unexpected bug and is
-            # left to propagate. The original is preserved for the log.
+            # twirl's two too-few-stars exits (empty cross_match index ->
+            # IndexError; too few matched points -> ValueError from
+            # fit_wcs_from_points). Surface either as a recoverable frame error;
+            # anything else propagates as an unexpected bug.
             last_exc = exc
             this_wcs = None
-        # Plate-scale sanity check: twirl can return a self-consistent but
-        # geometrically wrong WCS (~4.2 vs the true ~2.4 arcsec/px) that is not
-        # None and does not raise, so nothing downstream would catch it -- the
-        # frame would be photometered at wrong pixel positions. Treat an
-        # out-of-tolerance scale like any other pool failure: null it so the loop
-        # retries the deeper Gaia pool. Because the old code accepted the shallow
-        # pool's first non-None solve, a wrong-scale match was taken as-is and the
-        # deeper pool never tried; nulling it here lets the deeper pool (more Gaia
-        # refs) find the correct quad match instead. On SS Leo this RECOVERS the
-        # wrong-scale frames rather than dropping them -- 173/173 across nights
-        # 20260418+20260421 solved correctly, WCSScaleError never fired. It raises
-        # only if *every* pool solves wrong-scale; recovering that residual is
-        # tracked in https://github.com/mwcraig/bandaid/issues/83.
+        # Plate-scale check: twirl can return a non-None, self-consistent but
+        # geometrically wrong-scale WCS that nothing downstream would catch. Null
+        # it like any other pool failure so the loop retries the deeper Gaia pool,
+        # which usually recovers the correct-scale match (see #83).
         if this_wcs is not None and expected_pixscale is not None:
             measured = _wcs_pixscale_arcsec(this_wcs)
             if abs(measured - expected_pixscale) > (

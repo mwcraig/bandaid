@@ -72,13 +72,16 @@ class WCSSolveError(FrameError):
 
 class WCSScaleError(WCSSolveError):
     """
-    The solved WCS has an implausible plate scale for the instrument.
+    Every WCS solve for the frame came back at an implausible plate scale.
 
     twirl can return a self-consistent but geometrically wrong WCS (wrong plate
-    scale). This is a subclass of `WCSSolveError` so the batch loop still skips
-    the frame, but distinguishable in logs/manifests from a genuine "no match" so
-    wrong-scale solves can be counted separately (they are dropped, not
-    recovered).
+    scale). Such a solve is normally *recovered*, not dropped: the scale check
+    rejects it and retries a deeper Gaia pool, which usually finds the
+    correct-scale match. This error is raised only in the residual case where
+    *every* pool solves out of tolerance, so the frame cannot be recovered and is
+    skipped. It subclasses `WCSSolveError` so the batch loop still skips the
+    frame, while staying distinguishable in logs/manifests from a genuine
+    "no match".
     """
 
 
