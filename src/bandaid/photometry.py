@@ -90,11 +90,6 @@ N_GAIA_STARS_ALIGN = 15
 N_GAIA_STARS_ALIGN_RETRY = 20
 # Pixel tolerance handed to twirl's WCS solve.
 WCS_MATCH_TOLERANCE = 1
-# Maximum fractional deviation of a solved plate scale from the instrument's
-# expected pixscale before the WCS is rejected as a wrong-scale solve. 5% sits
-# well above the correct-scale solve spread and far below twirl's wrong-scale
-# solves; the empirical basis for this value is in #83.
-WCS_SCALE_TOLERANCE = 0.05
 
 # Minimum number of detected stars required before an image can be processed.
 MIN_DETECTED_STARS = 3
@@ -130,6 +125,11 @@ _FWHM_CUTOUT_HALF = _DEFAULT_INSTRUMENT.fwhm_cutout_half
 # bayer-balanced detection now yields just slow the CNN re-centroiding and inflate
 # the FWHM (faint sources are mis-centroided, smearing the stacked PSF).
 _FWHM_N_STARS = _DEFAULT_INSTRUMENT.fwhm_n_stars
+# Maximum fractional deviation of a solved plate scale from the instrument's
+# expected pixscale before the WCS is rejected as a wrong-scale solve. 5% sits
+# well above the correct-scale solve spread and far below twirl's wrong-scale
+# solves; the empirical basis for this value is in #83.
+WCS_SCALE_TOLERANCE = _DEFAULT_INSTRUMENT.wcs_scale_tolerance
 
 # Relative radii and annulus are multiplied by each image's FWHM to determine the
 # actual aperture sizes. Only one radius is needed for STWG, but it must be in an
@@ -1138,7 +1138,7 @@ def _wcs_pixscale_arcsec(wcs):
     return float(np.mean(proj_plane_pixel_scales(wcs))) * 3600.0
 
 
-def _solve_wcs(coords, radecs, expected_pixscale):
+def _solve_wcs(coords, radecs, expected_pixscale, scale_tolerance=WCS_SCALE_TOLERANCE):
     """
     Solve a WCS from detections and Gaia references, with a plate-scale check.
 
@@ -1154,6 +1154,10 @@ def _solve_wcs(coords, radecs, expected_pixscale):
         Gaia reference RA/Decs, sliced by the per-attempt Gaia pool size.
     expected_pixscale : float or None
         Expected plate scale (arcsec/pixel); see :func:`align`.
+    scale_tolerance : float, optional
+        Maximum fractional deviation from ``expected_pixscale`` before a solve is
+        rejected as wrong-scale. Defaults to the module-level
+        ``WCS_SCALE_TOLERANCE``; see :func:`align`.
 
     Returns
     -------
@@ -1207,7 +1211,7 @@ def _solve_wcs(coords, radecs, expected_pixscale):
         if this_wcs is not None and expected_pixscale is not None:
             measured = _wcs_pixscale_arcsec(this_wcs)
             if abs(measured - expected_pixscale) > (
-                WCS_SCALE_TOLERANCE * expected_pixscale
+                scale_tolerance * expected_pixscale
             ):
                 last_bad_scale = measured
                 this_wcs = None
@@ -1220,7 +1224,7 @@ def _solve_wcs(coords, radecs, expected_pixscale):
         msg = (
             f"twirl solved a WCS at {last_bad_scale:.3g} arcsec/px, far from the "
             f"expected {expected_pixscale:.3g} arcsec/px "
-            f"(> {WCS_SCALE_TOLERANCE:.0%} off); rejected as a wrong-scale solve"
+            f"(> {scale_tolerance:.0%} off); rejected as a wrong-scale solve"
         )
         raise WCSScaleError(msg)
     msg = "twirl returned no WCS (too few matched stars)"
@@ -1228,7 +1232,13 @@ def _solve_wcs(coords, radecs, expected_pixscale):
 
 
 def align(
-    coords, radecs=None, *, photometry_coords=None, wcs=None, expected_pixscale=None
+    coords,
+    radecs=None,
+    *,
+    photometry_coords=None,
+    wcs=None,
+    expected_pixscale=None,
+    scale_tolerance=WCS_SCALE_TOLERANCE,
 ):
     """
     Compute per-image WCS and align reference coordinates into pixel space.
@@ -1258,9 +1268,15 @@ def align(
     expected_pixscale : float or None, optional
         Expected plate scale (arcsec/pixel) for this instrument. When provided,
         a *computed* WCS whose scale deviates from it by more than
-        `WCS_SCALE_TOLERANCE` (fractional) is rejected as a wrong-scale solve.
-        None (default) skips the check. A caller-supplied `wcs` is trusted and
-        never scale-checked.
+        `scale_tolerance` (fractional) is rejected as a wrong-scale solve. None
+        (default) skips the check. A caller-supplied `wcs` is trusted and never
+        scale-checked.
+    scale_tolerance : float, optional
+        Maximum fractional deviation of a computed plate scale from
+        `expected_pixscale` before the WCS is rejected. Defaults to the
+        module-level `WCS_SCALE_TOLERANCE`; the pipeline passes the batch
+        instrument's ``wcs_scale_tolerance``. Ignored when `expected_pixscale`
+        is None or a `wcs` is supplied.
 
     Returns
     -------
@@ -1269,7 +1285,11 @@ def align(
     this_wcs : astropy.wcs.WCS
         World Coordinate System for the image.
     """
-    this_wcs = _solve_wcs(coords, radecs, expected_pixscale) if wcs is None else wcs
+    this_wcs = (
+        _solve_wcs(coords, radecs, expected_pixscale, scale_tolerance)
+        if wcs is None
+        else wcs
+    )
 
     if photometry_coords is not None:
         aligned_coords = this_wcs.world_to_pixel(photometry_coords)
@@ -1648,6 +1668,7 @@ def prepare_image(
             photometry_coords=photometry_coords,
             wcs=wcs,
             expected_pixscale=metadata.get("pixscale"),
+            scale_tolerance=instrument.wcs_scale_tolerance,
         )
     except WCSSolveError as exc:
         # align does not know the source file; attach it here so the batch

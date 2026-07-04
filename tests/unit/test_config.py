@@ -39,6 +39,7 @@ EXPECTED_THRESH = 0.5
 EXPECTED_DETECTION_OPENING = 5
 EXPECTED_FWHM_CUTOUT_HALF = 25
 EXPECTED_FWHM_N_STARS = 25
+EXPECTED_WCS_SCALE_TOLERANCE = 0.05
 
 
 class TestDefaultsMatchLegacyConstants:
@@ -78,6 +79,7 @@ class TestDefaultsMatchLegacyConstants:
         assert cfg.contamination_tolerance == EXPECTED_CONTAMINATION_TOLERANCE
         assert cfg.moffat_beta == EXPECTED_MOFFAT_BETA
         assert cfg.contamination_seeing_margin == EXPECTED_CONTAMINATION_SEEING_MARGIN
+        assert cfg.wcs_scale_tolerance == EXPECTED_WCS_SCALE_TOLERANCE
 
     def test_instrument_carries_seestar_header_map(self):
         """A bare profile defaults to the Seestar50 name and header dialect."""
@@ -156,6 +158,12 @@ class TestValidators:
         """A zero or negative FWHM star cap is rejected at construction."""
         with pytest.raises(ValidationError):
             InstrumentProfile(fwhm_n_stars=n_stars)
+
+    @pytest.mark.parametrize("tolerance", [0.0, -0.05])
+    def test_non_positive_wcs_scale_tolerance_rejected(self, tolerance):
+        """A zero or negative WCS plate-scale tolerance is rejected."""
+        with pytest.raises(ValidationError):
+            InstrumentProfile(wcs_scale_tolerance=tolerance)
 
     @pytest.mark.parametrize("margin", [0.99, 0.0, -1.0])
     def test_sub_unity_seeing_margin_rejected(self, margin):

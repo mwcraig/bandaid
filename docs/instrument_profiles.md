@@ -5,7 +5,7 @@ the two telescope-specific things the pipeline needs:
 
 - the **detection / PSF tuning** knobs (`thresh`, `detection_opening`,
     `fwhm_cutout_half`, `fwhm_n_stars`, `contamination_tolerance`, `moffat_beta`,
-    `contamination_seeing_margin`), and
+    `contamination_seeing_margin`, `wcs_scale_tolerance`), and
 - the **header map** — a small mapping that tells the pipeline how to read that
     telescope's per-frame FITS headers into the metadata it needs.
 
@@ -135,6 +135,7 @@ A `my_scope.json` looks like:
     "contamination_tolerance": 0.01,
     "moffat_beta": 3.0,
     "contamination_seeing_margin": 1.25,
+    "wcs_scale_tolerance": 0.05,
     "header_map": {
         "obs_time": "@DATE-OBS",
         "exposure": "@EXPTIME",
@@ -170,9 +171,10 @@ $ bandaid config validate my_config.json
 ```
 
 `InstrumentProfile.from_file` raises the same Pydantic errors directly. The common
-ones are out-of-range values — `thresh`, `contamination_tolerance`, and
-`moffat_beta` must be `> 0`; `detection_opening`, `fwhm_cutout_half`, and
-`fwhm_n_stars` must be `>= 1`; `contamination_seeing_margin` must be `>= 1`.
+ones are out-of-range values — `thresh`, `contamination_tolerance`,
+`moffat_beta`, and `wcs_scale_tolerance` must be `> 0`; `detection_opening`,
+`fwhm_cutout_half`, and `fwhm_n_stars` must be `>= 1`;
+`contamination_seeing_margin` must be `>= 1`.
 
 ### Verify it parses your headers
 

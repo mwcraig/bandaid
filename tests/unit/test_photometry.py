@@ -1136,6 +1136,43 @@ class TestPrepareImage:
         assert captured["opening"] == expected_opening
         assert captured["fwhm_n_stars"] == expected_fwhm_n_stars
 
+    def test_instrument_wcs_scale_tolerance_reaches_alignment(self, monkeypatch):
+        """
+        The instrument's ``wcs_scale_tolerance`` is forwarded to ``align``.
+
+        A non-default profile tolerance must reach the plate-scale check, so spy
+        on ``align`` and assert the configured value arrives as ``scale_tolerance``.
+        """
+        expected_tolerance = 0.07
+        captured = {}
+
+        def _spy_calibration_sequence(_file, *_args: object, **_kwargs: object):
+            calibrated = np.zeros((10, 10))
+            coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+            return calibrated, {"creator": "spy", "pixscale": 2.4}, coords, 2.0, None
+
+        def _spy_align(coords, _radecs, **kwargs: object):
+            captured["scale_tolerance"] = kwargs.get("scale_tolerance")
+            return coords, _make_tan_wcs()
+
+        monkeypatch.setattr(
+            "bandaid.photometry.calibration_sequence", _spy_calibration_sequence
+        )
+        monkeypatch.setattr("bandaid.photometry.align", _spy_align)
+        monkeypatch.setattr(
+            "bandaid.photometry.centroid_stars", lambda data, coords, cnn: coords
+        )
+        monkeypatch.setattr(
+            "bandaid.photometry.fits.getheader", lambda file: {"creator": "spy"}
+        )
+
+        config = PhotometryConfig(
+            instrument=InstrumentProfile(wcs_scale_tolerance=expected_tolerance),
+        )
+        prepare_image("unused.fits", np.zeros((5, 2)), None, config=config)
+
+        assert captured["scale_tolerance"] == expected_tolerance
+
 
 def _make_tan_wcs(image_size=(500, 500), crval=(10.0, 20.0), pixscale=2.4):
     """
@@ -2396,6 +2433,41 @@ class TestAlign:
         _, returned_wcs = align(coords, radecs=None, wcs=bad_wcs, expected_pixscale=2.4)
 
         assert returned_wcs is bad_wcs
+
+    def test_scale_tolerance_param_controls_the_check(self, monkeypatch):
+        """
+        The ``scale_tolerance`` argument gates the check, not the module default.
+
+        A WCS 10% off the expected scale is accepted under a loose 20% tolerance
+        but rejected under a tight 5% tolerance, so a per-instrument tolerance
+        threaded in from the config actually drives the decision.
+        """
+        wcs_10pct_off = _make_tan_wcs(pixscale=2.4 * 1.10)
+        monkeypatch.setattr(
+            "bandaid.photometry.compute_wcs",
+            lambda coords, radecs, tolerance: wcs_10pct_off,
+        )
+        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
+            N_IMAGE_STARS_ALIGN, 2
+        )
+
+        _, returned_wcs = align(
+            coords,
+            coords.copy(),
+            photometry_coords=None,
+            expected_pixscale=2.4,
+            scale_tolerance=0.20,
+        )
+        assert returned_wcs is wcs_10pct_off
+
+        with pytest.raises(WCSScaleError, match="scale"):
+            align(
+                coords,
+                coords.copy(),
+                photometry_coords=None,
+                expected_pixscale=2.4,
+                scale_tolerance=0.05,
+            )
 
     def test_wcs_scale_error_is_wcs_solve_error(self):
         """WCSScaleError is a WCSSolveError so the batch loop still skips the frame."""

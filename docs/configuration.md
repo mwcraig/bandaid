@@ -56,17 +56,18 @@ FITS-header dialect (`header_map`). These depend on the plate scale, the PSF, an
 the instrument's sensitivity. The defaults are the Seestar50 values; change them
 only when pointing a **different** telescope at the sky.
 
-| Sub-config   | Field                         | Default       | Meaning                                                  |
-| ------------ | ----------------------------- | ------------- | -------------------------------------------------------- |
-| `instrument` | `name`                        | `"Seestar50"` | The telescope's name (its registry key)                  |
-| `instrument` | `thresh`                      | `0.5`         | Source-detection threshold, in background sigma          |
-| `instrument` | `detection_opening`           | `5`           | Morphological-opening kernel that gates faint detections |
-| `instrument` | `fwhm_cutout_half`            | `25`          | Half-width (px) of the PSF window for the FWHM fit       |
-| `instrument` | `fwhm_n_stars`                | `25`          | Cap on the brightest detections fed to the FWHM fit      |
-| `instrument` | `contamination_tolerance`     | `0.01`        | Max neighbour spillover before flagging                  |
-| `instrument` | `moffat_beta`                 | `3.0`         | Moffat wing index for the contamination model            |
-| `instrument` | `contamination_seeing_margin` | `1.25`        | Seeing-pessimism factor for the once-per-batch flag      |
-| `instrument` | `header_map`                  | Seestar50     | FITS-header dialect resolved by `metadata_from_header`   |
+| Sub-config   | Field                         | Default       | Meaning                                                                      |
+| ------------ | ----------------------------- | ------------- | ---------------------------------------------------------------------------- |
+| `instrument` | `name`                        | `"Seestar50"` | The telescope's name (its registry key)                                      |
+| `instrument` | `thresh`                      | `0.5`         | Source-detection threshold, in background sigma                              |
+| `instrument` | `detection_opening`           | `5`           | Morphological-opening kernel that gates faint detections                     |
+| `instrument` | `fwhm_cutout_half`            | `25`          | Half-width (px) of the PSF window for the FWHM fit                           |
+| `instrument` | `fwhm_n_stars`                | `25`          | Cap on the brightest detections fed to the FWHM fit                          |
+| `instrument` | `contamination_tolerance`     | `0.01`        | Max neighbour spillover before flagging                                      |
+| `instrument` | `moffat_beta`                 | `3.0`         | Moffat wing index for the contamination model                                |
+| `instrument` | `contamination_seeing_margin` | `1.25`        | Seeing-pessimism factor for the once-per-batch flag                          |
+| `instrument` | `wcs_scale_tolerance`         | `0.05`        | Max fractional plate-scale deviation before a WCS is rejected as wrong-scale |
+| `instrument` | `header_map`                  | Seestar50     | FITS-header dialect resolved by `metadata_from_header`                       |
 
 The bright-neighbour contamination flag is computed once per batch, from the
 *first* frame's FWHM, and applied to every frame of the night. Because seeing
