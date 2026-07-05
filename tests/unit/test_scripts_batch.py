@@ -19,6 +19,35 @@ from bandaid.exceptions import (
 from bandaid.scripts import _quiet_hf_xet
 
 
+def _read_manifest(tmp_path):
+    """Return the QA manifest rows written under ``tmp_path`` as a list of dicts."""
+    with (tmp_path / scripts.QA_MANIFEST_FILENAME).open(newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def _starlist_names(tmp_path):
+    """Sorted starlist filenames in ``tmp_path``, ignoring the QA manifest sibling."""
+    return sorted(
+        p.name for p in tmp_path.iterdir() if p.name != scripts.QA_MANIFEST_FILENAME
+    )
+
+
+def _raise_on(trigger, exc, otherwise):
+    """
+    Build a ``process_one_image`` stub that raises ``exc`` for one frame.
+
+    The returned stub raises ``exc`` when called for the ``trigger`` filename and
+    otherwise returns ``otherwise()`` (evaluated per call, for a fresh result).
+    """
+
+    def _stub(file, *_args: object, **_kwargs: object):
+        if file == trigger:
+            raise exc
+        return otherwise()
+
+    return _stub
+
+
 @pytest.mark.usefixtures("_consistent_headers")
 class TestProcessBatch:
     """Unit tests for ``process_batch``."""
@@ -83,14 +112,15 @@ class TestProcessBatch:
     def test_failed_frames_are_skipped(self, monkeypatch):
         """A frame whose ``process_one_image`` raises a FrameError is omitted."""
         prep = _dummy_prep()
-
-        def _maybe(file, *_args: object, **_kwargs: object):
-            if file == "bad.fits":
-                msg = "too few stars"
-                raise TooFewStarsError(msg, file=file)
-            return {"TR": Table({"tot_count": [1.0]})}
-
-        monkeypatch.setattr(scripts, "process_one_image", _maybe)
+        monkeypatch.setattr(
+            scripts,
+            "process_one_image",
+            _raise_on(
+                "bad.fits",
+                TooFewStarsError("too few stars", file="bad.fits"),
+                lambda: {"TR": Table({"tot_count": [1.0]})},
+            ),
+        )
 
         results = scripts.process_batch(
             ["good.fits", "bad.fits"],
@@ -118,14 +148,15 @@ class TestProcessBatch:
 
     def test_unexpected_error_skipped_when_not_fail_fast(self, monkeypatch):
         """With fail_fast=False, an unexpected bug is logged and skipped."""
-
-        def _maybe(file, *_args: object, **_kwargs: object):
-            if file == "bad.fits":
-                msg = "a real bug"
-                raise RuntimeError(msg)
-            return {"TR": Table({"tot_count": [1.0]})}
-
-        monkeypatch.setattr(scripts, "process_one_image", _maybe)
+        monkeypatch.setattr(
+            scripts,
+            "process_one_image",
+            _raise_on(
+                "bad.fits",
+                RuntimeError("a real bug"),
+                lambda: {"TR": Table({"tot_count": [1.0]})},
+            ),
+        )
 
         results = scripts.process_batch(
             ["good.fits", "bad.fits"],
@@ -171,10 +202,7 @@ class TestProcessBatchToDisk:
         )
 
         # Ignore the QA manifest sibling; this test is about the starlist files.
-        written = sorted(
-            p.name for p in tmp_path.iterdir() if p.name != scripts.QA_MANIFEST_FILENAME
-        )
-        assert written == ["a.star", "b.star"]
+        assert _starlist_names(tmp_path) == ["a.star", "b.star"]
 
     def test_output_filename_is_stem_plus_default_suffix(
         self, patched_process_one_image, tmp_path, by_filter
@@ -189,9 +217,7 @@ class TestProcessBatchToDisk:
             output_dir=tmp_path,
         )
 
-        assert [
-            p.name for p in tmp_path.iterdir() if p.name != scripts.QA_MANIFEST_FILENAME
-        ] == ["frame1.star"]
+        assert _starlist_names(tmp_path) == ["frame1.star"]
 
     def test_same_basename_different_dirs_mirror_source_tree(
         self, patched_process_one_image, tmp_path, by_filter
@@ -260,10 +286,7 @@ class TestProcessBatchToDisk:
             output_dir=tmp_path,
         )
 
-        written = sorted(
-            p.name for p in tmp_path.iterdir() if p.name != scripts.QA_MANIFEST_FILENAME
-        )
-        assert written == ["img.star", "img_1.star"]
+        assert _starlist_names(tmp_path) == ["img.star", "img_1.star"]
 
     def test_custom_output_suffix_is_honored(
         self, patched_process_one_image, tmp_path, by_filter
@@ -279,9 +302,7 @@ class TestProcessBatchToDisk:
             output_suffix=".starlist",
         )
 
-        assert [
-            p.name for p in tmp_path.iterdir() if p.name != scripts.QA_MANIFEST_FILENAME
-        ] == ["frame1.starlist"]
+        assert _starlist_names(tmp_path) == ["frame1.starlist"]
 
     def test_written_file_round_trips_through_starlistset(
         self, patched_process_one_image, tmp_path, by_filter
@@ -325,14 +346,15 @@ class TestProcessBatchToDisk:
 
     def test_failed_frames_write_no_file(self, monkeypatch, tmp_path, by_filter):
         """A frame whose ``process_one_image`` raises a FrameError writes nothing."""
-
-        def _maybe(file, *_args: object, **_kwargs: object):
-            if file == "bad.fits":
-                msg = "twirl found no match"
-                raise WCSSolveError(msg, file=file)
-            return by_filter()
-
-        monkeypatch.setattr(scripts, "process_one_image", _maybe)
+        monkeypatch.setattr(
+            scripts,
+            "process_one_image",
+            _raise_on(
+                "bad.fits",
+                WCSSolveError("twirl found no match", file="bad.fits"),
+                by_filter,
+            ),
+        )
 
         results = scripts.process_batch(
             ["good.fits", "bad.fits"],
@@ -341,21 +363,20 @@ class TestProcessBatchToDisk:
             output_dir=tmp_path,
         )
 
-        assert [
-            p.name for p in tmp_path.iterdir() if p.name != scripts.QA_MANIFEST_FILENAME
-        ] == ["good.star"]
+        assert _starlist_names(tmp_path) == ["good.star"]
         assert results == {"good.fits": tmp_path / "good.star"}
 
     def test_writes_qa_manifest(self, monkeypatch, tmp_path, by_filter):
         """A per-frame QA manifest records ok and skipped frames (#31)."""
-
-        def _maybe(file, *_args: object, **_kwargs: object):
-            if file == "bad.fits":
-                msg = "twirl found no match"
-                raise WCSSolveError(msg, file=file)
-            return by_filter()
-
-        monkeypatch.setattr(scripts, "process_one_image", _maybe)
+        monkeypatch.setattr(
+            scripts,
+            "process_one_image",
+            _raise_on(
+                "bad.fits",
+                WCSSolveError("twirl found no match", file="bad.fits"),
+                by_filter,
+            ),
+        )
 
         scripts.process_batch(
             ["good.fits", "bad.fits"],
@@ -364,11 +385,8 @@ class TestProcessBatchToDisk:
             output_dir=tmp_path,
         )
 
-        manifest = tmp_path / "qa_manifest.csv"
-        assert manifest.exists()
-
-        with manifest.open(newline="") as f:
-            rows = list(csv.DictReader(f))
+        assert (tmp_path / scripts.QA_MANIFEST_FILENAME).exists()
+        rows = _read_manifest(tmp_path)
 
         expected_columns = {
             "file",
@@ -419,8 +437,7 @@ class TestProcessBatchToDisk:
             output_dir=tmp_path,
         )
 
-        with (tmp_path / scripts.QA_MANIFEST_FILENAME).open(newline="") as f:
-            rows = list(csv.DictReader(f))
+        rows = _read_manifest(tmp_path)
 
         assert float(rows[0]["sky_median"]) == pytest.approx(5.0)
 
@@ -445,8 +462,7 @@ class TestProcessBatchToDisk:
             output_dir=tmp_path,
         )
 
-        with (tmp_path / scripts.QA_MANIFEST_FILENAME).open(newline="") as f:
-            rows = list(csv.DictReader(f))
+        rows = _read_manifest(tmp_path)
 
         assert float(rows[0]["sky_median"]) == pytest.approx(7.0)
 
@@ -472,8 +488,7 @@ class TestProcessBatchToDisk:
             output_dir=tmp_path,
         )
 
-        with (tmp_path / scripts.QA_MANIFEST_FILENAME).open(newline="") as f:
-            rows = list(csv.DictReader(f))
+        rows = _read_manifest(tmp_path)
 
         assert rows[0]["n_centroid_drift"] == "1"
         assert rows[0]["n_drift_rejected"] == "1"
@@ -502,8 +517,7 @@ class TestProcessBatchToDisk:
             output_dir=tmp_path,
         )
 
-        with (tmp_path / scripts.QA_MANIFEST_FILENAME).open(newline="") as f:
-            rows = list(csv.DictReader(f))
+        rows = _read_manifest(tmp_path)
 
         assert rows[0]["n_centroid_drift"] == "1"
         assert rows[0]["n_drift_rejected"] == "0"
@@ -663,12 +677,9 @@ class TestProcessBatchToDisk:
         # The batch survives the starless frame: the later frame is still
         # written, and only it appears in the results.
         assert results == {"good.fits": tmp_path / "good.star"}
-        assert sorted(
-            p.name for p in tmp_path.iterdir() if p.name != scripts.QA_MANIFEST_FILENAME
-        ) == ["good.star"]
+        assert _starlist_names(tmp_path) == ["good.star"]
 
-        with (tmp_path / scripts.QA_MANIFEST_FILENAME).open(newline="") as f:
-            rows = list(csv.DictReader(f))
+        rows = _read_manifest(tmp_path)
 
         # One row per input frame: the starless frame's provisional ok record
         # is replaced by the skip, not duplicated alongside it.
