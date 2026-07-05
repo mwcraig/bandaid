@@ -30,6 +30,7 @@ from bandaid.exceptions import (
     FrameMetadataError,
     NoUsableStarsError,
     TooFewStarsError,
+    WCSScaleError,
     WCSSolveError,
 )
 from bandaid.image2sl_qt import generate_bayer_masks
@@ -1098,7 +1099,7 @@ class TestPrepareImage:
             captured["fwhm_n_stars"] = kwargs.get("fwhm_n_stars")
             calibrated = np.zeros((10, 10))
             coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
-            return calibrated, {"creator": "spy"}, coords, 2.0, None
+            return calibrated, {"creator": "spy", "pixscale": 2.4}, coords, 2.0, None
 
         monkeypatch.setattr(
             "bandaid.photometry.calibration_sequence",
@@ -1135,13 +1136,125 @@ class TestPrepareImage:
         assert captured["opening"] == expected_opening
         assert captured["fwhm_n_stars"] == expected_fwhm_n_stars
 
+    def test_instrument_wcs_scale_tolerance_reaches_alignment(self, monkeypatch):
+        """
+        The instrument's ``wcs_scale_tolerance`` is forwarded to ``align``.
 
-def _make_tan_wcs(image_size=(500, 500), crval=(10.0, 20.0)):
-    """Build a simple TAN WCS centered at ``crval`` for the given image size."""
+        A non-default profile tolerance must reach the plate-scale check, so spy
+        on ``align`` and assert the configured value arrives as ``scale_tolerance``.
+        """
+        expected_tolerance = 0.07
+        captured = {}
+
+        def _spy_calibration_sequence(_file, *_args: object, **_kwargs: object):
+            calibrated = np.zeros((10, 10))
+            coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+            return calibrated, {"creator": "spy", "pixscale": 2.4}, coords, 2.0, None
+
+        def _spy_align(coords, _radecs, **kwargs: object):
+            captured["scale_tolerance"] = kwargs.get("scale_tolerance")
+            return coords, _make_tan_wcs()
+
+        monkeypatch.setattr(
+            "bandaid.photometry.calibration_sequence", _spy_calibration_sequence
+        )
+        monkeypatch.setattr("bandaid.photometry.align", _spy_align)
+        monkeypatch.setattr(
+            "bandaid.photometry.centroid_stars", lambda data, coords, cnn: coords
+        )
+        monkeypatch.setattr(
+            "bandaid.photometry.fits.getheader", lambda file: {"creator": "spy"}
+        )
+
+        config = PhotometryConfig(
+            instrument=InstrumentProfile(wcs_scale_tolerance=expected_tolerance),
+        )
+        prepare_image("unused.fits", np.zeros((5, 2)), None, config=config)
+
+        assert captured["scale_tolerance"] == expected_tolerance
+
+    def test_missing_pixscale_raises_when_solving(self, monkeypatch):
+        """
+        A missing/non-numeric ``pixscale`` fails loud instead of silent-skipping.
+
+        ``pixscale`` comes from the instrument profile via
+        ``metadata_from_header`` and is required to scale-check a solved WCS, so
+        when it is absent and no WCS is supplied ``prepare_image`` raises
+        ``FrameMetadataError`` rather than passing ``expected_pixscale=None``
+        (which would quietly disable the check).
+        """
+
+        def _spy_calibration_sequence(_file, *_args: object, **_kwargs: object):
+            calibrated = np.zeros((10, 10))
+            coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+            # metadata deliberately omits "pixscale".
+            return calibrated, {"creator": "spy"}, coords, 2.0, None
+
+        monkeypatch.setattr(
+            "bandaid.photometry.calibration_sequence", _spy_calibration_sequence
+        )
+        monkeypatch.setattr(
+            "bandaid.photometry.align",
+            lambda *a, **k: pytest.fail("align must not run without a pixscale"),
+        )
+        monkeypatch.setattr(
+            "bandaid.photometry.centroid_stars", lambda data, coords, cnn: coords
+        )
+        monkeypatch.setattr(
+            "bandaid.photometry.fits.getheader", lambda file: {"creator": "spy"}
+        )
+
+        with pytest.raises(FrameMetadataError, match="pixscale"):
+            prepare_image("unused.fits", np.zeros((5, 2)), None)
+
+    def test_missing_pixscale_ok_when_wcs_supplied(self, monkeypatch):
+        """
+        A supplied WCS is trusted, so a missing ``pixscale`` is not required.
+
+        ``align`` skips the scale check for a caller-supplied WCS, so
+        ``prepare_image`` must not demand ``pixscale`` in that case; it forwards
+        ``expected_pixscale=None`` without raising.
+        """
+        supplied_wcs = _make_tan_wcs()
+        captured = {}
+
+        def _spy_calibration_sequence(_file, *_args: object, **_kwargs: object):
+            calibrated = np.zeros((10, 10))
+            coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+            return calibrated, {"creator": "spy"}, coords, 2.0, None
+
+        def _spy_align(coords, _radecs, **kwargs: object):
+            captured["expected_pixscale"] = kwargs.get("expected_pixscale")
+            return coords, supplied_wcs
+
+        monkeypatch.setattr(
+            "bandaid.photometry.calibration_sequence", _spy_calibration_sequence
+        )
+        monkeypatch.setattr("bandaid.photometry.align", _spy_align)
+        monkeypatch.setattr(
+            "bandaid.photometry.centroid_stars", lambda data, coords, cnn: coords
+        )
+        monkeypatch.setattr(
+            "bandaid.photometry.fits.getheader", lambda file: {"creator": "spy"}
+        )
+
+        prepare_image("unused.fits", np.zeros((5, 2)), None, wcs=supplied_wcs)
+
+        assert captured["expected_pixscale"] is None
+
+
+def _make_tan_wcs(image_size=(500, 500), crval=(10.0, 20.0), pixscale=2.4):
+    """
+    Build a simple TAN WCS centered at ``crval`` for the given image size.
+
+    ``pixscale`` (arcsec/pixel) sets the plate scale; the 2.4 default matches the
+    Seestar50. Pass a different value to build a wrong-scale WCS for the plate-scale
+    check tests.
+    """
     wcs = WCS(naxis=2)
     wcs.wcs.crpix = [image_size[1] / 2, image_size[0] / 2]
     wcs.wcs.crval = list(crval)
-    wcs.wcs.cdelt = [-2.4 / 3600, 2.4 / 3600]
+    wcs.wcs.cdelt = [-pixscale / 3600, pixscale / 3600]
     wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
     return wcs
 
@@ -2247,7 +2360,7 @@ class TestAlign:
             N_IMAGE_STARS_ALIGN, 2
         )
 
-        with pytest.raises(WCSSolveError, match="no WCS"):
+        with pytest.raises(WCSSolveError, match="no acceptable WCS"):
             align(coords, coords.copy(), photometry_coords=None)
 
     def test_unexpected_twirl_error_propagates(self, monkeypatch):
@@ -2297,6 +2410,137 @@ class TestAlign:
         assert returned_wcs is sentinel_wcs
         # Shallow pool tried first, then the deeper retry pool -- in that order.
         assert pool_sizes == [N_GAIA_STARS_ALIGN, N_GAIA_STARS_ALIGN_RETRY]
+
+    def test_accepts_wcs_matching_expected_scale(self, monkeypatch):
+        """A solved WCS whose plate scale matches the expectation is accepted."""
+        sentinel_wcs = _make_tan_wcs(pixscale=2.4)
+        monkeypatch.setattr(
+            "bandaid.photometry.compute_wcs",
+            lambda coords, radecs, tolerance: sentinel_wcs,
+        )
+        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
+            N_IMAGE_STARS_ALIGN, 2
+        )
+
+        _, returned_wcs = align(
+            coords, coords.copy(), photometry_coords=None, expected_pixscale=2.4
+        )
+
+        assert returned_wcs is sentinel_wcs
+
+    def test_rejects_wcs_with_wrong_scale(self, monkeypatch):
+        """
+        A solved WCS whose plate scale is far from the expectation is rejected.
+
+        This is the twirl-returns-a-self-consistent-but-wrong-scale case (~4.2 vs
+        the true ~2.4 arcsec/px): compute_wcs returns a non-None WCS, but its scale
+        deviates well beyond WCS_SCALE_TOLERANCE, so align raises WCSScaleError
+        rather than photometering at the wrong pixel positions.
+        """
+        bad_wcs = _make_tan_wcs(pixscale=4.2)
+        monkeypatch.setattr(
+            "bandaid.photometry.compute_wcs",
+            lambda coords, radecs, tolerance: bad_wcs,
+        )
+        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
+            N_IMAGE_STARS_ALIGN, 2
+        )
+
+        with pytest.raises(WCSScaleError, match="scale"):
+            align(coords, coords.copy(), photometry_coords=None, expected_pixscale=2.4)
+
+    def test_scale_check_skipped_when_expected_none(self, monkeypatch):
+        """With expected_pixscale=None the scale check is skipped (back-compat)."""
+        bad_wcs = _make_tan_wcs(pixscale=4.2)
+        monkeypatch.setattr(
+            "bandaid.photometry.compute_wcs",
+            lambda coords, radecs, tolerance: bad_wcs,
+        )
+        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
+            N_IMAGE_STARS_ALIGN, 2
+        )
+
+        _, returned_wcs = align(
+            coords, coords.copy(), photometry_coords=None, expected_pixscale=None
+        )
+
+        assert returned_wcs is bad_wcs
+
+    def test_retries_deeper_pool_on_bad_scale(self, monkeypatch):
+        """
+        A wrong-scale shallow solve retries at the deeper Gaia pool.
+
+        A bad-scale WCS is a failure to retry just like a None/raise: align widens
+        the reference pool and accepts the deeper pool's correctly-scaled solve.
+        """
+        good_wcs = _make_tan_wcs(pixscale=2.4)
+        bad_wcs = _make_tan_wcs(pixscale=4.2)
+        pool_sizes = []
+
+        def fake_compute_wcs(coords, radecs, tolerance):  # noqa: ARG001
+            pool_sizes.append(len(radecs))
+            return bad_wcs if len(radecs) <= N_GAIA_STARS_ALIGN else good_wcs
+
+        monkeypatch.setattr("bandaid.photometry.compute_wcs", fake_compute_wcs)
+
+        n_detected = N_GAIA_STARS_ALIGN_RETRY + 5
+        coords = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
+        radecs = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
+
+        _, returned_wcs = align(
+            coords, radecs, photometry_coords=None, expected_pixscale=2.4
+        )
+
+        assert returned_wcs is good_wcs
+        assert pool_sizes == [N_GAIA_STARS_ALIGN, N_GAIA_STARS_ALIGN_RETRY]
+
+    def test_supplied_wcs_scale_not_checked(self):
+        """A caller-supplied WCS is trusted and not scale-checked."""
+        bad_wcs = _make_tan_wcs(pixscale=4.2)
+        coords = np.array([[250.0, 250.0], [260.0, 260.0]])
+
+        _, returned_wcs = align(coords, radecs=None, wcs=bad_wcs, expected_pixscale=2.4)
+
+        assert returned_wcs is bad_wcs
+
+    def test_scale_tolerance_param_controls_the_check(self, monkeypatch):
+        """
+        The ``scale_tolerance`` argument gates the check, not the module default.
+
+        A WCS 10% off the expected scale is accepted under a loose 20% tolerance
+        but rejected under a tight 5% tolerance, so a per-instrument tolerance
+        threaded in from the config actually drives the decision.
+        """
+        wcs_10pct_off = _make_tan_wcs(pixscale=2.4 * 1.10)
+        monkeypatch.setattr(
+            "bandaid.photometry.compute_wcs",
+            lambda coords, radecs, tolerance: wcs_10pct_off,
+        )
+        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
+            N_IMAGE_STARS_ALIGN, 2
+        )
+
+        _, returned_wcs = align(
+            coords,
+            coords.copy(),
+            photometry_coords=None,
+            expected_pixscale=2.4,
+            scale_tolerance=0.20,
+        )
+        assert returned_wcs is wcs_10pct_off
+
+        with pytest.raises(WCSScaleError, match="scale"):
+            align(
+                coords,
+                coords.copy(),
+                photometry_coords=None,
+                expected_pixscale=2.4,
+                scale_tolerance=0.05,
+            )
+
+    def test_wcs_scale_error_is_wcs_solve_error(self):
+        """WCSScaleError is a WCSSolveError so the batch loop still skips the frame."""
+        assert issubclass(WCSScaleError, WCSSolveError)
 
 
 def test_centroid_stars_delegates_to_ballet(monkeypatch):
@@ -2788,7 +3032,7 @@ class TestCalibrationSequence:
         # ...while the returned calibrated_data is the original, unbalanced counts
         # that downstream photometry relies on.
         np.testing.assert_allclose(calibrated, image)
-        # Sanity: the balanced detection still recovers the injected sources.
+        # Check that the balanced detection still recovers the injected sources.
         assert len(regions) == n_sources
         assert coords.shape == (n_sources, 2)
 

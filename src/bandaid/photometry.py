@@ -22,6 +22,7 @@ from astropy.io import fits
 from astropy.stats import SigmaClip
 from astropy.table import Table
 from astropy.time import Time
+from astropy.wcs.utils import proj_plane_pixel_scales
 from dateutil import parser
 from eloy import centroid, detection, photometry, psf, utils
 from eloy.centroid import ballet_centroid
@@ -40,6 +41,7 @@ from .exceptions import (
     FrameMetadataError,
     NoUsableStarsError,
     TooFewStarsError,
+    WCSScaleError,
     WCSSolveError,
 )
 from .image2sl_qt import bayer_balance_image
@@ -108,9 +110,12 @@ _DEFAULT_INSTRUMENT = InstrumentProfile()
 THRESH = _DEFAULT_INSTRUMENT.thresh
 # Size of the morphological-opening kernel passed to `detection.stars_detection`.
 # A source must hold a solid opening x opening above-threshold core to survive, so
-# this -- not THRESH -- is what gates faint-star detection. eloy's default of 5
-# starved real fields (~10 of ~23 real stars), failing the plate solve; 3 recovers
-# them.
+# this -- not THRESH -- is what gates faint-star detection. bandaid once lowered
+# eloy's default (5 -> 3) because opening=5 starved real fields (~10 of ~23 stars),
+# breaking the plate solve -- but that was an artifact of detecting on raw RGGB
+# data. Production now detects on Bayer-balanced data, where openings 3/4/5 solve
+# identically (the bright stars that drive the solve are stable) and 5 yields far
+# fewer spurious faint sources, so the default is restored to 5.
 DETECTION_OPENING = _DEFAULT_INSTRUMENT.detection_opening
 # Half-width (px) of the square cutout used to build the effective PSF for the
 # FWHM fit; 25 reproduces the long-standing 50x50 calibration window.
@@ -120,6 +125,11 @@ _FWHM_CUTOUT_HALF = _DEFAULT_INSTRUMENT.fwhm_cutout_half
 # bayer-balanced detection now yields just slow the CNN re-centroiding and inflate
 # the FWHM (faint sources are mis-centroided, smearing the stacked PSF).
 _FWHM_N_STARS = _DEFAULT_INSTRUMENT.fwhm_n_stars
+# Maximum fractional deviation of a solved plate scale from the instrument's
+# expected pixscale before the WCS is rejected as a wrong-scale solve. 5% sits
+# well above the correct-scale solve spread and far below twirl's wrong-scale
+# solves; the empirical basis for this value is in #83.
+WCS_SCALE_TOLERANCE = _DEFAULT_INSTRUMENT.wcs_scale_tolerance
 
 # Relative radii and annulus are multiplied by each image's FWHM to determine the
 # actual aperture sizes. Only one radius is needed for STWG, but it must be in an
@@ -1118,9 +1128,124 @@ class ImageData:
         return self._time_airmass_cache
 
 
-def align(coords, radecs=None, *, photometry_coords=None, wcs=None):
+def _wcs_pixscale_arcsec(wcs):
+    """
+    Return the mean plate scale of a WCS in arcsec/pixel.
+
+    Averages the two axis scales from :func:`proj_plane_pixel_scales` (degrees,
+    for the TAN WCS twirl produces) and converts to arcsec.
+    """
+    return float(np.mean(proj_plane_pixel_scales(wcs))) * 3600.0
+
+
+def _solve_wcs(coords, radecs, expected_pixscale, scale_tolerance=WCS_SCALE_TOLERANCE):
+    """
+    Solve a WCS from detections and Gaia references, with a plate-scale check.
+
+    Extracted from :func:`align` so the alignment path stays under ruff's C901
+    complexity limit; kept private because the scale-checked, shallow-then-deep
+    pool solve is an implementation detail of `align`.
+
+    Parameters
+    ----------
+    coords : numpy.ndarray
+        Detected pixel coordinates, sliced by N_IMAGE_STARS_ALIGN.
+    radecs : numpy.ndarray
+        Gaia reference RA/Decs, sliced by the per-attempt Gaia pool size.
+    expected_pixscale : float or None
+        Expected plate scale (arcsec/pixel); see :func:`align`.
+    scale_tolerance : float, optional
+        Maximum fractional deviation from ``expected_pixscale`` before a solve is
+        rejected as wrong-scale. Defaults to the module-level
+        ``WCS_SCALE_TOLERANCE``; see :func:`align`.
+
+    Returns
+    -------
+    astropy.wcs.WCS
+        The solved, scale-checked WCS.
+
+    Raises
+    ------
+    WCSSolveError
+        If twirl returns None or raises a too-few-stars error for every pool.
+    WCSScaleError
+        If every pool solves at a plate scale out of tolerance (a subclass of
+        `WCSSolveError`).
+
+    Notes
+    -----
+    twirl matches by geometric (quad) shape, so `coords` and `radecs` need not be
+    in the same order or even the same length -- there is no per-index
+    correspondence, and the matcher may be handed more references than detections.
+    The cheap shallow Gaia pool is tried first and only widens to the deeper retry
+    pool on failure (the pool-size strategy is described at ``N_GAIA_STARS_ALIGN``);
+    a pool that returns None, raises a too-few-stars error, or solves at the wrong
+    plate scale is a failure to retry, and the last failure decides which error is
+    raised if every pool fails.
+    """
+    this_wcs = None
+    last_exc = None
+    last_bad_scale = None
+    for n_gaia in (N_GAIA_STARS_ALIGN, N_GAIA_STARS_ALIGN_RETRY):
+        last_exc = None
+        last_bad_scale = None
+        try:
+            # twirl prints timing/diagnostic lines to stdout; silence them.
+            with contextlib.redirect_stdout(io.StringIO()):
+                this_wcs = compute_wcs(
+                    coords[0:N_IMAGE_STARS_ALIGN],
+                    radecs[0:n_gaia],
+                    tolerance=WCS_MATCH_TOLERANCE,
+                )
+        except (IndexError, ValueError) as exc:
+            # twirl's two too-few-stars exits (empty cross_match index ->
+            # IndexError; too few matched points -> ValueError from
+            # fit_wcs_from_points). Surface either as a recoverable frame error;
+            # anything else propagates as an unexpected bug.
+            last_exc = exc
+            this_wcs = None
+        # Plate-scale check: twirl can return a non-None, self-consistent but
+        # geometrically wrong-scale WCS that nothing downstream would catch. Null
+        # it like any other pool failure so the loop retries the deeper Gaia pool,
+        # which usually recovers the correct-scale match (see #83).
+        if this_wcs is not None and expected_pixscale is not None:
+            measured = _wcs_pixscale_arcsec(this_wcs)
+            if abs(measured - expected_pixscale) > (
+                scale_tolerance * expected_pixscale
+            ):
+                last_bad_scale = measured
+                this_wcs = None
+        if this_wcs is not None:
+            return this_wcs
+    if last_exc is not None:
+        msg = "twirl raised while solving the WCS"
+        raise WCSSolveError(msg) from last_exc
+    if last_bad_scale is not None:
+        msg = (
+            f"twirl solved a WCS at {last_bad_scale:.3g} arcsec/px, far from the "
+            f"expected {expected_pixscale:.3g} arcsec/px "
+            f"(> {scale_tolerance:.0%} off); rejected as a wrong-scale solve"
+        )
+        raise WCSScaleError(msg)
+    msg = "twirl produced no acceptable WCS for any Gaia pool"
+    raise WCSSolveError(msg)
+
+
+def align(
+    coords,
+    radecs=None,
+    *,
+    photometry_coords=None,
+    wcs=None,
+    expected_pixscale=None,
+    scale_tolerance=WCS_SCALE_TOLERANCE,
+):
     """
     Compute per-image WCS and align reference coordinates into pixel space.
+
+    When `wcs` is None the WCS is solved by :func:`_solve_wcs`, which propagates a
+    `WCSSolveError` (or its `WCSScaleError` subclass) when no acceptable WCS can be
+    found; callers attach the source file to the error before re-raising.
 
     Parameters
     ----------
@@ -1140,6 +1265,18 @@ def align(coords, radecs=None, *, photometry_coords=None, wcs=None):
         If provided, this WCS is used instead of computing a new one from
         `coords` and `radecs`. By default None (WCS is computed from
         `coords` and `radecs`).
+    expected_pixscale : float or None, optional
+        Expected plate scale (arcsec/pixel) for this instrument. When provided,
+        a *computed* WCS whose scale deviates from it by more than
+        `scale_tolerance` (fractional) is rejected as a wrong-scale solve. None
+        (default) skips the check. A caller-supplied `wcs` is trusted and never
+        scale-checked.
+    scale_tolerance : float, optional
+        Maximum fractional deviation of a computed plate scale from
+        `expected_pixscale` before the WCS is rejected. Defaults to the
+        module-level `WCS_SCALE_TOLERANCE`; the pipeline passes the batch
+        instrument's ``wcs_scale_tolerance``. Ignored when `expected_pixscale`
+        is None or a `wcs` is supplied.
 
     Returns
     -------
@@ -1147,63 +1284,12 @@ def align(coords, radecs=None, *, photometry_coords=None, wcs=None):
         Aligned star coordinates in pixel space.
     this_wcs : astropy.wcs.WCS
         World Coordinate System for the image.
-
-    Raises
-    ------
-    WCSSolveError
-        If `wcs` is None and twirl cannot solve a WCS from `coords` and
-        `radecs` -- either it returns None (too few stars overlap to satisfy its
-        min_match threshold) or it raises while matching. The raiser does not
-        know the source file; callers attach it to the error before re-raising.
     """
-    if wcs is None:
-        # Feed the brightest N_IMAGE_STARS_ALIGN detections and the brightest
-        # Gaia reference RA/Decs to twirl's asterism (quad) matcher. twirl matches
-        # by geometric shape, so the two lists need NOT be in the same order or
-        # even the same length -- there is no per-index correspondence. The slices
-        # are independent so the matcher can be handed more references than
-        # detections (see the constants above).
-        #
-        # Try the cheap shallow Gaia pool first and only widen to the deeper retry
-        # pool if it fails: the larger pool's asterism search costs ~ C(N, 4), so
-        # the ~99% of frames that solve immediately should not pay for it. A pool
-        # that returns None or raises a too-few-stars error is a failure to retry;
-        # the last failure (exception or None) decides the error if every pool
-        # fails.
-        # twirl's asterism matcher prints timing/diagnostic lines straight to
-        # stdout (e.g. "Match took ... us"); redirect them to /dev/null so the
-        # pipeline and notebooks stay quiet.
-        this_wcs = None
-        last_exc = None
-        for n_gaia in (N_GAIA_STARS_ALIGN, N_GAIA_STARS_ALIGN_RETRY):
-            last_exc = None
-            try:
-                with contextlib.redirect_stdout(io.StringIO()):
-                    this_wcs = compute_wcs(
-                        coords[0:N_IMAGE_STARS_ALIGN],
-                        radecs[0:n_gaia],
-                        tolerance=WCS_MATCH_TOLERANCE,
-                    )
-            except (IndexError, ValueError) as exc:
-                # twirl's two too-few-stars exits: an IndexError when cross_match
-                # finds zero pairs (empty float index array), or a ValueError out
-                # of fit_wcs_from_points when too few matched points reach scipy's
-                # least-squares fitter (the original SS Leo failure). Surface
-                # either as a recoverable frame error; anything else is an
-                # unexpected bug and is left to propagate. The original is
-                # preserved for the log.
-                last_exc = exc
-                this_wcs = None
-            if this_wcs is not None:
-                break
-        if this_wcs is None:
-            if last_exc is not None:
-                msg = "twirl raised while solving the WCS"
-                raise WCSSolveError(msg) from last_exc
-            msg = "twirl returned no WCS (too few matched stars)"
-            raise WCSSolveError(msg)
-    else:
-        this_wcs = wcs
+    this_wcs = (
+        _solve_wcs(coords, radecs, expected_pixscale, scale_tolerance)
+        if wcs is None
+        else wcs
+    )
 
     if photometry_coords is not None:
         aligned_coords = this_wcs.world_to_pixel(photometry_coords)
@@ -1538,6 +1624,10 @@ def prepare_image(
         If the per-image WCS cannot be solved. The source `file` is attached to
         the error before it propagates. (`calibration_sequence` may also raise
         `TooFewStarsError`, which propagates unchanged.)
+    FrameMetadataError
+        If a WCS must be solved (``wcs`` is None) but the frame metadata has no
+        usable numeric ``pixscale`` to scale-check the solve against. The source
+        `file` is attached before it propagates.
     DegenerateBayerChannelError
         If ``detect_on_bayer_balanced`` is True and a CFA sub-grid sample is
         empty or has zero variance (propagated from `bayer_balance_image`,
@@ -1575,12 +1665,32 @@ def prepare_image(
     else:
         working_image = calibrated_data
 
+    # pixscale drives align's wrong-scale WCS rejection and is populated for
+    # every frame by metadata_from_header from the instrument profile, so a
+    # missing or non-numeric value means a malformed profile. When we are
+    # actually solving a WCS, fail loud rather than silently skip the check; a
+    # caller-supplied WCS is trusted, so pixscale is not required in that case.
+    if wcs is None:
+        expected_pixscale = metadata.get("pixscale")
+        if not isinstance(expected_pixscale, (int, float)) or isinstance(
+            expected_pixscale, bool
+        ):
+            msg = (
+                "frame metadata has no usable numeric 'pixscale' "
+                f"(got {expected_pixscale!r}); cannot scale-check the solved WCS"
+            )
+            raise FrameMetadataError(msg, file=file)
+    else:
+        expected_pixscale = None
+
     try:
         aligned_coords, this_wcs = align(
             coords,
             radecs,
             photometry_coords=photometry_coords,
             wcs=wcs,
+            expected_pixscale=expected_pixscale,
+            scale_tolerance=instrument.wcs_scale_tolerance,
         )
     except WCSSolveError as exc:
         # align does not know the source file; attach it here so the batch

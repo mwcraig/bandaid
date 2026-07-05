@@ -21,6 +21,7 @@ __all__ = [
     "FrameMetadataError",
     "NoUsableStarsError",
     "TooFewStarsError",
+    "WCSScaleError",
     "WCSSolveError",
 ]
 
@@ -67,6 +68,21 @@ class TooFewStarsError(FrameError):
 
 class WCSSolveError(FrameError):
     """A WCS could not be solved for the frame (twirl failed or found no match)."""
+
+
+class WCSScaleError(WCSSolveError):
+    """
+    Every WCS solve for the frame came back at an implausible plate scale.
+
+    twirl can return a self-consistent but geometrically wrong WCS (wrong plate
+    scale). Such a solve is normally *recovered*, not dropped: the scale check
+    rejects it and retries a deeper Gaia pool, which usually finds the
+    correct-scale match. This error is raised only in the residual case where
+    *every* pool solves out of tolerance, so the frame cannot be recovered and is
+    skipped. It subclasses `WCSSolveError` so the batch loop still skips the
+    frame, while staying distinguishable in logs/manifests from a genuine
+    "no match".
+    """
 
 
 class FrameMetadataError(FrameError):
