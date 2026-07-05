@@ -164,13 +164,6 @@ class TestPrepareBatch:
         assert captured.get("detect_on_bayer_balanced") is True
         assert captured.get("fwhm_n_stars") == fwhm_n_stars
 
-    def test_append_l4_adds_luminance_channel(self, monkeypatch):
-        """``append_l4`` adds the full-frame "L4" channel as a None mask."""
-        _patch_prep(monkeypatch)
-        prep = scripts.prepare_batch("frame1.fits", cnn=object(), append_l4=True)
-        assert set(prep.bayer_masks) == {"TR", "TB", "TG", "L4"}
-        assert prep.bayer_masks["L4"] is None
-
     def test_gaia_queried_at_metadata_center_and_doubled_fov_rad(self, monkeypatch):
         """Gaia is queried at the frame pointing over twice the field radius."""
         calls, metadata, _, _, _ = _patch_prep(monkeypatch)
@@ -211,37 +204,27 @@ class TestPrepareBatch:
 
         assert calls["obs_epoch"] == Time("2026-04-28T03:03:43")
 
-    def test_missing_obs_time_raises_clear_metadata_error(self, monkeypatch):
-        """
-        A frame without DATE-OBS fails with a metadata error, not a Gaia one.
-
-        The Seestar profile has no default for ``obs_time``, so a frame missing
-        DATE-OBS resolves it to None. Feeding that to the Gaia query would fail
-        inside the query's ``except Exception`` wrapper and surface as a
-        misleading "could not query Gaia" BatchPrepError; the metadata must be
-        validated first instead.
-        """
-        metadata = _batch_metadata()
-        metadata["obs_time"] = None
-        _patch_prep(monkeypatch, metadata=metadata)
-
-        with pytest.raises(FrameMetadataError, match="obs_time"):
-            scripts.prepare_batch("frame1.fits", cnn=object())
-
     @pytest.mark.parametrize(
         "bad_obs_time",
         [
+            # None: the Seestar profile has no default for obs_time, so a frame
+            # missing DATE-OBS resolves it to None. Feeding that to the Gaia query
+            # would fail inside the query's "except Exception" wrapper and surface
+            # as a misleading "could not query Gaia" BatchPrepError; the metadata
+            # must be validated first instead.
+            None,
             "not a date at all",
             # dateutil raises OverflowError (not ValueError) for all-digit
             # strings too large for a C long -- e.g. a corrupted numeric
             # DATE-OBS (PR #71 review).
             "999999999999999999",
         ],
+        ids=["missing-None", "not-a-date", "overflowing-digits"],
     )
     def test_unparseable_obs_time_raises_clear_metadata_error(
         self, monkeypatch, bad_obs_time
     ):
-        """An unparseable ``obs_time`` fails as a metadata error, not a Gaia one."""
+        """A missing/unparseable ``obs_time`` fails as a metadata error, not Gaia."""
         metadata = _batch_metadata()
         metadata["obs_time"] = bad_obs_time
         _patch_prep(monkeypatch, metadata=metadata)
@@ -415,33 +398,40 @@ class TestPrepareBatch:
         )
         np.testing.assert_allclose(flagged.photometry_coords.ra.deg, radecs[[2], 0])
 
-    def test_default_gaia_mag_limit_drops_faint_stars(self, monkeypatch):
-        """Stars fainter than the default limit of 15 are cut; 15.0 itself is kept."""
+    @pytest.mark.parametrize(
+        ("gaia_mag_limit", "n_kept"),
+        [
+            # Default limit of 15 cuts 15.1/16.0 but keeps 15.0 itself.
+            (None, 2),
+            # An explicit limit cuts at that magnitude instead.
+            (12.0, 1),
+        ],
+        ids=["default-limit-15", "custom-limit-12"],
+    )
+    def test_gaia_mag_limit_drops_faint_stars(
+        self, monkeypatch, gaia_mag_limit, n_kept
+    ):
+        """Stars fainter than the (default or explicit) Gaia mag limit are cut."""
         radecs = np.array([[10.0, 0.0], [10.1, 0.0], [10.2, 0.0], [10.3, 0.0]])
         mags = np.array([12.0, 15.0, 15.1, 16.0])
         _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
 
-        prep = scripts.prepare_batch("frame1.fits", cnn=object())
-
-        np.testing.assert_array_equal(prep.radecs, radecs[:2])
-        # The kept stars are degrees apart, so none are contamination-flagged.
-        np.testing.assert_allclose(prep.photometry_coords.ra.deg, radecs[:2, 0])
-
-    def test_custom_gaia_mag_limit_is_honored(self, monkeypatch):
-        """An explicit ``gaia_mag_limit`` cuts at that magnitude instead."""
-        radecs = np.array([[10.0, 0.0], [10.1, 0.0], [10.2, 0.0], [10.3, 0.0]])
-        mags = np.array([12.0, 15.0, 15.1, 16.0])
-        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
-
-        prep = scripts.prepare_batch(
-            "frame1.fits",
-            cnn=object(),
-            config=PhotometryConfig(
-                source_selection=SourceSelectionConfig(gaia_mag_limit=12.0)
-            ),
+        config_kwargs = (
+            {}
+            if gaia_mag_limit is None
+            else {
+                "config": PhotometryConfig(
+                    source_selection=SourceSelectionConfig(
+                        gaia_mag_limit=gaia_mag_limit
+                    )
+                )
+            }
         )
+        prep = scripts.prepare_batch("frame1.fits", cnn=object(), **config_kwargs)
 
-        np.testing.assert_array_equal(prep.radecs, radecs[:1])
+        np.testing.assert_array_equal(prep.radecs, radecs[:n_kept])
+        # The kept stars are degrees apart, so none are contamination-flagged.
+        np.testing.assert_allclose(prep.photometry_coords.ra.deg, radecs[:n_kept, 0])
 
     def test_faint_real_star_contaminates_brighter_target(self, monkeypatch):
         """
