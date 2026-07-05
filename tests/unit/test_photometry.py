@@ -2640,18 +2640,18 @@ class TestAlign:
 
         assert returned_wcs is sentinel_wcs
 
-    def test_rejects_wcs_placing_center_outside_frame(self, monkeypatch):
+    def test_rejects_wcs_far_from_queried_center(self, monkeypatch):
         """
-        A solved WCS that projects the queried field center off-frame is rejected.
+        A solved WCS whose frame lies far from the queried center is rejected.
 
-        The Gaia catalog is queried at the header pointing, so a WCS that puts
-        that location outside the image is a mispointed (false-asterism) solve:
-        the catalog would not even overlap the frame. align raises
-        WCSPointingError rather than photometering a field the WCS says we are
-        not looking at.
+        The Gaia catalog is queried at the header pointing, so a WCS whose
+        frame center is more than one field radius (half-diagonal) from that
+        location is a mispointed (false-asterism) solve: the catalog would
+        barely overlap the frame. align raises WCSPointingError rather than
+        photometering a field the WCS says we are not looking at.
         """
-        # crval 5 deg away in RA: the expected center lands thousands of pixels
-        # outside a 500x500 frame at 2.4 arcsec/px.
+        # crval 5 deg away in RA vs a ~0.24 deg field radius (500x500 px at
+        # 2.4 arcsec/px): far beyond any plausible pointing drift.
         mispointed_wcs = _make_tan_wcs(crval=(15.0, 20.0))
         monkeypatch.setattr(
             "bandaid.photometry.compute_wcs",
@@ -2669,6 +2669,36 @@ class TestAlign:
                 expected_center=SkyCoord(10.0, 20.0, unit="deg"),
                 shape=(500, 500),
             )
+
+    def test_accepts_wcs_with_center_slightly_off_frame(self, monkeypatch):
+        """
+        A queried center just past the frame edge is NOT a mispointed solve.
+
+        Regression for the SS Leo 20260418 smoke test: the header target can
+        legitimately sit at (or drift a few arcmin past) the frame edge while
+        the solve is correct, so the check must tolerate separations up to one
+        field radius rather than demanding the center project strictly
+        on-frame. 0.2 deg off-center is outside a 500-px-wide frame's
+        half-width (~0.17 deg) but inside its ~0.24 deg half-diagonal.
+        """
+        sentinel_wcs = _make_tan_wcs(crval=(10.0, 20.0))
+        monkeypatch.setattr(
+            "bandaid.photometry.compute_wcs",
+            lambda coords, radecs, tolerance: sentinel_wcs,
+        )
+        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
+            N_IMAGE_STARS_ALIGN, 2
+        )
+
+        _, returned_wcs = align(
+            coords,
+            coords.copy(),
+            photometry_coords=None,
+            expected_center=SkyCoord(10.0, 20.2, unit="deg"),
+            shape=(500, 500),
+        )
+
+        assert returned_wcs is sentinel_wcs
 
     def test_retries_deeper_pool_on_bad_center(self, monkeypatch):
         """
