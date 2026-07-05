@@ -41,6 +41,7 @@ from .exceptions import (
     FrameMetadataError,
     NoUsableStarsError,
     TooFewStarsError,
+    WCSPointingError,
     WCSScaleError,
     WCSSolveError,
 )
@@ -1138,12 +1139,82 @@ def _wcs_pixscale_arcsec(wcs):
     return float(np.mean(proj_plane_pixel_scales(wcs))) * 3600.0
 
 
-def _solve_wcs(coords, radecs, expected_pixscale, scale_tolerance=WCS_SCALE_TOLERANCE):
+def _validate_solved_wcs(
+    wcs, expected_pixscale, scale_tolerance, expected_center, shape
+):
     """
-    Solve a WCS from detections and Gaia references, with a plate-scale check.
+    Validate a solved WCS against the expected plate scale and pointing.
+
+    Parameters
+    ----------
+    wcs : astropy.wcs.WCS
+        Candidate solved WCS.
+    expected_pixscale : float or None
+        Expected plate scale (arcsec/pixel); see :func:`align`.
+    scale_tolerance : float
+        Maximum fractional deviation from ``expected_pixscale``.
+    expected_center : astropy.coordinates.SkyCoord or None
+        Sky location the Gaia catalog was queried at; see :func:`align`.
+    shape : tuple of int or None
+        Image shape ``(height, width)`` defining the frame center and field
+        radius for the pointing check.
+
+    Returns
+    -------
+    wcs : astropy.wcs.WCS or None
+        The input WCS when it passes both checks, otherwise None.
+    bad_scale : float or None
+        The measured plate scale (arcsec/pixel) when the scale check failed.
+    bad_center : tuple of float or None
+        ``(separation_deg, limit_deg)`` between the solved frame center and
+        ``expected_center`` when the pointing check failed.
+
+    Notes
+    -----
+    twirl can return a non-None, self-consistent but geometrically wrong WCS
+    (a false asterism match) that nothing downstream would catch: its plate
+    scale is off, and/or it places the frame far from the sky location the
+    Gaia catalog was queried at. The scale check runs first so a wrong-scale
+    solve is reported as such rather than as a pointing failure. Either check
+    is skipped when its expectation (`expected_pixscale`, or `expected_center`
+    with `shape`) is None.
+
+    The pointing check tolerates up to one field radius (the frame
+    half-diagonal at the solved scale) between the solved frame center and
+    `expected_center` -- the header target can legitimately sit at, or drift a
+    few arcmin past, the frame edge, so demanding the queried center project
+    strictly on-frame rejects correct solves.
+    """
+    if expected_pixscale is not None:
+        measured = _wcs_pixscale_arcsec(wcs)
+        if abs(measured - expected_pixscale) > (scale_tolerance * expected_pixscale):
+            return None, measured, None
+    if expected_center is not None and shape is not None:
+        height, width = shape
+        frame_center = wcs.pixel_to_world((width - 1) / 2, (height - 1) / 2)
+        separation = frame_center.separation(expected_center).deg
+        # Field radius = half-diagonal at the solved scale (already vetted above
+        # when expected_pixscale is given).
+        limit = np.hypot(height - 1, width - 1) / 2 * _wcs_pixscale_arcsec(wcs) / 3600
+        # NaN comparisons are False, so an unprojectable frame center fails.
+        if not (separation <= limit):
+            return None, None, (float(separation), float(limit))
+    return wcs, None, None
+
+
+def _solve_wcs(
+    coords,
+    radecs,
+    expected_pixscale,
+    scale_tolerance=WCS_SCALE_TOLERANCE,
+    expected_center=None,
+    shape=None,
+):
+    """
+    Solve a WCS from detections and Gaia references, with scale and pointing checks.
 
     Extracted from :func:`align` so the alignment path stays under ruff's C901
-    complexity limit; kept private because the scale-checked, shallow-then-deep
+    complexity limit; kept private because the checked, shallow-then-deep
     pool solve is an implementation detail of `align`.
 
     Parameters
@@ -1158,11 +1229,18 @@ def _solve_wcs(coords, radecs, expected_pixscale, scale_tolerance=WCS_SCALE_TOLE
         Maximum fractional deviation from ``expected_pixscale`` before a solve is
         rejected as wrong-scale. Defaults to the module-level
         ``WCS_SCALE_TOLERANCE``; see :func:`align`.
+    expected_center : astropy.coordinates.SkyCoord or None, optional
+        Sky location the Gaia catalog was queried at (the frame header's
+        pointing); see :func:`align`. By default None (check skipped).
+    shape : tuple of int or None, optional
+        Image shape ``(height, width)``; the solved frame center must lie
+        within one field radius of ``expected_center``. By default None
+        (check skipped).
 
     Returns
     -------
     astropy.wcs.WCS
-        The solved, scale-checked WCS.
+        The solved, validated WCS.
 
     Raises
     ------
@@ -1171,6 +1249,9 @@ def _solve_wcs(coords, radecs, expected_pixscale, scale_tolerance=WCS_SCALE_TOLE
     WCSScaleError
         If every pool solves at a plate scale out of tolerance (a subclass of
         `WCSSolveError`).
+    WCSPointingError
+        If every pool's solve puts the frame more than one field radius from
+        ``expected_center`` (a subclass of `WCSSolveError`).
 
     Notes
     -----
@@ -1180,15 +1261,17 @@ def _solve_wcs(coords, radecs, expected_pixscale, scale_tolerance=WCS_SCALE_TOLE
     The cheap shallow Gaia pool is tried first and only widens to the deeper retry
     pool on failure (the pool-size strategy is described at ``N_GAIA_STARS_ALIGN``);
     a pool that returns None, raises a too-few-stars error, or solves at the wrong
-    plate scale is a failure to retry, and the last failure decides which error is
-    raised if every pool fails.
+    plate scale or pointing is a failure to retry, and the last failure decides
+    which error is raised if every pool fails.
     """
     this_wcs = None
     last_exc = None
     last_bad_scale = None
+    last_bad_center = None
     for n_gaia in (N_GAIA_STARS_ALIGN, N_GAIA_STARS_ALIGN_RETRY):
         last_exc = None
         last_bad_scale = None
+        last_bad_center = None
         try:
             # twirl prints timing/diagnostic lines to stdout; silence them.
             with contextlib.redirect_stdout(io.StringIO()):
@@ -1204,17 +1287,13 @@ def _solve_wcs(coords, radecs, expected_pixscale, scale_tolerance=WCS_SCALE_TOLE
             # anything else propagates as an unexpected bug.
             last_exc = exc
             this_wcs = None
-        # Plate-scale check: twirl can return a non-None, self-consistent but
-        # geometrically wrong-scale WCS that nothing downstream would catch. Null
-        # it like any other pool failure so the loop retries the deeper Gaia pool,
-        # which usually recovers the correct-scale match (see #83).
-        if this_wcs is not None and expected_pixscale is not None:
-            measured = _wcs_pixscale_arcsec(this_wcs)
-            if abs(measured - expected_pixscale) > (
-                scale_tolerance * expected_pixscale
-            ):
-                last_bad_scale = measured
-                this_wcs = None
+        # A geometrically bad solve is nulled like any other pool failure so
+        # the loop retries the deeper Gaia pool, which usually recovers the
+        # correct match (see #83).
+        if this_wcs is not None:
+            this_wcs, last_bad_scale, last_bad_center = _validate_solved_wcs(
+                this_wcs, expected_pixscale, scale_tolerance, expected_center, shape
+            )
         if this_wcs is not None:
             return this_wcs
     if last_exc is not None:
@@ -1227,6 +1306,14 @@ def _solve_wcs(coords, radecs, expected_pixscale, scale_tolerance=WCS_SCALE_TOLE
             f"(> {scale_tolerance:.0%} off); rejected as a wrong-scale solve"
         )
         raise WCSScaleError(msg)
+    if last_bad_center is not None:
+        msg = (
+            "twirl solved a WCS whose frame center is "
+            f"{last_bad_center[0]:.3g} deg from the queried Gaia field center "
+            f"(> the {last_bad_center[1]:.3g} deg field radius); rejected as a "
+            "mispointed solve"
+        )
+        raise WCSPointingError(msg)
     msg = "twirl produced no acceptable WCS for any Gaia pool"
     raise WCSSolveError(msg)
 
@@ -1239,6 +1326,8 @@ def align(
     wcs=None,
     expected_pixscale=None,
     scale_tolerance=WCS_SCALE_TOLERANCE,
+    expected_center=None,
+    shape=None,
 ):
     """
     Compute per-image WCS and align reference coordinates into pixel space.
@@ -1277,6 +1366,15 @@ def align(
         module-level `WCS_SCALE_TOLERANCE`; the pipeline passes the batch
         instrument's ``wcs_scale_tolerance``. Ignored when `expected_pixscale`
         is None or a `wcs` is supplied.
+    expected_center : astropy.coordinates.SkyCoord or None, optional
+        Sky location the Gaia catalog was queried at (the frame header's
+        pointing). When provided together with `shape`, a *computed* WCS whose
+        frame center lies more than one field radius (the frame half-diagonal)
+        from this location is rejected as a mispointed solve. None (default)
+        skips the check. A caller-supplied `wcs` is trusted and never checked.
+    shape : tuple of int or None, optional
+        Image shape ``(height, width)`` used with `expected_center` for the
+        pointing check. None (default) skips the check.
 
     Returns
     -------
@@ -1286,7 +1384,14 @@ def align(
         World Coordinate System for the image.
     """
     this_wcs = (
-        _solve_wcs(coords, radecs, expected_pixscale, scale_tolerance)
+        _solve_wcs(
+            coords,
+            radecs,
+            expected_pixscale,
+            scale_tolerance,
+            expected_center=expected_center,
+            shape=shape,
+        )
         if wcs is None
         else wcs
     )
@@ -1680,8 +1785,30 @@ def prepare_image(
                 f"(got {expected_pixscale!r}); cannot scale-check the solved WCS"
             )
             raise FrameMetadataError(msg, file=file)
+        # The Gaia catalog is queried at the header pointing, so align can
+        # reject a solved WCS that puts that location off-frame. Unlike
+        # pixscale (instrument-profile-sourced), ra/dec come from the frame
+        # header, so a frame without them just skips the check. The @RA/@DEC
+        # directives pass the header value through untouched, so it often
+        # arrives as a numeric string; coerce it the way the airmass path
+        # already does (float(metadata["ra"])) instead of treating a string as
+        # missing. A None/absent value or one that will not parse just skips
+        # the check.
+        ra = metadata.get("ra")
+        dec = metadata.get("dec")
+        if isinstance(ra, bool) or isinstance(dec, bool):
+            expected_center = None
+        else:
+            try:
+                expected_center = SkyCoord(float(ra), float(dec), unit="deg")
+            except (TypeError, ValueError):
+                # float(None) raises TypeError, float("N/A") raises ValueError.
+                expected_center = None
+        shape = calibrated_data.shape
     else:
         expected_pixscale = None
+        expected_center = None
+        shape = None
 
     try:
         aligned_coords, this_wcs = align(
@@ -1691,6 +1818,8 @@ def prepare_image(
             wcs=wcs,
             expected_pixscale=expected_pixscale,
             scale_tolerance=instrument.wcs_scale_tolerance,
+            expected_center=expected_center,
+            shape=shape,
         )
     except WCSSolveError as exc:
         # align does not know the source file; attach it here so the batch

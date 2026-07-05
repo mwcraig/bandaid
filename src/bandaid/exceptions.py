@@ -21,6 +21,7 @@ __all__ = [
     "FrameMetadataError",
     "NoUsableStarsError",
     "TooFewStarsError",
+    "WCSPointingError",
     "WCSScaleError",
     "WCSSolveError",
 ]
@@ -82,6 +83,21 @@ class WCSScaleError(WCSSolveError):
     skipped. It subclasses `WCSSolveError` so the batch loop still skips the
     frame, while staying distinguishable in logs/manifests from a genuine
     "no match".
+    """
+
+
+class WCSPointingError(WCSSolveError):
+    """
+    Every WCS solve for the frame landed far from the queried field center.
+
+    The Gaia catalog is queried at the frame header's pointing, so a solved WCS
+    whose frame center is more than one field radius (half-diagonal) from that
+    location is a mispointed (false-asterism) solve -- the catalog would barely
+    overlap the frame. Like a wrong-scale solve it is normally *recovered*: the
+    pointing check rejects it and retries a deeper Gaia pool. This error is
+    raised only when every pool solves mispointed. It subclasses `WCSSolveError`
+    so the batch loop still skips the frame, while staying distinguishable in
+    logs/manifests.
     """
 
 
