@@ -1,5 +1,5 @@
 """
-Shared pure helpers for the split ``bandaid.photometry`` test modules.
+Shared pure helpers for the split ``bandaid.photometry`` / ``bandaid.scripts`` tests.
 
 These are plain importable functions (not fixtures) because they take arguments
 and build objects; the split ``test_*`` files import from here rather than each
@@ -7,12 +7,13 @@ carrying its own copy. Fixtures that need pytest wiring live in ``conftest.py``.
 """
 
 import numpy as np
+from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.stats import gaussian_fwhm_to_sigma
 from astropy.table import Table
 from astropy.wcs import WCS
 
-from bandaid import measure_photometry
+from bandaid import measure_photometry, scripts
 from bandaid.photometry import ANNULUS, RELATIVE_RADII, ImageData
 
 # Fixed random seed for reproducible noise in generated test images.
@@ -264,3 +265,39 @@ class _Region:
 def five_diagonal_regions(data, threshold=5, opening=5):  # noqa: ARG001
     """Detection stub returning five regions at ``(10i, 10i)`` for ``i`` in 1..5."""
     return [_Region(10 * i, 10 * i) for i in range(1, 6)]
+
+
+def _consistency_header(**overrides: object) -> dict:
+    """
+    A Seestar-dialect header satisfying ``check_frame_consistency``'s resolution.
+
+    CREATOR is required because the Seestar ``header_map`` resolves
+    ``tel_manufac`` with a ``!CREATOR`` directive; every other key the template
+    references falls back to None when absent.
+    """
+    header = {
+        "NAXIS1": 1080,
+        "NAXIS2": 1920,
+        "RA": 10.0,
+        "DEC": 0.0,
+        "CREATOR": "ZWO Seestar S50",
+    }
+    header.update(overrides)
+    return header
+
+
+def _dummy_prep():
+    """Return a BatchPrep with recognizable sentinel fields for identity checks."""
+    return scripts.BatchPrep(
+        radecs=np.array([[10.0, 0.0], [10.1, 0.0]]),
+        photometry_coords=SkyCoord([10.0, 10.1], [0.0, 0.0], unit="deg"),
+        cnn=object(),
+        bayer_masks={"TR": np.zeros((2, 2), dtype=bool)},
+        center=(10.0, 0.0),
+        fov_rad=0.74,
+        shape=(1920, 1080),
+    )
+
+
+# Header matching _dummy_prep's center/shape, so check_frame_consistency passes.
+_CONSISTENT_HEADER = _consistency_header()
