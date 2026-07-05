@@ -22,68 +22,16 @@ from bandaid.writers import (
 
 
 @pytest.fixture(autouse=True)
-def _isolate_registry():
+def _isolate_registry(isolate_registry):
     """
     Restore the in-process writer registry after each test.
 
     ``register_writer`` mutates a module-level dict, so without this a registered
     writer would leak into later tests (e.g. the membership check on
-    ``available_writers``). Mirrors the instrument-registry isolation fixture.
+    ``available_writers``). Delegates to the shared ``isolate_registry`` factory.
     """
-    saved = dict(writers._WRITERS)  # noqa: SLF001
-    yield
-    writers._WRITERS.clear()  # noqa: SLF001
-    writers._WRITERS.update(saved)  # noqa: SLF001
-
-
-@pytest.fixture
-def by_filter(eloy_table, starlist_metadata):
-    """
-    A ``{filter: Table}`` frame result like ``process_one_image`` returns.
-
-    Each filter's table carries two good (finite, positive, in-bounds) rows plus
-    the ``meta["full_image_meta"]`` that the starlist writer needs.
-
-    Parameters
-    ----------
-    eloy_table : callable
-        Fixture building an eloy-style photometry table from per-row dicts.
-    starlist_metadata : dict
-        Fixture providing the StarList metadata stored on each table.
-
-    Returns
-    -------
-    dict
-        ``{filter_name: astropy.table.Table}`` for filters ``TR`` and ``TG``.
-    """
-    rows = [
-        {
-            "x": 20.0,
-            "y": 30.0,
-            "ra": 10.0,
-            "dec": 20.0,
-            "tot_count": 100.0,
-            "count_err": 5.0,
-            "bkgd_count": 1.0,
-            "peak_count": 200.0,
-        },
-        {
-            "x": 70.0,
-            "y": 60.0,
-            "ra": 11.0,
-            "dec": 21.0,
-            "tot_count": 300.0,
-            "count_err": 7.0,
-            "bkgd_count": 1.0,
-            "peak_count": 400.0,
-        },
-    ]
-    result = {}
-    for filter_name in ("TR", "TG"):
-        table = eloy_table(rows)
-        table.meta["full_image_meta"] = starlist_metadata
-        result[filter_name] = table
-    return result
+    with isolate_registry(writers, "_WRITERS"):
+        yield
 
 
 class TestGetWriter:
@@ -136,12 +84,13 @@ class TestWriteStarlistSet:
     def test_writes_valid_starlistset_and_returns_path(self, tmp_path, by_filter):
         """One StarList per filter, stars intact, the written path returned."""
         output_path = tmp_path / "frame1.star"
+        frame_result = by_filter()
 
-        returned = write_starlist_set(by_filter, output_path)
+        returned = write_starlist_set(frame_result, output_path)
 
         assert returned == output_path
         star_list_set = StarListSet.model_validate_json(output_path.read_text())
-        assert len(star_list_set.star_lists) == len(by_filter)
+        assert len(star_list_set.star_lists) == len(frame_result)
         for star_list in star_list_set.star_lists:
             kept_x = sorted(item.x for item in star_list.staritems)
             assert kept_x == [20.0, 70.0]

@@ -21,19 +21,17 @@ from bandaid.instruments import (
 
 
 @pytest.fixture(autouse=True)
-def _isolate_registry():
+def _isolate_registry(isolate_registry):
     """
     Restore the in-process profile registry after each test.
 
     ``register_instrument`` mutates a module-level dict, so without this a
     registered profile would leak into later tests (e.g. the exact-set check on
-    ``available_instruments``). Snapshotting that private dict is the only way to
-    reset it -- the registry exposes no public "clear" hook by design.
+    ``available_instruments``). Delegates to the shared ``isolate_registry``
+    factory with this module's private registry as the target.
     """
-    saved = dict(instruments._REGISTERED)  # noqa: SLF001
-    yield
-    instruments._REGISTERED.clear()  # noqa: SLF001
-    instruments._REGISTERED.update(saved)  # noqa: SLF001
+    with isolate_registry(instruments, "_REGISTERED"):
+        yield
 
 
 class TestLoadInstrument:

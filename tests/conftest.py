@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from unittest.mock import MagicMock
 
 import astropy.units as u
@@ -7,7 +8,8 @@ from astropy.modeling.models import Gaussian2D
 from astropy.table import MaskedColumn, Table
 from photutils.datasets import make_model_image, make_noise_image
 
-from bandaid import catalog
+from bandaid import catalog, scripts
+from bandaid.image2sl_qt import generate_bayer_masks
 
 
 @pytest.fixture
@@ -179,3 +181,137 @@ def make_test_image():
         return source_image + noise_image
 
     return _make_test_image
+
+
+@pytest.fixture
+def bayer_masks_rggb():
+    """
+    Factory building top-down RGGB Bayer masks for a given frame shape.
+
+    Returns
+    -------
+    callable
+        ``_make(shape, *, append_l4=False)`` -> the ``{channel: mask}`` mapping
+        from ``generate_bayer_masks``.
+    """
+
+    def _make(shape, *, append_l4=False):
+        return generate_bayer_masks(
+            shape,
+            {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0},
+            append_l4=append_l4,
+        )
+
+    return _make
+
+
+@pytest.fixture
+def isolate_registry():
+    """
+    Factory context manager: snapshot/restore a module-level registry dict.
+
+    Replaces the near-identical ``_isolate_registry`` autouse fixtures in the
+    writer and instrument test modules. Each test file keeps a tiny autouse
+    wrapper that calls this with its own ``(module, attr)`` target.
+
+    Returns
+    -------
+    callable
+        ``isolate(module, attr)`` -> a context manager restoring
+        ``getattr(module, attr)`` (a dict) to its prior contents on exit.
+    """
+
+    @contextmanager
+    def _isolate(module, attr):
+        registry = getattr(module, attr)
+        saved = dict(registry)
+        try:
+            yield
+        finally:
+            registry.clear()
+            registry.update(saved)
+
+    return _isolate
+
+
+@pytest.fixture
+def by_filter(eloy_table, starlist_metadata):
+    """
+    Factory for a ``{filter: Table}`` photometry result like ``process_one_image``.
+
+    Each filter's table carries two good (finite, positive, in-bounds) rows plus
+    the ``meta["fwhm"]`` and ``meta["full_image_meta"]`` that
+    ``process_batch`` -> ``eloy_to_starlist`` requires. Both rows survive the
+    converter's filtering, so each written StarList has two stars.
+
+    Parameters
+    ----------
+    eloy_table : callable
+        Fixture building an eloy-style photometry table from per-row dicts.
+    starlist_metadata : dict
+        Fixture providing the StarList metadata stored on each table.
+
+    Returns
+    -------
+    callable
+        ``_make(filters=("TR", "TG"))`` -> the per-filter table mapping.
+    """
+    rows = [
+        {
+            "x": 20.0,
+            "y": 30.0,
+            "ra": 10.0,
+            "dec": 20.0,
+            "tot_count": 100.0,
+            "count_err": 5.0,
+            "bkgd_count": 1.0,
+            "peak_count": 200.0,
+        },
+        {
+            "x": 70.0,
+            "y": 60.0,
+            "ra": 11.0,
+            "dec": 21.0,
+            "tot_count": 300.0,
+            "count_err": 7.0,
+            "bkgd_count": 1.0,
+            "peak_count": 400.0,
+        },
+    ]
+
+    def _make(filters=("TR", "TG")):
+        result = {}
+        for filter_name in filters:
+            table = eloy_table(rows)
+            table.meta["full_image_meta"] = starlist_metadata
+            result[filter_name] = table
+        return result
+
+    return _make
+
+
+@pytest.fixture
+def patched_process_one_image(monkeypatch):
+    """
+    Factory patching ``scripts.process_one_image`` to return a fixed result.
+
+    Replaces the repeated
+    ``monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: ...)``
+    preamble in the batch/disk tests.
+
+    Parameters
+    ----------
+    monkeypatch : pytest.MonkeyPatch
+        The built-in monkeypatch fixture used to install the patch.
+
+    Returns
+    -------
+    callable
+        ``_patch(result)`` -> installs the patch and returns ``result``.
+    """
+
+    def _patch(result):
+        monkeypatch.setattr(scripts, "process_one_image", lambda *_a, **_k: result)
+        return result
+
+    return _patch
