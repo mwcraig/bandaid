@@ -6,7 +6,6 @@ import astropy.units as u
 import numpy as np
 import pytest
 from astropy.modeling.models import Gaussian2D
-from astropy.stats import gaussian_fwhm_to_sigma
 from astropy.table import MaskedColumn, Table
 from astropy.wcs import WCS
 from photutils.datasets import make_model_image, make_noise_image
@@ -194,38 +193,6 @@ def make_test_image():
         return source_image + noise_image
 
     return _make_test_image
-
-
-@pytest.fixture
-def gaussian_sources_table():
-    """
-    Factory building a Gaussian-source ``Table`` for ``make_test_image``.
-
-    Returns
-    -------
-    callable
-        ``_make(amplitude, x_mean, y_mean, *, fwhm=None, x_stddev=None,
-        y_stddev=None)`` -> a ``Table`` with the five source columns. Pass
-        ``fwhm`` to derive equal x/y sigmas, or give explicit ``x_stddev`` /
-        ``y_stddev`` sequences.
-    """
-
-    def _make(amplitude, x_mean, y_mean, *, fwhm=None, x_stddev=None, y_stddev=None):
-        if x_stddev is None:
-            x_stddev = np.asarray(fwhm, dtype=float) * gaussian_fwhm_to_sigma
-        if y_stddev is None:
-            y_stddev = np.asarray(fwhm, dtype=float) * gaussian_fwhm_to_sigma
-        return Table(
-            {
-                "amplitude": amplitude,
-                "x_mean": x_mean,
-                "y_mean": y_mean,
-                "x_stddev": x_stddev,
-                "y_stddev": y_stddev,
-            },
-        )
-
-    return _make
 
 
 @pytest.fixture
