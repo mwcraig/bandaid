@@ -30,6 +30,7 @@ from bandaid.exceptions import (
     FrameMetadataError,
     NoUsableStarsError,
     TooFewStarsError,
+    WCSPointingError,
     WCSScaleError,
     WCSSolveError,
 )
@@ -1241,6 +1242,82 @@ class TestPrepareImage:
         prepare_image("unused.fits", np.zeros((5, 2)), None, wcs=supplied_wcs)
 
         assert captured["expected_pixscale"] is None
+
+    def test_header_center_and_shape_reach_alignment(self, monkeypatch):
+        """
+        The header pointing and image shape are forwarded to ``align``.
+
+        The Gaia catalog is queried at the header ra/dec, so ``prepare_image``
+        must pass that location (as ``expected_center``) plus the frame shape to
+        ``align`` for the solved-WCS in-frame check. Spy on ``align`` and assert
+        both arrive.
+        """
+        captured = {}
+
+        def _spy_calibration_sequence(_file, *_args: object, **_kwargs: object):
+            calibrated = np.zeros((10, 12))
+            coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+            metadata = {"creator": "spy", "pixscale": 2.4, "ra": 10.0, "dec": 20.0}
+            return calibrated, metadata, coords, 2.0, None
+
+        def _spy_align(coords, _radecs, **kwargs: object):
+            captured["expected_center"] = kwargs.get("expected_center")
+            captured["shape"] = kwargs.get("shape")
+            return coords, _make_tan_wcs()
+
+        monkeypatch.setattr(
+            "bandaid.photometry.calibration_sequence", _spy_calibration_sequence
+        )
+        monkeypatch.setattr("bandaid.photometry.align", _spy_align)
+        monkeypatch.setattr(
+            "bandaid.photometry.centroid_stars", lambda data, coords, cnn: coords
+        )
+        monkeypatch.setattr(
+            "bandaid.photometry.fits.getheader", lambda file: {"creator": "spy"}
+        )
+
+        prepare_image("unused.fits", np.zeros((5, 2)), None)
+
+        center = captured["expected_center"]
+        assert isinstance(center, SkyCoord)
+        assert center.ra.deg == pytest.approx(10.0)
+        assert center.dec.deg == pytest.approx(20.0)
+        assert captured["shape"] == (10, 12)
+
+    def test_missing_header_radec_skips_center_check(self, monkeypatch):
+        """
+        A frame without usable header ra/dec skips the center check, not fails.
+
+        Unlike ``pixscale`` (instrument-profile-sourced, so missing means a
+        malformed profile), the pointing comes from the frame header; a frame
+        without it should still solve, just without the in-frame check.
+        """
+        captured = {}
+
+        def _spy_calibration_sequence(_file, *_args: object, **_kwargs: object):
+            calibrated = np.zeros((10, 10))
+            coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+            # metadata deliberately omits "ra"/"dec".
+            return calibrated, {"creator": "spy", "pixscale": 2.4}, coords, 2.0, None
+
+        def _spy_align(coords, _radecs, **kwargs: object):
+            captured["expected_center"] = kwargs.get("expected_center")
+            return coords, _make_tan_wcs()
+
+        monkeypatch.setattr(
+            "bandaid.photometry.calibration_sequence", _spy_calibration_sequence
+        )
+        monkeypatch.setattr("bandaid.photometry.align", _spy_align)
+        monkeypatch.setattr(
+            "bandaid.photometry.centroid_stars", lambda data, coords, cnn: coords
+        )
+        monkeypatch.setattr(
+            "bandaid.photometry.fits.getheader", lambda file: {"creator": "spy"}
+        )
+
+        prepare_image("unused.fits", np.zeros((5, 2)), None)
+
+        assert captured["expected_center"] is None
 
 
 def _make_tan_wcs(image_size=(500, 500), crval=(10.0, 20.0), pixscale=2.4):
@@ -2541,6 +2618,157 @@ class TestAlign:
     def test_wcs_scale_error_is_wcs_solve_error(self):
         """WCSScaleError is a WCSSolveError so the batch loop still skips the frame."""
         assert issubclass(WCSScaleError, WCSSolveError)
+
+    def test_accepts_wcs_placing_center_in_frame(self, monkeypatch):
+        """A solved WCS that puts the queried field center on-frame is accepted."""
+        sentinel_wcs = _make_tan_wcs(crval=(10.0, 20.0))
+        monkeypatch.setattr(
+            "bandaid.photometry.compute_wcs",
+            lambda coords, radecs, tolerance: sentinel_wcs,
+        )
+        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
+            N_IMAGE_STARS_ALIGN, 2
+        )
+
+        _, returned_wcs = align(
+            coords,
+            coords.copy(),
+            photometry_coords=None,
+            expected_center=SkyCoord(10.0, 20.0, unit="deg"),
+            shape=(500, 500),
+        )
+
+        assert returned_wcs is sentinel_wcs
+
+    def test_rejects_wcs_placing_center_outside_frame(self, monkeypatch):
+        """
+        A solved WCS that projects the queried field center off-frame is rejected.
+
+        The Gaia catalog is queried at the header pointing, so a WCS that puts
+        that location outside the image is a mispointed (false-asterism) solve:
+        the catalog would not even overlap the frame. align raises
+        WCSPointingError rather than photometering a field the WCS says we are
+        not looking at.
+        """
+        # crval 5 deg away in RA: the expected center lands thousands of pixels
+        # outside a 500x500 frame at 2.4 arcsec/px.
+        mispointed_wcs = _make_tan_wcs(crval=(15.0, 20.0))
+        monkeypatch.setattr(
+            "bandaid.photometry.compute_wcs",
+            lambda coords, radecs, tolerance: mispointed_wcs,
+        )
+        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
+            N_IMAGE_STARS_ALIGN, 2
+        )
+
+        with pytest.raises(WCSPointingError, match="center"):
+            align(
+                coords,
+                coords.copy(),
+                photometry_coords=None,
+                expected_center=SkyCoord(10.0, 20.0, unit="deg"),
+                shape=(500, 500),
+            )
+
+    def test_retries_deeper_pool_on_bad_center(self, monkeypatch):
+        """
+        An off-frame-center shallow solve retries at the deeper Gaia pool.
+
+        A mispointed WCS is a failure to retry just like a wrong-scale one:
+        align widens the reference pool and accepts the deeper pool's
+        correctly-pointed solve.
+        """
+        good_wcs = _make_tan_wcs(crval=(10.0, 20.0))
+        mispointed_wcs = _make_tan_wcs(crval=(15.0, 20.0))
+        pool_sizes = []
+
+        def fake_compute_wcs(coords, radecs, tolerance):  # noqa: ARG001
+            pool_sizes.append(len(radecs))
+            return mispointed_wcs if len(radecs) <= N_GAIA_STARS_ALIGN else good_wcs
+
+        monkeypatch.setattr("bandaid.photometry.compute_wcs", fake_compute_wcs)
+
+        n_detected = N_GAIA_STARS_ALIGN_RETRY + 5
+        coords = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
+        radecs = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
+
+        _, returned_wcs = align(
+            coords,
+            radecs,
+            photometry_coords=None,
+            expected_center=SkyCoord(10.0, 20.0, unit="deg"),
+            shape=(500, 500),
+        )
+
+        assert returned_wcs is good_wcs
+        assert pool_sizes == [N_GAIA_STARS_ALIGN, N_GAIA_STARS_ALIGN_RETRY]
+
+    def test_center_check_skipped_when_expected_none(self, monkeypatch):
+        """With expected_center=None the in-frame check is skipped (back-compat)."""
+        mispointed_wcs = _make_tan_wcs(crval=(15.0, 20.0))
+        monkeypatch.setattr(
+            "bandaid.photometry.compute_wcs",
+            lambda coords, radecs, tolerance: mispointed_wcs,
+        )
+        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
+            N_IMAGE_STARS_ALIGN, 2
+        )
+
+        _, returned_wcs = align(
+            coords,
+            coords.copy(),
+            photometry_coords=None,
+            expected_center=None,
+            shape=(500, 500),
+        )
+
+        assert returned_wcs is mispointed_wcs
+
+    def test_supplied_wcs_center_not_checked(self):
+        """A caller-supplied WCS is trusted and not center-checked."""
+        mispointed_wcs = _make_tan_wcs(crval=(15.0, 20.0))
+        coords = np.array([[250.0, 250.0], [260.0, 260.0]])
+
+        _, returned_wcs = align(
+            coords,
+            radecs=None,
+            wcs=mispointed_wcs,
+            expected_center=SkyCoord(10.0, 20.0, unit="deg"),
+            shape=(500, 500),
+        )
+
+        assert returned_wcs is mispointed_wcs
+
+    def test_wrong_scale_wins_over_bad_center(self, monkeypatch):
+        """
+        A WCS failing both checks is reported as a scale error, not pointing.
+
+        The scale check runs first: a wrong-scale solve is the known twirl
+        failure mode and should not be masked as a pointing failure just because
+        the bogus scale also throws the projected center off-frame.
+        """
+        doubly_bad_wcs = _make_tan_wcs(pixscale=4.2, crval=(15.0, 20.0))
+        monkeypatch.setattr(
+            "bandaid.photometry.compute_wcs",
+            lambda coords, radecs, tolerance: doubly_bad_wcs,
+        )
+        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
+            N_IMAGE_STARS_ALIGN, 2
+        )
+
+        with pytest.raises(WCSScaleError, match="scale"):
+            align(
+                coords,
+                coords.copy(),
+                photometry_coords=None,
+                expected_pixscale=2.4,
+                expected_center=SkyCoord(10.0, 20.0, unit="deg"),
+                shape=(500, 500),
+            )
+
+    def test_wcs_pointing_error_is_wcs_solve_error(self):
+        """WCSPointingError is a WCSSolveError so the batch loop still skips."""
+        assert issubclass(WCSPointingError, WCSSolveError)
 
 
 def test_centroid_stars_delegates_to_ballet(monkeypatch):
