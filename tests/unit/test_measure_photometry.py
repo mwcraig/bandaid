@@ -120,27 +120,21 @@ def test_measure_photometry_single_source(make_test_image, include_noise, noise_
         abs=snr_tol,
     )
 
-
-def test_measure_photometry_default_matches_explicit_constants(make_test_image):
-    """Omitting radii/annulus matches passing the module constants."""
-    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
-    egain = 0.3
-
-    default = measure_photometry(image, coords, fwhm, egain, mask)
+    # Omitting radii/annulus must match passing the module constants explicitly:
+    # the default arguments are wired to RELATIVE_RADII / ANNULUS.
     explicit = measure_photometry(
-        image,
-        coords,
+        source_image,
+        np.array([[source_x, source_y]]),
         fwhm,
         egain,
         mask,
         radii=RELATIVE_RADII,
         annulus=ANNULUS,
     )
-
-    np.testing.assert_array_equal(default["tot_count"], explicit["tot_count"])
-    np.testing.assert_array_equal(default["count_err"], explicit["count_err"])
-    assert default["aperture_radii"] == explicit["aperture_radii"]
-    assert default["annulus_radii"] == explicit["annulus_radii"]
+    np.testing.assert_array_equal(photom["tot_count"], explicit["tot_count"])
+    np.testing.assert_array_equal(photom["count_err"], explicit["count_err"])
+    assert photom["aperture_radii"] == explicit["aperture_radii"]
+    assert photom["annulus_radii"] == explicit["annulus_radii"]
 
 
 def test_measure_photometry_custom_radii(make_test_image):
