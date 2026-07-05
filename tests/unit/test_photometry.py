@@ -2674,7 +2674,7 @@ class TestAlign:
         """
         A queried center just past the frame edge is NOT a mispointed solve.
 
-        Regression for the SS Leo 20260418 smoke test: the header target can
+        Regression for #83 (SS Leo 20260418 smoke test): the header target can
         legitimately sit at (or drift a few arcmin past) the frame edge while
         the solve is correct, so the check must tolerate separations up to one
         field radius rather than demanding the center project strictly

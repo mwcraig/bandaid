@@ -1143,21 +1143,7 @@ def _validate_solved_wcs(
     wcs, expected_pixscale, scale_tolerance, expected_center, shape
 ):
     """
-    Sanity-check a solved WCS against the expected plate scale and pointing.
-
-    twirl can return a non-None, self-consistent but geometrically wrong WCS
-    (a false asterism match) that nothing downstream would catch: its plate
-    scale is off, and/or it places the frame far from the sky location the
-    Gaia catalog was queried at. The scale check runs first so a wrong-scale
-    solve is reported as such rather than as a pointing failure. Either check
-    is skipped when its expectation (`expected_pixscale`, or `expected_center`
-    with `shape`) is None.
-
-    The pointing check tolerates up to one field radius (the frame
-    half-diagonal at the solved scale) between the solved frame center and
-    `expected_center` -- the header target can legitimately sit at, or drift a
-    few arcmin past, the frame edge (seen on SS Leo 20260418), so demanding
-    the queried center project strictly on-frame rejects correct solves.
+    Validate a solved WCS against the expected plate scale and pointing.
 
     Parameters
     ----------
@@ -1182,6 +1168,22 @@ def _validate_solved_wcs(
     bad_center : tuple of float or None
         ``(separation_deg, limit_deg)`` between the solved frame center and
         ``expected_center`` when the pointing check failed.
+
+    Notes
+    -----
+    twirl can return a non-None, self-consistent but geometrically wrong WCS
+    (a false asterism match) that nothing downstream would catch: its plate
+    scale is off, and/or it places the frame far from the sky location the
+    Gaia catalog was queried at. The scale check runs first so a wrong-scale
+    solve is reported as such rather than as a pointing failure. Either check
+    is skipped when its expectation (`expected_pixscale`, or `expected_center`
+    with `shape`) is None.
+
+    The pointing check tolerates up to one field radius (the frame
+    half-diagonal at the solved scale) between the solved frame center and
+    `expected_center` -- the header target can legitimately sit at, or drift a
+    few arcmin past, the frame edge, so demanding the queried center project
+    strictly on-frame rejects correct solves.
     """
     if expected_pixscale is not None:
         measured = _wcs_pixscale_arcsec(wcs)
@@ -1193,7 +1195,7 @@ def _validate_solved_wcs(
         separation = frame_center.separation(expected_center).deg
         # Field radius = half-diagonal at the solved scale (already vetted above
         # when expected_pixscale is given).
-        limit = np.hypot(height, width) / 2 * _wcs_pixscale_arcsec(wcs) / 3600
+        limit = np.hypot(height - 1, width - 1) / 2 * _wcs_pixscale_arcsec(wcs) / 3600
         # NaN comparisons are False, so an unprojectable frame center fails.
         if not (separation <= limit):
             return None, None, (float(separation), float(limit))
@@ -1209,7 +1211,7 @@ def _solve_wcs(
     shape=None,
 ):
     """
-    Solve a WCS from detections and Gaia references, with sanity checks.
+    Solve a WCS from detections and Gaia references, with scale and pointing checks.
 
     Extracted from :func:`align` so the alignment path stays under ruff's C901
     complexity limit; kept private because the checked, shallow-then-deep
@@ -1238,7 +1240,7 @@ def _solve_wcs(
     Returns
     -------
     astropy.wcs.WCS
-        The solved, sanity-checked WCS.
+        The solved, validated WCS.
 
     Raises
     ------
