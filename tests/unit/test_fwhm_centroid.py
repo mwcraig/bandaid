@@ -163,7 +163,7 @@ class TestFwhmFromCoords:
         )
         assert fwhm == pytest.approx(inject_fwhm, rel=0.1)
 
-    def test_cap_applied_before_centroiding(self, make_test_image, monkeypatch):
+    def test_cap_applied_before_centroiding(self, make_test_image, mocker):
         """
         The brightest-N cut runs *before* the expensive ``ballet_centroid`` call.
 
@@ -176,15 +176,12 @@ class TestFwhmFromCoords:
         coords = np.column_stack(
             [rng.uniform(30.0, 270.0, 1000), rng.uniform(30.0, 270.0, 1000)]
         )
-        seen = {}
-
-        def spy(_data, received, _cnn):
-            seen["n"] = len(received)
-            return np.asarray(received, dtype=float)
-
-        monkeypatch.setattr("bandaid.photometry.ballet_centroid", spy)
+        cnn = mocker.patch(
+            "bandaid.photometry.ballet_centroid",
+            side_effect=lambda _data, received, _cnn: np.asarray(received, dtype=float),
+        )
         _fwhm_from_coords(image, coords, max_adu=50000, cnn=object(), n_stars=n_stars)
-        assert seen["n"] <= n_stars
+        assert len(cnn.call_args.args[1]) <= n_stars
 
     def test_brightest_unsaturated_keeps_high_peak_drops_saturated(self):
         """The helper returns the highest-peak coords and drops saturated/empty."""
@@ -214,20 +211,16 @@ class TestFwhmFromCoords:
 class TestCalibrationSequenceCnn:
     """`calibration_sequence` threads its optional ``cnn`` to the FWHM helper."""
 
-    def test_cnn_is_passed_to_fwhm_helper(self, tmp_path, monkeypatch):
+    def test_cnn_is_passed_to_fwhm_helper(self, tmp_path, mocker):
         """The ``cnn`` given to ``calibration_sequence`` reaches the FWHM helper."""
-        monkeypatch.setattr(
+        mocker.patch(
             "bandaid.photometry.detection.stars_detection",
             five_diagonal_regions,
         )
-        captured = {}
         stub_fwhm = 2.5
-
-        def _spy(_data, _coords, _max_adu, *, cnn=None, **_kwargs: object):
-            captured["cnn"] = cnn
-            return stub_fwhm
-
-        monkeypatch.setattr("bandaid.photometry._fwhm_from_coords", _spy)
+        fwhm_helper = mocker.patch(
+            "bandaid.photometry._fwhm_from_coords", return_value=stub_fwhm
+        )
 
         path = tmp_path / "frame.fits"
         fits.PrimaryHDU(np.zeros((200, 200)), header=_seestar_header()).writeto(
@@ -236,23 +229,19 @@ class TestCalibrationSequenceCnn:
         sentinel = object()
         _, _, _, fwhm, _ = calibration_sequence(path, cnn=sentinel)
 
-        assert captured["cnn"] is sentinel
+        assert fwhm_helper.call_args.kwargs["cnn"] is sentinel
         assert fwhm == stub_fwhm
 
-    def test_fwhm_n_stars_is_passed_to_fwhm_helper(self, tmp_path, monkeypatch):
+    def test_fwhm_n_stars_is_passed_to_fwhm_helper(self, tmp_path, mocker):
         """``fwhm_n_stars`` reaches the FWHM helper as its ``n_stars`` cap."""
-        monkeypatch.setattr(
+        mocker.patch(
             "bandaid.photometry.detection.stars_detection",
             five_diagonal_regions,
         )
-        captured = {}
+        fwhm_helper = mocker.patch(
+            "bandaid.photometry._fwhm_from_coords", return_value=2.5
+        )
         requested_n_stars = 7
-
-        def _spy(_data, _coords, _max_adu, *, n_stars=None, **_kwargs: object):
-            captured["n_stars"] = n_stars
-            return 2.5
-
-        monkeypatch.setattr("bandaid.photometry._fwhm_from_coords", _spy)
 
         path = tmp_path / "frame.fits"
         fits.PrimaryHDU(np.zeros((200, 200)), header=_seestar_header()).writeto(
@@ -260,7 +249,7 @@ class TestCalibrationSequenceCnn:
         )
         calibration_sequence(path, fwhm_n_stars=requested_n_stars)
 
-        assert captured["n_stars"] == requested_n_stars
+        assert fwhm_helper.call_args.kwargs["n_stars"] == requested_n_stars
 
 
 class TestCentroidDriftFlag:

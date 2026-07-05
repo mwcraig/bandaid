@@ -1,5 +1,4 @@
 from contextlib import contextmanager
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import astropy.units as u
@@ -7,21 +6,10 @@ import numpy as np
 import pytest
 from astropy.modeling.models import Gaussian2D
 from astropy.table import MaskedColumn, Table
-from astropy.wcs import WCS
 from photutils.datasets import make_model_image, make_noise_image
 
 from bandaid import catalog, scripts
 from bandaid.image2sl_qt import generate_bayer_masks
-
-
-def _default_tan_wcs(image_size=(500, 500), crval=(10.0, 20.0), pixscale=2.4):
-    """Build a TAN WCS for the ``align`` stub's default return value."""
-    wcs = WCS(naxis=2)
-    wcs.wcs.crpix = [image_size[1] / 2, image_size[0] / 2]
-    wcs.wcs.crval = list(crval)
-    wcs.wcs.cdelt = [-pixscale / 3600, pixscale / 3600]
-    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
-    return wcs
 
 
 @pytest.fixture
@@ -327,61 +315,3 @@ def patched_process_one_image(monkeypatch):
         return result
 
     return _patch
-
-
-@pytest.fixture
-def stub_prepare_image_externals(mocker):
-    """
-    Factory patching the four externals ``prepare_image`` reaches, via ``mocker``.
-
-    Patches ``calibration_sequence`` (returns a configurable
-    ``(calibrated, metadata, coords, fwhm, None)`` 5-tuple), ``align`` (returns
-    ``(coords, wcs)``), ``centroid_stars`` (identity) and ``fits.getheader``
-    (``{"creator": "spy"}``). Returns the four mocks so callers can assert on
-    their ``.call_args``; override ``.return_value`` / ``.side_effect`` to tune a
-    single external per test.
-
-    Parameters
-    ----------
-    mocker : pytest_mock.MockerFixture
-        The pytest-mock fixture used to patch the externals.
-
-    Returns
-    -------
-    callable
-        ``_stub(*, metadata=None, coords=None, calibrated=None, fwhm=2.0)`` -> a
-        namespace with ``.calibration_sequence``, ``.align``, ``.centroid_stars``
-        and ``.getheader`` mocks.
-    """
-
-    def _stub(*, metadata=None, coords=None, calibrated=None, fwhm=2.0):
-        if metadata is None:
-            metadata = {"creator": "spy", "pixscale": 2.4}
-        if coords is None:
-            coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
-        if calibrated is None:
-            calibrated = np.zeros((10, 10))
-        calibration_sequence = mocker.patch(
-            "bandaid.photometry.calibration_sequence",
-            return_value=(calibrated, metadata, coords, fwhm, None),
-        )
-        align = mocker.patch(
-            "bandaid.photometry.align",
-            side_effect=lambda coords, _radecs, **_kwargs: (coords, _default_tan_wcs()),
-        )
-        centroid_stars = mocker.patch(
-            "bandaid.photometry.centroid_stars",
-            side_effect=lambda _data, coords, _cnn: coords,
-        )
-        getheader = mocker.patch(
-            "bandaid.photometry.fits.getheader",
-            side_effect=lambda _file: {"creator": "spy"},
-        )
-        return SimpleNamespace(
-            calibration_sequence=calibration_sequence,
-            align=align,
-            centroid_stars=centroid_stars,
-            getheader=getheader,
-        )
-
-    return _stub
