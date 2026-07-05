@@ -1319,6 +1319,80 @@ class TestPrepareImage:
 
         assert captured["expected_center"] is None
 
+    def test_string_header_radec_still_reaches_alignment(self, monkeypatch):
+        """
+        String header ra/dec are coerced, not treated as missing.
+
+        The ``@RA``/``@DEC`` directives return the raw header value, which the
+        FITS header often stores as a numeric string; the airmass path already
+        ``float(...)``-coerces them. ``prepare_image`` must do the same so the
+        pointing check runs on real frames instead of silently skipping.
+        """
+        captured = {}
+
+        def _spy_calibration_sequence(_file, *_args: object, **_kwargs: object):
+            calibrated = np.zeros((10, 12))
+            coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+            # ra/dec as numeric strings, as they arrive from the FITS header.
+            metadata = {"creator": "spy", "pixscale": 2.4, "ra": "10.0", "dec": "20.0"}
+            return calibrated, metadata, coords, 2.0, None
+
+        def _spy_align(coords, _radecs, **kwargs: object):
+            captured["expected_center"] = kwargs.get("expected_center")
+            return coords, _make_tan_wcs()
+
+        monkeypatch.setattr(
+            "bandaid.photometry.calibration_sequence", _spy_calibration_sequence
+        )
+        monkeypatch.setattr("bandaid.photometry.align", _spy_align)
+        monkeypatch.setattr(
+            "bandaid.photometry.centroid_stars", lambda data, coords, cnn: coords
+        )
+        monkeypatch.setattr(
+            "bandaid.photometry.fits.getheader", lambda file: {"creator": "spy"}
+        )
+
+        prepare_image("unused.fits", np.zeros((5, 2)), None)
+
+        center = captured["expected_center"]
+        assert isinstance(center, SkyCoord)
+        assert center.ra.deg == pytest.approx(10.0)
+        assert center.dec.deg == pytest.approx(20.0)
+
+    def test_unparseable_header_radec_skips_center_check(self, monkeypatch):
+        """
+        Non-numeric header ra/dec skip the check rather than raising.
+
+        A frame whose pointing cannot be coerced to a float should still solve
+        (just without the pointing check), mirroring the missing-ra/dec path.
+        """
+        captured = {}
+
+        def _spy_calibration_sequence(_file, *_args: object, **_kwargs: object):
+            calibrated = np.zeros((10, 10))
+            coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+            metadata = {"creator": "spy", "pixscale": 2.4, "ra": "N/A", "dec": "N/A"}
+            return calibrated, metadata, coords, 2.0, None
+
+        def _spy_align(coords, _radecs, **kwargs: object):
+            captured["expected_center"] = kwargs.get("expected_center")
+            return coords, _make_tan_wcs()
+
+        monkeypatch.setattr(
+            "bandaid.photometry.calibration_sequence", _spy_calibration_sequence
+        )
+        monkeypatch.setattr("bandaid.photometry.align", _spy_align)
+        monkeypatch.setattr(
+            "bandaid.photometry.centroid_stars", lambda data, coords, cnn: coords
+        )
+        monkeypatch.setattr(
+            "bandaid.photometry.fits.getheader", lambda file: {"creator": "spy"}
+        )
+
+        prepare_image("unused.fits", np.zeros((5, 2)), None)
+
+        assert captured["expected_center"] is None
+
 
 def _make_tan_wcs(image_size=(500, 500), crval=(10.0, 20.0), pixscale=2.4):
     """

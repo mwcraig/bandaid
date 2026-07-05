@@ -1788,15 +1788,22 @@ def prepare_image(
         # The Gaia catalog is queried at the header pointing, so align can
         # reject a solved WCS that puts that location off-frame. Unlike
         # pixscale (instrument-profile-sourced), ra/dec come from the frame
-        # header, so a frame without them just skips the check.
+        # header, so a frame without them just skips the check. The @RA/@DEC
+        # directives pass the header value through untouched, so it often
+        # arrives as a numeric string; coerce it the way the airmass path
+        # already does (float(metadata["ra"])) instead of treating a string as
+        # missing. A None/absent value or one that will not parse just skips
+        # the check.
         ra = metadata.get("ra")
         dec = metadata.get("dec")
-        if all(
-            isinstance(v, (int, float)) and not isinstance(v, bool) for v in (ra, dec)
-        ):
-            expected_center = SkyCoord(ra, dec, unit="deg")
-        else:
+        if isinstance(ra, bool) or isinstance(dec, bool):
             expected_center = None
+        else:
+            try:
+                expected_center = SkyCoord(float(ra), float(dec), unit="deg")
+            except (TypeError, ValueError):
+                # float(None) raises TypeError, float("N/A") raises ValueError.
+                expected_center = None
         shape = calibrated_data.shape
     else:
         expected_pixscale = None
