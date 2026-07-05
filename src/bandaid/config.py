@@ -262,9 +262,13 @@ class InstrumentProfile(BaseModel, frozen=True):
     cone_radius_margin : float
         Extra field radius in degrees added to ``fov_rad`` when the Gaia cone is
         centered on a resolved center (``header_center_offset`` estimate or an
-        object-name lookup). It absorbs the ~1.3 deg night-to-night rotation /
-        header-pixel drift so the widened cone still covers the whole field.
-        ``0.0`` (the default) leaves the query radius unchanged.
+        object-name lookup). ``0.0`` (the default) leaves the query radius
+        unchanged, querying exactly the field. A live-DR2 A/B on SS Leo (issue
+        #83, 635 frames over two nights) found that widening the cone is *net
+        harmful*: the extra edge stars reshuffle the brightest-N asterisms fed to
+        the plate-solver, breaking frames that solved on the unwidened cone
+        (0.1 deg margin was net -46 frames vs 0.0). Keep it 0.0 unless a specific
+        instrument is shown to need a buffer.
     header_map : collections.abc.Mapping
         The per-frame FITS-header dialect for this telescope: a mapping of
         metadata key to a directive resolved by
@@ -287,10 +291,12 @@ class InstrumentProfile(BaseModel, frozen=True):
     wcs_scale_tolerance: Annotated[float, Field(gt=0)] = 0.05
     # Seestar50 values (the class defaults are the Seestar): the header pointing
     # sits ~0.35 deg off the field center, so the default pipeline must walk to
-    # the true center and widen the cone. A different telescope overrides these
-    # (set header_center_offset to None to fall back to object-name resolution).
+    # the true center. The cone is NOT widened (margin 0.0): a live-DR2 A/B on SS
+    # Leo showed widening reshuffles the plate-solver asterisms and loses frames
+    # (issue #83). A different telescope overrides these (set header_center_offset
+    # to None to fall back to object-name resolution).
     header_center_offset: tuple[float, float] | None = (-0.32, 0.15)
-    cone_radius_margin: Annotated[float, Field(ge=0)] = 0.1
+    cone_radius_margin: Annotated[float, Field(ge=0)] = 0.0
     header_map: Mapping = Field(
         default_factory=_default_seestar_header_map, validate_default=True
     )

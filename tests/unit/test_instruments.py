@@ -51,6 +51,9 @@ class TestLoadInstrument:
         # the class defaults, so the bundled and default profiles agree.
         assert profile.header_center_offset == default.header_center_offset
         assert profile.cone_radius_margin == default.cone_radius_margin
+        # DR2 A/B (issue #83) found widening the cone is net harmful, so the
+        # default margin is 0.0 (no widening); guard against an accidental revert.
+        assert default.cone_radius_margin == 0.0
 
     def test_seestar_header_map_carries_dialect(self):
         """The bundled profile carries the Seestar header dialect."""

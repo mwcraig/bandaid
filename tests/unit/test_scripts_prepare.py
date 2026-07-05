@@ -203,13 +203,15 @@ class TestPrepareBatch:
         assert captured.get("detect_on_bayer_balanced") is True
         assert captured.get("fwhm_n_stars") == fwhm_n_stars
 
-    def test_gaia_queried_at_resolved_center_and_widened_fov(self, monkeypatch):
+    def test_gaia_queried_at_resolved_center_over_unwidened_field(self, monkeypatch):
         """
-        Gaia is queried at the resolved field center over the widened field.
+        Gaia is queried at the resolved field center over the (unwidened) field.
 
         The Seestar header points ~0.35 deg off the field center, so the cone is
-        centered on the header-estimate field center (not the raw header) and
-        widened by the profile margin (issue #83).
+        centered on the header-estimate field center (not the raw header). The
+        cone is NOT widened: the default margin is 0.0 because a live-DR2 A/B
+        found widening reshuffles the plate-solver asterisms and loses frames
+        (issue #83).
         """
         calls, metadata, _, _, _ = _patch_prep(monkeypatch)
         scripts.prepare_batch("frame1.fits", cnn=object())
@@ -217,8 +219,9 @@ class TestPrepareBatch:
         instrument = InstrumentProfile()
         expected_center = scripts.estimate_center_from_header(metadata, instrument)
         assert calls["center"] == pytest.approx(expected_center)
-        # fov_rad is a field *radius*; the query takes the full field (2 * radius)
-        # widened by the profile's cone margin.
+        # fov_rad is a field *radius*; with the default 0.0 margin the query takes
+        # exactly the full field (2 * radius), with no widening.
+        assert instrument.cone_radius_margin == 0.0
         assert calls["fov"] == pytest.approx(
             2 * (metadata["fov_rad"] + instrument.cone_radius_margin)
         )
