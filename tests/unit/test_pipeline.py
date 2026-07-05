@@ -216,6 +216,46 @@ class TestPrepareImage:
 
         assert externals.align.call_args.kwargs["expected_center"] is None
 
+    def test_string_header_radec_still_reaches_alignment(
+        self, stub_prepare_image_externals
+    ):
+        """
+        String header ra/dec are coerced, not treated as missing.
+
+        The ``@RA``/``@DEC`` directives return the raw header value, which the
+        FITS header often stores as a numeric string; the airmass path already
+        ``float(...)``-coerces them. ``prepare_image`` must do the same so the
+        pointing check runs on real frames instead of silently skipping.
+        """
+        externals = stub_prepare_image_externals(
+            # ra/dec as numeric strings, as they arrive from the FITS header.
+            metadata={"creator": "spy", "pixscale": 2.4, "ra": "10.0", "dec": "20.0"},
+        )
+
+        prepare_image("unused.fits", np.zeros((5, 2)), None)
+
+        center = externals.align.call_args.kwargs["expected_center"]
+        assert isinstance(center, SkyCoord)
+        assert center.ra.deg == pytest.approx(10.0)
+        assert center.dec.deg == pytest.approx(20.0)
+
+    def test_unparseable_header_radec_skips_center_check(
+        self, stub_prepare_image_externals
+    ):
+        """
+        Non-numeric header ra/dec skip the check rather than raising.
+
+        A frame whose pointing cannot be coerced to a float should still solve
+        (just without the pointing check), mirroring the missing-ra/dec path.
+        """
+        externals = stub_prepare_image_externals(
+            metadata={"creator": "spy", "pixscale": 2.4, "ra": "N/A", "dec": "N/A"}
+        )
+
+        prepare_image("unused.fits", np.zeros((5, 2)), None)
+
+        assert externals.align.call_args.kwargs["expected_center"] is None
+
 
 # --- Synthetic-FITS helpers for the detect/align/centroid pipeline tests ---
 
