@@ -109,16 +109,6 @@ def test_min_separation_fwhm_tuning_params_are_keyword_only():
 class TestNeighborContaminationFlag:
     """Unit tests for the bright-neighbor flag ``neighbor_contamination_flag``."""
 
-    @pytest.mark.parametrize("n", [0, 1])
-    def test_fewer_than_two_stars_never_flagged(self, n):
-        """With <2 stars no pair can exist, so the early return is all-False."""
-        coords = np.zeros((n, 2))
-        mags = np.zeros(n)
-        flag = neighbor_contamination_flag(coords, mags, fwhm=2.0)
-        assert flag.shape == (n,)
-        assert flag.dtype == bool
-        assert not flag.any()
-
     def test_equal_brightness_pair_flagged_inside_threshold(self):
         """Equal-mag neighbors flag both stars inside ~2.30 FWHM, neither outside."""
         fwhm = 2.0
@@ -147,21 +137,6 @@ class TestNeighborContaminationFlag:
         assert not flag[0]  # bright star: faint neighbor spills negligibly
         assert flag[1]  # faint star: bright neighbor contaminates it
 
-    def test_non_finite_magnitude_contributes_no_contamination(self):
-        """A NaN-magnitude star neither flags nor is flagged."""
-        fwhm = 2.0
-        coords = np.array([[0.0, 0.0], [1.0, 0.0]])  # essentially on top of one another
-        mags = np.array([10.0, np.nan])
-        flag = neighbor_contamination_flag(coords, mags, fwhm=fwhm)
-        assert not flag.any()
-
-    def test_tuning_params_are_keyword_only(self):
-        """The tuning params cannot be passed positionally (issue #61)."""
-        coords = np.array([[0.0, 0.0], [1.0, 0.0]])
-        mags = np.array([10.0, 10.0])
-        with pytest.raises(TypeError):
-            neighbor_contamination_flag(coords, mags, 2.0, CONTAMINATION_TOLERANCE)
-
     def test_aperture_radius_widens_the_flagged_region(self):
         """
         A pair clean for the default 1-FWHM aperture is flagged at 2 FWHM.
@@ -187,33 +162,74 @@ class TestNeighborContaminationFlag:
         )
 
 
-class TestNeighborContaminationFlagSky:
-    """Unit tests for the sky-space flag ``neighbor_contamination_flag_sky``."""
+# A close pair (~1 px / ~0.5 arcsec apart) for each contamination front end.
+_CLOSE_PIXEL = np.array([[0.0, 0.0], [1.0, 0.0]])
+_CLOSE_SKY = np.array([[10.0, 0.0], [10.0 + 0.5 / 3600.0, 0.0]])
 
+
+class TestNeighborContaminationFrontEnds:
+    """
+    Behaviour shared by the pixel and sky neighbor-contamination front ends.
+
+    ``neighbor_contamination_flag`` (pixel coords, ``fwhm`` in pixels) and
+    ``neighbor_contamination_flag_sky`` (ra/dec, ``fwhm_arcsec``) implement the
+    same contamination rule at different front ends; both take the FWHM
+    positionally as the third argument. These parametrized tests pin the
+    behaviour the two front ends must share (issue #61, PR #70 review).
+    """
+
+    @pytest.mark.parametrize(
+        "front_end",
+        [neighbor_contamination_flag, neighbor_contamination_flag_sky],
+        ids=["pixel", "sky"],
+    )
     @pytest.mark.parametrize("n", [0, 1])
-    def test_fewer_than_two_stars_never_flagged(self, n):
+    def test_fewer_than_two_stars_never_flagged(self, front_end, n):
         """With <2 stars no pair can exist, so the early return is all-False."""
-        radecs = np.zeros((n, 2))
+        positions = np.zeros((n, 2))
         mags = np.zeros(n)
-        flag = neighbor_contamination_flag_sky(radecs, mags, fwhm_arcsec=2.0)
+        flag = front_end(positions, mags, 2.0)
         assert flag.shape == (n,)
         assert flag.dtype == bool
         assert not flag.any()
 
-    def test_non_finite_magnitude_contributes_no_contamination(self):
-        """A NaN-magnitude star neither flags nor is flagged."""
-        # The two stars are ~0.5 arcsec apart -- essentially on top of one another.
-        radecs = np.array([[10.0, 0.0], [10.0 + 0.5 / 3600.0, 0.0]])
+    @pytest.mark.parametrize(
+        ("front_end", "positions"),
+        [
+            (neighbor_contamination_flag, _CLOSE_PIXEL),
+            (neighbor_contamination_flag_sky, _CLOSE_SKY),
+        ],
+        ids=["pixel", "sky"],
+    )
+    def test_non_finite_magnitude_contributes_no_contamination(
+        self, front_end, positions
+    ):
+        """
+        A NaN-magnitude star neither flags nor is flagged.
+
+        The two stars sit essentially on top of one another (~1 px / ~0.5 arcsec).
+        """
         mags = np.array([10.0, np.nan])
-        flag = neighbor_contamination_flag_sky(radecs, mags, fwhm_arcsec=2.0)
+        flag = front_end(positions, mags, 2.0)
         assert not flag.any()
 
-    def test_tuning_params_are_keyword_only(self):
-        """The tuning params cannot be passed positionally (PR #70 review, #61)."""
-        radecs = np.array([[10.0, 0.0], [10.0 + 0.5 / 3600.0, 0.0]])
+    @pytest.mark.parametrize(
+        ("front_end", "positions"),
+        [
+            (neighbor_contamination_flag, _CLOSE_PIXEL),
+            (neighbor_contamination_flag_sky, _CLOSE_SKY),
+        ],
+        ids=["pixel", "sky"],
+    )
+    def test_tuning_params_are_keyword_only(self, front_end, positions):
+        """The tuning params cannot be passed positionally (issue #61)."""
         mags = np.array([10.0, 10.0])
         with pytest.raises(TypeError):
-            neighbor_contamination_flag_sky(radecs, mags, 2.0, CONTAMINATION_TOLERANCE)
+            front_end(positions, mags, 2.0, CONTAMINATION_TOLERANCE)
+
+
+class TestNeighborContaminationFlagSky:
+    """Unit tests for the sky-space flag ``neighbor_contamination_flag_sky``."""
 
     def test_matches_pixel_front_end_on_equator(self):
         """
