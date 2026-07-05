@@ -248,6 +248,23 @@ class InstrumentProfile(BaseModel, frozen=True):
         wrong-scale solve (see :func:`~bandaid.photometry.align`). It is an
         instrument setting because it is a tolerance on *this* telescope's plate
         scale; the empirical basis for the ``0.05`` default is in issue #83.
+    header_center_offset : tuple of float or None
+        The fixed sky vector ``(Delta(RA*cos(dec)), Delta(dec))`` in degrees from
+        this instrument's header pointing to the *true* field center. Seestar
+        frames report a pointing that sits ~0.35 deg off the frame center
+        (mid-left of the field), so centering the Gaia cone on the raw header
+        clips the far side of the field and starves the plate-solve matcher
+        (issue #83). When present, :func:`~bandaid.scripts.resolve_field_center`
+        walks the header pointing to the field center by this vector; when
+        ``None`` (the default, and every non-Seestar instrument) the pipeline
+        keeps its historical behaviour of centering on the raw header. The
+        Seestar value was measured on SS Leo (132 frames, 7 nights).
+    cone_radius_margin : float
+        Extra field radius in degrees added to ``fov_rad`` when the Gaia cone is
+        centered on a resolved center (``header_center_offset`` estimate or an
+        object-name lookup). It absorbs the ~1.3 deg night-to-night rotation /
+        header-pixel drift so the widened cone still covers the whole field.
+        ``0.0`` (the default) leaves the query radius unchanged.
     header_map : collections.abc.Mapping
         The per-frame FITS-header dialect for this telescope: a mapping of
         metadata key to a directive resolved by
@@ -268,6 +285,12 @@ class InstrumentProfile(BaseModel, frozen=True):
     # seeing already contaminates, silently shipping blended photometry.
     contamination_seeing_margin: Annotated[float, Field(ge=1.0)] = 1.25
     wcs_scale_tolerance: Annotated[float, Field(gt=0)] = 0.05
+    # Seestar50 values (the class defaults are the Seestar): the header pointing
+    # sits ~0.35 deg off the field center, so the default pipeline must walk to
+    # the true center and widen the cone. A different telescope overrides these
+    # (set header_center_offset to None to fall back to object-name resolution).
+    header_center_offset: tuple[float, float] | None = (-0.32, 0.15)
+    cone_radius_margin: Annotated[float, Field(ge=0)] = 0.1
     header_map: Mapping = Field(
         default_factory=_default_seestar_header_map, validate_default=True
     )

@@ -47,6 +47,10 @@ class TestLoadInstrument:
         assert profile.fwhm_cutout_half == default.fwhm_cutout_half
         assert profile.contamination_tolerance == default.contamination_tolerance
         assert profile.moffat_beta == default.moffat_beta
+        # The framing constants (issue #83) live in profile.json but must match
+        # the class defaults, so the bundled and default profiles agree.
+        assert profile.header_center_offset == default.header_center_offset
+        assert profile.cone_radius_margin == default.cone_radius_margin
 
     def test_seestar_header_map_carries_dialect(self):
         """The bundled profile carries the Seestar header dialect."""
