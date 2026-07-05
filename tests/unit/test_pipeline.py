@@ -87,7 +87,7 @@ class TestPrepareImage:
 
         assert np.array_equal(img.coords, img.aligned_coords)
 
-    def test_instrument_config_reaches_detection(self, monkeypatch):
+    def test_instrument_config_reaches_detection(self, stub_prepare_image_externals):
         """
         A non-default instrument config sets the detection threshold/opening.
 
@@ -99,32 +99,7 @@ class TestPrepareImage:
         expected_thresh = 0.9
         expected_opening = 7
         expected_fwhm_n_stars = 33
-        captured = {}
-
-        def _spy_calibration_sequence(_file, *_args: object, **kwargs: object):
-            captured["threshold"] = kwargs.get("threshold")
-            captured["opening"] = kwargs.get("opening")
-            captured["fwhm_n_stars"] = kwargs.get("fwhm_n_stars")
-            calibrated = np.zeros((10, 10))
-            coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
-            return calibrated, {"creator": "spy", "pixscale": 2.4}, coords, 2.0, None
-
-        monkeypatch.setattr(
-            "bandaid.photometry.calibration_sequence",
-            _spy_calibration_sequence,
-        )
-        monkeypatch.setattr(
-            "bandaid.photometry.align",
-            lambda coords, radecs, **kwargs: (coords, _make_tan_wcs()),
-        )
-        monkeypatch.setattr(
-            "bandaid.photometry.centroid_stars",
-            lambda data, coords, cnn: coords,
-        )
-        monkeypatch.setattr(
-            "bandaid.photometry.fits.getheader",
-            lambda file: {"creator": "spy"},
-        )
+        externals = stub_prepare_image_externals()
 
         config = PhotometryConfig(
             instrument=InstrumentProfile(
@@ -140,11 +115,14 @@ class TestPrepareImage:
             config=config,
         )
 
-        assert captured["threshold"] == expected_thresh
-        assert captured["opening"] == expected_opening
-        assert captured["fwhm_n_stars"] == expected_fwhm_n_stars
+        kwargs = externals.calibration_sequence.call_args.kwargs
+        assert kwargs["threshold"] == expected_thresh
+        assert kwargs["opening"] == expected_opening
+        assert kwargs["fwhm_n_stars"] == expected_fwhm_n_stars
 
-    def test_instrument_wcs_scale_tolerance_reaches_alignment(self, monkeypatch):
+    def test_instrument_wcs_scale_tolerance_reaches_alignment(
+        self, stub_prepare_image_externals
+    ):
         """
         The instrument's ``wcs_scale_tolerance`` is forwarded to ``align``.
 
@@ -152,36 +130,16 @@ class TestPrepareImage:
         on ``align`` and assert the configured value arrives as ``scale_tolerance``.
         """
         expected_tolerance = 0.07
-        captured = {}
-
-        def _spy_calibration_sequence(_file, *_args: object, **_kwargs: object):
-            calibrated = np.zeros((10, 10))
-            coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
-            return calibrated, {"creator": "spy", "pixscale": 2.4}, coords, 2.0, None
-
-        def _spy_align(coords, _radecs, **kwargs: object):
-            captured["scale_tolerance"] = kwargs.get("scale_tolerance")
-            return coords, _make_tan_wcs()
-
-        monkeypatch.setattr(
-            "bandaid.photometry.calibration_sequence", _spy_calibration_sequence
-        )
-        monkeypatch.setattr("bandaid.photometry.align", _spy_align)
-        monkeypatch.setattr(
-            "bandaid.photometry.centroid_stars", lambda data, coords, cnn: coords
-        )
-        monkeypatch.setattr(
-            "bandaid.photometry.fits.getheader", lambda file: {"creator": "spy"}
-        )
+        externals = stub_prepare_image_externals()
 
         config = PhotometryConfig(
             instrument=InstrumentProfile(wcs_scale_tolerance=expected_tolerance),
         )
         prepare_image("unused.fits", np.zeros((5, 2)), None, config=config)
 
-        assert captured["scale_tolerance"] == expected_tolerance
+        assert externals.align.call_args.kwargs["scale_tolerance"] == expected_tolerance
 
-    def test_missing_pixscale_raises_when_solving(self, monkeypatch):
+    def test_missing_pixscale_raises_when_solving(self, stub_prepare_image_externals):
         """
         A missing/non-numeric ``pixscale`` fails loud instead of silent-skipping.
 
@@ -191,31 +149,15 @@ class TestPrepareImage:
         ``FrameMetadataError`` rather than passing ``expected_pixscale=None``
         (which would quietly disable the check).
         """
-
-        def _spy_calibration_sequence(_file, *_args: object, **_kwargs: object):
-            calibrated = np.zeros((10, 10))
-            coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
-            # metadata deliberately omits "pixscale".
-            return calibrated, {"creator": "spy"}, coords, 2.0, None
-
-        monkeypatch.setattr(
-            "bandaid.photometry.calibration_sequence", _spy_calibration_sequence
-        )
-        monkeypatch.setattr(
-            "bandaid.photometry.align",
-            lambda *a, **k: pytest.fail("align must not run without a pixscale"),
-        )
-        monkeypatch.setattr(
-            "bandaid.photometry.centroid_stars", lambda data, coords, cnn: coords
-        )
-        monkeypatch.setattr(
-            "bandaid.photometry.fits.getheader", lambda file: {"creator": "spy"}
-        )
+        externals = stub_prepare_image_externals(metadata={"creator": "spy"})
 
         with pytest.raises(FrameMetadataError, match="pixscale"):
             prepare_image("unused.fits", np.zeros((5, 2)), None)
 
-    def test_missing_pixscale_ok_when_wcs_supplied(self, monkeypatch):
+        # align must never run when the scale check cannot be performed.
+        externals.align.assert_not_called()
+
+    def test_missing_pixscale_ok_when_wcs_supplied(self, stub_prepare_image_externals):
         """
         A supplied WCS is trusted, so a missing ``pixscale`` is not required.
 
@@ -224,33 +166,15 @@ class TestPrepareImage:
         ``expected_pixscale=None`` without raising.
         """
         supplied_wcs = _make_tan_wcs()
-        captured = {}
-
-        def _spy_calibration_sequence(_file, *_args: object, **_kwargs: object):
-            calibrated = np.zeros((10, 10))
-            coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
-            return calibrated, {"creator": "spy"}, coords, 2.0, None
-
-        def _spy_align(coords, _radecs, **kwargs: object):
-            captured["expected_pixscale"] = kwargs.get("expected_pixscale")
-            return coords, supplied_wcs
-
-        monkeypatch.setattr(
-            "bandaid.photometry.calibration_sequence", _spy_calibration_sequence
-        )
-        monkeypatch.setattr("bandaid.photometry.align", _spy_align)
-        monkeypatch.setattr(
-            "bandaid.photometry.centroid_stars", lambda data, coords, cnn: coords
-        )
-        monkeypatch.setattr(
-            "bandaid.photometry.fits.getheader", lambda file: {"creator": "spy"}
-        )
+        externals = stub_prepare_image_externals(metadata={"creator": "spy"})
 
         prepare_image("unused.fits", np.zeros((5, 2)), None, wcs=supplied_wcs)
 
-        assert captured["expected_pixscale"] is None
+        assert externals.align.call_args.kwargs["expected_pixscale"] is None
 
-    def test_header_center_and_shape_reach_alignment(self, monkeypatch):
+    def test_header_center_and_shape_reach_alignment(
+        self, stub_prepare_image_externals
+    ):
         """
         The header pointing and image shape are forwarded to ``align``.
 
@@ -259,39 +183,23 @@ class TestPrepareImage:
         ``align`` for the solved-WCS in-frame check. Spy on ``align`` and assert
         both arrive.
         """
-        captured = {}
-
-        def _spy_calibration_sequence(_file, *_args: object, **_kwargs: object):
-            calibrated = np.zeros((10, 12))
-            coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
-            metadata = {"creator": "spy", "pixscale": 2.4, "ra": 10.0, "dec": 20.0}
-            return calibrated, metadata, coords, 2.0, None
-
-        def _spy_align(coords, _radecs, **kwargs: object):
-            captured["expected_center"] = kwargs.get("expected_center")
-            captured["shape"] = kwargs.get("shape")
-            return coords, _make_tan_wcs()
-
-        monkeypatch.setattr(
-            "bandaid.photometry.calibration_sequence", _spy_calibration_sequence
-        )
-        monkeypatch.setattr("bandaid.photometry.align", _spy_align)
-        monkeypatch.setattr(
-            "bandaid.photometry.centroid_stars", lambda data, coords, cnn: coords
-        )
-        monkeypatch.setattr(
-            "bandaid.photometry.fits.getheader", lambda file: {"creator": "spy"}
+        externals = stub_prepare_image_externals(
+            metadata={"creator": "spy", "pixscale": 2.4, "ra": 10.0, "dec": 20.0},
+            calibrated=np.zeros((10, 12)),
         )
 
         prepare_image("unused.fits", np.zeros((5, 2)), None)
 
-        center = captured["expected_center"]
+        kwargs = externals.align.call_args.kwargs
+        center = kwargs["expected_center"]
         assert isinstance(center, SkyCoord)
         assert center.ra.deg == pytest.approx(10.0)
         assert center.dec.deg == pytest.approx(20.0)
-        assert captured["shape"] == (10, 12)
+        assert kwargs["shape"] == (10, 12)
 
-    def test_missing_header_radec_skips_center_check(self, monkeypatch):
+    def test_missing_header_radec_skips_center_check(
+        self, stub_prepare_image_externals
+    ):
         """
         A frame without usable header ra/dec skips the center check, not fails.
 
@@ -299,32 +207,14 @@ class TestPrepareImage:
         malformed profile), the pointing comes from the frame header; a frame
         without it should still solve, just without the in-frame check.
         """
-        captured = {}
-
-        def _spy_calibration_sequence(_file, *_args: object, **_kwargs: object):
-            calibrated = np.zeros((10, 10))
-            coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
-            # metadata deliberately omits "ra"/"dec".
-            return calibrated, {"creator": "spy", "pixscale": 2.4}, coords, 2.0, None
-
-        def _spy_align(coords, _radecs, **kwargs: object):
-            captured["expected_center"] = kwargs.get("expected_center")
-            return coords, _make_tan_wcs()
-
-        monkeypatch.setattr(
-            "bandaid.photometry.calibration_sequence", _spy_calibration_sequence
-        )
-        monkeypatch.setattr("bandaid.photometry.align", _spy_align)
-        monkeypatch.setattr(
-            "bandaid.photometry.centroid_stars", lambda data, coords, cnn: coords
-        )
-        monkeypatch.setattr(
-            "bandaid.photometry.fits.getheader", lambda file: {"creator": "spy"}
+        # metadata deliberately omits "ra"/"dec".
+        externals = stub_prepare_image_externals(
+            metadata={"creator": "spy", "pixscale": 2.4}
         )
 
         prepare_image("unused.fits", np.zeros((5, 2)), None)
 
-        assert captured["expected_center"] is None
+        assert externals.align.call_args.kwargs["expected_center"] is None
 
 
 # --- Synthetic-FITS helpers for the detect/align/centroid pipeline tests ---
