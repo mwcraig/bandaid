@@ -58,13 +58,9 @@ class TestProcessBatch:
             assert masks is prep.bayer_masks
             assert phot_coords is prep.photometry_coords
 
-    def test_emits_progress_log_per_frame(self, monkeypatch, caplog):
+    def test_emits_progress_log_per_frame(self, patched_process_one_image, caplog):
         """Each frame logs a ``processing i/N: name`` line at INFO for --verbose."""
-        monkeypatch.setattr(
-            scripts,
-            "process_one_image",
-            lambda *_a, **_k: {"TR": Table({"tot_count": [1.0]})},
-        )
+        patched_process_one_image({"TR": Table({"tot_count": [1.0]})})
 
         # Identically-named frames from different directories (a supported
         # mirrored-tree batch): the line logs the full path, not just the
@@ -161,9 +157,11 @@ class TestQuietHfXet:
 class TestProcessBatchToDisk:
     """Unit tests for the ``output_dir`` (write starlists to disk) path."""
 
-    def test_writes_one_file_per_frame(self, monkeypatch, tmp_path, by_filter):
+    def test_writes_one_file_per_frame(
+        self, patched_process_one_image, tmp_path, by_filter
+    ):
         """Each processed frame produces one ``<stem>.star`` file in output_dir."""
-        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+        patched_process_one_image(by_filter())
 
         scripts.process_batch(
             ["a.fits", "b.fits"],
@@ -179,10 +177,10 @@ class TestProcessBatchToDisk:
         assert written == ["a.star", "b.star"]
 
     def test_output_filename_is_stem_plus_default_suffix(
-        self, monkeypatch, tmp_path, by_filter
+        self, patched_process_one_image, tmp_path, by_filter
     ):
         """The output name is the input *stem* + ``.star``; the input dir is dropped."""
-        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+        patched_process_one_image(by_filter())
 
         scripts.process_batch(
             ["sub/frame1.fits"],
@@ -196,10 +194,10 @@ class TestProcessBatchToDisk:
         ] == ["frame1.star"]
 
     def test_same_basename_different_dirs_mirror_source_tree(
-        self, monkeypatch, tmp_path, by_filter
+        self, patched_process_one_image, tmp_path, by_filter
     ):
         """Same-named frames from different dirs are written under mirrored subdirs."""
-        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+        patched_process_one_image(by_filter())
 
         inputs = ["n1/img.fits", "n2/img.fits"]
         results = scripts.process_batch(
@@ -218,10 +216,10 @@ class TestProcessBatchToDisk:
         assert len({str(v) for v in results.values()}) == len(results)
 
     def test_distinct_dirs_sharing_a_basename_get_unique_subdirs(
-        self, monkeypatch, tmp_path, by_filter
+        self, patched_process_one_image, tmp_path, by_filter
     ):
         """Two different source dirs with the same name still mirror distinctly."""
-        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+        patched_process_one_image(by_filter())
 
         # Both parent directories are named "night" but live in different trees.
         (tmp_path / "a" / "night").mkdir(parents=True)
@@ -245,10 +243,10 @@ class TestProcessBatchToDisk:
         assert len({str(v) for v in results.values()}) == len(results)
 
     def test_same_stem_one_dir_falls_back_to_numeric_suffix(
-        self, monkeypatch, tmp_path, by_filter
+        self, monkeypatch, patched_process_one_image, tmp_path, by_filter
     ):
         """Two single-dir inputs differing only by extension stay distinct + flat."""
-        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+        patched_process_one_image(by_filter())
         # Both inputs live in the same directory (the cwd), so the layout stays
         # flat; their shared stem "img" is disambiguated with a numeric suffix
         # rather than a leading-underscore or directory prefix.
@@ -267,9 +265,11 @@ class TestProcessBatchToDisk:
         )
         assert written == ["img.star", "img_1.star"]
 
-    def test_custom_output_suffix_is_honored(self, monkeypatch, tmp_path, by_filter):
+    def test_custom_output_suffix_is_honored(
+        self, patched_process_one_image, tmp_path, by_filter
+    ):
         """An explicit ``output_suffix`` replaces the default ``.star``."""
-        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+        patched_process_one_image(by_filter())
 
         scripts.process_batch(
             ["frame1.fits"],
@@ -284,13 +284,11 @@ class TestProcessBatchToDisk:
         ] == ["frame1.starlist"]
 
     def test_written_file_round_trips_through_starlistset(
-        self, monkeypatch, tmp_path, by_filter
+        self, patched_process_one_image, tmp_path, by_filter
     ):
         """The file is a valid StarListSet: one StarList per filter, stars intact."""
         filters = ("TR", "TG", "TB")
-        monkeypatch.setattr(
-            scripts, "process_one_image", lambda *a, **k: by_filter(filters)
-        )
+        patched_process_one_image(by_filter(filters))
 
         scripts.process_batch(
             ["frame1.fits"],
@@ -307,9 +305,11 @@ class TestProcessBatchToDisk:
             kept_x = sorted(item.x for item in star_list.staritems)
             assert kept_x == [20.0, 70.0]
 
-    def test_disk_mode_returns_path_mapping(self, monkeypatch, tmp_path, by_filter):
+    def test_disk_mode_returns_path_mapping(
+        self, patched_process_one_image, tmp_path, by_filter
+    ):
         """Disk mode returns each input file mapped to its written output path."""
-        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+        patched_process_one_image(by_filter())
 
         results = scripts.process_batch(
             ["a.fits", "b.fits"],
@@ -397,7 +397,7 @@ class TestProcessBatchToDisk:
         assert bad["wcs_solved"] == "False"
 
     def test_qa_manifest_sky_median_is_median_of_bkgd_count(
-        self, monkeypatch, tmp_path, by_filter
+        self, patched_process_one_image, tmp_path, by_filter
     ):
         """
         ``sky_median`` is the median of the per-star ``bkgd_count`` (#52).
@@ -410,7 +410,7 @@ class TestProcessBatchToDisk:
         # Distinct per-star backgrounds in the representative (first) table so
         # the median is unambiguous: median([2, 8]) = 5.
         result["TR"]["bkgd_count"] = [2.0, 8.0]
-        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: result)
+        patched_process_one_image(result)
 
         scripts.process_batch(
             ["a.fits"],
@@ -425,7 +425,7 @@ class TestProcessBatchToDisk:
         assert float(rows[0]["sky_median"]) == pytest.approx(5.0)
 
     def test_qa_manifest_sky_median_ignores_nan_bkgd_count(
-        self, monkeypatch, tmp_path, by_filter
+        self, patched_process_one_image, tmp_path, by_filter
     ):
         """
         A NaN ``bkgd_count`` (edge-of-frame annulus) stays out of ``sky_median``.
@@ -436,7 +436,7 @@ class TestProcessBatchToDisk:
         """
         result = by_filter()
         result["TR"]["bkgd_count"] = [np.nan, 7.0]
-        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: result)
+        patched_process_one_image(result)
 
         scripts.process_batch(
             ["a.fits"],
@@ -451,7 +451,7 @@ class TestProcessBatchToDisk:
         assert float(rows[0]["sky_median"]) == pytest.approx(7.0)
 
     def test_qa_manifest_drift_rejected_counts_flagged_star_that_survives_filtering(
-        self, monkeypatch, tmp_path, by_filter
+        self, patched_process_one_image, tmp_path, by_filter
     ):
         """
         A drift-flagged star that still passes ``good_star_mask`` is "rejected" (#60).
@@ -463,7 +463,7 @@ class TestProcessBatchToDisk:
         """
         result = by_filter()
         result["TR"]["centroid_drift"] = [True, False]
-        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: result)
+        patched_process_one_image(result)
 
         scripts.process_batch(
             ["a.fits"],
@@ -479,7 +479,7 @@ class TestProcessBatchToDisk:
         assert rows[0]["n_drift_rejected"] == "1"
 
     def test_qa_manifest_drift_rejected_excludes_star_failing_flux_cut(
-        self, monkeypatch, tmp_path, by_filter
+        self, patched_process_one_image, tmp_path, by_filter
     ):
         """
         A drift-flagged star already dropped by the flux cut is not "rejected" (#60).
@@ -493,7 +493,7 @@ class TestProcessBatchToDisk:
         # good_star_mask requires tot_count > 0; fail it for the drifted row.
         result["TR"]["tot_count"] = [-1.0, 300.0]
         result["TR"]["centroid_drift"] = [True, False]
-        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: result)
+        patched_process_one_image(result)
 
         scripts.process_batch(
             ["a.fits"],
@@ -508,9 +508,11 @@ class TestProcessBatchToDisk:
         assert rows[0]["n_centroid_drift"] == "1"
         assert rows[0]["n_drift_rejected"] == "0"
 
-    def test_qa_manifest_can_be_disabled(self, monkeypatch, tmp_path, by_filter):
+    def test_qa_manifest_can_be_disabled(
+        self, patched_process_one_image, tmp_path, by_filter
+    ):
         """``write_qa_manifest=False`` writes only starlists, no manifest."""
-        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+        patched_process_one_image(by_filter())
 
         scripts.process_batch(
             ["a.fits", "b.fits"],
@@ -523,9 +525,11 @@ class TestProcessBatchToDisk:
         assert not (tmp_path / scripts.QA_MANIFEST_FILENAME).exists()
         assert sorted(p.name for p in tmp_path.iterdir()) == ["a.star", "b.star"]
 
-    def test_qa_manifest_name_is_honored(self, monkeypatch, tmp_path, by_filter):
+    def test_qa_manifest_name_is_honored(
+        self, patched_process_one_image, tmp_path, by_filter
+    ):
         """An explicit ``qa_manifest_name`` overrides the default filename."""
-        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+        patched_process_one_image(by_filter())
 
         scripts.process_batch(
             ["a.fits"],
@@ -539,7 +543,7 @@ class TestProcessBatchToDisk:
         assert not (tmp_path / scripts.QA_MANIFEST_FILENAME).exists()
 
     def test_custom_write_frame_gets_rich_tables_and_path(
-        self, monkeypatch, tmp_path, by_filter
+        self, patched_process_one_image, tmp_path, by_filter
     ):
         """A custom ``write_frame`` is called once per frame with the rich tables."""
         calls = []
@@ -549,7 +553,7 @@ class TestProcessBatchToDisk:
             output_path.write_text("recorded")
             return output_path
 
-        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+        patched_process_one_image(by_filter())
 
         scripts.process_batch(
             ["a.fits", "b.fits"],
@@ -574,7 +578,7 @@ class TestProcessBatchToDisk:
         assert "full_image_meta" in table.meta
 
     def test_write_frame_return_value_lands_in_results(
-        self, monkeypatch, tmp_path, by_filter
+        self, patched_process_one_image, tmp_path, by_filter
     ):
         """Whatever ``write_frame`` returns is stored as ``results[file]``."""
         sentinel = tmp_path / "somewhere" / "custom.out"
@@ -582,7 +586,7 @@ class TestProcessBatchToDisk:
         def writer(_frame_result, _output_path):
             return sentinel
 
-        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+        patched_process_one_image(by_filter())
 
         results = scripts.process_batch(
             ["a.fits"],
@@ -594,14 +598,16 @@ class TestProcessBatchToDisk:
 
         assert results == {"a.fits": sentinel}
 
-    def test_write_frame_not_called_in_memory_mode(self, monkeypatch, by_filter):
+    def test_write_frame_not_called_in_memory_mode(
+        self, patched_process_one_image, by_filter
+    ):
         """In-memory mode ignores ``write_frame`` and returns the tables."""
 
         def boom(_frame_result, _output_path):
             msg = "write_frame must not run in in-memory mode"
             raise AssertionError(msg)
 
-        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+        patched_process_one_image(by_filter())
 
         results = scripts.process_batch(
             ["a.fits"],
@@ -615,10 +621,10 @@ class TestProcessBatchToDisk:
         assert set(results["a.fits"]) == {"TR", "TG"}
 
     def test_default_write_frame_writes_starlist(
-        self, monkeypatch, tmp_path, by_filter
+        self, patched_process_one_image, tmp_path, by_filter
     ):
         """With no ``write_frame`` given, the default still writes a StarListSet."""
-        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+        patched_process_one_image(by_filter())
 
         scripts.process_batch(
             ["frame1.fits"],
@@ -672,7 +678,7 @@ class TestProcessBatchToDisk:
         assert by_file["good.fits"]["status"] == "ok"
 
     def test_writer_non_frame_error_still_propagates(
-        self, monkeypatch, tmp_path, by_filter
+        self, patched_process_one_image, tmp_path, by_filter
     ):
         """A genuine write failure (not a FrameError) still aborts the batch."""
 
@@ -680,7 +686,7 @@ class TestProcessBatchToDisk:
             msg = "simulated unwritable output"
             raise PermissionError(msg)
 
-        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+        patched_process_one_image(by_filter())
 
         with pytest.raises(PermissionError, match="simulated unwritable output"):
             scripts.process_batch(
