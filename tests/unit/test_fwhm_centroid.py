@@ -2,7 +2,7 @@
 
 import numpy as np
 import pytest
-from _helpers import SEED, _seestar_header
+from _helpers import SEED, _seestar_header, five_diagonal_regions
 from astropy.io import fits
 from astropy.stats import gaussian_fwhm_to_sigma
 from astropy.table import Table
@@ -216,16 +216,9 @@ class TestCalibrationSequenceCnn:
 
     def test_cnn_is_passed_to_fwhm_helper(self, tmp_path, monkeypatch):
         """The ``cnn`` given to ``calibration_sequence`` reaches the FWHM helper."""
-
-        class _Region:
-            def __init__(self, y, x) -> None:
-                self.centroid = (y, x)
-
         monkeypatch.setattr(
             "bandaid.photometry.detection.stars_detection",
-            lambda data, threshold, opening: [
-                _Region(10 * i, 10 * i) for i in range(1, 6)
-            ],
+            five_diagonal_regions,
         )
         captured = {}
         stub_fwhm = 2.5
@@ -248,16 +241,9 @@ class TestCalibrationSequenceCnn:
 
     def test_fwhm_n_stars_is_passed_to_fwhm_helper(self, tmp_path, monkeypatch):
         """``fwhm_n_stars`` reaches the FWHM helper as its ``n_stars`` cap."""
-
-        class _Region:
-            def __init__(self, y, x) -> None:
-                self.centroid = (y, x)
-
         monkeypatch.setattr(
             "bandaid.photometry.detection.stars_detection",
-            lambda data, threshold, opening: [
-                _Region(10 * i, 10 * i) for i in range(1, 6)
-            ],
+            five_diagonal_regions,
         )
         captured = {}
         requested_n_stars = 7

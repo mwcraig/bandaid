@@ -14,7 +14,6 @@ from astropy.stats import gaussian_fwhm_to_sigma, sigma_clipped_stats
 from astropy.table import Table
 
 from bandaid import measure_photometry
-from bandaid.image2sl_qt import generate_bayer_masks
 from bandaid.photometry import (
     ANNULUS,
     RELATIVE_RADII,
@@ -355,7 +354,7 @@ def test_peak_count_is_the_targets_own_peak(make_test_image):
     assert peak_target < _PEAK_LEAK_CEILING
 
 
-def test_peak_count_respects_the_channel_mask(make_test_image):
+def test_peak_count_respects_the_channel_mask(make_test_image, bayer_masks_rggb):
     """
     Per-channel ``peak_count`` is the max over that channel's pixels only (#54).
 
@@ -366,11 +365,7 @@ def test_peak_count_respects_the_channel_mask(make_test_image):
     was never applied and the TR/TG/TB columns were bit-identical.
     """
     image, coords = _bright_neighbor_scene(make_test_image)
-    masks = generate_bayer_masks(
-        image.shape,
-        {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0},
-        append_l4=False,
-    )
+    masks = bayer_masks_rggb(image.shape)
 
     peaks = {
         name: _peak_scene_photometry(image, coords, mask)["peak_count"]
@@ -386,7 +381,9 @@ def test_peak_count_respects_the_channel_mask(make_test_image):
 
 
 @pytest.mark.parametrize("channel", ["TR", "TG", "TB"])
-def test_peak_count_masked_star_at_frame_edge(make_test_image, channel):
+def test_peak_count_masked_star_at_frame_edge(
+    make_test_image, channel, bayer_masks_rggb
+):
     """
     A masked peak box hanging off the frame edge reads only in-frame pixels.
 
@@ -398,11 +395,7 @@ def test_peak_count_masked_star_at_frame_edge(make_test_image, channel):
     """
     sky = 10.0
     image, _ = _bright_neighbor_scene(make_test_image, sky=sky)
-    masks = generate_bayer_masks(
-        image.shape,
-        {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0},
-        append_l4=False,
-    )
+    masks = bayer_masks_rggb(image.shape)
     coords = np.array([[0.0, 0.0]])
 
     photom = _peak_scene_photometry(image, coords, masks[channel])

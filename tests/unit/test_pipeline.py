@@ -686,7 +686,9 @@ class TestPrepareImageBranches:
 class TestProcessOneImage:
     """End-to-end (stubbed-externals) coverage for ``process_one_image``."""
 
-    def test_raises_when_image_rejected(self, make_test_image, tmp_path):
+    def test_raises_when_image_rejected(
+        self, make_test_image, tmp_path, bayer_masks_rggb
+    ):
         """A frame with too few stars raises TooFewStarsError."""
         image = _detectable_image(
             make_test_image,
@@ -695,27 +697,19 @@ class TestProcessOneImage:
             include_noise=False,
         )
         path = _write_seestar_fits(tmp_path / "few.fits", image)
-        masks = generate_bayer_masks(
-            image.shape,
-            {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0},
-            append_l4=True,
-        )
+        masks = bayer_masks_rggb(image.shape, append_l4=True)
 
         with pytest.raises(TooFewStarsError, match="stars detected"):
             process_one_image(path, {}, _REF_RADECS, None, masks)
 
     def test_full_path_builds_per_filter_tables_with_l4(
-        self, make_test_image, tmp_path, monkeypatch
+        self, make_test_image, tmp_path, monkeypatch, bayer_masks_rggb
     ):
         """Every filter gets a table and the L4 channel sums the RGB counts."""
         _stub_wcs_and_centroid(monkeypatch)
         image = _detectable_image(make_test_image)
         path = _write_seestar_fits(tmp_path / "proc.fits", image)
-        masks = generate_bayer_masks(
-            image.shape,
-            {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0},
-            append_l4=True,
-        )
+        masks = bayer_masks_rggb(image.shape, append_l4=True)
 
         result = process_one_image(path, {}, _REF_RADECS, None, masks)
 

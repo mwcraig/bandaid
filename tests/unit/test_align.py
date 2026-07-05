@@ -3,7 +3,7 @@
 import astropy.units as u
 import numpy as np
 import pytest
-from _helpers import _make_tan_wcs
+from _helpers import _make_tan_wcs, align_coords
 from astropy.coordinates import SkyCoord
 
 from bandaid.exceptions import (
@@ -97,9 +97,7 @@ class TestAlign:
 
         monkeypatch.setattr("bandaid.photometry.compute_wcs", noisy_compute_wcs)
 
-        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
-            N_IMAGE_STARS_ALIGN, 2
-        )
+        coords = align_coords(N_IMAGE_STARS_ALIGN)
         radecs = coords.copy()
 
         _, returned_wcs = align(coords, radecs, photometry_coords=None)
@@ -127,9 +125,7 @@ class TestAlign:
 
         monkeypatch.setattr("bandaid.photometry.compute_wcs", failing_compute_wcs)
 
-        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
-            N_IMAGE_STARS_ALIGN, 2
-        )
+        coords = align_coords(N_IMAGE_STARS_ALIGN)
 
         with pytest.raises(WCSSolveError, match="twirl raised") as excinfo:
             align(coords, coords.copy(), photometry_coords=None)
@@ -144,9 +140,7 @@ class TestAlign:
 
         monkeypatch.setattr("bandaid.photometry.compute_wcs", none_compute_wcs)
 
-        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
-            N_IMAGE_STARS_ALIGN, 2
-        )
+        coords = align_coords(N_IMAGE_STARS_ALIGN)
 
         with pytest.raises(WCSSolveError, match="no acceptable WCS"):
             align(coords, coords.copy(), photometry_coords=None)
@@ -160,9 +154,7 @@ class TestAlign:
 
         monkeypatch.setattr("bandaid.photometry.compute_wcs", buggy_compute_wcs)
 
-        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
-            N_IMAGE_STARS_ALIGN, 2
-        )
+        coords = align_coords(N_IMAGE_STARS_ALIGN)
 
         with pytest.raises(TypeError, match="genuine bug"):
             align(coords, coords.copy(), photometry_coords=None)
@@ -206,9 +198,7 @@ class TestAlign:
             "bandaid.photometry.compute_wcs",
             lambda coords, radecs, tolerance: sentinel_wcs,
         )
-        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
-            N_IMAGE_STARS_ALIGN, 2
-        )
+        coords = align_coords(N_IMAGE_STARS_ALIGN)
 
         _, returned_wcs = align(
             coords, coords.copy(), photometry_coords=None, expected_pixscale=2.4
@@ -230,9 +220,7 @@ class TestAlign:
             "bandaid.photometry.compute_wcs",
             lambda coords, radecs, tolerance: bad_wcs,
         )
-        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
-            N_IMAGE_STARS_ALIGN, 2
-        )
+        coords = align_coords(N_IMAGE_STARS_ALIGN)
 
         with pytest.raises(WCSScaleError, match="scale"):
             align(coords, coords.copy(), photometry_coords=None, expected_pixscale=2.4)
@@ -244,9 +232,7 @@ class TestAlign:
             "bandaid.photometry.compute_wcs",
             lambda coords, radecs, tolerance: bad_wcs,
         )
-        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
-            N_IMAGE_STARS_ALIGN, 2
-        )
+        coords = align_coords(N_IMAGE_STARS_ALIGN)
 
         _, returned_wcs = align(
             coords, coords.copy(), photometry_coords=None, expected_pixscale=None
@@ -304,9 +290,7 @@ class TestAlign:
             "bandaid.photometry.compute_wcs",
             lambda coords, radecs, tolerance: wcs_10pct_off,
         )
-        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
-            N_IMAGE_STARS_ALIGN, 2
-        )
+        coords = align_coords(N_IMAGE_STARS_ALIGN)
 
         _, returned_wcs = align(
             coords,
@@ -337,9 +321,7 @@ class TestAlign:
             "bandaid.photometry.compute_wcs",
             lambda coords, radecs, tolerance: sentinel_wcs,
         )
-        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
-            N_IMAGE_STARS_ALIGN, 2
-        )
+        coords = align_coords(N_IMAGE_STARS_ALIGN)
 
         _, returned_wcs = align(
             coords,
@@ -368,9 +350,7 @@ class TestAlign:
             "bandaid.photometry.compute_wcs",
             lambda coords, radecs, tolerance: mispointed_wcs,
         )
-        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
-            N_IMAGE_STARS_ALIGN, 2
-        )
+        coords = align_coords(N_IMAGE_STARS_ALIGN)
 
         with pytest.raises(WCSPointingError, match="center"):
             align(
@@ -397,9 +377,7 @@ class TestAlign:
             "bandaid.photometry.compute_wcs",
             lambda coords, radecs, tolerance: sentinel_wcs,
         )
-        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
-            N_IMAGE_STARS_ALIGN, 2
-        )
+        coords = align_coords(N_IMAGE_STARS_ALIGN)
 
         _, returned_wcs = align(
             coords,
@@ -451,9 +429,7 @@ class TestAlign:
             "bandaid.photometry.compute_wcs",
             lambda coords, radecs, tolerance: mispointed_wcs,
         )
-        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
-            N_IMAGE_STARS_ALIGN, 2
-        )
+        coords = align_coords(N_IMAGE_STARS_ALIGN)
 
         _, returned_wcs = align(
             coords,
@@ -493,9 +469,7 @@ class TestAlign:
             "bandaid.photometry.compute_wcs",
             lambda coords, radecs, tolerance: doubly_bad_wcs,
         )
-        coords = np.arange(N_IMAGE_STARS_ALIGN * 2, dtype=float).reshape(
-            N_IMAGE_STARS_ALIGN, 2
-        )
+        coords = align_coords(N_IMAGE_STARS_ALIGN)
 
         with pytest.raises(WCSScaleError, match="scale"):
             align(

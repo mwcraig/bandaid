@@ -12,6 +12,7 @@ from _helpers import (
     _make_tan_wcs,
     _peak_scene_photometry,
     _single_source_photometry_inputs,
+    filter_table,
 )
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
@@ -19,7 +20,6 @@ from astropy.table import Table
 from astropy.time import Time
 
 from bandaid.config import InstrumentProfile
-from bandaid.image2sl_qt import generate_bayer_masks
 from bandaid.photometry import (
     ANNULUS,
     RELATIVE_RADII,
@@ -252,7 +252,9 @@ class TestBuildPhotometryTable:
         return img
 
     @pytest.mark.parametrize("channel", ["TR", "TG", "TB", "L4"])
-    def test_bkgd_count_is_true_per_pixel_sky_on_every_channel(self, channel):
+    def test_bkgd_count_is_true_per_pixel_sky_on_every_channel(
+        self, channel, bayer_masks_rggb
+    ):
         """
         A uniform frame reports the true per-pixel sky on TR/TG/TB/L4 (#52).
 
@@ -263,11 +265,7 @@ class TestBuildPhotometryTable:
         """
         true_sky = 10.0
         shape = (256, 256)
-        masks = generate_bayer_masks(
-            shape,
-            {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0},
-            append_l4=True,
-        )
+        masks = bayer_masks_rggb(shape, append_l4=True)
         coords = np.array([[100.0, 100.0], [150.0, 120.0], [90.0, 160.0]])
         img = self._uniform_frame_image(np.full(shape, true_sky), coords)
 
@@ -316,19 +314,10 @@ class TestCalculateL4Quantities:
         """L4 columns are the documented combinations of the TR/TG/TB tables."""
         egain = 0.5
 
-        def _filter_table(tot, area, bkgd, bkgd_std, peak):
-            t = Table()
-            t["tot_count"] = np.array(tot, dtype=float)
-            t["aperture_area"] = np.array(area, dtype=float)
-            t["bkgd_count"] = np.array(bkgd, dtype=float)
-            t["bkgd_std"] = np.array(bkgd_std, dtype=float)
-            t["peak_count"] = np.array(peak, dtype=float)
-            return t
-
         by_filter = {
-            "TR": _filter_table([100, 200], [10, 12], [5, 6], [2, 3], [50, 90]),
-            "TG": _filter_table([110, 210], [11, 13], [4, 7], [1, 2], [70, 80]),
-            "TB": _filter_table([120, 220], [9, 14], [6, 5], [3, 1], [60, 95]),
+            "TR": filter_table([100, 200], [10, 12], [5, 6], [2, 3], [50, 90]),
+            "TG": filter_table([110, 210], [11, 13], [4, 7], [1, 2], [70, 80]),
+            "TB": filter_table([120, 220], [9, 14], [6, 5], [3, 1], [60, 95]),
         }
         final_data = Table()
 
@@ -363,7 +352,9 @@ class TestCalculateL4Quantities:
         np.testing.assert_allclose(final_data["count_err"], expected_err)
         np.testing.assert_allclose(final_data["snr"], expected_snr)
 
-    def test_peak_count_is_a_real_cross_channel_max(self, make_test_image):
+    def test_peak_count_is_a_real_cross_channel_max(
+        self, make_test_image, bayer_masks_rggb
+    ):
         """
         The L4 peak max varies with genuinely different channel peaks (#54).
 
@@ -374,11 +365,7 @@ class TestCalculateL4Quantities:
         every star and the L4 value must be their elementwise maximum.
         """
         image, coords = _bright_neighbor_scene(make_test_image)
-        masks = generate_bayer_masks(
-            image.shape,
-            {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0},
-            append_l4=False,
-        )
+        masks = bayer_masks_rggb(image.shape)
 
         by_filter = {}
         for name, mask in masks.items():
@@ -420,19 +407,10 @@ class TestCalculateL4Quantities:
         """
         egain = 0.5
 
-        def _filter_table(tot, area, bkgd, bkgd_std, peak):
-            t = Table()
-            t["tot_count"] = np.array(tot, dtype=float)
-            t["aperture_area"] = np.array(area, dtype=float)
-            t["bkgd_count"] = np.array(bkgd, dtype=float)
-            t["bkgd_std"] = np.array(bkgd_std, dtype=float)
-            t["peak_count"] = np.array(peak, dtype=float)
-            return t
-
         by_filter = {
-            "TR": _filter_table([100, 200], [10, 12], [5, 6], [2, 3], [50, 90]),
-            "TG": _filter_table([110, 210], [11, 13], [4, 7], [1, 2], [70, 80]),
-            "TB": _filter_table([120, 220], [9, 14], [6, 5], [3, 1], [60, 95]),
+            "TR": filter_table([100, 200], [10, 12], [5, 6], [2, 3], [50, 90]),
+            "TG": filter_table([110, 210], [11, 13], [4, 7], [1, 2], [70, 80]),
+            "TB": filter_table([120, 220], [9, 14], [6, 5], [3, 1], [60, 95]),
         }
 
         # Seed the stale full-frame columns the L4 table really arrives with.
@@ -458,22 +436,13 @@ class TestCalculateL4Quantities:
         """
         egain = 0.5
 
-        def _filter_table(tot, area, bkgd, bkgd_std, peak):
-            t = Table()
-            t["tot_count"] = np.array(tot, dtype=float)
-            t["aperture_area"] = np.array(area, dtype=float)
-            t["bkgd_count"] = np.array(bkgd, dtype=float)
-            t["bkgd_std"] = np.array(bkgd_std, dtype=float)
-            t["peak_count"] = np.array(peak, dtype=float)
-            return t
-
         # Every channel of the single star has zero aperture area and zero
         # error: aperture_area sums to 0 (bkgd_count = 0/0) and count_err is
         # sqrt(0) = 0 (snr = 0/0).
         by_filter = {
-            "TR": _filter_table([0.0], [0.0], [5.0], [0.0], [0.0]),
-            "TG": _filter_table([0.0], [0.0], [4.0], [0.0], [0.0]),
-            "TB": _filter_table([0.0], [0.0], [6.0], [0.0], [0.0]),
+            "TR": filter_table([0.0], [0.0], [5.0], [0.0], [0.0]),
+            "TG": filter_table([0.0], [0.0], [4.0], [0.0], [0.0]),
+            "TB": filter_table([0.0], [0.0], [6.0], [0.0], [0.0]),
         }
         final_data = Table()
 
@@ -508,19 +477,10 @@ class TestCalculateL4Quantities:
             mask=None,
         )
 
-        def _filter_table(tot, area, bkgd, bkgd_std, peak):
-            t = Table()
-            t["tot_count"] = np.array(tot, dtype=float)
-            t["aperture_area"] = np.array(area, dtype=float)
-            t["bkgd_count"] = np.array(bkgd, dtype=float)
-            t["bkgd_std"] = np.array(bkgd_std, dtype=float)
-            t["peak_count"] = np.array(peak, dtype=float)
-            return t
-
         by_filter = {
-            "TR": _filter_table([100, 200], [10, 12], [5, 6], [2, 3], [50, 90]),
-            "TG": _filter_table([110, 210], [11, 13], [4, 7], [1, 2], [70, 80]),
-            "TB": _filter_table([120, 220], [9, 14], [6, 5], [3, 1], [60, 95]),
+            "TR": filter_table([100, 200], [10, 12], [5, 6], [2, 3], [50, 90]),
+            "TG": filter_table([110, 210], [11, 13], [4, 7], [1, 2], [70, 80]),
+            "TB": filter_table([120, 220], [9, 14], [6, 5], [3, 1], [60, 95]),
         }
 
         calculate_l4_quantities(final_data, by_filter, egain=0.5)
