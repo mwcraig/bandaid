@@ -41,17 +41,20 @@ class TestAirmassFromMetadata:
         return metadata
 
     def test_uses_resolved_airmass_when_present(self):
-        """A resolved ``airmass`` value is returned verbatim, pointing ignored."""
+        """
+        A resolved ``airmass`` value is returned verbatim, pointing ignored.
+
+        Also covers the Seestar-header identity: a header AIRMASS resolves through
+        metadata_from_header and still short-circuits the derivation.
+        """
         assert _airmass_from_metadata(self._metadata(airmass=1.37)) == pytest.approx(
             1.37
         )
-
-    def test_seestar_header_airmass_resolves_identically(self):
-        """Seestar identity: a header AIRMASS still short-circuits the derivation."""
         header = _seestar_header()
         header["AIRMASS"] = 1.37
-        metadata = metadata_from_header(header)
-        assert _airmass_from_metadata(metadata) == pytest.approx(1.37)
+        assert _airmass_from_metadata(metadata_from_header(header)) == pytest.approx(
+            1.37
+        )
 
     @staticmethod
     def _pointing_at_altitude(alt_deg) -> tuple:
@@ -81,7 +84,12 @@ class TestAirmassFromMetadata:
         )
 
     def test_derives_from_pointing_when_absent(self):
-        """With no airmass, derive it from the ra/dec/site/obs_time metadata."""
+        """
+        With no airmass, derive it from the ra/dec/site/obs_time metadata.
+
+        Also covers the Seestar-header identity: raw-header keys resolve through
+        metadata_from_header to the same derived airmass.
+        """
         # Point ~1 deg from the zenith: a finite, physical (~1) airmass where
         # Kasten-Young and sec(z) coincide.
         metadata = self._metadata_pointing_at_altitude(89.0)
@@ -91,8 +99,6 @@ class TestAirmassFromMetadata:
         assert np.isfinite(airmass)
         assert airmass == pytest.approx(self._kasten_young(89.0), rel=1e-6)
 
-    def test_seestar_header_derivation_unchanged(self):
-        """Seestar identity: raw-header keys resolve to the same derived airmass."""
         ra, dec = self._pointing_at_altitude(89.0)
         header = _seestar_header()
         header["RA"] = ra
@@ -101,10 +107,8 @@ class TestAirmassFromMetadata:
         header["SITELONG"] = -105.0
         header["SITEELEV"] = 0.0
         header["DATE-OBS"] = "2024-06-01T07:00:00"
-
-        airmass = _airmass_from_metadata(metadata_from_header(header))
-
-        assert airmass == pytest.approx(self._kasten_young(89.0), rel=1e-6)
+        header_airmass = _airmass_from_metadata(metadata_from_header(header))
+        assert header_airmass == pytest.approx(self._kasten_young(89.0), rel=1e-6)
 
     def test_header_map_renames_resolve(self):
         """A dialect with renamed site/pointing/time keywords derives airmass (#59)."""
