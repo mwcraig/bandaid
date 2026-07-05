@@ -1,13 +1,28 @@
+from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import astropy.units as u
 import numpy as np
 import pytest
 from astropy.modeling.models import Gaussian2D
+from astropy.stats import gaussian_fwhm_to_sigma
 from astropy.table import MaskedColumn, Table
+from astropy.wcs import WCS
 from photutils.datasets import make_model_image, make_noise_image
 
-from bandaid import catalog
+from bandaid import catalog, scripts
+from bandaid.image2sl_qt import generate_bayer_masks
+
+
+def _default_tan_wcs(image_size=(500, 500), crval=(10.0, 20.0), pixscale=2.4):
+    """Build a TAN WCS for the ``align`` stub's default return value."""
+    wcs = WCS(naxis=2)
+    wcs.wcs.crpix = [image_size[1] / 2, image_size[0] / 2]
+    wcs.wcs.crval = list(crval)
+    wcs.wcs.cdelt = [-pixscale / 3600, pixscale / 3600]
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    return wcs
 
 
 @pytest.fixture
@@ -179,3 +194,227 @@ def make_test_image():
         return source_image + noise_image
 
     return _make_test_image
+
+
+@pytest.fixture
+def gaussian_sources_table():
+    """
+    Factory building a Gaussian-source ``Table`` for ``make_test_image``.
+
+    Returns
+    -------
+    callable
+        ``_make(amplitude, x_mean, y_mean, *, fwhm=None, x_stddev=None,
+        y_stddev=None)`` -> a ``Table`` with the five source columns. Pass
+        ``fwhm`` to derive equal x/y sigmas, or give explicit ``x_stddev`` /
+        ``y_stddev`` sequences.
+    """
+
+    def _make(amplitude, x_mean, y_mean, *, fwhm=None, x_stddev=None, y_stddev=None):
+        if x_stddev is None:
+            x_stddev = np.asarray(fwhm, dtype=float) * gaussian_fwhm_to_sigma
+        if y_stddev is None:
+            y_stddev = np.asarray(fwhm, dtype=float) * gaussian_fwhm_to_sigma
+        return Table(
+            {
+                "amplitude": amplitude,
+                "x_mean": x_mean,
+                "y_mean": y_mean,
+                "x_stddev": x_stddev,
+                "y_stddev": y_stddev,
+            },
+        )
+
+    return _make
+
+
+@pytest.fixture
+def bayer_masks_rggb():
+    """
+    Factory building top-down RGGB Bayer masks for a given frame shape.
+
+    Returns
+    -------
+    callable
+        ``_make(shape, *, append_l4=False)`` -> the ``{channel: mask}`` mapping
+        from ``generate_bayer_masks``.
+    """
+
+    def _make(shape, *, append_l4=False):
+        return generate_bayer_masks(
+            shape,
+            {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0},
+            append_l4=append_l4,
+        )
+
+    return _make
+
+
+@pytest.fixture
+def isolate_registry():
+    """
+    Factory context manager: snapshot/restore a module-level registry dict.
+
+    Replaces the near-identical ``_isolate_registry`` autouse fixtures in the
+    writer and instrument test modules. Each test file keeps a tiny autouse
+    wrapper that calls this with its own ``(module, attr)`` target.
+
+    Returns
+    -------
+    callable
+        ``isolate(module, attr)`` -> a context manager restoring
+        ``getattr(module, attr)`` (a dict) to its prior contents on exit.
+    """
+
+    @contextmanager
+    def _isolate(module, attr):
+        registry = getattr(module, attr)
+        saved = dict(registry)
+        try:
+            yield
+        finally:
+            registry.clear()
+            registry.update(saved)
+
+    return _isolate
+
+
+@pytest.fixture
+def by_filter(eloy_table, starlist_metadata):
+    """
+    Factory for a ``{filter: Table}`` photometry result like ``process_one_image``.
+
+    Each filter's table carries two good (finite, positive, in-bounds) rows plus
+    the ``meta["fwhm"]`` and ``meta["full_image_meta"]`` that
+    ``process_batch`` -> ``eloy_to_starlist`` requires. Both rows survive the
+    converter's filtering, so each written StarList has two stars.
+
+    Parameters
+    ----------
+    eloy_table : callable
+        Fixture building an eloy-style photometry table from per-row dicts.
+    starlist_metadata : dict
+        Fixture providing the StarList metadata stored on each table.
+
+    Returns
+    -------
+    callable
+        ``_make(filters=("TR", "TG"))`` -> the per-filter table mapping.
+    """
+    rows = [
+        {
+            "x": 20.0,
+            "y": 30.0,
+            "ra": 10.0,
+            "dec": 20.0,
+            "tot_count": 100.0,
+            "count_err": 5.0,
+            "bkgd_count": 1.0,
+            "peak_count": 200.0,
+        },
+        {
+            "x": 70.0,
+            "y": 60.0,
+            "ra": 11.0,
+            "dec": 21.0,
+            "tot_count": 300.0,
+            "count_err": 7.0,
+            "bkgd_count": 1.0,
+            "peak_count": 400.0,
+        },
+    ]
+
+    def _make(filters=("TR", "TG")):
+        result = {}
+        for filter_name in filters:
+            table = eloy_table(rows)
+            table.meta["full_image_meta"] = starlist_metadata
+            result[filter_name] = table
+        return result
+
+    return _make
+
+
+@pytest.fixture
+def patched_process_one_image(monkeypatch):
+    """
+    Factory patching ``scripts.process_one_image`` to return a fixed result.
+
+    Replaces the repeated
+    ``monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: ...)``
+    preamble in the batch/disk tests.
+
+    Parameters
+    ----------
+    monkeypatch : pytest.MonkeyPatch
+        The built-in monkeypatch fixture used to install the patch.
+
+    Returns
+    -------
+    callable
+        ``_patch(result)`` -> installs the patch and returns ``result``.
+    """
+
+    def _patch(result):
+        monkeypatch.setattr(scripts, "process_one_image", lambda *_a, **_k: result)
+        return result
+
+    return _patch
+
+
+@pytest.fixture
+def stub_prepare_image_externals(mocker):
+    """
+    Factory patching the four externals ``prepare_image`` reaches, via ``mocker``.
+
+    Patches ``calibration_sequence`` (returns a configurable
+    ``(calibrated, metadata, coords, fwhm, None)`` 5-tuple), ``align`` (returns
+    ``(coords, wcs)``), ``centroid_stars`` (identity) and ``fits.getheader``
+    (``{"creator": "spy"}``). Returns the four mocks so callers can assert on
+    their ``.call_args``; override ``.return_value`` / ``.side_effect`` to tune a
+    single external per test.
+
+    Parameters
+    ----------
+    mocker : pytest_mock.MockerFixture
+        The pytest-mock fixture used to patch the externals.
+
+    Returns
+    -------
+    callable
+        ``_stub(*, metadata=None, coords=None, calibrated=None, fwhm=2.0)`` -> a
+        namespace with ``.calibration_sequence``, ``.align``, ``.centroid_stars``
+        and ``.getheader`` mocks.
+    """
+
+    def _stub(*, metadata=None, coords=None, calibrated=None, fwhm=2.0):
+        if metadata is None:
+            metadata = {"creator": "spy", "pixscale": 2.4}
+        if coords is None:
+            coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+        if calibrated is None:
+            calibrated = np.zeros((10, 10))
+        calibration_sequence = mocker.patch(
+            "bandaid.photometry.calibration_sequence",
+            return_value=(calibrated, metadata, coords, fwhm, None),
+        )
+        align = mocker.patch(
+            "bandaid.photometry.align",
+            side_effect=lambda coords, _radecs, **_kwargs: (coords, _default_tan_wcs()),
+        )
+        centroid_stars = mocker.patch(
+            "bandaid.photometry.centroid_stars",
+            side_effect=lambda _data, coords, _cnn: coords,
+        )
+        getheader = mocker.patch(
+            "bandaid.photometry.fits.getheader",
+            side_effect=lambda _file: {"creator": "spy"},
+        )
+        return SimpleNamespace(
+            calibration_sequence=calibration_sequence,
+            align=align,
+            centroid_stars=centroid_stars,
+            getheader=getheader,
+        )
+
+    return _stub

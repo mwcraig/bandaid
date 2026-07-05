@@ -91,6 +91,7 @@ build = [
 tests = [
     "pytest",
     "pytest-cov",
+    "pytest-mock",
     "pytest-raises",
     "pytest-randomly",
     "pytest-remotedata",
