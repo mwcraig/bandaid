@@ -1227,7 +1227,7 @@ def _solve_wcs(coords, radecs, expected_pixscale, scale_tolerance=WCS_SCALE_TOLE
             f"(> {scale_tolerance:.0%} off); rejected as a wrong-scale solve"
         )
         raise WCSScaleError(msg)
-    msg = "twirl returned no WCS (too few matched stars)"
+    msg = "twirl produced no acceptable WCS for any Gaia pool"
     raise WCSSolveError(msg)
 
 
@@ -1624,6 +1624,10 @@ def prepare_image(
         If the per-image WCS cannot be solved. The source `file` is attached to
         the error before it propagates. (`calibration_sequence` may also raise
         `TooFewStarsError`, which propagates unchanged.)
+    FrameMetadataError
+        If a WCS must be solved (``wcs`` is None) but the frame metadata has no
+        usable numeric ``pixscale`` to scale-check the solve against. The source
+        `file` is attached before it propagates.
     DegenerateBayerChannelError
         If ``detect_on_bayer_balanced`` is True and a CFA sub-grid sample is
         empty or has zero variance (propagated from `bayer_balance_image`,
@@ -1661,13 +1665,31 @@ def prepare_image(
     else:
         working_image = calibrated_data
 
+    # pixscale drives align's wrong-scale WCS rejection and is populated for
+    # every frame by metadata_from_header from the instrument profile, so a
+    # missing or non-numeric value means a malformed profile. When we are
+    # actually solving a WCS, fail loud rather than silently skip the check; a
+    # caller-supplied WCS is trusted, so pixscale is not required in that case.
+    if wcs is None:
+        expected_pixscale = metadata.get("pixscale")
+        if not isinstance(expected_pixscale, (int, float)) or isinstance(
+            expected_pixscale, bool
+        ):
+            msg = (
+                "frame metadata has no usable numeric 'pixscale' "
+                f"(got {expected_pixscale!r}); cannot scale-check the solved WCS"
+            )
+            raise FrameMetadataError(msg, file=file)
+    else:
+        expected_pixscale = None
+
     try:
         aligned_coords, this_wcs = align(
             coords,
             radecs,
             photometry_coords=photometry_coords,
             wcs=wcs,
-            expected_pixscale=metadata.get("pixscale"),
+            expected_pixscale=expected_pixscale,
             scale_tolerance=instrument.wcs_scale_tolerance,
         )
     except WCSSolveError as exc:

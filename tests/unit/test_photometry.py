@@ -1099,7 +1099,7 @@ class TestPrepareImage:
             captured["fwhm_n_stars"] = kwargs.get("fwhm_n_stars")
             calibrated = np.zeros((10, 10))
             coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
-            return calibrated, {"creator": "spy"}, coords, 2.0, None
+            return calibrated, {"creator": "spy", "pixscale": 2.4}, coords, 2.0, None
 
         monkeypatch.setattr(
             "bandaid.photometry.calibration_sequence",
@@ -1172,6 +1172,75 @@ class TestPrepareImage:
         prepare_image("unused.fits", np.zeros((5, 2)), None, config=config)
 
         assert captured["scale_tolerance"] == expected_tolerance
+
+    def test_missing_pixscale_raises_when_solving(self, monkeypatch):
+        """
+        A missing/non-numeric ``pixscale`` fails loud instead of silent-skipping.
+
+        ``pixscale`` comes from the instrument profile via
+        ``metadata_from_header`` and is required to scale-check a solved WCS, so
+        when it is absent and no WCS is supplied ``prepare_image`` raises
+        ``FrameMetadataError`` rather than passing ``expected_pixscale=None``
+        (which would quietly disable the check).
+        """
+
+        def _spy_calibration_sequence(_file, *_args: object, **_kwargs: object):
+            calibrated = np.zeros((10, 10))
+            coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+            # metadata deliberately omits "pixscale".
+            return calibrated, {"creator": "spy"}, coords, 2.0, None
+
+        monkeypatch.setattr(
+            "bandaid.photometry.calibration_sequence", _spy_calibration_sequence
+        )
+        monkeypatch.setattr(
+            "bandaid.photometry.align",
+            lambda *a, **k: pytest.fail("align must not run without a pixscale"),
+        )
+        monkeypatch.setattr(
+            "bandaid.photometry.centroid_stars", lambda data, coords, cnn: coords
+        )
+        monkeypatch.setattr(
+            "bandaid.photometry.fits.getheader", lambda file: {"creator": "spy"}
+        )
+
+        with pytest.raises(FrameMetadataError, match="pixscale"):
+            prepare_image("unused.fits", np.zeros((5, 2)), None)
+
+    def test_missing_pixscale_ok_when_wcs_supplied(self, monkeypatch):
+        """
+        A supplied WCS is trusted, so a missing ``pixscale`` is not required.
+
+        ``align`` skips the scale check for a caller-supplied WCS, so
+        ``prepare_image`` must not demand ``pixscale`` in that case; it forwards
+        ``expected_pixscale=None`` without raising.
+        """
+        supplied_wcs = _make_tan_wcs()
+        captured = {}
+
+        def _spy_calibration_sequence(_file, *_args: object, **_kwargs: object):
+            calibrated = np.zeros((10, 10))
+            coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
+            return calibrated, {"creator": "spy"}, coords, 2.0, None
+
+        def _spy_align(coords, _radecs, **kwargs: object):
+            captured["expected_pixscale"] = kwargs.get("expected_pixscale")
+            return coords, supplied_wcs
+
+        monkeypatch.setattr(
+            "bandaid.photometry.calibration_sequence", _spy_calibration_sequence
+        )
+        monkeypatch.setattr("bandaid.photometry.align", _spy_align)
+        monkeypatch.setattr(
+            "bandaid.photometry.centroid_stars", lambda data, coords, cnn: coords
+        )
+        monkeypatch.setattr(
+            "bandaid.photometry.fits.getheader", lambda file: {"creator": "spy"}
+        )
+
+        prepare_image("unused.fits", np.zeros((5, 2)), None, wcs=supplied_wcs)
+
+        assert captured["expected_pixscale"] is None
 
 
 def _make_tan_wcs(image_size=(500, 500), crval=(10.0, 20.0), pixscale=2.4):
@@ -2291,7 +2360,7 @@ class TestAlign:
             N_IMAGE_STARS_ALIGN, 2
         )
 
-        with pytest.raises(WCSSolveError, match="no WCS"):
+        with pytest.raises(WCSSolveError, match="no acceptable WCS"):
             align(coords, coords.copy(), photometry_coords=None)
 
     def test_unexpected_twirl_error_propagates(self, monkeypatch):
@@ -2963,7 +3032,7 @@ class TestCalibrationSequence:
         # ...while the returned calibrated_data is the original, unbalanced counts
         # that downstream photometry relies on.
         np.testing.assert_allclose(calibrated, image)
-        # Sanity: the balanced detection still recovers the injected sources.
+        # Check that the balanced detection still recovers the injected sources.
         assert len(regions) == n_sources
         assert coords.shape == (n_sources, 2)
 
