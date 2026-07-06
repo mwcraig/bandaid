@@ -261,18 +261,39 @@ def estimate_center_from_header(metadata, profile):
     Returns
     -------
     tuple of float
-        The ``(ra, dec)`` field center in degrees.
+        The ``(ra, dec)`` field center in degrees, with RA wrapped into
+        ``[0, 360)``.
+
+    Raises
+    ------
+    FrameMetadataError
+        If the header resolved no numeric ``ra``/``dec`` pointing (absent
+        keyword or non-numeric value). This is the single coercion point every
+        center path funnels through -- the estimate, the raw-header fallback in
+        :func:`resolve_field_center`, and :func:`check_frame_consistency` -- so
+        the failure surfaces as a recoverable, labellable metadata error rather
+        than a bare ``KeyError``/``TypeError``/``ValueError``.
     """
-    ra = float(metadata["ra"])
-    dec = float(metadata["dec"])
+    try:
+        ra = float(metadata["ra"])
+        dec = float(metadata["dec"])
+    except (KeyError, TypeError, ValueError) as exc:
+        msg = (
+            "header resolved no numeric pointing (ra/dec) through the instrument "
+            f"header_map: ra={metadata.get('ra')!r}, dec={metadata.get('dec')!r}"
+        )
+        raise FrameMetadataError(msg) from exc
     offset = profile.header_center_offset
     if offset is None:
-        return (ra, dec)
+        # No framing constants: the raw header pointing, RA wrapped for safety.
+        return (ra % 360.0, dec)
     d_ra_cosdec, d_dec = offset
     center_dec = dec + d_dec
     # The offset stores Delta(RA*cos(dec)); divide by cos(dec) to get the RA
     # shift itself. The pointing is far from the poles, so cos(dec) is safe.
-    center_ra = ra + d_ra_cosdec / np.cos(np.radians(dec))
+    # Wrap into [0, 360) so a shift across RA 0h never hands the Gaia cone a
+    # negative RA.
+    center_ra = (ra + d_ra_cosdec / np.cos(np.radians(dec))) % 360.0
     return (center_ra, center_dec)
 
 
@@ -333,7 +354,10 @@ def resolve_field_center(metadata, profile):
             logger.info("field center from SkyCoord.from_name(%r): %s", obj, center)
             return center, profile.cone_radius_margin
 
-    center = (float(metadata["ra"]), float(metadata["dec"]))
+    # Past the early return above, the profile carries no offset, so the estimate
+    # returns the raw header pointing unchanged -- reuse it as the single coercion
+    # point so a bad pointing surfaces as a FrameMetadataError here too.
+    center = estimate_center_from_header(metadata, profile)
     logger.info("field center from raw header pointing: %s", center)
     return center, 0.0
 
@@ -446,7 +470,14 @@ def prepare_batch(
     # and the plate-solve matcher starves (issue #83).
     # fov_rad is a field *radius*; cached_gaia_radecs takes the full field and
     # halves it internally (matching the established twirl.gaia_radecs usage).
-    center, cone_margin = resolve_field_center(metadata, instrument)
+    # resolve_field_center knows a bad pointing but not which file it came from;
+    # attach first_file so the failure names the frame, like the obs_time/
+    # metadata_from_header labelling above.
+    try:
+        center, cone_margin = resolve_field_center(metadata, instrument)
+    except FrameMetadataError as exc:
+        exc.file = first_file
+        raise
     # A Gaia query failure (network/service error) is fatal for the whole batch;
     # surface it as a BatchPrepError instead of a raw astroquery/requests error.
     try:
@@ -580,7 +611,16 @@ def check_frame_consistency(file, header, prep):
     # center-to-center means a stable frame reads ~0 offset; comparing the raw
     # header against the true center would bake in the header-to-center baseline
     # and erode the drift margin (prep.fov_rad) by that much.
-    frame_ra, frame_dec = estimate_center_from_header(metadata, prep.config.instrument)
+    # The None case is caught by the explicit guard above; a present-but-non-
+    # numeric pointing surfaces from estimate_center_from_header, which sits
+    # outside the metadata_from_header try/except, so label it with the file here.
+    try:
+        frame_ra, frame_dec = estimate_center_from_header(
+            metadata, prep.config.instrument
+        )
+    except FrameMetadataError as exc:
+        exc.file = file
+        raise
     frame_center = SkyCoord(frame_ra, frame_dec, unit="deg")
     center = SkyCoord(prep.center[0], prep.center[1], unit="deg")
     offset = center.separation(frame_center).deg

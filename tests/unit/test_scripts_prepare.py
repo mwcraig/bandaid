@@ -129,6 +129,57 @@ class TestEstimateCenterFromHeader:
         assert ra == pytest.approx(10.0 + d_ra_cosdec)  # cos(0) == 1
         assert dec == pytest.approx(d_dec)
 
+    @pytest.mark.parametrize(
+        "metadata",
+        [
+            {"dec": 0.0},  # ra key absent -> KeyError
+            {"ra": None, "dec": 0.0},  # @RA absent resolves to None -> TypeError
+            {"ra": "not-a-number", "dec": 0.0},  # present but junk -> ValueError
+        ],
+        ids=["ra-missing", "ra-None", "ra-non-numeric"],
+    )
+    def test_bad_pointing_raises_metadata_error(self, metadata):
+        """
+        A missing/non-numeric pointing fails as a metadata error, not a bare one.
+
+        The coercion is the single choke point every center path funnels through
+        (the estimate, the raw-header fallback in ``resolve_field_center``, and
+        ``check_frame_consistency``), so translating the failure here keeps the
+        recoverable/fatal error semantics and per-frame labelling consistent
+        (#58/#78) instead of leaking a bare ``KeyError``/``TypeError``/``ValueError``.
+        """
+        with pytest.raises(FrameMetadataError, match="pointing"):
+            scripts.estimate_center_from_header(metadata, InstrumentProfile())
+
+    def test_wrapped_ra_stays_in_range(self):
+        """A field near RA 0h whose offset pushes RA negative wraps into [0, 360)."""
+        # Seestar offset -0.32 deg at dec 0: RA 0.1 -> -0.22, which must wrap to
+        # ~359.78 before it reaches the Gaia cone query rather than going negative.
+        profile = InstrumentProfile()
+        ra, _dec = scripts.estimate_center_from_header({"ra": 0.1, "dec": 0.0}, profile)
+
+        # approx(359.78) both pins the wrapped value and confirms it is a
+        # non-negative, in-range RA (0.1 - 0.32 would otherwise be -0.22).
+        assert ra >= 0.0
+        assert ra == pytest.approx(359.78)
+
+
+class TestResolveFieldCenter:
+    """Unit tests for ``resolve_field_center``'s priority order and errors."""
+
+    def test_raw_header_fallback_translates_bad_pointing(self):
+        """
+        The raw-header fallback surfaces a bad pointing as a metadata error.
+
+        With no framing constants and no resolvable object name the resolver
+        falls back to the raw header pointing; a non-numeric value there must
+        raise ``FrameMetadataError`` like every other center path, not a bare
+        ``ValueError``.
+        """
+        profile = InstrumentProfile(header_center_offset=None)
+        with pytest.raises(FrameMetadataError, match="pointing"):
+            scripts.resolve_field_center({"ra": "junk", "dec": 0.0}, profile)
+
 
 class TestPrepareBatch:
     """Unit tests for ``prepare_batch``."""
@@ -345,6 +396,23 @@ class TestPrepareBatch:
 
         with pytest.raises(FrameMetadataError, match="obs_time"):
             scripts.prepare_batch("frame1.fits", cnn=object())
+
+    def test_bad_pointing_labeled_with_first_file(self, monkeypatch):
+        """
+        A bad first-frame pointing fails as a metadata error naming the frame.
+
+        ``resolve_field_center`` knows the pointing is bad but not which file it
+        came from; ``prepare_batch`` attaches ``first_file`` before re-raising,
+        matching the ``metadata_from_header``/``obs_time`` labelling right above
+        the call so the failure is actionable.
+        """
+        metadata = _batch_metadata()
+        metadata["ra"] = "not-a-number"
+        _patch_prep(monkeypatch, metadata=metadata)
+
+        with pytest.raises(FrameMetadataError, match="pointing") as excinfo:
+            scripts.prepare_batch("frame1.fits", cnn=object())
+        assert excinfo.value.file == "frame1.fits"
 
     def test_high_pm_star_propagated_to_obs_epoch(
         self, monkeypatch, gaia_table, fake_vizier
@@ -730,6 +798,21 @@ class TestCheckFrameConsistency:
         del header["DEC"]
         with pytest.raises(FrameMetadataError, match="pointing"):
             scripts.check_frame_consistency("bad.fits", header, self._prep())
+
+    def test_non_numeric_pointing_labeled_with_file(self):
+        """
+        A present-but-non-numeric pointing fails as a metadata error naming the file.
+
+        The ``None`` case is caught by the explicit guard above; the residual is
+        a pointing that resolves to a non-numeric value, which surfaces from
+        ``estimate_center_from_header``. That call sits outside the
+        ``metadata_from_header`` try/except, so its error must be labelled with
+        the frame path here to stay consistent with the other rejections.
+        """
+        header = _consistency_header(RA="garbage")
+        with pytest.raises(FrameMetadataError, match="pointing") as excinfo:
+            scripts.check_frame_consistency("bad.fits", header, self._prep())
+        assert excinfo.value.file == "bad.fits"
 
     def test_header_map_routes_pointing_keys(self):
         """Pointing under renamed keywords resolves through the profile (#59)."""
