@@ -280,17 +280,6 @@ def resolve_field_center(metadata, profile):
     """
     Resolve the field center to query Gaia for, and the cone margin to add.
 
-    Priority order:
-
-    1. The profile carries framing constants (``header_center_offset``) -- the
-       primary Seestar path: walk the header pointing to the field center with
-       :func:`estimate_center_from_header`. No network.
-    2. Otherwise resolve the frame's ``object`` name with
-       :meth:`~astropy.coordinates.SkyCoord.from_name` -- the fallback for
-       instruments without framing constants (needs network).
-    3. On any ``from_name`` failure (network error, unresolvable/absent name)
-       fall back to the raw header pointing -- the historical behaviour.
-
     Parameters
     ----------
     metadata : dict
@@ -308,6 +297,19 @@ def resolve_field_center(metadata, profile):
         Extra field radius in degrees to widen the Gaia cone by (the profile's
         ``cone_radius_margin`` for the estimate/from_name paths, ``0.0`` for the
         raw-header fallback).
+
+    Notes
+    -----
+    The center is resolved in priority order:
+
+    1. The profile carries framing constants (``header_center_offset``) -- walk
+       the header pointing to the field center with
+       :func:`estimate_center_from_header`. No network.
+    2. Otherwise resolve the frame's ``object`` name with
+       :meth:`~astropy.coordinates.SkyCoord.from_name` -- the fallback for
+       instruments without framing constants (needs network).
+    3. On any ``from_name`` failure (network error, unresolvable/absent name)
+       fall back to the raw header pointing -- the historical behaviour.
     """
     if profile.header_center_offset is not None:
         center = estimate_center_from_header(metadata, profile)
@@ -438,10 +440,10 @@ def prepare_batch(
         msg = f"could not parse observation time (obs_time) {obs_time!r}"
         raise FrameMetadataError(msg, file=first_file) from exc
 
-    # The header pointing is ~0.35 deg off the field center on the Seestar, so
-    # center the Gaia cone on the resolved *true* center (not the raw header) and
-    # widen it by the profile margin, else the far side of the field is clipped
-    # from the catalog and the plate-solve matcher starves (issue #83).
+    # The header pointing can be offset from the field center, so center the Gaia
+    # cone on the resolved *true* center (not the raw header) and widen it by the
+    # profile margin, else the far side of the field is clipped from the catalog
+    # and the plate-solve matcher starves (issue #83).
     # fov_rad is a field *radius*; cached_gaia_radecs takes the full field and
     # halves it internally (matching the established twirl.gaia_radecs usage).
     center, cone_margin = resolve_field_center(metadata, instrument)
@@ -576,8 +578,8 @@ def check_frame_consistency(file, header, prep):
     # prep.center is the resolved *true* field center, so walk this frame's
     # header pointing to its own field center the same way (issue #83). Comparing
     # center-to-center means a stable frame reads ~0 offset; comparing the raw
-    # header against the true center would bake in the ~0.35 deg header-to-center
-    # baseline and erode the drift margin (prep.fov_rad) by that much.
+    # header against the true center would bake in the header-to-center baseline
+    # and erode the drift margin (prep.fov_rad) by that much.
     frame_ra, frame_dec = estimate_center_from_header(metadata, prep.config.instrument)
     frame_center = SkyCoord(frame_ra, frame_dec, unit="deg")
     center = SkyCoord(prep.center[0], prep.center[1], unit="deg")

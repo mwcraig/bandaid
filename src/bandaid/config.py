@@ -250,15 +250,16 @@ class InstrumentProfile(BaseModel, frozen=True):
         scale; the empirical basis for the ``0.05`` default is in issue #83.
     header_center_offset : tuple of float or None
         The fixed sky vector ``(Delta(RA*cos(dec)), Delta(dec))`` in degrees from
-        this instrument's header pointing to the *true* field center. Seestar
-        frames report a pointing that sits ~0.35 deg off the frame center
-        (mid-left of the field), so centering the Gaia cone on the raw header
-        clips the far side of the field and starves the plate-solve matcher
-        (issue #83). When present, :func:`~bandaid.scripts.resolve_field_center`
-        walks the header pointing to the field center by this vector; when
-        ``None`` (the default, and every non-Seestar instrument) the pipeline
-        keeps its historical behaviour of centering on the raw header. The
-        Seestar value was measured on SS Leo (132 frames, 7 nights).
+        this instrument's header pointing to the *true* field center. The Seestar
+        reports a pointing that sits ~0.35 deg off the frame center (mid-left of
+        the field), so centering the Gaia cone on the raw header clips the far
+        side of the field and starves the plate-solve matcher (issue #83). When
+        present -- and the class default carries the Seestar offset --
+        :func:`~bandaid.scripts.resolve_field_center` walks the header pointing to
+        the field center by this vector. Setting it to ``None`` restores the
+        historical behaviour of centering on the raw header (routing through the
+        ``from_name`` fallback), which is correct for an instrument whose header
+        already points at the field center.
     cone_radius_margin : float
         Extra field radius in degrees added to ``fov_rad`` when the Gaia cone is
         centered on a resolved center (``header_center_offset`` estimate or an
