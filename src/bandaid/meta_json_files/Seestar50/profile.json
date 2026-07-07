@@ -5,6 +5,8 @@
     "fwhm_cutout_half": 25,
     "contamination_tolerance": 0.01,
     "moffat_beta": 3.0,
+    "header_center_offset": [-0.32, 0.15],
+    "cone_radius_margin": 0.0,
     "header_map": {
         "_note": "Header map for the Seestar50, raw and stacked frames.",
         "_airmass": "used verbatim when present; otherwise derived from ra/dec/site/obs_time",

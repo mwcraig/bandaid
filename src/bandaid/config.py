@@ -248,6 +248,28 @@ class InstrumentProfile(BaseModel, frozen=True):
         wrong-scale solve (see :func:`~bandaid.photometry.align`). It is an
         instrument setting because it is a tolerance on *this* telescope's plate
         scale; the empirical basis for the ``0.05`` default is in issue #83.
+    header_center_offset : tuple of float or None
+        The fixed sky vector ``(Delta(RA*cos(dec)), Delta(dec))`` in degrees from
+        this instrument's header pointing to the *true* field center. The Seestar
+        reports a pointing that sits ~0.35 deg off the frame center (mid-left of
+        the field), so centering the Gaia cone on the raw header clips the far
+        side of the field and starves the plate-solve matcher (issue #83). When
+        present -- and the class default carries the Seestar offset --
+        :func:`~bandaid.scripts.resolve_field_center` walks the header pointing to
+        the field center by this vector. Setting it to ``None`` restores the
+        historical behaviour of centering on the raw header (routing through the
+        ``from_name`` fallback), which is correct for an instrument whose header
+        already points at the field center.
+    cone_radius_margin : float
+        Extra field radius in degrees added to ``fov_rad`` when the Gaia cone is
+        centered on a resolved center (``header_center_offset`` estimate or an
+        object-name lookup). ``0.0`` (the default) leaves the query radius
+        unchanged, querying exactly the field. A live-DR2 A/B on SS Leo (issue
+        #83, 635 frames over two nights) found that widening the cone is *net
+        harmful*: the extra edge stars reshuffle the brightest-N asterisms fed to
+        the plate-solver, breaking frames that solved on the unwidened cone
+        (0.1 deg margin was net -46 frames vs 0.0). Keep it 0.0 unless a specific
+        instrument is shown to need a buffer.
     header_map : collections.abc.Mapping
         The per-frame FITS-header dialect for this telescope: a mapping of
         metadata key to a directive resolved by
@@ -268,6 +290,14 @@ class InstrumentProfile(BaseModel, frozen=True):
     # seeing already contaminates, silently shipping blended photometry.
     contamination_seeing_margin: Annotated[float, Field(ge=1.0)] = 1.25
     wcs_scale_tolerance: Annotated[float, Field(gt=0)] = 0.05
+    # Seestar50 values (the class defaults are the Seestar): the header pointing
+    # sits ~0.35 deg off the field center, so the default pipeline must walk to
+    # the true center. The cone is NOT widened (margin 0.0): a live-DR2 A/B on SS
+    # Leo showed widening reshuffles the plate-solver asterisms and loses frames
+    # (issue #83). A different telescope overrides these (set header_center_offset
+    # to None to fall back to object-name resolution).
+    header_center_offset: tuple[float, float] | None = (-0.32, 0.15)
+    cone_radius_margin: Annotated[float, Field(ge=0)] = 0.0
     header_map: Mapping = Field(
         default_factory=_default_seestar_header_map, validate_default=True
     )
