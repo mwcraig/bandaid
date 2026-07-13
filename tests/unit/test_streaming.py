@@ -1,13 +1,15 @@
 """Unit tests for the rclone streaming transport in ``bandaid.streaming``."""
 
 import logging
+import re
 import subprocess
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from bandaid import streaming
+from bandaid import scripts, streaming
 from bandaid.exceptions import RemoteFetchError
 
 # A remote path with spaces, matching the real-world "gdrive:LS Psc from Rick"
@@ -358,7 +360,9 @@ def _install_stream_fakes(monkeypatch, names):
         exists_after_after_frame=[],
     )
     monkeypatch.setattr(streaming, "list_remote_fits", lambda _remote: list(names))
-    monkeypatch.setattr(streaming, "Ballet", lambda **_kwargs: object())
+    # The config/Ballet resolution is shared with photometer_frames and lives
+    # in scripts, so the centroider fake is patched there.
+    monkeypatch.setattr(scripts, "Ballet", lambda **_kwargs: object())
 
     def fake_fetch(_remote, name, dest_dir):
         rec.fetched.append(name)
@@ -505,6 +509,63 @@ class TestStreamFrames:
         registered[0]()
         assert not temp_dir.exists()
 
+    def test_atexit_handler_unregistered_after_clean_run(self, monkeypatch):
+        """A clean run drops its exit handler so they never pile up."""
+        _install_stream_fakes(monkeypatch, ["a.fits"])
+        registered = []
+        unregistered = []
+        monkeypatch.setattr(
+            streaming.atexit, "register", lambda func: registered.append(func) or func
+        )
+        monkeypatch.setattr(streaming.atexit, "unregister", unregistered.append)
+
+        streaming.stream_frames("gdrive:field")
+
+        assert len(registered) == 1
+        assert unregistered == registered
+
+    def test_atexit_handler_unregistered_after_non_interrupt_failure(self, monkeypatch):
+        """A mid-batch crash still drops the handler: close() wound down cleanly."""
+        _install_stream_fakes(monkeypatch, ["a.fits"])
+        registered = []
+        unregistered = []
+        monkeypatch.setattr(
+            streaming.atexit, "register", lambda func: registered.append(func) or func
+        )
+        monkeypatch.setattr(streaming.atexit, "unregister", unregistered.append)
+
+        def boom(*_args: object, **_kwargs: object):
+            msg = "mid-batch crash"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(streaming, "process_batch", boom)
+
+        with pytest.raises(RuntimeError, match="mid-batch crash"):
+            streaming.stream_frames("gdrive:field")
+
+        assert len(registered) == 1
+        assert unregistered == registered
+
+    def test_atexit_handler_stays_registered_when_close_is_interrupted(
+        self, monkeypatch
+    ):
+        """An interrupted close() keeps the exit-time safety net registered."""
+        _install_stream_fakes(monkeypatch, ["a.fits"])
+        registered = []
+        unregistered = []
+        monkeypatch.setattr(
+            streaming.atexit, "register", lambda func: registered.append(func) or func
+        )
+        monkeypatch.setattr(streaming.atexit, "unregister", unregistered.append)
+        monkeypatch.setattr(streaming.Prefetcher, "close", _interrupted_close)
+
+        with pytest.raises(KeyboardInterrupt):
+            streaming.stream_frames("gdrive:field")
+
+        # A late worker could still recreate the dir, so the net must stay.
+        assert len(registered) == 1
+        assert unregistered == []
+
     def test_empty_listing_raises_before_any_prep(self, monkeypatch):
         """An empty remote is a ValueError and never fetches or preps."""
         rec = _install_stream_fakes(monkeypatch, [])
@@ -555,6 +616,31 @@ class TestStreamFrames:
 
         assert made
         assert not made[0].exists()
+
+    def test_ballet_build_failure_creates_no_temp_dir(self, monkeypatch, tmp_path):
+        """A failed weights download raises before any owned temp dir exists."""
+        _install_stream_fakes(monkeypatch, ["a.fits"])
+        made = []
+
+        def fake_mkdtemp(prefix):
+            made.append(tmp_path / f"{prefix}owned")
+            made[-1].mkdir()
+            return str(made[-1])
+
+        monkeypatch.setattr(streaming.tempfile, "mkdtemp", fake_mkdtemp)
+
+        def failing_ballet(**_kwargs: object):
+            msg = "weights download failed"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(scripts, "Ballet", failing_ballet)
+
+        with pytest.raises(RuntimeError, match="weights download failed"):
+            streaming.stream_frames("gdrive:field")
+
+        # The Ballet build precedes the staging dir, so mkdtemp never ran and
+        # there is nothing to leak.
+        assert made == []
 
     def test_returns_names_and_process_batch_results(self, monkeypatch, tmp_path):
         """The remote listing and the batch results pass straight through."""
@@ -611,6 +697,71 @@ class TestStreamFrames:
         ]
         assert len(timing) == 1
         assert timing[0].startswith("timing b.fits: download cached")
+
+    def test_failed_fetch_timing_line_carries_its_stall(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        """A frame whose fetch fails still logs the stall its wait really cost."""
+        names = ["a.fits", "b.fits"]
+        _install_stream_fakes(monkeypatch, names)
+
+        def slow_failing_fetch(_remote, name, dest_dir):
+            if name == "b.fits":
+                time.sleep(0.2)
+                msg = "rclone copyto failed"
+                raise RemoteFetchError(msg, file=name)
+            local = Path(dest_dir) / name
+            local.write_text("frame data")
+            return local
+
+        monkeypatch.setattr(streaming, "fetch_remote_file", slow_failing_fetch)
+
+        def fake_process_batch(files, _prep, *, fetch, after_frame, **_kwargs: object):
+            results = {}
+            for name in files:
+                try:
+                    local = fetch(name)
+                except RemoteFetchError:
+                    # The real batch loop treats this as a per-frame skip and
+                    # still reports the decided outcome via after_frame.
+                    after_frame(name, "skipped")
+                    continue
+                after_frame(name, "ok")
+                results[name] = local
+            return results
+
+        monkeypatch.setattr(streaming, "process_batch", fake_process_batch)
+
+        with caplog.at_level(logging.INFO, logger="bandaid"):
+            streaming.stream_frames("gdrive:field", incoming_dir=tmp_path)
+
+        line = next(
+            record.getMessage()
+            for record in caplog.records
+            if record.getMessage().startswith("timing b.fits")
+        )
+        stall = float(re.search(r"stall (\d+\.\d) s", line).group(1))
+        assert stall > 0.0
+
+    def test_cached_seed_frame_is_not_refetched(self, monkeypatch, tmp_path, caplog):
+        """A seed frame left by a prior --keep run is served from disk."""
+        names = ["a.fits", "b.fits"]
+        rec = _install_stream_fakes(monkeypatch, names)
+        # a.fits survives from a prior --keep run: the seed fetch must not
+        # download it again.
+        (tmp_path / "a.fits").write_text("kept from a prior run")
+
+        with caplog.at_level(logging.INFO, logger="bandaid"):
+            streaming.stream_frames("gdrive:field", incoming_dir=tmp_path)
+
+        assert "a.fits" not in rec.fetched
+        timing = [
+            record.getMessage()
+            for record in caplog.records
+            if record.getMessage().startswith("timing a.fits")
+        ]
+        assert len(timing) == 1
+        assert timing[0].startswith("timing a.fits: download cached")
 
     def test_batch_kwargs_and_hooks_are_forwarded(self, monkeypatch, tmp_path):
         """process_batch receives the streaming hooks and normalized kwargs."""

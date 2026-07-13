@@ -1082,6 +1082,39 @@ def process_batch(
     return results
 
 
+def _resolve_batch_inputs(config, cnn, weights):
+    """
+    Resolve a batch's configuration and Ballet centroider from the call inputs.
+
+    The shared front door of `photometer_frames` and
+    `bandaid.streaming.stream_frames`: a missing config becomes the default
+    `PhotometryConfig`, and a missing centroider is built from ``weights``
+    (downloading the defaults from HuggingFace when that is None too, with the
+    ``hf_xet`` warning silenced first).
+
+    Parameters
+    ----------
+    config : PhotometryConfig or None
+        Configuration carried through the batch, or None for the default
+        `PhotometryConfig` (Seestar50).
+    cnn : object or None
+        A pre-built Ballet centroider, or None to build one from ``weights``.
+    weights : str or None
+        Path to Ballet weights used when ``cnn`` is None; None downloads the
+        defaults from HuggingFace.
+
+    Returns
+    -------
+    tuple of (PhotometryConfig, object)
+        The resolved configuration and Ballet centroider.
+    """
+    config = config or PhotometryConfig()
+    if cnn is None:
+        _quiet_hf_xet()
+        cnn = Ballet(model_file=weights)
+    return config, cnn
+
+
 def photometer_frames(
     files,
     *,
@@ -1156,10 +1189,7 @@ def photometer_frames(
         msg = "no FITS frames found in the given files/directories"
         raise ValueError(msg)
 
-    config = config or PhotometryConfig()
-    if cnn is None:
-        _quiet_hf_xet()
-        cnn = Ballet(model_file=weights)
+    config, cnn = _resolve_batch_inputs(config, cnn, weights)
 
     prep = prepare_batch(frames[0], cnn=cnn, config=config, append_l4=append_l4)
     results = process_batch(

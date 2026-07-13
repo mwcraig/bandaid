@@ -19,11 +19,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from eloy.ballet.model import Ballet
-
-from .config import PhotometryConfig
 from .exceptions import RemoteFetchError
-from .scripts import _is_fits, _quiet_hf_xet, prepare_batch, process_batch
+from .scripts import _is_fits, _resolve_batch_inputs, prepare_batch, process_batch
 from .writers import write_starlist_set
 
 logger = logging.getLogger(__name__)
@@ -316,6 +313,10 @@ class _BatchTimer:
         """
         Fetch ``name`` via the prefetcher, recording the stall it cost.
 
+        Recorded in a finally so a failed fetch's stall is kept too --
+        processing sat blocked either way, and the frame still reaches
+        `record` via the batch's skip path.
+
         Parameters
         ----------
         name : str
@@ -327,11 +328,12 @@ class _BatchTimer:
             The frame's local path, from ``Prefetcher.fetch``.
         """
         start = time.monotonic()
-        local = self._prefetcher.fetch(name)
-        done = time.monotonic()
-        self._stall[name] = done - start
-        self._fetch_done[name] = done
-        return local
+        try:
+            return self._prefetcher.fetch(name)
+        finally:
+            done = time.monotonic()
+            self._stall[name] = done - start
+            self._fetch_done[name] = done
 
     def record(self, name):
         """
@@ -410,6 +412,37 @@ def _resolve_incoming_dir(incoming_dir):
     incoming = Path(incoming_dir)
     incoming.mkdir(parents=True, exist_ok=True)
     return incoming, False
+
+
+def _fetch_seed_frame(remote, name, incoming):
+    """
+    Materialize the batch's seed frame, reusing a cached copy when present.
+
+    A copy surviving from a prior ``--keep`` run is served as-is instead of
+    re-downloaded; a failed download propagates (as `RemoteFetchError`) --
+    there is no batch without the seed.
+
+    Parameters
+    ----------
+    remote : str
+        The rclone remote path the frame lives on.
+    name : str
+        The seed frame's file name on the remote.
+    incoming : pathlib.Path
+        The local staging directory.
+
+    Returns
+    -------
+    tuple of (pathlib.Path, float or None)
+        The frame's local path and the download's wall-clock seconds, or
+        None when a cached copy was served from disk (no download to time).
+    """
+    local = incoming / name
+    if local.exists():
+        return local, None
+    start = time.monotonic()
+    local = fetch_remote_file(remote, name, incoming)
+    return local, time.monotonic() - start
 
 
 def stream_frames(
@@ -512,13 +545,18 @@ def stream_frames(
         msg = f"no FITS frames found on the remote {remote!r}"
         raise ValueError(msg)
 
+    # Resolve the config and centroider before creating the staging directory:
+    # a failed weights download must not leave an owned temp dir behind.
+    config, cnn = _resolve_batch_inputs(config, cnn, weights)
+
     incoming, owns_incoming = _resolve_incoming_dir(incoming_dir)
+    cleanup_incoming = owns_incoming and not keep_local
 
     def _remove_incoming():
         """Remove the owned staging directory, tolerating its absence."""
         shutil.rmtree(incoming, ignore_errors=True)
 
-    if owns_incoming and not keep_local:
+    if cleanup_incoming:
         # Safety net for an interrupted shutdown: a download thread still in
         # flight when the in-line rmtree below runs can finish afterwards and
         # recreate the directory (rclone creates destination parents). The
@@ -528,25 +566,19 @@ def stream_frames(
         # succeeded.
         atexit.register(_remove_incoming)
 
-    config = config or PhotometryConfig()
-    if cnn is None:
-        _quiet_hf_xet()
-        cnn = Ballet(model_file=weights)
-
     prefetcher = None
     try:
         # The first frame seeds prepare_batch, so a failed download here is
         # fatal and deliberately propagates. The local copy is left in place:
         # the Prefetcher serves it from disk instead of downloading it twice.
-        first_start = time.monotonic()
-        first_local = fetch_remote_file(remote, names[0], incoming)
-        first_seconds = time.monotonic() - first_start
+        first_local, first_seconds = _fetch_seed_frame(remote, names[0], incoming)
         prep = prepare_batch(first_local, cnn=cnn, config=config, append_l4=append_l4)
         prefetcher = Prefetcher(remote, names, incoming, workers=download_workers)
-        # The seed download happened outside the Prefetcher; hand it the
-        # duration so the first frame's timing line shows the real transfer
-        # instead of "cached".
-        prefetcher.download_seconds[names[0]] = first_seconds
+        if first_seconds is not None:
+            # The seed download happened outside the Prefetcher; hand it the
+            # duration so the first frame's timing line shows the real
+            # transfer instead of "cached".
+            prefetcher.download_seconds[names[0]] = first_seconds
         timer = _BatchTimer(prefetcher)
 
         def _after_frame(name, _status):
@@ -580,12 +612,15 @@ def stream_frames(
         try:
             if prefetcher is not None:
                 prefetcher.close()
+            # close() returned normally, so no worker thread survives to
+            # recreate the directory after the rmtree below: the exit-time
+            # safety net has nothing left to do, and dropping it keeps
+            # handlers from piling up in a long-lived process that streams
+            # many batches. When close() raises instead (a second Ctrl-C),
+            # this is skipped and the net stays registered.
+            if cleanup_incoming:
+                atexit.unregister(_remove_incoming)
         finally:
-            if owns_incoming and not keep_local:
+            if cleanup_incoming:
                 _remove_incoming()
-    # The run completed and the in-line cleanup ran, so the exit-time safety
-    # net has nothing left to do; dropping it keeps handlers from piling up
-    # in a long-lived process that streams many batches.
-    if owns_incoming and not keep_local:
-        atexit.unregister(_remove_incoming)
     return names, results
