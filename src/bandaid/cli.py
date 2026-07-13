@@ -7,24 +7,28 @@ Python.
 The heavy lifting lives in :mod:`bandaid.scripts`, :mod:`bandaid.instruments`,
 and :mod:`bandaid.config`; this module only parses arguments and handles I/O.
 
-The four command groups are:
+The five command groups are:
 
 * ``bandaid process`` -- photometer a batch of frames (the main command).
+* ``bandaid stream`` -- photometer frames straight from an rclone remote.
 * ``bandaid instrument list`` / ``show`` -- inspect instrument profiles.
 * ``bandaid config init`` / ``validate`` -- create and check a photometry config.
 * ``bandaid weights`` -- fetch/print the default Ballet centroider weights.
 
-The names ``photometer_frames``, ``download_weights``, ``available_instruments``,
-``load_instrument``, ``InstrumentProfile``, and ``PhotometryConfig`` are imported
-into this module's namespace so the network/heavy ones can be monkeypatched in
-tests. The file-expansion and ``prepare_batch`` -> ``process_batch`` flow lives
-in :func:`bandaid.scripts.photometer_frames`; this module only turns flags into a
+The names ``photometer_frames``, ``stream_frames``, ``download_weights``,
+``available_instruments``, ``load_instrument``, ``InstrumentProfile``, and
+``PhotometryConfig`` are imported into this module's namespace so the
+network/heavy ones can be monkeypatched in tests. The file-expansion and
+``prepare_batch`` -> ``process_batch`` flow lives in
+:func:`bandaid.scripts.photometer_frames` (and its streaming counterpart
+:func:`bandaid.streaming.stream_frames`); this module only turns flags into a
 config + metadata and delegates to it.
 """
 
 import json
 import logging
 import shutil
+import subprocess
 from pathlib import Path
 
 import click
@@ -32,9 +36,11 @@ from eloy.ballet.model import download_weights
 from pydantic import ValidationError
 
 from .config import InstrumentProfile, PhotometryConfig
+from .exceptions import BatchPrepError, RemoteFetchError
 from .instruments import available_instruments, load_instrument
 from .logging_setup import configure_logging
 from .scripts import QA_MANIFEST_FILENAME, _quiet_hf_xet, photometer_frames
+from .streaming import stream_frames
 from .writers import get_writer
 
 __all__ = ["main"]
@@ -141,89 +147,203 @@ def _load_metadata(metadata_file):
     return data
 
 
+def _resolve_writer(output_format):
+    """
+    Resolve ``--output-format`` to its registered writer callable.
+
+    Resolved up front so an unknown name fails before any (expensive) frame
+    processing, as a clean CLI error rather than a traceback.
+
+    Parameters
+    ----------
+    output_format : str
+        Name passed to ``--output-format``, resolved with
+        :func:`~bandaid.writers.get_writer`.
+
+    Returns
+    -------
+    collections.abc.Callable
+        The registered per-frame writer.
+
+    Raises
+    ------
+    click.ClickException
+        If ``output_format`` is not a registered writer name.
+    """
+    try:
+        return get_writer(output_format)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+def _configure_verbosity(verbose):
+    """
+    Route bandaid's log records to stderr at the level ``-v`` asks for.
+
+    Always configured -- even with no ``-v`` -- so per-frame skip/error
+    warnings are never silently lost: WARNING+ shows by default, ``-v`` adds
+    INFO per-frame progress, ``-vv`` adds DEBUG detail.
+
+    Parameters
+    ----------
+    verbose : int
+        The ``-v`` count from the command line.
+    """
+    if verbose >= _DEBUG_VERBOSITY:
+        level = logging.DEBUG
+    elif verbose:
+        level = logging.INFO
+    else:
+        level = logging.WARNING
+    configure_logging(level=level)
+
+
+def _report_batch_outcome(frames, results, output_dir, qa_manifest):
+    """
+    Print the end-of-batch summary and enforce the shared exit contract.
+
+    Parameters
+    ----------
+    frames : list
+        Every frame the batch attempted.
+    results : dict
+        The successfully processed frames (see
+        :func:`bandaid.scripts.process_batch`).
+    output_dir : str
+        Where the outputs were written, for the summary line.
+    qa_manifest : bool
+        Whether a QA manifest was written (and so should be pointed at).
+
+    Raises
+    ------
+    click.ClickException
+        If every frame in a non-empty batch failed: 0 of N succeeding must
+        not exit 0, or an unattended/cron run is indistinguishable from
+        success. A partial failure is normal robust-mode operation and still
+        exits 0; see the per-frame warnings on stderr for what was skipped.
+    """
+    click.echo(f"Processed {len(results)} of {len(frames)} frames into {output_dir}")
+    if qa_manifest:
+        click.echo(f"QA manifest: {Path(output_dir) / QA_MANIFEST_FILENAME}")
+    if frames and not results:
+        msg = f"all {len(frames)} frames failed; see the QA manifest for details"
+        raise click.ClickException(msg)
+
+
 @click.group()
 @click.version_option(package_name="bandaid")
 def main():
     """Photometer Smart Telescope frames and inspect instruments/config."""
 
 
+#: The batch-processing options ``process`` and ``stream`` share. The two
+#: commands differ only in where the frames come from (local paths vs. an
+#: rclone remote), so everything downstream of the frame source -- config,
+#: metadata, output layout, verbosity -- is declared once here.
+_PROCESSING_OPTIONS = (
+    click.option(
+        "-o",
+        "--output-dir",
+        default=".",
+        type=click.Path(file_okay=False),
+        show_default=True,
+        help="Directory to write the .star files (and QA manifest) into.",
+    ),
+    click.option(
+        "--instrument",
+        default=None,
+        help="Name of a bundled/registered instrument profile (e.g. Seestar50).",
+    ),
+    click.option(
+        "--profile",
+        default=None,
+        type=click.Path(exists=True, dir_okay=False),
+        help="Path to an instrument-profile JSON file (alternative to --instrument).",
+    ),
+    click.option(
+        "--config",
+        "config_file",
+        default=None,
+        type=click.Path(exists=True, dir_okay=False),
+        help="Path to a full PhotometryConfig JSON file.",
+    ),
+    click.option(
+        "--weights",
+        default=None,
+        type=click.Path(exists=True, dir_okay=False),
+        help="Path to Ballet centroider weights; omit to download the defaults.",
+    ),
+    click.option(
+        "--user-metadata",
+        "metadata_file",
+        default=None,
+        type=click.Path(exists=True, dir_okay=False),
+        help="Path to a JSON object of per-frame user-specific metadata.",
+    ),
+    click.option(
+        "--append-l4/--no-append-l4",
+        default=True,
+        show_default=True,
+        help="Add a full-frame L4 luminance channel to the Bayer masks.",
+    ),
+    click.option(
+        "--fail-fast/--no-fail-fast",
+        default=False,
+        show_default=True,
+        help="Re-raise unexpected per-frame errors instead of skipping the frame.",
+    ),
+    click.option(
+        "--output-format",
+        default="starlist",
+        show_default=True,
+        help="Name of a registered output writer (e.g. starlist).",
+    ),
+    click.option(
+        "--output-suffix",
+        default=".star",
+        show_default=True,
+        help="Suffix for the per-frame output files.",
+    ),
+    click.option(
+        "--qa-manifest/--no-qa-manifest",
+        default=True,
+        show_default=True,
+        help="Write a per-frame QA manifest alongside the per-frame output files.",
+    ),
+    click.option(
+        "-v",
+        "--verbose",
+        count=True,
+        help="Show per-frame progress in the terminal (-vv for debug detail).",
+    ),
+)
+
+
+def _processing_options(command):
+    """
+    Apply the shared batch-processing options to a command.
+
+    Parameters
+    ----------
+    command : collections.abc.Callable
+        The command function being decorated.
+
+    Returns
+    -------
+    collections.abc.Callable
+        The command with every option in `_PROCESSING_OPTIONS` attached, in
+        the same ``--help`` order as if they had been stacked as decorators.
+    """
+    # Decorators apply bottom-up, so reversed() reproduces the stacked-
+    # decorator parameter order (click re-reverses at command creation).
+    for option in reversed(_PROCESSING_OPTIONS):
+        command = option(command)
+    return command
+
+
 @main.command()
 @click.argument("files", nargs=-1, required=True, type=click.Path())
-@click.option(
-    "-o",
-    "--output-dir",
-    default=".",
-    type=click.Path(file_okay=False),
-    show_default=True,
-    help="Directory to write the .star files (and QA manifest) into.",
-)
-@click.option(
-    "--instrument",
-    default=None,
-    help="Name of a bundled/registered instrument profile (e.g. Seestar50).",
-)
-@click.option(
-    "--profile",
-    default=None,
-    type=click.Path(exists=True, dir_okay=False),
-    help="Path to an instrument-profile JSON file (alternative to --instrument).",
-)
-@click.option(
-    "--config",
-    "config_file",
-    default=None,
-    type=click.Path(exists=True, dir_okay=False),
-    help="Path to a full PhotometryConfig JSON file.",
-)
-@click.option(
-    "--weights",
-    default=None,
-    type=click.Path(exists=True, dir_okay=False),
-    help="Path to Ballet centroider weights; omit to download the defaults.",
-)
-@click.option(
-    "--user-metadata",
-    "metadata_file",
-    default=None,
-    type=click.Path(exists=True, dir_okay=False),
-    help="Path to a JSON object of per-frame user-specific metadata.",
-)
-@click.option(
-    "--append-l4/--no-append-l4",
-    default=True,
-    show_default=True,
-    help="Add a full-frame L4 luminance channel to the Bayer masks.",
-)
-@click.option(
-    "--fail-fast/--no-fail-fast",
-    default=False,
-    show_default=True,
-    help="Re-raise unexpected per-frame errors instead of skipping the frame.",
-)
-@click.option(
-    "--output-format",
-    default="starlist",
-    show_default=True,
-    help="Name of a registered output writer (e.g. starlist).",
-)
-@click.option(
-    "--output-suffix",
-    default=".star",
-    show_default=True,
-    help="Suffix for the per-frame output files.",
-)
-@click.option(
-    "--qa-manifest/--no-qa-manifest",
-    default=True,
-    show_default=True,
-    help="Write a per-frame QA manifest alongside the per-frame output files.",
-)
-@click.option(
-    "-v",
-    "--verbose",
-    count=True,
-    help="Show per-frame progress in the terminal (-vv for debug detail).",
-)
+@_processing_options
 def process(
     files,
     output_dir,
@@ -245,6 +365,7 @@ def process(
     FILES may be directories (expanded to their FITS frames), glob patterns, or
     individual frame paths. The first frame seeds the once-per-batch preparation
     and every frame is then photometered against it.
+    \f
 
     Parameters
     ----------
@@ -280,32 +401,18 @@ def process(
     ------
     click.ClickException
         If the arguments expand to no FITS frames, a path argument is missing or
-        not a FITS frame, a config/profile/metadata file fails validation, or
-        every frame in the batch fails.
-    """
-    # Always route bandaid's records to stderr so per-frame skip/error warnings
-    # are never silently lost: WARNING+ (skips, unexpected errors) shows even
-    # with no -v. -v adds INFO per-frame progress; -vv adds DEBUG detail.
-    if verbose >= _DEBUG_VERBOSITY:
-        level = logging.DEBUG
-    elif verbose:
-        level = logging.INFO
-    else:
-        level = logging.WARNING
-    configure_logging(level=level)
+        not a FITS frame, a config/profile/metadata file fails validation, the
+        once-per-batch preparation fails, or every frame in the batch fails.
+    """  # noqa: D301 -- the \f is click's marker truncating --help here.
+    _configure_verbosity(verbose)
 
     config = _build_config(instrument, profile, config_file)
     metadata = _load_metadata(metadata_file)
-    # Resolve the output format up front so an unknown name fails before any
-    # (expensive) frame processing, as a clean CLI error rather than a traceback.
-    try:
-        write_frame = get_writer(output_format)
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
+    write_frame = _resolve_writer(output_format)
 
     # The file expansion + prepare/process flow lives in
     # scripts.photometer_frames; surface its argument errors (no frames, bad
-    # path) as clean CLI errors.
+    # path) and a fatal first-frame prep failure as clean CLI errors.
     try:
         frames, results = photometer_frames(
             files,
@@ -319,19 +426,163 @@ def process(
             fail_fast=fail_fast,
             write_qa_manifest=qa_manifest,
         )
-    except (ValueError, FileNotFoundError) as exc:
+    except (ValueError, FileNotFoundError, BatchPrepError) as exc:
         raise click.ClickException(str(exc)) from exc
 
-    click.echo(f"Processed {len(results)} of {len(frames)} frames into {output_dir}")
-    if qa_manifest:
-        click.echo(f"QA manifest: {Path(output_dir) / QA_MANIFEST_FILENAME}")
-    if frames and not results:
-        # 0 of N succeeded: a fully failed batch must not exit 0, or an
-        # unattended/cron run is indistinguishable from success. A partial
-        # failure (some results) is normal robust-mode operation and still
-        # exits 0; see the per-frame warnings on stderr for what was skipped.
-        msg = f"all {len(frames)} frames failed; see the QA manifest for details"
+    _report_batch_outcome(frames, results, output_dir, qa_manifest)
+
+
+@main.command()
+@click.argument("remote")
+@_processing_options
+@click.option(
+    "--incoming",
+    "incoming_dir",
+    default=None,
+    type=click.Path(file_okay=False),
+    help="Local staging directory for the downloads; omit for a temp dir.",
+)
+@click.option(
+    "--keep/--no-keep",
+    "keep_local",
+    default=False,
+    show_default=True,
+    help=(
+        "Keep each frame's local copy instead of deleting it after processing. "
+        "Pair with --incoming to choose where the kept frames land."
+    ),
+)
+@click.option(
+    "--download-workers",
+    default=2,
+    show_default=True,
+    type=click.IntRange(min=1),
+    help="Number of concurrent rclone downloads.",
+)
+def stream(
+    remote,
+    output_dir,
+    instrument,
+    profile,
+    config_file,
+    weights,
+    metadata_file,
+    append_l4,
+    fail_fast,
+    output_format,
+    output_suffix,
+    qa_manifest,
+    verbose,
+    incoming_dir,
+    keep_local,
+    download_workers,
+):
+    """
+    Photometer FITS frames straight from an rclone remote.
+
+    REMOTE is an rclone remote path, e.g. "gdrive:My Frames". Each frame is
+    downloaded just before it is processed and deleted afterwards, so a batch
+    far larger than the local disk can be photometered; the remote is never
+    modified. Requires rclone (https://rclone.org) with a configured remote.
+    \f
+
+    Parameters
+    ----------
+    remote : str
+        The rclone remote path holding the frames.
+    output_dir : str
+        Directory to write the per-frame ``.star`` files (and QA manifest) into.
+    instrument : str or None
+        Name of a bundled/registered instrument profile to use.
+    profile : str or None
+        Path to an instrument-profile JSON file (alternative to ``instrument``).
+    config_file : str or None
+        Path to a full `PhotometryConfig` JSON file.
+    weights : str or None
+        Path to Ballet centroider weights; None downloads the defaults.
+    metadata_file : str or None
+        Path to a JSON object of per-frame user-specific metadata.
+    append_l4 : bool
+        Whether to add a full-frame L4 luminance channel to the Bayer masks.
+    fail_fast : bool
+        Whether to re-raise unexpected per-frame errors instead of skipping.
+    output_format : str
+        Name of a registered output writer to record each frame with.
+    output_suffix : str
+        Suffix for the per-frame output files.
+    qa_manifest : bool
+        Whether to write a per-frame QA manifest alongside the ``.star`` files.
+    verbose : int
+        Verbosity count from ``-v``, as for ``process``.
+    incoming_dir : str or None
+        Local staging directory for the downloads; None uses a temp dir.
+    keep_local : bool
+        Whether to keep each frame's local copy after its outcome is decided.
+    download_workers : int
+        Number of concurrent rclone downloads.
+
+    Raises
+    ------
+    click.ClickException
+        If rclone is not installed, the ``--incoming`` directory cannot be
+        created, the remote cannot be listed or holds no FITS frames, the
+        first frame cannot be fetched, the once-per-batch preparation fails, a
+        config/profile/metadata file fails validation, or every frame in the
+        batch fails.
+    """  # noqa: D301 -- the \f is click's marker truncating --help here.
+    _configure_verbosity(verbose)
+
+    # Fail the missing-tool case up front, before any config parsing or
+    # (expensive) weights download, with a pointer instead of a cryptic
+    # FileNotFoundError from subprocess.
+    if shutil.which("rclone") is None:
+        msg = (
+            "rclone not found on PATH; install it and configure a remote "
+            "(https://rclone.org) to stream frames"
+        )
         raise click.ClickException(msg)
+
+    # Likewise fail a bad staging directory (an existing file, an unwritable
+    # parent) up front as a clean CLI error, not a raw OSError traceback from
+    # deep inside stream_frames.
+    if incoming_dir is not None:
+        try:
+            Path(incoming_dir).mkdir(parents=True, exist_ok=True)
+        except OSError as err:
+            msg = f"could not create the --incoming directory {incoming_dir}: {err}"
+            raise click.ClickException(msg) from err
+
+    config = _build_config(instrument, profile, config_file)
+    metadata = _load_metadata(metadata_file)
+    write_frame = _resolve_writer(output_format)
+
+    try:
+        names, results = stream_frames(
+            remote,
+            config=config,
+            weights=weights,
+            user_specific_metadata=metadata,
+            append_l4=append_l4,
+            output_dir=output_dir,
+            output_suffix=output_suffix,
+            write_frame=write_frame,
+            fail_fast=fail_fast,
+            write_qa_manifest=qa_manifest,
+            incoming_dir=incoming_dir,
+            keep_local=keep_local,
+            download_workers=download_workers,
+        )
+    except subprocess.CalledProcessError as exc:
+        # rclone itself failed (unknown remote, expired auth): surface its
+        # stderr, which names the actual problem, as the CLI error.
+        msg = f"rclone failed: {(exc.stderr or '').strip() or exc}"
+        raise click.ClickException(msg) from exc
+    except (ValueError, RemoteFetchError, BatchPrepError) as exc:
+        # An empty remote, a fatal first-frame fetch, or a failed batch prep;
+        # all three messages already name the remote/frame/cause.
+        raise click.ClickException(str(exc)) from exc
+
+    _report_batch_outcome(names, results, output_dir, qa_manifest)
 
 
 @main.group()

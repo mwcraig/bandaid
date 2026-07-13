@@ -901,6 +901,8 @@ def process_batch(
     fail_fast=True,
     write_qa_manifest=True,
     qa_manifest_name=QA_MANIFEST_FILENAME,
+    fetch=None,
+    after_frame=None,
 ):
     """
     Photometer every frame in a batch using a shared `BatchPrep`.
@@ -954,6 +956,25 @@ def process_batch(
     qa_manifest_name : str, optional
         Filename for the QA manifest within ``output_dir``. Default
         `QA_MANIFEST_FILENAME`.
+    fetch : collections.abc.Callable or None, optional
+        ``fetch(file) -> local_path``: materialize one frame before it is
+        processed, for batches whose ``files`` are remote names rather than
+        local paths (see `bandaid.streaming`). The returned local path is what
+        gets opened and photometered, while ``file`` stays the key for
+        progress logs, the QA manifest, and the result/output mappings. A
+        `FrameError` raised here (e.g. `RemoteFetchError`) skips the frame
+        like any other per-frame failure. Default None: ``files`` are local
+        paths and are opened directly.
+    after_frame : collections.abc.Callable or None, optional
+        ``after_frame(file, status)``: called once per frame after its outcome
+        is decided, with ``status`` one of ``"ok"``, ``"skipped"`` (any
+        `FrameError`, including a write-time one), or ``"error"`` (an
+        unexpected error in robust mode). A streaming caller uses this to
+        delete the frame's local copy. Not called when an error propagates
+        (fail-fast abort or a systemic write failure), so the offending local
+        file survives for debugging (with a user-supplied staging dir; an
+        owned temp dir is still removed by the streaming cleanup).
+        Default None.
 
     Returns
     -------
@@ -1000,9 +1021,13 @@ def process_batch(
         # configure_logging, alongside the skip/error warnings logged below.
         logger.info("processing %d/%d: %s", idx, len(files), file)
         try:
-            check_frame_consistency(file, fits.getheader(file), prep)
+            # For a streamed batch, materialize the frame first: the local
+            # copy is what gets opened, while `file` (the remote name) stays
+            # the key everywhere else.
+            local = fetch(file) if fetch is not None else file
+            check_frame_consistency(local, fits.getheader(local), prep)
             by_filter = process_one_image(
-                file,
+                local,
                 user_specific_metadata,
                 prep.radecs,
                 prep.cnn,
@@ -1013,17 +1038,20 @@ def process_batch(
         except FrameError as exc:
             # Expected per-frame failure: skip the frame and keep going.
             manifest_records.append(_record_frame_skip(file, exc))
-            continue
+            status = "skipped"
         except Exception as exc:
             # Unexpected error (a bug, not a bad frame): surface it by default;
             # only swallow-and-continue when the caller opted into robust mode.
+            # A propagating error also skips after_frame, so a streamed frame's
+            # local copy survives for debugging (with a user-supplied staging
+            # dir; an owned temp dir is still removed by streaming cleanup).
             if fail_fast:
                 raise
             logger.exception("unexpected error on %s", file)
             manifest_records.append(
                 _qa_record_failed(file, f"error: {type(exc).__name__}")
             )
-            continue
+            status = "error"
         else:
             # The frame processed cleanly. Writing its output is deliberately
             # outside the try above: a write failure (bad output_dir,
@@ -1035,6 +1063,7 @@ def process_batch(
             # split on exception type: a FrameError is this frame's problem
             # and is skipped like any other, everything else propagates.
             manifest_records.append(_qa_record_ok(file, by_filter))
+            status = "ok"
             if output_dir is not None:
                 try:
                     results[file] = write_frame(by_filter, output_paths[file])
@@ -1042,8 +1071,11 @@ def process_batch(
                     # Replace the provisional ok record appended above with
                     # the skip, so the manifest keeps one row per frame.
                     manifest_records[-1] = _record_frame_skip(file, exc)
+                    status = "skipped"
             else:
                 results[file] = by_filter
+        if after_frame is not None:
+            after_frame(file, status)
 
     # Persist the per-frame QA manifest next to the starlists. Only written in
     # write-to-disk mode (in-memory mode has no directory to write it to) and
@@ -1051,6 +1083,39 @@ def process_batch(
     if write_manifest:
         _write_qa_manifest(Path(output_dir) / qa_manifest_name, manifest_records)
     return results
+
+
+def _resolve_batch_inputs(config, cnn, weights):
+    """
+    Resolve a batch's configuration and Ballet centroider from the call inputs.
+
+    The shared front door of `photometer_frames` and
+    `bandaid.streaming.stream_frames`: a missing config becomes the default
+    `PhotometryConfig`, and a missing centroider is built from ``weights``
+    (downloading the defaults from HuggingFace when that is None too, with the
+    ``hf_xet`` warning silenced first).
+
+    Parameters
+    ----------
+    config : PhotometryConfig or None
+        Configuration carried through the batch, or None for the default
+        `PhotometryConfig` (Seestar50).
+    cnn : object or None
+        A pre-built Ballet centroider, or None to build one from ``weights``.
+    weights : str or None
+        Path to Ballet weights used when ``cnn`` is None; None downloads the
+        defaults from HuggingFace.
+
+    Returns
+    -------
+    tuple of (PhotometryConfig, object)
+        The resolved configuration and Ballet centroider.
+    """
+    config = config or PhotometryConfig()
+    if cnn is None:
+        _quiet_hf_xet()
+        cnn = Ballet(model_file=weights)
+    return config, cnn
 
 
 def photometer_frames(
@@ -1127,10 +1192,7 @@ def photometer_frames(
         msg = "no FITS frames found in the given files/directories"
         raise ValueError(msg)
 
-    config = config or PhotometryConfig()
-    if cnn is None:
-        _quiet_hf_xet()
-        cnn = Ballet(model_file=weights)
+    config, cnn = _resolve_batch_inputs(config, cnn, weights)
 
     prep = prepare_batch(frames[0], cnn=cnn, config=config, append_l4=append_l4)
     results = process_batch(

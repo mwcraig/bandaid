@@ -7,12 +7,14 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from _helpers import _dummy_prep
+from _helpers import _CONSISTENT_HEADER, _dummy_prep
 from aavso_starlist_schema import StarListSet
 from astropy.table import Table
 
 from bandaid import scripts
 from bandaid.exceptions import (
+    NoUsableStarsError,
+    RemoteFetchError,
     TooFewStarsError,
     WCSSolveError,
 )
@@ -688,6 +690,28 @@ class TestProcessBatchToDisk:
         assert by_file["starless.fits"]["status"] == "skipped: NoUsableStarsError"
         assert by_file["good.fits"]["status"] == "ok"
 
+    def test_after_frame_writer_frame_error_reports_skipped(
+        self, patched_process_one_image, tmp_path, by_filter
+    ):
+        """A writer-raised FrameError downgrades the frame's status to skipped."""
+
+        def starless(_frame_result, _output_path):
+            raise NoUsableStarsError("no usable stars", file=None)
+
+        patched_process_one_image(by_filter())
+        statuses = []
+
+        scripts.process_batch(
+            ["a.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+            write_frame=starless,
+            after_frame=lambda file, status: statuses.append((file, status)),
+        )
+
+        assert statuses == [("a.fits", "skipped")]
+
     def test_writer_non_frame_error_still_propagates(
         self, patched_process_one_image, tmp_path, by_filter
     ):
@@ -707,3 +731,164 @@ class TestProcessBatchToDisk:
                 output_dir=tmp_path,
                 write_frame=denied,
             )
+
+
+class TestProcessBatchStreamingHooks:
+    """
+    Unit tests for the ``fetch``/``after_frame`` streaming hooks.
+
+    ``fetch`` maps the batch's file key (a remote name) to the local path the
+    frame is actually read from; ``after_frame`` observes each frame's outcome
+    so a streaming caller can delete the local copy. Both default to None,
+    leaving the classic local-files behavior untouched (covered by every other
+    test in this module).
+    """
+
+    def test_fetch_result_feeds_processing_but_keys_stay_remote(
+        self, monkeypatch, tmp_path, by_filter
+    ):
+        """The fetched local path is read; names key the results and manifest."""
+        local_for = {"remote_a.fits": "local/a.fits", "remote_b.fits": "local/b.fits"}
+        header_reads = []
+        processed = []
+
+        def fake_getheader(file):
+            header_reads.append(file)
+            return dict(_CONSISTENT_HEADER)
+
+        def fake_process_one_image(file, *_args: object, **_kwargs: object):
+            processed.append(file)
+            return by_filter()
+
+        monkeypatch.setattr(scripts.fits, "getheader", fake_getheader)
+        monkeypatch.setattr(scripts, "process_one_image", fake_process_one_image)
+
+        results = scripts.process_batch(
+            list(local_for),
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+            fetch=lambda name: local_for[name],
+        )
+
+        # The local copy is what gets opened...
+        assert header_reads == list(local_for.values())
+        assert processed == list(local_for.values())
+        # ...while the remote names stay the keys for outputs and the manifest.
+        assert results == {
+            "remote_a.fits": tmp_path / "remote_a.star",
+            "remote_b.fits": tmp_path / "remote_b.star",
+        }
+        by_file = {row["file"]: row for row in _read_manifest(tmp_path)}
+        assert set(by_file) == set(local_for)
+
+    @pytest.mark.usefixtures("_consistent_headers")
+    def test_fetch_failure_skips_frame_and_batch_continues(
+        self, patched_process_one_image, tmp_path, by_filter
+    ):
+        """A RemoteFetchError from ``fetch`` skips that frame like any FrameError."""
+        patched_process_one_image(by_filter())
+
+        def fetch(name):
+            if name == "bad.fits":
+                raise RemoteFetchError("rclone copyto failed", file=name)
+            return name
+
+        results = scripts.process_batch(
+            ["bad.fits", "good.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+            fetch=fetch,
+        )
+
+        assert results == {"good.fits": tmp_path / "good.star"}
+        by_file = {row["file"]: row for row in _read_manifest(tmp_path)}
+        assert by_file["bad.fits"]["status"] == "skipped: RemoteFetchError"
+        assert by_file["good.fits"]["status"] == "ok"
+
+    @pytest.mark.usefixtures("_consistent_headers")
+    def test_after_frame_reports_ok_and_skipped(self, monkeypatch, by_filter):
+        """``after_frame`` sees each frame's outcome once it is decided."""
+        monkeypatch.setattr(
+            scripts,
+            "process_one_image",
+            _raise_on(
+                "bad.fits",
+                TooFewStarsError("too few stars", file="bad.fits"),
+                by_filter,
+            ),
+        )
+        statuses = []
+
+        scripts.process_batch(
+            ["good.fits", "bad.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            after_frame=lambda file, status: statuses.append((file, status)),
+        )
+
+        assert statuses == [("good.fits", "ok"), ("bad.fits", "skipped")]
+
+    @pytest.mark.usefixtures("_consistent_headers")
+    def test_after_frame_sees_fetch_failure_as_skipped(
+        self, patched_process_one_image, by_filter
+    ):
+        """A failed download still reaches ``after_frame`` (as ``skipped``)."""
+        patched_process_one_image(by_filter())
+
+        def fetch(name):
+            raise RemoteFetchError("rclone copyto failed", file=name)
+
+        statuses = []
+        scripts.process_batch(
+            ["a.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            fetch=fetch,
+            after_frame=lambda file, status: statuses.append((file, status)),
+        )
+
+        assert statuses == [("a.fits", "skipped")]
+
+    @pytest.mark.usefixtures("_consistent_headers")
+    def test_after_frame_reports_error_in_robust_mode(self, monkeypatch, by_filter):
+        """With fail_fast=False an unexpected bug is reported as ``error``."""
+        monkeypatch.setattr(
+            scripts,
+            "process_one_image",
+            _raise_on("bad.fits", RuntimeError("a real bug"), by_filter),
+        )
+        statuses = []
+
+        scripts.process_batch(
+            ["good.fits", "bad.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            fail_fast=False,
+            after_frame=lambda file, status: statuses.append((file, status)),
+        )
+
+        assert statuses == [("good.fits", "ok"), ("bad.fits", "error")]
+
+    @pytest.mark.usefixtures("_consistent_headers")
+    def test_after_frame_not_called_on_fail_fast_abort(self, monkeypatch, by_filter):
+        """A fail-fast abort skips ``after_frame`` so the local file survives."""
+        monkeypatch.setattr(
+            scripts,
+            "process_one_image",
+            _raise_on("boom.fits", RuntimeError("a real bug"), by_filter),
+        )
+        statuses = []
+
+        with pytest.raises(RuntimeError, match="a real bug"):
+            scripts.process_batch(
+                ["good.fits", "boom.fits"],
+                _dummy_prep(),
+                user_specific_metadata={},
+                after_frame=lambda file, status: statuses.append((file, status)),
+            )
+
+        # The frame that aborted the run never reaches the callback; frames
+        # before it were already reported normally.
+        assert statuses == [("good.fits", "ok")]
