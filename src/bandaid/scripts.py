@@ -972,7 +972,9 @@ def process_batch(
         unexpected error in robust mode). A streaming caller uses this to
         delete the frame's local copy. Not called when an error propagates
         (fail-fast abort or a systemic write failure), so the offending local
-        file survives for debugging. Default None.
+        file survives for debugging (with a user-supplied staging dir; an
+        owned temp dir is still removed by the streaming cleanup).
+        Default None.
 
     Returns
     -------
@@ -1041,7 +1043,8 @@ def process_batch(
             # Unexpected error (a bug, not a bad frame): surface it by default;
             # only swallow-and-continue when the caller opted into robust mode.
             # A propagating error also skips after_frame, so a streamed frame's
-            # local copy survives for debugging.
+            # local copy survives for debugging (with a user-supplied staging
+            # dir; an owned temp dir is still removed by streaming cleanup).
             if fail_fast:
                 raise
             logger.exception("unexpected error on %s", file)
