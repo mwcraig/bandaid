@@ -133,6 +133,12 @@ only-packages = true
 [tool.hatch.build.targets.wheel]
 packages = ["src/bandaid"]
 
+# only-packages excludes directories without an __init__.py, which would leave
+# the bundled instrument profiles out of the wheel and break `import bandaid`
+# in a non-editable install.
+[tool.hatch.build.targets.wheel.force-include]
+"src/bandaid/meta_json_files" = "bandaid/meta_json_files"
+
 [tool.hatch.metadata]
 allow-direct-references = true
 
