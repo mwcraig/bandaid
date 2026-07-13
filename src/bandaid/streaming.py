@@ -11,9 +11,11 @@ behaviour are reused with zero new Python dependencies.
 """
 
 import atexit
+import logging
 import shutil
 import subprocess
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -23,6 +25,8 @@ from .config import PhotometryConfig
 from .exceptions import RemoteFetchError
 from .scripts import _is_fits, _quiet_hf_xet, prepare_batch, process_batch
 from .writers import write_starlist_set
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "Prefetcher",
@@ -164,6 +168,14 @@ class Prefetcher:
         ``fetch_one(remote, name, dest_dir) -> Path`` used for each download.
         Default None: `fetch_remote_file`, resolved at construction time so a
         test that patches ``streaming.fetch_remote_file`` is honoured.
+
+    Attributes
+    ----------
+    download_seconds : dict
+        Wall-clock duration of each name's download, recorded as it finishes
+        (failed downloads included -- the time was still spent). Names served
+        from an already-present local file have no entry: there was no
+        download to time.
     """
 
     def __init__(
@@ -183,7 +195,31 @@ class Prefetcher:
         self._executor = ThreadPoolExecutor(max_workers=workers)
         self._names = iter(names)
         self._futures = {}
+        self.download_seconds = {}
         self._top_up()
+
+    def _timed_fetch_one(self, name):
+        """
+        Download one name, recording its wall-clock duration.
+
+        Recorded in a finally so a failed download's time is kept too -- it
+        was spent either way, and the timing report should show it.
+
+        Parameters
+        ----------
+        name : str
+            The frame name to download.
+
+        Returns
+        -------
+        pathlib.Path
+            The downloaded frame's local path, from ``fetch_one``.
+        """
+        start = time.monotonic()
+        try:
+            return self._fetch_one(self._remote, name, self._incoming)
+        finally:
+            self.download_seconds[name] = time.monotonic() - start
 
     def _top_up(self):
         """
@@ -199,9 +235,7 @@ class Prefetcher:
                 break
             if (self._incoming / name).exists():
                 continue
-            self._futures[name] = self._executor.submit(
-                self._fetch_one, self._remote, name, self._incoming
-            )
+            self._futures[name] = self._executor.submit(self._timed_fetch_one, name)
 
     def fetch(self, name):
         """
@@ -234,7 +268,7 @@ class Prefetcher:
             local = self._incoming / name
             if local.exists():
                 return local
-            return self._fetch_one(self._remote, name, self._incoming)
+            return self._timed_fetch_one(name)
         finally:
             self._top_up()
 
@@ -249,6 +283,109 @@ class Prefetcher:
         """
         self._executor.shutdown(wait=True, cancel_futures=True)
         self._futures.clear()
+
+
+class _BatchTimer:
+    """
+    Per-frame download/stall/processing timing for a streamed batch.
+
+    Wraps the `Prefetcher`'s ``fetch`` to measure the *stall* (how long
+    processing sat blocked waiting for a download -- the number that says
+    whether ``--download-workers`` needs raising) and clocks each frame from
+    fetch-return to outcome as its *bandaid* time. The download time itself
+    comes from the Prefetcher, which times the actual transfer in the worker;
+    with prefetch overlap it is usually much larger than the stall.
+
+    Parameters
+    ----------
+    prefetcher : Prefetcher
+        The batch's prefetcher, wrapped by `timed_fetch` and consulted for
+        the per-name download durations.
+    """
+
+    def __init__(self, prefetcher) -> None:
+        self._prefetcher = prefetcher
+        self._fetch_done = {}
+        self._stall = {}
+        self._frames = 0
+        self._download_total = 0.0
+        self._stall_total = 0.0
+        self._bandaid_total = 0.0
+
+    def timed_fetch(self, name):
+        """
+        Fetch ``name`` via the prefetcher, recording the stall it cost.
+
+        Parameters
+        ----------
+        name : str
+            The frame name to materialize.
+
+        Returns
+        -------
+        pathlib.Path
+            The frame's local path, from ``Prefetcher.fetch``.
+        """
+        start = time.monotonic()
+        local = self._prefetcher.fetch(name)
+        done = time.monotonic()
+        self._stall[name] = done - start
+        self._fetch_done[name] = done
+        return local
+
+    def record(self, name):
+        """
+        Close out one frame's timing and log its line at INFO.
+
+        Called from the batch's ``after_frame`` hook, so the frame's bandaid
+        time spans everything from fetch-return to decided outcome (header
+        check, photometry, and the write).
+
+        Parameters
+        ----------
+        name : str
+            The frame whose outcome was just decided.
+        """
+        now = time.monotonic()
+        bandaid = now - self._fetch_done.pop(name, now)
+        stall = self._stall.pop(name, 0.0)
+        download = self._prefetcher.download_seconds.get(name)
+        self._frames += 1
+        self._stall_total += stall
+        self._bandaid_total += bandaid
+        if download is None:
+            logger.info(
+                "timing %s: download cached, stall %.1f s, bandaid %.1f s",
+                name,
+                stall,
+                bandaid,
+            )
+        else:
+            self._download_total += download
+            logger.info(
+                "timing %s: download %.1f s, stall %.1f s, bandaid %.1f s",
+                name,
+                download,
+                stall,
+                bandaid,
+            )
+
+    def log_summary(self):
+        """Log the batch's timing totals and per-frame averages at INFO."""
+        if not self._frames:
+            return
+        frames = self._frames
+        logger.info(
+            "timing summary over %d frames: download avg %.1f s (total %.1f s), "
+            "stall avg %.1f s (total %.1f s), bandaid avg %.1f s (total %.1f s)",
+            frames,
+            self._download_total / frames,
+            self._download_total,
+            self._stall_total / frames,
+            self._stall_total,
+            self._bandaid_total / frames,
+            self._bandaid_total,
+        )
 
 
 def _resolve_incoming_dir(incoming_dir):
@@ -396,19 +533,28 @@ def stream_frames(
         _quiet_hf_xet()
         cnn = Ballet(model_file=weights)
 
-    def _after_frame(name, _status):
-        """Delete the frame's local copy once its outcome is decided."""
-        if not keep_local:
-            (incoming / name).unlink(missing_ok=True)
-
     prefetcher = None
     try:
         # The first frame seeds prepare_batch, so a failed download here is
         # fatal and deliberately propagates. The local copy is left in place:
         # the Prefetcher serves it from disk instead of downloading it twice.
+        first_start = time.monotonic()
         first_local = fetch_remote_file(remote, names[0], incoming)
+        first_seconds = time.monotonic() - first_start
         prep = prepare_batch(first_local, cnn=cnn, config=config, append_l4=append_l4)
         prefetcher = Prefetcher(remote, names, incoming, workers=download_workers)
+        # The seed download happened outside the Prefetcher; hand it the
+        # duration so the first frame's timing line shows the real transfer
+        # instead of "cached".
+        prefetcher.download_seconds[names[0]] = first_seconds
+        timer = _BatchTimer(prefetcher)
+
+        def _after_frame(name, _status):
+            """Log the frame's timing, then delete its local copy."""
+            timer.record(name)
+            if not keep_local:
+                (incoming / name).unlink(missing_ok=True)
+
         results = process_batch(
             names,
             prep,
@@ -418,9 +564,10 @@ def stream_frames(
             write_frame=write_frame,
             fail_fast=fail_fast,
             write_qa_manifest=write_qa_manifest,
-            fetch=prefetcher.fetch,
+            fetch=timer.timed_fetch,
             after_frame=_after_frame,
         )
+        timer.log_summary()
     finally:
         # Wind the downloads down and remove an owned staging directory
         # whenever the run does not complete -- a fatal first-frame fetch, a

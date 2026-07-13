@@ -1,5 +1,6 @@
 """Unit tests for the rclone streaming transport in ``bandaid.streaming``."""
 
+import logging
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -278,6 +279,45 @@ class TestPrefetcher:
         assert local == tmp_path / names[-1]
         assert names[-1] in recorded
 
+    def test_download_durations_are_recorded_per_name(self, tmp_path):
+        """Each downloaded name's wall time lands in ``download_seconds``."""
+        recorded = []
+        names = ["a.fits", "b.fits"]
+        prefetcher = streaming.Prefetcher(
+            "gdrive:field",
+            names,
+            tmp_path,
+            workers=1,
+            fetch_one=_recording_fetch_one(recorded),
+        )
+        try:
+            for name in names:
+                prefetcher.fetch(name)
+        finally:
+            prefetcher.close()
+
+        assert set(prefetcher.download_seconds) == set(names)
+        assert all(duration >= 0.0 for duration in prefetcher.download_seconds.values())
+
+    def test_cache_served_name_records_no_download(self, tmp_path):
+        """A name served from an existing local file has no download to time."""
+        recorded = []
+        (tmp_path / "a.fits").write_text("already here")
+        prefetcher = streaming.Prefetcher(
+            "gdrive:field",
+            ["a.fits"],
+            tmp_path,
+            workers=1,
+            fetch_one=_recording_fetch_one(recorded),
+        )
+        try:
+            prefetcher.fetch("a.fits")
+        finally:
+            prefetcher.close()
+
+        assert recorded == []
+        assert "a.fits" not in prefetcher.download_seconds
+
     def test_close_is_prompt_and_idempotent(self, tmp_path):
         """close() returns without hanging and tolerates a second call."""
         recorded = []
@@ -527,6 +567,50 @@ class TestStreamFrames:
 
         assert got_names == names
         assert results == {name: tmp_path / name for name in names}
+
+    def test_timing_logged_per_frame_and_summarized(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        """Each frame logs download/stall/bandaid timing, plus an end summary."""
+        names = ["a.fits", "b.fits"]
+        _install_stream_fakes(monkeypatch, names)
+
+        with caplog.at_level(logging.INFO, logger="bandaid"):
+            streaming.stream_frames("gdrive:field", incoming_dir=tmp_path)
+
+        timing = [
+            record.getMessage()
+            for record in caplog.records
+            if record.getMessage().startswith("timing ")
+        ]
+        # One line per frame, then the batch summary.
+        assert len(timing) == len(names) + 1
+        for name, line in zip(names, timing, strict=False):
+            assert line.startswith(f"timing {name}: download ")
+            assert "stall" in line
+            assert "bandaid" in line
+        assert timing[-1].startswith(f"timing summary over {len(names)} frames")
+        assert "download avg" in timing[-1]
+        assert "bandaid avg" in timing[-1]
+
+    def test_timing_marks_cache_served_frames(self, monkeypatch, tmp_path, caplog):
+        """A frame served from a pre-existing local file logs 'cached'."""
+        names = ["a.fits", "b.fits"]
+        _install_stream_fakes(monkeypatch, names)
+        # b.fits survives from a prior --keep run, so the Prefetcher serves it
+        # from disk and there is no download to time.
+        (tmp_path / "b.fits").write_text("kept from a prior run")
+
+        with caplog.at_level(logging.INFO, logger="bandaid"):
+            streaming.stream_frames("gdrive:field", incoming_dir=tmp_path)
+
+        timing = [
+            record.getMessage()
+            for record in caplog.records
+            if record.getMessage().startswith("timing b.fits")
+        ]
+        assert len(timing) == 1
+        assert timing[0].startswith("timing b.fits: download cached")
 
     def test_batch_kwargs_and_hooks_are_forwarded(self, monkeypatch, tmp_path):
         """process_batch receives the streaming hooks and normalized kwargs."""
