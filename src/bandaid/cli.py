@@ -147,83 +147,114 @@ def main():
     """Photometer Smart Telescope frames and inspect instruments/config."""
 
 
+#: The batch-processing options ``process`` and ``stream`` share. The two
+#: commands differ only in where the frames come from (local paths vs. an
+#: rclone remote), so everything downstream of the frame source -- config,
+#: metadata, output layout, verbosity -- is declared once here.
+_PROCESSING_OPTIONS = (
+    click.option(
+        "-o",
+        "--output-dir",
+        default=".",
+        type=click.Path(file_okay=False),
+        show_default=True,
+        help="Directory to write the .star files (and QA manifest) into.",
+    ),
+    click.option(
+        "--instrument",
+        default=None,
+        help="Name of a bundled/registered instrument profile (e.g. Seestar50).",
+    ),
+    click.option(
+        "--profile",
+        default=None,
+        type=click.Path(exists=True, dir_okay=False),
+        help="Path to an instrument-profile JSON file (alternative to --instrument).",
+    ),
+    click.option(
+        "--config",
+        "config_file",
+        default=None,
+        type=click.Path(exists=True, dir_okay=False),
+        help="Path to a full PhotometryConfig JSON file.",
+    ),
+    click.option(
+        "--weights",
+        default=None,
+        type=click.Path(exists=True, dir_okay=False),
+        help="Path to Ballet centroider weights; omit to download the defaults.",
+    ),
+    click.option(
+        "--user-metadata",
+        "metadata_file",
+        default=None,
+        type=click.Path(exists=True, dir_okay=False),
+        help="Path to a JSON object of per-frame user-specific metadata.",
+    ),
+    click.option(
+        "--append-l4/--no-append-l4",
+        default=True,
+        show_default=True,
+        help="Add a full-frame L4 luminance channel to the Bayer masks.",
+    ),
+    click.option(
+        "--fail-fast/--no-fail-fast",
+        default=False,
+        show_default=True,
+        help="Re-raise unexpected per-frame errors instead of skipping the frame.",
+    ),
+    click.option(
+        "--output-format",
+        default="starlist",
+        show_default=True,
+        help="Name of a registered output writer (e.g. starlist).",
+    ),
+    click.option(
+        "--output-suffix",
+        default=".star",
+        show_default=True,
+        help="Suffix for the per-frame output files.",
+    ),
+    click.option(
+        "--qa-manifest/--no-qa-manifest",
+        default=True,
+        show_default=True,
+        help="Write a per-frame QA manifest alongside the per-frame output files.",
+    ),
+    click.option(
+        "-v",
+        "--verbose",
+        count=True,
+        help="Show per-frame progress in the terminal (-vv for debug detail).",
+    ),
+)
+
+
+def _processing_options(command):
+    """
+    Apply the shared batch-processing options to a command.
+
+    Parameters
+    ----------
+    command : collections.abc.Callable
+        The command function being decorated.
+
+    Returns
+    -------
+    collections.abc.Callable
+        The command with every option in `_PROCESSING_OPTIONS` attached, in
+        the same ``--help`` order as if they had been stacked as decorators.
+    """
+    # Decorators apply bottom-up, so reversed() reproduces the stacked-
+    # decorator parameter order (click re-reverses at command creation).
+    for option in reversed(_PROCESSING_OPTIONS):
+        command = option(command)
+    return command
+
+
 @main.command()
 @click.argument("files", nargs=-1, required=True, type=click.Path())
-@click.option(
-    "-o",
-    "--output-dir",
-    default=".",
-    type=click.Path(file_okay=False),
-    show_default=True,
-    help="Directory to write the .star files (and QA manifest) into.",
-)
-@click.option(
-    "--instrument",
-    default=None,
-    help="Name of a bundled/registered instrument profile (e.g. Seestar50).",
-)
-@click.option(
-    "--profile",
-    default=None,
-    type=click.Path(exists=True, dir_okay=False),
-    help="Path to an instrument-profile JSON file (alternative to --instrument).",
-)
-@click.option(
-    "--config",
-    "config_file",
-    default=None,
-    type=click.Path(exists=True, dir_okay=False),
-    help="Path to a full PhotometryConfig JSON file.",
-)
-@click.option(
-    "--weights",
-    default=None,
-    type=click.Path(exists=True, dir_okay=False),
-    help="Path to Ballet centroider weights; omit to download the defaults.",
-)
-@click.option(
-    "--user-metadata",
-    "metadata_file",
-    default=None,
-    type=click.Path(exists=True, dir_okay=False),
-    help="Path to a JSON object of per-frame user-specific metadata.",
-)
-@click.option(
-    "--append-l4/--no-append-l4",
-    default=True,
-    show_default=True,
-    help="Add a full-frame L4 luminance channel to the Bayer masks.",
-)
-@click.option(
-    "--fail-fast/--no-fail-fast",
-    default=False,
-    show_default=True,
-    help="Re-raise unexpected per-frame errors instead of skipping the frame.",
-)
-@click.option(
-    "--output-format",
-    default="starlist",
-    show_default=True,
-    help="Name of a registered output writer (e.g. starlist).",
-)
-@click.option(
-    "--output-suffix",
-    default=".star",
-    show_default=True,
-    help="Suffix for the per-frame output files.",
-)
-@click.option(
-    "--qa-manifest/--no-qa-manifest",
-    default=True,
-    show_default=True,
-    help="Write a per-frame QA manifest alongside the per-frame output files.",
-)
-@click.option(
-    "-v",
-    "--verbose",
-    count=True,
-    help="Show per-frame progress in the terminal (-vv for debug detail).",
-)
+@_processing_options
 def process(
     files,
     output_dir,
