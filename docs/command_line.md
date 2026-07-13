@@ -76,6 +76,43 @@ the command exits with a non-zero status (a partial failure still exits 0,
 since skipping a bad frame is normal robust-mode operation). New to the
 command? Start with the [getting-started tutorial](getting_started.md).
 
+## `bandaid stream` — photometer frames from an rclone remote
+
+Use `bandaid stream` when the frames live on a remote (say, a Google Drive
+folder an observer shared with you) and the batch is larger than your local
+disk — or you simply don't want to pre-download a whole night before starting.
+Each frame is downloaded just before it is processed (a small pool of
+concurrent downloads keeps the pipeline fed) and deleted once its outcome is
+decided, so local disk holds only a handful of frames at a time. The remote is
+never modified.
+
+Streaming needs [rclone](https://rclone.org) on your `PATH` with a configured
+remote — install it and run `rclone config` once (for example to set up a
+Google Drive remote named `gdrive`). The command errors out with a clear
+message if rclone is missing or the remote can't be listed.
+
+```bash
+# Photometer every FITS frame in a shared Drive folder
+$ bandaid stream "gdrive:My Frames" -o results --user-metadata observer.json -v
+```
+
+`bandaid stream` takes all the `bandaid process` options above, plus three
+streaming-specific ones:
+
+| Option                    | Default    | Meaning                                                              |
+| ------------------------- | ---------- | -------------------------------------------------------------------- |
+| `--incoming DIR`          | a temp dir | Local staging directory for the downloads.                           |
+| `--keep / --no-keep`      | `--no-keep`| Keep each frame's local copy instead of deleting it after processing. |
+| `--download-workers N`    | `2`        | Number of concurrent rclone downloads.                               |
+
+Progress messages, results, and the QA manifest are keyed by the **remote
+frame names**, not the temporary local paths, so the outputs read the same as
+a local `bandaid process` run of those frames. A frame whose download fails is
+skipped and recorded in the QA manifest like any other bad frame; as with
+`process`, the exit status is non-zero only when every frame fails.
+
+To drive the same flow from Python, call `bandaid.streaming.stream_frames`.
+
 ## `bandaid instrument` — inspect instrument profiles
 
 ```bash

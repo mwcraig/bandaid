@@ -20,6 +20,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     single directory are written flat as `<stem>.star`; frames from a mix of
     directories mirror the source tree as `<dirname>/<stem>.star`, keeping
     identically named frames distinct without mangling their names.
+- `bandaid stream REMOTE` photometers FITS frames straight from an rclone
+    remote (e.g. a shared Google Drive folder), for batches larger than the
+    local disk: each frame is downloaded just before processing with a small
+    bounded prefetch pool and deleted after its outcome is decided; the remote
+    is never modified. It shares all of `bandaid process`'s options plus
+    `--incoming` (staging dir, default a temp dir), `--keep/--no-keep`
+    (default `--no-keep`), and `--download-workers` (default 2). Requires
+    rclone on `PATH` with a configured remote and errors cleanly otherwise.
+    Logs, results, and the QA manifest are keyed by the remote frame names; a
+    failed download is skipped and recorded like any other bad frame, and the
+    exit status is non-zero only if every frame fails (the `process`
+    contract). Available from Python as `bandaid.streaming.stream_frames`.
+    See `docs/command_line.md`.
 - A tiered, pydantic-validated `PhotometryConfig` (with `ApertureConfig`,
     `SourceSelectionConfig`, `DriftConfig`, and `InstrumentProfile`) makes the
     photometry tuning parameters configurable. `prepare_batch` accepts a
