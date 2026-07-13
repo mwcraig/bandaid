@@ -130,3 +130,165 @@ class TestFetchRemoteFile:
             streaming.fetch_remote_file("gdrive:field", "bad.fits", tmp_path)
 
         assert not (tmp_path / "bad.fits").exists()
+
+
+def _recording_fetch_one(recorded, fail=()):
+    """
+    Build a blocking-free ``fetch_one`` fake for `Prefetcher` tests.
+
+    The fake records each downloaded name in ``recorded``, raises a
+    `RemoteFetchError` for names in ``fail``, and otherwise writes a small
+    file at the destination and returns its path -- the same contract as
+    ``fetch_remote_file``.
+    """
+
+    def fetch_one(_remote, name, dest_dir):
+        recorded.append(name)
+        if name in fail:
+            msg = "rclone copyto failed"
+            raise RemoteFetchError(msg, file=name)
+        local = Path(dest_dir) / name
+        local.write_text("frame data")
+        return local
+
+    return fetch_one
+
+
+class TestPrefetcher:
+    """Unit tests for the bounded look-ahead ``Prefetcher``."""
+
+    def test_downloads_run_in_listing_order(self, tmp_path):
+        """Names download in listing order (a single worker serializes them)."""
+        recorded = []
+        names = [f"frame{i}.fits" for i in range(5)]
+        prefetcher = streaming.Prefetcher(
+            "gdrive:field",
+            names,
+            tmp_path,
+            workers=1,
+            fetch_one=_recording_fetch_one(recorded),
+        )
+        try:
+            for name in names:
+                assert prefetcher.fetch(name) == tmp_path / name
+        finally:
+            prefetcher.close()
+
+        assert recorded == names
+
+    def test_lookahead_bounds_outstanding_submissions(self, tmp_path):
+        """Only the first ``2 * workers`` names are in flight after construction."""
+        recorded = []
+        names = [f"frame{i}.fits" for i in range(10)]
+        prefetcher = streaming.Prefetcher(
+            "gdrive:field",
+            names,
+            tmp_path,
+            workers=2,
+            fetch_one=_recording_fetch_one(recorded),
+        )
+        try:
+            # The private futures map is the only race-free view of what has
+            # been submitted; anything execution-based races the pool.
+            assert set(prefetcher._futures) == set(names[:4])  # noqa: SLF001
+        finally:
+            prefetcher.close()
+
+    def test_fetch_tops_the_queue_back_up(self, tmp_path):
+        """Serving one name promotes the next listed name into the window."""
+        recorded = []
+        names = ["a.fits", "b.fits", "c.fits", "d.fits"]
+        prefetcher = streaming.Prefetcher(
+            "gdrive:field",
+            names,
+            tmp_path,
+            workers=1,
+            lookahead=2,
+            fetch_one=_recording_fetch_one(recorded),
+        )
+        try:
+            assert set(prefetcher._futures) == {"a.fits", "b.fits"}  # noqa: SLF001
+
+            local = prefetcher.fetch("a.fits")
+
+            assert local == tmp_path / "a.fits"
+            assert "c.fits" in prefetcher._futures  # noqa: SLF001
+            assert "d.fits" not in prefetcher._futures  # noqa: SLF001
+        finally:
+            prefetcher.close()
+
+    def test_existing_local_file_served_without_download(self, tmp_path):
+        """A file already in incoming (the prep frame) is never re-fetched."""
+        recorded = []
+        names = ["a.fits", "b.fits"]
+        (tmp_path / "a.fits").write_text("already here")
+        prefetcher = streaming.Prefetcher(
+            "gdrive:field",
+            names,
+            tmp_path,
+            workers=1,
+            fetch_one=_recording_fetch_one(recorded),
+        )
+        try:
+            local = prefetcher.fetch("a.fits")
+        finally:
+            prefetcher.close()
+
+        assert local == tmp_path / "a.fits"
+        assert local.read_text() == "already here"
+        # close() waited for the pool, so recorded is complete: only b.fits.
+        assert "a.fits" not in recorded
+
+    def test_failed_download_poisons_only_its_own_fetch(self, tmp_path):
+        """One RemoteFetchError raises from that fetch; later names still arrive."""
+        recorded = []
+        names = ["bad.fits", "good.fits"]
+        prefetcher = streaming.Prefetcher(
+            "gdrive:field",
+            names,
+            tmp_path,
+            workers=1,
+            fetch_one=_recording_fetch_one(recorded, fail={"bad.fits"}),
+        )
+        try:
+            with pytest.raises(RemoteFetchError, match="rclone copyto failed"):
+                prefetcher.fetch("bad.fits")
+
+            assert prefetcher.fetch("good.fits") == tmp_path / "good.fits"
+        finally:
+            prefetcher.close()
+
+    def test_unqueued_name_is_fetched_synchronously(self, tmp_path):
+        """A name outside the look-ahead window is downloaded on demand."""
+        recorded = []
+        names = [f"frame{i}.fits" for i in range(8)]
+        prefetcher = streaming.Prefetcher(
+            "gdrive:field",
+            names,
+            tmp_path,
+            workers=1,
+            lookahead=2,
+            fetch_one=_recording_fetch_one(recorded),
+        )
+        try:
+            local = prefetcher.fetch(names[-1])
+        finally:
+            prefetcher.close()
+
+        assert local == tmp_path / names[-1]
+        assert names[-1] in recorded
+
+    def test_close_is_prompt_and_idempotent(self, tmp_path):
+        """close() returns without hanging and tolerates a second call."""
+        recorded = []
+        names = [f"frame{i}.fits" for i in range(6)]
+        prefetcher = streaming.Prefetcher(
+            "gdrive:field",
+            names,
+            tmp_path,
+            workers=2,
+            fetch_one=_recording_fetch_one(recorded),
+        )
+
+        prefetcher.close()
+        prefetcher.close()
