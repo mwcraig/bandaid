@@ -292,3 +292,184 @@ class TestPrefetcher:
 
         prefetcher.close()
         prefetcher.close()
+
+
+def _install_stream_fakes(monkeypatch, names):
+    """
+    Patch ``stream_frames``'s collaborators with recording fakes.
+
+    The fake ``fetch_remote_file`` writes a small file at the destination (so
+    local copies really exist on disk), ``prepare_batch`` records its call and
+    returns a sentinel, and ``process_batch`` drives the passed ``fetch``/
+    ``after_frame`` hooks once per name -- mimicking the real per-frame loop
+    so the delete-after-process contract is exercised. Returns a namespace
+    recording everything the fakes saw.
+    """
+    rec = SimpleNamespace(
+        fetched=[],
+        prep_args=[],
+        batch=None,
+        exists_before_after_frame=[],
+        exists_after_after_frame=[],
+    )
+    monkeypatch.setattr(streaming, "list_remote_fits", lambda _remote: list(names))
+    monkeypatch.setattr(streaming, "Ballet", lambda **_kwargs: object())
+
+    def fake_fetch(_remote, name, dest_dir):
+        rec.fetched.append(name)
+        local = Path(dest_dir) / name
+        local.write_text("frame data")
+        return local
+
+    monkeypatch.setattr(streaming, "fetch_remote_file", fake_fetch)
+
+    def fake_prepare_batch(first_local, **kwargs: object):
+        rec.prep_args.append((Path(first_local), kwargs))
+        return "prep-sentinel"
+
+    monkeypatch.setattr(streaming, "prepare_batch", fake_prepare_batch)
+
+    def fake_process_batch(files, prep, *, fetch, after_frame, **kwargs: object):
+        rec.batch = {
+            "files": list(files),
+            "prep": prep,
+            "fetch": fetch,
+            "after_frame": after_frame,
+            **kwargs,
+        }
+        results = {}
+        for name in files:
+            local = fetch(name)
+            rec.exists_before_after_frame.append(local.exists())
+            after_frame(name, "ok")
+            rec.exists_after_after_frame.append(local.exists())
+            results[name] = local
+        return results
+
+    monkeypatch.setattr(streaming, "process_batch", fake_process_batch)
+    return rec
+
+
+class TestStreamFrames:
+    """Unit tests for the ``stream_frames`` orchestration."""
+
+    def test_local_copies_deleted_after_each_frame_by_default(
+        self, monkeypatch, tmp_path
+    ):
+        """Each frame's incoming copy exists while processed and is gone after."""
+        names = ["a.fits", "b.fits"]
+        rec = _install_stream_fakes(monkeypatch, names)
+        incoming = tmp_path / "incoming"
+
+        streaming.stream_frames("gdrive:field", incoming_dir=incoming)
+
+        assert rec.exists_before_after_frame == [True, True]
+        assert rec.exists_after_after_frame == [False, False]
+
+    def test_keep_local_retains_the_downloads(self, monkeypatch, tmp_path):
+        """With keep_local=True every frame's local copy survives the run."""
+        names = ["a.fits", "b.fits"]
+        rec = _install_stream_fakes(monkeypatch, names)
+        incoming = tmp_path / "incoming"
+
+        streaming.stream_frames("gdrive:field", incoming_dir=incoming, keep_local=True)
+
+        assert rec.exists_after_after_frame == [True, True]
+        assert sorted(p.name for p in incoming.iterdir()) == names
+
+    def test_user_incoming_dir_is_created_and_preserved(self, monkeypatch, tmp_path):
+        """A user-supplied incoming dir is made if needed and never removed."""
+        _install_stream_fakes(monkeypatch, ["a.fits"])
+        incoming = tmp_path / "deep" / "incoming"
+
+        streaming.stream_frames("gdrive:field", incoming_dir=incoming)
+
+        assert incoming.is_dir()
+
+    def test_owned_temp_incoming_dir_removed_on_return(self, monkeypatch):
+        """With no incoming_dir a bandaid-stream temp dir is made, then removed."""
+        rec = _install_stream_fakes(monkeypatch, ["a.fits"])
+
+        streaming.stream_frames("gdrive:field")
+
+        temp_dir = rec.prep_args[0][0].parent
+        assert temp_dir.name.startswith("bandaid-stream-")
+        assert not temp_dir.exists()
+
+    def test_owned_temp_dir_removed_when_process_batch_raises(self, monkeypatch):
+        """A mid-batch crash still cleans up the owned temp directory."""
+        rec = _install_stream_fakes(monkeypatch, ["a.fits"])
+
+        def boom(*_args: object, **_kwargs: object):
+            msg = "mid-batch crash"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(streaming, "process_batch", boom)
+
+        with pytest.raises(RuntimeError, match="mid-batch crash"):
+            streaming.stream_frames("gdrive:field")
+
+        temp_dir = rec.prep_args[0][0].parent
+        assert not temp_dir.exists()
+
+    def test_empty_listing_raises_before_any_prep(self, monkeypatch):
+        """An empty remote is a ValueError and never fetches or preps."""
+        rec = _install_stream_fakes(monkeypatch, [])
+
+        with pytest.raises(ValueError, match="no FITS frames found on the remote"):
+            streaming.stream_frames("gdrive:field")
+
+        assert rec.fetched == []
+        assert rec.prep_args == []
+
+    def test_first_frame_fetch_failure_is_fatal(self, monkeypatch, tmp_path):
+        """A RemoteFetchError on the prep frame propagates; no prep is built."""
+        rec = _install_stream_fakes(monkeypatch, ["a.fits"])
+
+        def failing_fetch(_remote, name, _dest_dir):
+            msg = "rclone copyto failed"
+            raise RemoteFetchError(msg, file=name)
+
+        monkeypatch.setattr(streaming, "fetch_remote_file", failing_fetch)
+
+        with pytest.raises(RemoteFetchError, match="rclone copyto failed"):
+            streaming.stream_frames("gdrive:field", incoming_dir=tmp_path)
+
+        assert rec.prep_args == []
+
+    def test_returns_names_and_process_batch_results(self, monkeypatch, tmp_path):
+        """The remote listing and the batch results pass straight through."""
+        names = ["a.fits", "b.fits"]
+        _install_stream_fakes(monkeypatch, names)
+
+        got_names, results = streaming.stream_frames(
+            "gdrive:field", incoming_dir=tmp_path
+        )
+
+        assert got_names == names
+        assert results == {name: tmp_path / name for name in names}
+
+    def test_batch_kwargs_and_hooks_are_forwarded(self, monkeypatch, tmp_path):
+        """process_batch receives the streaming hooks and normalized kwargs."""
+        rec = _install_stream_fakes(monkeypatch, ["a.fits"])
+
+        streaming.stream_frames(
+            "gdrive:field",
+            incoming_dir=tmp_path,
+            output_dir="out",
+            output_suffix=".starlist",
+            fail_fast=True,
+            write_qa_manifest=False,
+        )
+
+        assert rec.batch["files"] == ["a.fits"]
+        assert rec.batch["prep"] == "prep-sentinel"
+        # user_specific_metadata=None is normalized to an empty dict...
+        assert rec.batch["user_specific_metadata"] == {}
+        # ...and the streaming hooks really reach process_batch.
+        assert callable(rec.batch["fetch"])
+        assert callable(rec.batch["after_frame"])
+        assert rec.batch["output_dir"] == "out"
+        assert rec.batch["output_suffix"] == ".starlist"
+        assert rec.batch["fail_fast"] is True
+        assert rec.batch["write_qa_manifest"] is False

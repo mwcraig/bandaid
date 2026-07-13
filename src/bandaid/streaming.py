@@ -10,17 +10,24 @@ shell) so the user's already-configured remotes, credentials, and retry
 behaviour are reused with zero new Python dependencies.
 """
 
+import shutil
 import subprocess
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from eloy.ballet.model import Ballet
+
+from .config import PhotometryConfig
 from .exceptions import RemoteFetchError
-from .scripts import _is_fits
+from .scripts import _is_fits, _quiet_hf_xet, prepare_batch, process_batch
+from .writers import write_starlist_set
 
 __all__ = [
     "Prefetcher",
     "fetch_remote_file",
     "list_remote_fits",
+    "stream_frames",
 ]
 
 
@@ -241,3 +248,153 @@ class Prefetcher:
         """
         self._executor.shutdown(wait=True, cancel_futures=True)
         self._futures.clear()
+
+
+def stream_frames(
+    remote,
+    *,
+    config=None,
+    cnn=None,
+    weights=None,
+    user_specific_metadata=None,
+    append_l4=True,
+    output_dir=".",
+    output_suffix=".star",
+    write_frame=write_starlist_set,
+    fail_fast=False,
+    write_qa_manifest=True,
+    incoming_dir=None,
+    keep_local=False,
+    download_workers=2,
+):
+    """
+    Photometer every FITS frame on an rclone remote, downloading just in time.
+
+    The streaming counterpart of `bandaid.scripts.photometer_frames` and the
+    convenience behind ``bandaid stream``: it lists the remote, builds the
+    Ballet centroider, fetches the first frame to seed `prepare_batch`, and
+    runs `process_batch` over the remote *names* with a `Prefetcher` supplying
+    each frame's bytes just before they are needed and deleting them once the
+    frame's outcome is decided. Local disk therefore holds only a handful of
+    frames at a time, so a batch far larger than the disk can be processed;
+    the remote is never modified.
+
+    Parameters
+    ----------
+    remote : str
+        The rclone remote path holding the frames, e.g.
+        ``"gdrive:LS Psc from Rick"``.
+    config : PhotometryConfig or None, optional
+        Configuration carried through the batch. None (default) uses a
+        default `PhotometryConfig` (Seestar50).
+    cnn : object or None, optional
+        A pre-built Ballet centroider. None (default) builds one from
+        ``weights``.
+    weights : str or None, optional
+        Path to Ballet weights used when ``cnn`` is None; None downloads the
+        defaults from HuggingFace.
+    user_specific_metadata : dict or None, optional
+        Per-frame user metadata recorded with each output. None (default) is
+        an empty dict.
+    append_l4 : bool, optional
+        Whether to add a full-frame L4 luminance channel to the Bayer masks.
+        Default True.
+    output_dir : str or pathlib.Path or None, optional
+        Directory to write the per-frame ``.star`` files (and QA manifest)
+        into. Default ``"."``; None runs in in-memory mode (see
+        `bandaid.scripts.process_batch`).
+    output_suffix : str, optional
+        Suffix for the per-frame output files. Default ``".star"``.
+    write_frame : collections.abc.Callable, optional
+        Per-frame writer used in write-to-disk mode (see
+        `bandaid.scripts.process_batch` and `bandaid.writers`). Default
+        `write_starlist_set` (the ``.star`` format).
+    fail_fast : bool, optional
+        Whether to re-raise unexpected per-frame errors instead of skipping
+        the frame. Default False (the robust mode for unattended runs).
+    write_qa_manifest : bool, optional
+        Whether to write a per-frame QA manifest alongside the outputs.
+        Default True.
+    incoming_dir : str or pathlib.Path or None, optional
+        Local staging directory for the downloads. A given directory is
+        created if needed and left in place afterwards (only the per-frame
+        files are cleaned up); None (default) uses a fresh temporary
+        directory that is removed when the run ends.
+    keep_local : bool, optional
+        Whether to keep each frame's local copy instead of deleting it after
+        the frame's outcome is decided. Default False -- deleting is the
+        point of streaming. True also preserves an owned temporary
+        ``incoming_dir``.
+    download_workers : int, optional
+        Number of concurrent download threads for the `Prefetcher`. Default
+        2; the look-ahead is derived from it (``2 * workers``).
+
+    Returns
+    -------
+    tuple of (list of str, dict)
+        The remote frame names and the `process_batch` result mapping (each
+        successfully-processed name to its output). A frame whose download
+        fails mid-batch is skipped like any other per-frame failure and
+        recorded in the QA manifest.
+
+    Raises
+    ------
+    ValueError
+        If the remote holds no FITS frames. A failure to list the remote
+        (`subprocess.CalledProcessError`) or to fetch the *first* frame
+        (`RemoteFetchError`) also propagates -- there is no batch without
+        prep.
+    """
+    names = list_remote_fits(remote)
+    if not names:
+        msg = f"no FITS frames found on the remote {remote!r}"
+        raise ValueError(msg)
+
+    # The incoming directory is *owned* (and so removed at the end) only when
+    # this run created it; a user-supplied directory is theirs to keep.
+    owns_incoming = incoming_dir is None
+    if owns_incoming:
+        incoming = Path(tempfile.mkdtemp(prefix="bandaid-stream-"))
+    else:
+        incoming = Path(incoming_dir)
+        incoming.mkdir(parents=True, exist_ok=True)
+
+    config = config or PhotometryConfig()
+    if cnn is None:
+        _quiet_hf_xet()
+        cnn = Ballet(model_file=weights)
+
+    # The first frame seeds prepare_batch, so a failed download here is fatal
+    # and deliberately propagates. The local copy is left in place: the
+    # Prefetcher serves it from disk instead of downloading it twice.
+    first_local = fetch_remote_file(remote, names[0], incoming)
+    prep = prepare_batch(first_local, cnn=cnn, config=config, append_l4=append_l4)
+
+    prefetcher = Prefetcher(remote, names, incoming, workers=download_workers)
+
+    def _after_frame(name, _status):
+        """Delete the frame's local copy once its outcome is decided."""
+        if not keep_local:
+            (incoming / name).unlink(missing_ok=True)
+
+    try:
+        results = process_batch(
+            names,
+            prep,
+            user_specific_metadata=user_specific_metadata or {},
+            output_dir=output_dir,
+            output_suffix=output_suffix,
+            write_frame=write_frame,
+            fail_fast=fail_fast,
+            write_qa_manifest=write_qa_manifest,
+            fetch=prefetcher.fetch,
+            after_frame=_after_frame,
+        )
+    finally:
+        # Wind the downloads down and remove an owned staging directory even
+        # when the batch aborts (fail-fast bug, systemic write failure), so a
+        # crashed run does not leak temp dirs full of FITS frames.
+        prefetcher.close()
+        if owns_incoming and not keep_local:
+            shutil.rmtree(incoming, ignore_errors=True)
+    return names, results
