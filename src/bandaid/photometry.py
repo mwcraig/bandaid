@@ -626,7 +626,8 @@ def _fwhm_from_coords(
     detection opening that yields jittery centroids inflates the FWHM -- and hence the
     photometry aperture, which is sized in FWHM.
 
-    With a ``cnn`` (an ``eloy.centroid.Ballet``), the centers are first refined with
+    With a ``cnn`` (any object with a ``centroid(cutouts) -> (N, 2)`` method,
+    e.g. `~bandaid.ballet_numpy.NumpyBallet`), the centers are first refined with
     `ballet_centroid` and the cutouts are sub-pixel-registered to them before
     stacking, so the measured FWHM tracks the true PSF regardless of the opening.
 
@@ -638,9 +639,10 @@ def _fwhm_from_coords(
         Detected source centers as ``(x, y)`` in pixels.
     max_adu : float
         Saturation ceiling; saturated cutouts are excluded from the fit.
-    cnn : eloy.centroid.Ballet or None, optional
-        If given, re-centroid sources with the CNN and sub-pixel-register the cutouts
-        before fitting. Default None (legacy integer-cutout stack).
+    cnn : object or None, optional
+        Centroiding model: any object with a ``centroid(cutouts) -> (N, 2)``
+        method. If given, re-centroid sources with the CNN and sub-pixel-register
+        the cutouts before fitting. Default None (legacy integer-cutout stack).
     fwhm_cutout_half : int, optional
         Half-width (px) of the square cutout used to build the effective PSF.
         Defaults to ``_FWHM_CUTOUT_HALF`` (a 50x50 window).
@@ -703,10 +705,12 @@ def calibration_sequence(
         *copy* of the data. The returned ``calibrated_data`` is always the
         original unbalanced array, so downstream photometry still measures real
         counts. Default False preserves detection on the raw data.
-    cnn : eloy.centroid.Ballet or None, optional
-        If given, the FWHM is measured by re-centroiding detections with the CNN and
-        sub-pixel-registering their cutouts before the PSF fit, so the FWHM (and the
-        FWHM-sized photometry aperture) is independent of the detection ``opening``.
+    cnn : object or None, optional
+        Centroiding model: any object with a ``centroid(cutouts) -> (N, 2)``
+        method. If given, the FWHM is measured by re-centroiding detections with
+        the CNN and sub-pixel-registering their cutouts before the PSF fit, so
+        the FWHM (and the FWHM-sized photometry aperture) is independent of the
+        detection ``opening``.
         Default None preserves the legacy integer-cutout FWHM. See
         `_fwhm_from_coords`.
     fwhm_cutout_half : int, optional
@@ -1415,8 +1419,9 @@ def centroid_stars(calibrated_data, aligned_coords, cnn):
         Calibrated image data.
     aligned_coords : numpy.ndarray
         Pixel coordinates at which to centroid.
-    cnn : eloy.centroid.Ballet
-        Centroiding CNN model.
+    cnn : object
+        Centroiding CNN model: any object with a ``centroid(cutouts) -> (N, 2)``
+        method.
 
     Returns
     -------
@@ -1699,8 +1704,9 @@ def prepare_image(
         Path to the FITS file.
     radecs : numpy.ndarray
         Gaia reference sky coordinates (RA/Dec) used for WCS alignment.
-    cnn : eloy.centroid.Ballet
-        Centroiding CNN model.
+    cnn : object
+        Centroiding CNN model: any object with a ``centroid(cutouts) -> (N, 2)``
+        method.
     config : PhotometryConfig or None, optional
         Photometry configuration. The ``instrument`` settings (detection
         threshold, opening, and FWHM cutout window) drive the detection call. If
@@ -2001,8 +2007,9 @@ def process_one_image(
         User-specific metadata to include in the output.
     radecs : numpy.ndarray
         Gaia reference sky coordinates (RA/Dec) used for WCS alignment.
-    cnn : eloy.centroid.Ballet
-        Centroiding CNN model.
+    cnn : object
+        Centroiding CNN model: any object with a ``centroid(cutouts) -> (N, 2)``
+        method.
     bayer_masks : dict of {str: numpy.ndarray or None}
         Dictionary mapping each filter name to the Bayer mask to apply to the
         image. The filter name is stamped into each returned table's metadata so

@@ -40,8 +40,9 @@ dependencies = [
     "click",
     "python-dateutil",
     # Pin eloy to a specific commit on mwcraig's fork until the fix is merged in
-    "eloy[jax] @ git+https://github.com/mwcraig/eloy@a056c91a945772e0520a89695f8fcd16fda36870",
+    "eloy @ git+https://github.com/mwcraig/eloy@a056c91a945772e0520a89695f8fcd16fda36870",
     # "eloy @ git+https://github.com/lgrcia/eloy@0b53f23f90b12b33ef21473cbb1a785a819aaeeb",
+    "huggingface_hub",
     "photutils",
     "pydantic>=2",
     "twirl",
@@ -50,8 +51,8 @@ dependencies = [
 
 [project.optional-dependencies]
 # Extras needed to run the Ballet CNN training scripts (src/bandaid/train_ballet_*.py).
-# These come in transitively via eloy[jax], but are declared here so the training
-# scripts are reproducible on their own.
+# Runtime centroiding is numpy-only (bandaid.ballet_numpy), so this extra is the
+# only source of jax/flax/optax -- they are no longer pulled in via eloy.
 train = [
     "jax",
     "flax",

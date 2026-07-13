@@ -17,7 +17,6 @@ functions: no shared mutable state, no "is it done yet?" bookkeeping.
 import csv
 import glob
 import logging
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -26,8 +25,10 @@ from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.time import Time
 from dateutil import parser
-from eloy.ballet.model import Ballet
 
+# _quiet_hf_xet is re-exported for backwards compatibility (tests and callers
+# historically imported it from bandaid.scripts; it now lives in ballet_numpy).
+from .ballet_numpy import NumpyBallet, _quiet_hf_xet  # noqa: F401
 from .catalog import cached_gaia_radecs
 from .config import PhotometryConfig
 from .exceptions import (
@@ -89,23 +90,6 @@ _FITS_SUFFIXES = (
     ".fits.gz",
     ".fts.gz",
 )
-
-
-def _quiet_hf_xet():
-    """
-    Best-effort: silence the native ``hf_xet`` unauthenticated-request warning.
-
-    On the first weights download, ``hf_hub_download`` routes through the native
-    ``hf_xet`` accelerator, which prints a "sending unauthenticated requests to
-    the HF Hub ... faster downloads" line straight to stderr -- not a Python
-    warning or log record, so it cannot be filtered the usual way. Disabling xet
-    keeps the download working (the ``.npz`` is tiny and cached once) and avoids
-    that line. ``setdefault`` so a user who set ``HF_HUB_DISABLE_XET`` (or who
-    wants xet) is never overridden; setting ``HF_TOKEN`` is the fully-correct fix
-    -- it both keeps xet acceleration and silences the warning. Best-effort
-    because the exact behaviour depends on the installed ``hf_xet`` version.
-    """
-    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 
 def _is_fits(path):
@@ -208,7 +192,9 @@ class BatchPrep:
         Contaminant-filtered subset of ``radecs`` used as the centroiding and
         photometry targets.
     cnn : object
-        The ``eloy`` Ballet centroiding model to use for every frame.
+        The centroiding model to use for every frame: any object with a
+        ``centroid(cutouts) -> (N, 2)`` method, such as
+        `~bandaid.ballet_numpy.NumpyBallet`.
     bayer_masks : dict
         Mapping of filter name to Bayer mask, as returned by
         `generate_bayer_masks`.
@@ -384,7 +370,9 @@ def prepare_batch(
         pointing/FOV, plate scale, Bayer pattern, image shape, and FWHM. All
         frames in the batch are assumed to share these.
     cnn : object
-        The ``eloy`` Ballet centroiding model to carry through to every frame.
+        The centroiding model to carry through to every frame: any object with
+        a ``centroid(cutouts) -> (N, 2)`` method, such as
+        `~bandaid.ballet_numpy.NumpyBallet`.
     config : PhotometryConfig or None, optional
         Photometry configuration carried on the returned `BatchPrep` and applied
         to every frame. Its ``instrument`` settings drive the first-frame FWHM
@@ -1085,7 +1073,9 @@ def photometer_frames(
         Configuration carried through the batch. None (default) uses a default
         `PhotometryConfig` (Seestar50).
     cnn : object or None, optional
-        A pre-built Ballet centroider. None (default) builds one from ``weights``.
+        A pre-built centroider: any object with a ``centroid(cutouts) -> (N, 2)``
+        method. None (default) builds a `~bandaid.ballet_numpy.NumpyBallet` from
+        ``weights``.
     weights : str or None, optional
         Path to Ballet weights used when ``cnn`` is None; None downloads the
         defaults from HuggingFace.
@@ -1129,8 +1119,7 @@ def photometer_frames(
 
     config = config or PhotometryConfig()
     if cnn is None:
-        _quiet_hf_xet()
-        cnn = Ballet(model_file=weights)
+        cnn = NumpyBallet(model_file=weights)
 
     prep = prepare_batch(frames[0], cnn=cnn, config=config, append_l4=append_l4)
     results = process_batch(
