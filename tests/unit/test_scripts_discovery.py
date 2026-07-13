@@ -148,7 +148,7 @@ class TestPhotometerFrames:
             calls["process"] = {"files": files, "prep": prep, "kwargs": kwargs}
             return {f: f + ".star" for f in files}
 
-        monkeypatch.setattr(scripts, "Ballet", fake_ballet)
+        monkeypatch.setattr(scripts, "NumpyBallet", fake_ballet)
         monkeypatch.setattr(scripts, "prepare_batch", fake_prepare)
         monkeypatch.setattr(scripts, "process_batch", fake_process)
 
@@ -196,7 +196,9 @@ class TestPhotometerFrames:
 
         calls = {}
         monkeypatch.setattr(
-            scripts, "Ballet", lambda model_file=None: calls.update(ballet=model_file)
+            scripts,
+            "NumpyBallet",
+            lambda model_file=None: calls.update(ballet=model_file),
         )
 
         def fake_prepare(first_file, *, cnn, config=None, append_l4=False):
@@ -237,7 +239,7 @@ class TestPhotometerFrames:
         out = tmp_path / "out"
         inputs = [str(n1), str(n2)]
 
-        monkeypatch.setattr(scripts, "Ballet", lambda model_file=None: object())
+        monkeypatch.setattr(scripts, "NumpyBallet", lambda model_file=None: object())
         monkeypatch.setattr(
             scripts,
             "prepare_batch",
