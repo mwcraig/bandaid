@@ -393,8 +393,14 @@ def stream_frames(
     finally:
         # Wind the downloads down and remove an owned staging directory even
         # when the batch aborts (fail-fast bug, systemic write failure), so a
-        # crashed run does not leak temp dirs full of FITS frames.
-        prefetcher.close()
-        if owns_incoming and not keep_local:
-            shutil.rmtree(incoming, ignore_errors=True)
+        # crashed run does not leak temp dirs full of FITS frames. The removal
+        # is nested in its own finally because close() itself can be
+        # interrupted: a terminal Ctrl-C signals the whole process group (and
+        # `uv run` forwards it besides), so a second KeyboardInterrupt often
+        # lands while close() is still waiting out the in-flight downloads.
+        try:
+            prefetcher.close()
+        finally:
+            if owns_incoming and not keep_local:
+                shutil.rmtree(incoming, ignore_errors=True)
     return names, results

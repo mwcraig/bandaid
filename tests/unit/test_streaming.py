@@ -412,6 +412,28 @@ class TestStreamFrames:
         temp_dir = rec.prep_args[0][0].parent
         assert not temp_dir.exists()
 
+    def test_owned_temp_dir_removed_when_close_is_interrupted(self, monkeypatch):
+        """
+        A Ctrl-C landing inside prefetcher.close() still cleans the temp dir.
+
+        In a terminal the whole process group gets SIGINT (and ``uv run``
+        forwards it besides), so a second KeyboardInterrupt routinely arrives
+        while the finally block is still winding the downloads down; the
+        staging-dir removal must not depend on close() finishing.
+        """
+        rec = _install_stream_fakes(monkeypatch, ["a.fits"])
+
+        def interrupted_close(_self):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(streaming.Prefetcher, "close", interrupted_close)
+
+        with pytest.raises(KeyboardInterrupt):
+            streaming.stream_frames("gdrive:field")
+
+        temp_dir = rec.prep_args[0][0].parent
+        assert not temp_dir.exists()
+
     def test_empty_listing_raises_before_any_prep(self, monkeypatch):
         """An empty remote is a ValueError and never fetches or preps."""
         rec = _install_stream_fakes(monkeypatch, [])
