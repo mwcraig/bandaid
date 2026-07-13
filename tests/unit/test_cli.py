@@ -12,12 +12,14 @@ wiring and the clean-error handling; the engine itself is covered in
 
 import json
 import logging
+import subprocess
 
 import pytest
 from click.testing import CliRunner
 
 from bandaid import cli
 from bandaid.config import InstrumentProfile, PhotometryConfig
+from bandaid.exceptions import RemoteFetchError
 from bandaid.instruments import _REGISTERED, register_instrument
 from bandaid.writers import write_starlist_set
 
@@ -360,6 +362,159 @@ def test_process_non_object_metadata_is_clean_error(runner, tmp_path):
     assert "object" in result.output.lower()
 
 
+@pytest.fixture
+def rclone_on_path(monkeypatch):
+    """Pretend rclone is installed so ``stream`` gets past its upfront check."""
+    monkeypatch.setattr(cli.shutil, "which", lambda _name: "/usr/bin/rclone")
+
+
+@pytest.fixture
+def patched_stream(monkeypatch):
+    """
+    Patch ``cli.stream_frames`` and record how the CLI called it.
+
+    Mirrors ``patched_photometer``: returns a dict of the forwarded arguments,
+    with the fake returning a deliberate frame/result count mismatch so the
+    summary line is testable.
+    """
+    calls = {}
+
+    def fake_stream(remote, **kwargs: object):
+        calls["remote"] = remote
+        calls.update(kwargs)
+        return ["frame1.fit", "frame2.fit"], {"frame1.fit": "frame1.star"}
+
+    monkeypatch.setattr(cli, "stream_frames", fake_stream)
+    return calls
+
+
+@pytest.mark.usefixtures("rclone_on_path")
+def test_stream_forwards_every_flag(runner, patched_stream, tmp_path):
+    """All stream flags reach ``stream_frames`` with the right values."""
+    meta = tmp_path / "meta.json"
+    meta.write_text(json.dumps({"observer": "MWC"}))
+    out_dir = tmp_path / "out"
+    incoming = tmp_path / "incoming"
+
+    result = runner.invoke(
+        cli.main,
+        [
+            "stream",
+            "gdrive:LS Psc from Rick",
+            "--user-metadata",
+            str(meta),
+            "--output-dir",
+            str(out_dir),
+            "--incoming",
+            str(incoming),
+            "--keep",
+            "--download-workers",
+            "4",
+            "--fail-fast",
+            "--output-suffix",
+            ".starlist",
+            "--no-qa-manifest",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    # The remote (spaces and all) is the positional argument.
+    assert patched_stream["remote"] == "gdrive:LS Psc from Rick"
+    assert patched_stream["user_specific_metadata"] == {"observer": "MWC"}
+    assert patched_stream["output_dir"] == str(out_dir)
+    assert patched_stream["incoming_dir"] == str(incoming)
+    assert patched_stream["keep_local"] is True
+    assert patched_stream["download_workers"] == 4  # noqa: PLR2004
+    assert patched_stream["fail_fast"] is True
+    assert patched_stream["write_frame"] is write_starlist_set
+    assert patched_stream["output_suffix"] == ".starlist"
+    assert patched_stream["write_qa_manifest"] is False
+    assert isinstance(patched_stream["config"], PhotometryConfig)
+    assert "Processed 1 of 2 frames" in result.output
+
+
+@pytest.mark.usefixtures("rclone_on_path")
+def test_stream_uses_robust_defaults(runner, patched_stream):
+    """Omitting options streams to a temp dir, deleting each local copy."""
+    result = runner.invoke(cli.main, ["stream", "gdrive:frames"])
+
+    assert result.exit_code == 0, result.output
+    assert patched_stream["incoming_dir"] is None
+    assert patched_stream["keep_local"] is False
+    assert patched_stream["download_workers"] == 2  # noqa: PLR2004
+    assert patched_stream["fail_fast"] is False
+    assert patched_stream["weights"] is None
+    assert patched_stream["user_specific_metadata"] == {}
+    assert patched_stream["write_qa_manifest"] is True
+
+
+def test_stream_missing_rclone_is_clean_error(runner, monkeypatch, patched_stream):
+    """With no rclone on PATH, stream fails up front with a clear message."""
+    monkeypatch.setattr(cli.shutil, "which", lambda _name: None)
+
+    result = runner.invoke(cli.main, ["stream", "gdrive:frames"])
+
+    assert result.exit_code == 1
+    assert "rclone" in result.output
+    # The check runs before any remote work: stream_frames is never reached.
+    assert "remote" not in patched_stream
+
+
+@pytest.mark.usefixtures("rclone_on_path")
+def test_stream_exit_code_reflects_a_fully_failed_batch(runner, monkeypatch):
+    """0 of N streamed frames succeeding exits non-zero, matching process."""
+    monkeypatch.setattr(
+        cli, "stream_frames", lambda _remote, **_kwargs: (["a.fit", "b.fit"], {})
+    )
+
+    result = runner.invoke(cli.main, ["stream", "gdrive:frames"])
+
+    assert "Processed 0 of 2 frames" in result.output
+    assert result.exit_code != 0
+
+
+@pytest.mark.usefixtures("rclone_on_path")
+@pytest.mark.parametrize(
+    "error",
+    [
+        ValueError("no FITS frames found on the remote 'gdrive:frames'"),
+        RemoteFetchError("rclone copyto failed for 'a.fit': quota", file="a.fit"),
+    ],
+    ids=["empty-remote", "first-frame-fetch"],
+)
+def test_stream_transport_errors_are_clean(runner, monkeypatch, error):
+    """A failed listing or fatal first-frame fetch is a clean CLI error."""
+
+    def fake_stream(_remote, **_kwargs: object):
+        raise error
+
+    monkeypatch.setattr(cli, "stream_frames", fake_stream)
+
+    result = runner.invoke(cli.main, ["stream", "gdrive:frames"])
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert str(error) in result.output
+
+
+@pytest.mark.usefixtures("rclone_on_path")
+def test_stream_rclone_failure_shows_stderr(runner, monkeypatch):
+    """An rclone failure surfaces rclone's own stderr in the CLI error."""
+
+    def fake_stream(_remote, **_kwargs: object):
+        raise subprocess.CalledProcessError(
+            3, ["rclone", "lsf"], stderr="didn't find section in config file"
+        )
+
+    monkeypatch.setattr(cli, "stream_frames", fake_stream)
+
+    result = runner.invoke(cli.main, ["stream", "gdrive:nope"])
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "didn't find section in config file" in result.output
+
+
 def test_instrument_list(runner):
     """``instrument list`` prints the resolvable profile names."""
     result = runner.invoke(cli.main, ["instrument", "list"])
@@ -477,9 +632,9 @@ def test_weights_copy_unwritable_is_clean_error(runner, monkeypatch, tmp_path):
 
 
 def test_main_help_lists_commands(runner):
-    """``bandaid --help`` lists all four top-level commands."""
+    """``bandaid --help`` lists all five top-level commands."""
     result = runner.invoke(cli.main, ["--help"])
 
     assert result.exit_code == 0, result.output
-    for command in ("process", "instrument", "config", "weights"):
+    for command in ("process", "stream", "instrument", "config", "weights"):
         assert command in result.output
