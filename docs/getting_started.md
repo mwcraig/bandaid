@@ -38,7 +38,8 @@ preparation from idea 2 — and the rest follow quickly.
 The Ballet centroider needs trained weights. The **first** time you run a
 photometry batch, bandaid downloads the default weights from HuggingFace and the
 HuggingFace hub caches them, so subsequent runs reuse the cached copy with no
-network access.
+network access. The centroider itself runs as a pure-numpy forward pass — no
+GPU or JAX stack is installed or needed.
 
 To pre-fetch the weights (handy before going offline, or to confirm the download
 works) use the `weights` command, which prints the cached path:

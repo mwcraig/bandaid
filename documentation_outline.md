@@ -43,9 +43,10 @@ AAVSO-style photometry, retired Aug 1 2026), the three-bullet mental model above
 ### 2. Installation — `docs/installation.md` 🆕
 
 - `pip install bandaid`; Python ≥ 3.12.
-- Note the git-based dependencies pulled in automatically: `eloy[jax]` (the
-    Ballet centroider, brings JAX) and `aavso-starlist-schema` (the `.star`
-    schema). Both are public.
+- Note the git-based dependencies pulled in automatically: `eloy` (detection and
+    photometry building blocks; centroid inference is pure numpy, no JAX) and
+    `aavso-starlist-schema` (the `.star` schema). Both are public.
+    `huggingface_hub` handles the Ballet weights download.
 - Editable/dev install for contributors.
 - First run downloads the default Ballet **weights** from HuggingFace and caches
     them; pre-fetch with `bandaid weights`, or point at a local `.npz` with

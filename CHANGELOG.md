@@ -56,6 +56,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     sample is empty or has zero variance is now skipped cleanly instead of
     silently dividing by zero during Bayer balancing (#61).
 
+### Changed
+
+- Ballet CNN centroid inference now runs as a pure-numpy forward pass
+    (`bandaid.ballet_numpy.NumpyBallet`), so JAX/Flax/Optax are no longer runtime
+    dependencies: the `eloy[jax]` requirement became plain `eloy` (same pin) plus
+    a direct `huggingface_hub` dependency for the weights download, making
+    installs ~270 MB lighter. Results are identical to the JAX model within
+    float32 round-off, and the `cnn=` pipeline parameter stays duck-typed (any
+    object with a `centroid(cutouts) -> (N, 2)` method still works). The `train`
+    extra still provides JAX for the training scripts.
+
 ### Changed (breaking)
 
 - `measure_photometry` and `build_photometry_table` renamed their keyword-only
