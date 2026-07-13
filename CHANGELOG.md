@@ -31,8 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     Logs, results, and the QA manifest are keyed by the remote frame names; a
     failed download is skipped and recorded like any other bad frame, and the
     exit status is non-zero only if every frame fails (the `process`
-    contract). Available from Python as `bandaid.streaming.stream_frames`.
-    See `docs/command_line.md`.
+    contract). With `-v`, each frame logs download/stall/bandaid timing and
+    the batch ends with a timing summary. Available from Python as
+    `bandaid.streaming.stream_frames`. See `docs/command_line.md`.
 - A tiered, pydantic-validated `PhotometryConfig` (with `ApertureConfig`,
     `SourceSelectionConfig`, `DriftConfig`, and `InstrumentProfile`) makes the
     photometry tuning parameters configurable. `prepare_batch` accepts a

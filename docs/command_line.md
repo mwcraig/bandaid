@@ -111,6 +111,18 @@ a local `bandaid process` run of those frames. A frame whose download fails is
 skipped and recorded in the QA manifest like any other bad frame; as with
 `process`, the exit status is non-zero only when every frame fails.
 
+With `-v`, each frame also logs its timing — the download's transfer time, the
+*stall* (how long processing sat waiting for the download; consistently large
+stalls mean `--download-workers` could go up), and the *bandaid* time spent
+photometering and writing — followed by a whole-batch summary:
+
+```text
+timing frame_0042.fit: download 3.1 s, stall 0.2 s, bandaid 0.9 s
+...
+timing summary over 1545 frames: download avg 3.2 s (total 4944.0 s),
+stall avg 0.3 s (total 463.5 s), bandaid avg 0.9 s (total 1390.5 s)
+```
+
 To drive the same flow from Python, call `bandaid.streaming.stream_frames`.
 
 ## `bandaid instrument` — inspect instrument profiles
