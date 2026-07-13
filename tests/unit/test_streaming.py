@@ -294,6 +294,11 @@ class TestPrefetcher:
         prefetcher.close()
 
 
+def _interrupted_close(_self):
+    """Stand-in for ``Prefetcher.close`` hit by a second Ctrl-C mid-shutdown."""
+    raise KeyboardInterrupt
+
+
 def _install_stream_fakes(monkeypatch, names):
     """
     Patch ``stream_frames``'s collaborators with recording fakes.
@@ -422,16 +427,42 @@ class TestStreamFrames:
         staging-dir removal must not depend on close() finishing.
         """
         rec = _install_stream_fakes(monkeypatch, ["a.fits"])
-
-        def interrupted_close(_self):
-            raise KeyboardInterrupt
-
-        monkeypatch.setattr(streaming.Prefetcher, "close", interrupted_close)
+        monkeypatch.setattr(streaming.Prefetcher, "close", _interrupted_close)
 
         with pytest.raises(KeyboardInterrupt):
             streaming.stream_frames("gdrive:field")
 
         temp_dir = rec.prep_args[0][0].parent
+        assert not temp_dir.exists()
+
+    def test_atexit_net_cleans_a_dir_recreated_by_a_late_worker(self, monkeypatch):
+        """
+        The atexit handler removes an owned dir a worker recreated post-rmtree.
+
+        When close() is interrupted, still-running downloads can finish *after*
+        the in-line rmtree and recreate the staging dir (rclone creates
+        destination parents). The interpreter joins those threads at exit,
+        before atexit handlers run, so a registered handler is the one cleanup
+        that is guaranteed to see the dir's final state.
+        """
+        rec = _install_stream_fakes(monkeypatch, ["a.fits"])
+        registered = []
+        monkeypatch.setattr(
+            streaming.atexit, "register", lambda func: registered.append(func) or func
+        )
+        monkeypatch.setattr(streaming.Prefetcher, "close", _interrupted_close)
+
+        with pytest.raises(KeyboardInterrupt):
+            streaming.stream_frames("gdrive:field")
+
+        temp_dir = rec.prep_args[0][0].parent
+        assert not temp_dir.exists()
+        # A late worker recreates the dir after the in-line rmtree ran ...
+        temp_dir.mkdir()
+        (temp_dir / "late.fits").write_text("frame data")
+        # ... and the registered exit handler still removes it.
+        assert len(registered) == 1
+        registered[0]()
         assert not temp_dir.exists()
 
     def test_empty_listing_raises_before_any_prep(self, monkeypatch):
@@ -458,6 +489,32 @@ class TestStreamFrames:
             streaming.stream_frames("gdrive:field", incoming_dir=tmp_path)
 
         assert rec.prep_args == []
+
+    def test_owned_temp_dir_removed_on_fatal_first_frame_failure(
+        self, monkeypatch, tmp_path
+    ):
+        """A fatal failure before the batch starts still removes the owned dir."""
+        _install_stream_fakes(monkeypatch, ["a.fits"])
+        made = []
+
+        def fake_mkdtemp(prefix):
+            made.append(tmp_path / f"{prefix}owned")
+            made[-1].mkdir()
+            return str(made[-1])
+
+        monkeypatch.setattr(streaming.tempfile, "mkdtemp", fake_mkdtemp)
+
+        def failing_fetch(_remote, name, _dest_dir):
+            msg = "rclone copyto failed"
+            raise RemoteFetchError(msg, file=name)
+
+        monkeypatch.setattr(streaming, "fetch_remote_file", failing_fetch)
+
+        with pytest.raises(RemoteFetchError, match="rclone copyto failed"):
+            streaming.stream_frames("gdrive:field")
+
+        assert made
+        assert not made[0].exists()
 
     def test_returns_names_and_process_batch_results(self, monkeypatch, tmp_path):
         """The remote listing and the batch results pass straight through."""

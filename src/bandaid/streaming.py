@@ -10,6 +10,7 @@ shell) so the user's already-configured remotes, credentials, and retry
 behaviour are reused with zero new Python dependencies.
 """
 
+import atexit
 import shutil
 import subprocess
 import tempfile
@@ -250,6 +251,30 @@ class Prefetcher:
         self._futures.clear()
 
 
+def _resolve_incoming_dir(incoming_dir):
+    """
+    Resolve the staging directory and whether this run owns it.
+
+    An *owned* directory (one this run created because the caller gave none)
+    is removed when the run ends; a user-supplied directory is theirs to keep.
+
+    Parameters
+    ----------
+    incoming_dir : str or pathlib.Path or None
+        The caller's staging directory, or None for a fresh temporary one.
+
+    Returns
+    -------
+    tuple of (pathlib.Path, bool)
+        The directory (created if needed) and whether this run owns it.
+    """
+    if incoming_dir is None:
+        return Path(tempfile.mkdtemp(prefix="bandaid-stream-")), True
+    incoming = Path(incoming_dir)
+    incoming.mkdir(parents=True, exist_ok=True)
+    return incoming, False
+
+
 def stream_frames(
     remote,
     *,
@@ -350,34 +375,40 @@ def stream_frames(
         msg = f"no FITS frames found on the remote {remote!r}"
         raise ValueError(msg)
 
-    # The incoming directory is *owned* (and so removed at the end) only when
-    # this run created it; a user-supplied directory is theirs to keep.
-    owns_incoming = incoming_dir is None
-    if owns_incoming:
-        incoming = Path(tempfile.mkdtemp(prefix="bandaid-stream-"))
-    else:
-        incoming = Path(incoming_dir)
-        incoming.mkdir(parents=True, exist_ok=True)
+    incoming, owns_incoming = _resolve_incoming_dir(incoming_dir)
+
+    def _remove_incoming():
+        """Remove the owned staging directory, tolerating its absence."""
+        shutil.rmtree(incoming, ignore_errors=True)
+
+    if owns_incoming and not keep_local:
+        # Safety net for an interrupted shutdown: a download thread still in
+        # flight when the in-line rmtree below runs can finish afterwards and
+        # recreate the directory (rclone creates destination parents). The
+        # interpreter joins those threads at exit *before* atexit handlers
+        # run, so this handler is the one cleanup guaranteed to see the
+        # directory's final state. Harmless when the in-line rmtree already
+        # succeeded.
+        atexit.register(_remove_incoming)
 
     config = config or PhotometryConfig()
     if cnn is None:
         _quiet_hf_xet()
         cnn = Ballet(model_file=weights)
 
-    # The first frame seeds prepare_batch, so a failed download here is fatal
-    # and deliberately propagates. The local copy is left in place: the
-    # Prefetcher serves it from disk instead of downloading it twice.
-    first_local = fetch_remote_file(remote, names[0], incoming)
-    prep = prepare_batch(first_local, cnn=cnn, config=config, append_l4=append_l4)
-
-    prefetcher = Prefetcher(remote, names, incoming, workers=download_workers)
-
     def _after_frame(name, _status):
         """Delete the frame's local copy once its outcome is decided."""
         if not keep_local:
             (incoming / name).unlink(missing_ok=True)
 
+    prefetcher = None
     try:
+        # The first frame seeds prepare_batch, so a failed download here is
+        # fatal and deliberately propagates. The local copy is left in place:
+        # the Prefetcher serves it from disk instead of downloading it twice.
+        first_local = fetch_remote_file(remote, names[0], incoming)
+        prep = prepare_batch(first_local, cnn=cnn, config=config, append_l4=append_l4)
+        prefetcher = Prefetcher(remote, names, incoming, workers=download_workers)
         results = process_batch(
             names,
             prep,
@@ -391,16 +422,23 @@ def stream_frames(
             after_frame=_after_frame,
         )
     finally:
-        # Wind the downloads down and remove an owned staging directory even
-        # when the batch aborts (fail-fast bug, systemic write failure), so a
+        # Wind the downloads down and remove an owned staging directory
+        # whenever the run does not complete -- a fatal first-frame fetch, a
+        # prep failure, a fail-fast bug, a systemic write failure -- so a
         # crashed run does not leak temp dirs full of FITS frames. The removal
         # is nested in its own finally because close() itself can be
         # interrupted: a terminal Ctrl-C signals the whole process group (and
         # `uv run` forwards it besides), so a second KeyboardInterrupt often
         # lands while close() is still waiting out the in-flight downloads.
         try:
-            prefetcher.close()
+            if prefetcher is not None:
+                prefetcher.close()
         finally:
             if owns_incoming and not keep_local:
-                shutil.rmtree(incoming, ignore_errors=True)
+                _remove_incoming()
+    # The run completed and the in-line cleanup ran, so the exit-time safety
+    # net has nothing left to do; dropping it keeps handlers from piling up
+    # in a long-lived process that streams many batches.
+    if owns_incoming and not keep_local:
+        atexit.unregister(_remove_incoming)
     return names, results
