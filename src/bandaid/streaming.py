@@ -390,17 +390,23 @@ class _BatchTimer:
         )
 
 
-def _resolve_incoming_dir(incoming_dir):
+def _resolve_incoming_dir(incoming_dir, keep_local):
     """
     Resolve the staging directory and whether this run owns it.
 
     An *owned* directory (one this run created because the caller gave none)
     is removed when the run ends; a user-supplied directory is theirs to keep.
+    An owned directory that ``keep_local`` will preserve is announced at INFO:
+    the caller never named it, so without the log line the kept frames would
+    sit in an unfindable temp dir.
 
     Parameters
     ----------
     incoming_dir : str or pathlib.Path or None
         The caller's staging directory, or None for a fresh temporary one.
+    keep_local : bool
+        Whether the run will keep the downloaded frames (and therefore an
+        owned temporary directory) instead of deleting them.
 
     Returns
     -------
@@ -408,7 +414,10 @@ def _resolve_incoming_dir(incoming_dir):
         The directory (created if needed) and whether this run owns it.
     """
     if incoming_dir is None:
-        return Path(tempfile.mkdtemp(prefix="bandaid-stream-")), True
+        incoming = Path(tempfile.mkdtemp(prefix="bandaid-stream-"))
+        if keep_local:
+            logger.info("keeping downloaded frames in %s", incoming)
+        return incoming, True
     incoming = Path(incoming_dir)
     incoming.mkdir(parents=True, exist_ok=True)
     return incoming, False
@@ -519,7 +528,8 @@ def stream_frames(
         Whether to keep each frame's local copy instead of deleting it after
         the frame's outcome is decided. Default False -- deleting is the
         point of streaming. True also preserves an owned temporary
-        ``incoming_dir``.
+        ``incoming_dir``, whose path is logged at INFO so the kept frames
+        can be found.
     download_workers : int, optional
         Number of concurrent download threads for the `Prefetcher`. Default
         2; the look-ahead is derived from it (``2 * workers``).
@@ -549,7 +559,7 @@ def stream_frames(
     # a failed weights download must not leave an owned temp dir behind.
     config, cnn = _resolve_batch_inputs(config, cnn, weights)
 
-    incoming, owns_incoming = _resolve_incoming_dir(incoming_dir)
+    incoming, owns_incoming = _resolve_incoming_dir(incoming_dir, keep_local)
     cleanup_incoming = owns_incoming and not keep_local
 
     def _remove_incoming():

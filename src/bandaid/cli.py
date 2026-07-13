@@ -36,7 +36,7 @@ from eloy.ballet.model import download_weights
 from pydantic import ValidationError
 
 from .config import InstrumentProfile, PhotometryConfig
-from .exceptions import RemoteFetchError
+from .exceptions import BatchPrepError, RemoteFetchError
 from .instruments import available_instruments, load_instrument
 from .logging_setup import configure_logging
 from .scripts import QA_MANIFEST_FILENAME, _quiet_hf_xet, photometer_frames
@@ -145,6 +145,35 @@ def _load_metadata(metadata_file):
         msg = "--user-metadata must be a JSON object"
         raise click.ClickException(msg)
     return data
+
+
+def _resolve_writer(output_format):
+    """
+    Resolve ``--output-format`` to its registered writer callable.
+
+    Resolved up front so an unknown name fails before any (expensive) frame
+    processing, as a clean CLI error rather than a traceback.
+
+    Parameters
+    ----------
+    output_format : str
+        Name passed to ``--output-format``, resolved with
+        :func:`~bandaid.writers.get_writer`.
+
+    Returns
+    -------
+    collections.abc.Callable
+        The registered per-frame writer.
+
+    Raises
+    ------
+    click.ClickException
+        If ``output_format`` is not a registered writer name.
+    """
+    try:
+        return get_writer(output_format)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 def _configure_verbosity(verbose):
@@ -336,6 +365,7 @@ def process(
     FILES may be directories (expanded to their FITS frames), glob patterns, or
     individual frame paths. The first frame seeds the once-per-batch preparation
     and every frame is then photometered against it.
+    \f
 
     Parameters
     ----------
@@ -371,23 +401,18 @@ def process(
     ------
     click.ClickException
         If the arguments expand to no FITS frames, a path argument is missing or
-        not a FITS frame, a config/profile/metadata file fails validation, or
-        every frame in the batch fails.
-    """
+        not a FITS frame, a config/profile/metadata file fails validation, the
+        once-per-batch preparation fails, or every frame in the batch fails.
+    """  # noqa: D301 -- the \f is click's marker truncating --help here.
     _configure_verbosity(verbose)
 
     config = _build_config(instrument, profile, config_file)
     metadata = _load_metadata(metadata_file)
-    # Resolve the output format up front so an unknown name fails before any
-    # (expensive) frame processing, as a clean CLI error rather than a traceback.
-    try:
-        write_frame = get_writer(output_format)
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
+    write_frame = _resolve_writer(output_format)
 
     # The file expansion + prepare/process flow lives in
     # scripts.photometer_frames; surface its argument errors (no frames, bad
-    # path) as clean CLI errors.
+    # path) and a fatal first-frame prep failure as clean CLI errors.
     try:
         frames, results = photometer_frames(
             files,
@@ -401,7 +426,7 @@ def process(
             fail_fast=fail_fast,
             write_qa_manifest=qa_manifest,
         )
-    except (ValueError, FileNotFoundError) as exc:
+    except (ValueError, FileNotFoundError, BatchPrepError) as exc:
         raise click.ClickException(str(exc)) from exc
 
     _report_batch_outcome(frames, results, output_dir, qa_manifest)
@@ -422,13 +447,16 @@ def process(
     "keep_local",
     default=False,
     show_default=True,
-    help="Keep each frame's local copy instead of deleting it after processing.",
+    help=(
+        "Keep each frame's local copy instead of deleting it after processing. "
+        "Pair with --incoming to choose where the kept frames land."
+    ),
 )
 @click.option(
     "--download-workers",
     default=2,
     show_default=True,
-    type=int,
+    type=click.IntRange(min=1),
     help="Number of concurrent rclone downloads.",
 )
 def stream(
@@ -456,6 +484,7 @@ def stream(
     downloaded just before it is processed and deleted afterwards, so a batch
     far larger than the local disk can be photometered; the remote is never
     modified. Requires rclone (https://rclone.org) with a configured remote.
+    \f
 
     Parameters
     ----------
@@ -495,11 +524,12 @@ def stream(
     Raises
     ------
     click.ClickException
-        If rclone is not installed, the remote cannot be listed or holds no
-        FITS frames, the first frame cannot be fetched, a
+        If rclone is not installed, the ``--incoming`` directory cannot be
+        created, the remote cannot be listed or holds no FITS frames, the
+        first frame cannot be fetched, the once-per-batch preparation fails, a
         config/profile/metadata file fails validation, or every frame in the
         batch fails.
-    """
+    """  # noqa: D301 -- the \f is click's marker truncating --help here.
     _configure_verbosity(verbose)
 
     # Fail the missing-tool case up front, before any config parsing or
@@ -512,12 +542,19 @@ def stream(
         )
         raise click.ClickException(msg)
 
+    # Likewise fail a bad staging directory (an existing file, an unwritable
+    # parent) up front as a clean CLI error, not a raw OSError traceback from
+    # deep inside stream_frames.
+    if incoming_dir is not None:
+        try:
+            Path(incoming_dir).mkdir(parents=True, exist_ok=True)
+        except OSError as err:
+            msg = f"could not create the --incoming directory {incoming_dir}: {err}"
+            raise click.ClickException(msg) from err
+
     config = _build_config(instrument, profile, config_file)
     metadata = _load_metadata(metadata_file)
-    try:
-        write_frame = get_writer(output_format)
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
+    write_frame = _resolve_writer(output_format)
 
     try:
         names, results = stream_frames(
@@ -540,9 +577,9 @@ def stream(
         # stderr, which names the actual problem, as the CLI error.
         msg = f"rclone failed: {(exc.stderr or '').strip() or exc}"
         raise click.ClickException(msg) from exc
-    except (ValueError, RemoteFetchError) as exc:
-        # An empty remote or a fatal first-frame fetch; both messages already
-        # name the remote/frame.
+    except (ValueError, RemoteFetchError, BatchPrepError) as exc:
+        # An empty remote, a fatal first-frame fetch, or a failed batch prep;
+        # all three messages already name the remote/frame/cause.
         raise click.ClickException(str(exc)) from exc
 
     _report_batch_outcome(names, results, output_dir, qa_manifest)

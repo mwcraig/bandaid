@@ -19,7 +19,7 @@ from click.testing import CliRunner
 
 from bandaid import cli
 from bandaid.config import InstrumentProfile, PhotometryConfig
-from bandaid.exceptions import RemoteFetchError
+from bandaid.exceptions import BatchPrepError, RemoteFetchError
 from bandaid.instruments import _REGISTERED, register_instrument
 from bandaid.writers import write_starlist_set
 
@@ -362,6 +362,33 @@ def test_process_non_object_metadata_is_clean_error(runner, tmp_path):
     assert "object" in result.output.lower()
 
 
+def test_process_batch_prep_failure_is_clean_error(runner, monkeypatch, tmp_path):
+    """A fatal first-frame prep failure is a clean CLI error, not a traceback."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+
+    def fake_photometer(_files, **_kwargs: object):
+        msg = "no usable Gaia catalog for the batch"
+        raise BatchPrepError(msg)
+
+    monkeypatch.setattr(cli, "photometer_frames", fake_photometer)
+
+    result = runner.invoke(cli.main, ["process", str(frame)])
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "no usable Gaia catalog" in result.output
+
+
+@pytest.mark.parametrize("command", ["process", "stream"])
+def test_help_hides_numpydoc_sections(runner, command):
+    """``--help`` shows only the summary and options, not the numpydoc soup."""
+    result = runner.invoke(cli.main, [command, "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "Parameters" not in result.output
+
+
 @pytest.fixture
 def rclone_on_path(monkeypatch):
     """Pretend rclone is installed so ``stream`` gets past its upfront check."""
@@ -513,6 +540,52 @@ def test_stream_rclone_failure_shows_stderr(runner, monkeypatch):
     assert result.exit_code == 1
     assert "Traceback" not in result.output
     assert "didn't find section in config file" in result.output
+
+
+@pytest.mark.usefixtures("rclone_on_path")
+def test_stream_batch_prep_failure_is_clean_error(runner, monkeypatch):
+    """A fatal first-frame prep failure is a clean CLI error, not a traceback."""
+
+    def fake_stream(_remote, **_kwargs: object):
+        msg = "no usable Gaia catalog for the batch"
+        raise BatchPrepError(msg)
+
+    monkeypatch.setattr(cli, "stream_frames", fake_stream)
+
+    result = runner.invoke(cli.main, ["stream", "gdrive:frames"])
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "no usable Gaia catalog" in result.output
+
+
+@pytest.mark.usefixtures("rclone_on_path")
+def test_stream_zero_download_workers_is_usage_error(runner, patched_stream):
+    """``--download-workers 0`` is rejected up front as a usage error (exit 2)."""
+    result = runner.invoke(
+        cli.main, ["stream", "gdrive:frames", "--download-workers", "0"]
+    )
+
+    assert result.exit_code == 2  # noqa: PLR2004
+    assert "download-workers" in result.output
+    # Rejected at parse time: stream_frames is never reached.
+    assert "remote" not in patched_stream
+
+
+@pytest.mark.usefixtures("rclone_on_path")
+def test_stream_incoming_existing_file_is_clean_error(runner, patched_stream, tmp_path):
+    """``--incoming`` pointing at an existing file is a clean error, not a crash."""
+    not_a_dir = tmp_path / "incoming"
+    not_a_dir.write_bytes(b"")
+
+    result = runner.invoke(
+        cli.main, ["stream", "gdrive:frames", "--incoming", str(not_a_dir)]
+    )
+
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+    # The bad staging dir is caught before any streaming work starts.
+    assert "remote" not in patched_stream
 
 
 def test_instrument_list(runner):
