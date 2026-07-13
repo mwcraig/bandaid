@@ -95,6 +95,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Wheel builds now include the bundled instrument profiles
+    (`bandaid/meta_json_files/`): hatch's `only-packages` option excluded the
+    directory (no `__init__.py`), so `import bandaid` crashed in any
+    non-editable install. Editable dev installs masked the bug.
 - The per-frame FWHM fit now uses only the brightest unsaturated detections
     (`InstrumentProfile.fwhm_n_stars`, default 25) instead of every detection.
     Bayer-balanced detection yields thousands of faint sources whose CNN
