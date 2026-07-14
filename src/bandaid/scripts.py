@@ -26,9 +26,7 @@ from astropy.io import fits
 from astropy.time import Time
 from dateutil import parser
 
-# _quiet_hf_xet is re-exported for backwards compatibility (tests and callers
-# historically imported it from bandaid.scripts; it now lives in ballet_numpy).
-from .ballet_numpy import NumpyBallet, _quiet_hf_xet  # noqa: F401
+from .ballet_numpy import NumpyBallet
 from .catalog import cached_gaia_radecs
 from .config import PhotometryConfig
 from .exceptions import (
@@ -1059,8 +1057,9 @@ def photometer_frames(
     Expand a set of file arguments and measure per-frame photometry for each.
 
     The high-level convenience behind ``bandaid process``: it does the file-name
-    expansion (`expand_frame_paths`), builds the Ballet centroider, and runs
-    `prepare_batch` (seeded from the first frame) followed by `process_batch`.
+    expansion (`expand_frame_paths`), builds the `NumpyBallet` centroider, and
+    runs `prepare_batch` (seeded from the first frame) followed by
+    `process_batch`.
     Driving the whole flow from Python is one call to this function; the CLI is a
     thin dressing over it.
 

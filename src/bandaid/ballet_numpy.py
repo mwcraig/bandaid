@@ -9,6 +9,13 @@ runtime. The forward pass mirrors the flax model layer for layer -- three SAME
 convolutions with relu, two 2x2 SAME max-pools, and three dense layers -- and
 reproduces flax's exact padding and flattening conventions so the outputs
 match the jax model to float32 round-off.
+
+Vocabulary, for readers not steeped in TensorFlow/flax conventions: "SAME" is
+the padding mode in which the input borders are padded just enough that the
+output spatial size equals the input size divided by the stride (as opposed
+to "VALID": no padding, the output shrinks by kernel-1); NHWC is the axis
+order of a 4-d image batch -- batch (N), height, width, channels -- flax's
+native convolution layout, which this module keeps throughout.
 """
 
 import os
@@ -18,15 +25,17 @@ from eloy.ballet.model import load_weights_file
 from scipy.special import expit
 
 __all__ = [
-    "BALLET_HF_REPO_ID",
-    "BALLET_WEIGHTS_FILENAME",
     "NumpyBallet",
     "download_weights",
 ]
 
 # HuggingFace location of the pretrained Ballet weights (public, no auth).
-BALLET_HF_REPO_ID = "lgrcia/ballet"
-BALLET_WEIGHTS_FILENAME = "centroid_15x15.npz"
+# The revision pins the exact weights blob the golden values in
+# test_ballet_numpy.py were captured against, so an upstream re-upload can
+# neither silently change production centroids nor break that test.
+_BALLET_HF_REPO_ID = "lgrcia/ballet"
+_BALLET_WEIGHTS_FILENAME = "centroid_15x15.npz"
+_BALLET_WEIGHTS_REVISION = "cfebd20240ce3fb694f6403a244f37f971e7780b"
 
 # Cutouts per forward-pass chunk. The convolution layers materialize
 # (chunk, H, W, 256) float32 intermediates, so chunking keeps peak memory flat
@@ -66,7 +75,11 @@ def download_weights():
     # keeps module import (and offline use with a local file) network-free.
     from huggingface_hub import hf_hub_download  # noqa: PLC0415
 
-    return hf_hub_download(repo_id=BALLET_HF_REPO_ID, filename=BALLET_WEIGHTS_FILENAME)
+    return hf_hub_download(
+        repo_id=_BALLET_HF_REPO_ID,
+        filename=_BALLET_WEIGHTS_FILENAME,
+        revision=_BALLET_WEIGHTS_REVISION,
+    )
 
 
 def _conv2d_same(x, kernel, bias):
@@ -105,14 +118,23 @@ def _max_pool_2x2_same(x):
     Parameters
     ----------
     x : numpy.ndarray
-        Input batch, NHWC ``(N, H, W, C)``; H and W are assumed equal.
+        Input batch, NHWC ``(N, H, W, C)``; H and W must be equal.
 
     Returns
     -------
     numpy.ndarray
         Pooled batch ``(N, ceil(H/2), ceil(W/2), C)``.
+
+    Raises
+    ------
+    ValueError
+        If H and W differ -- the pad-both-edges-on-odd-H logic below is only
+        correct for square inputs.
     """
     n, h, w, c = x.shape
+    if h != w:
+        msg = f"square input required, got {h}x{w}"
+        raise ValueError(msg)
     if h % 2:
         x = np.pad(
             x,
@@ -188,22 +210,23 @@ class NumpyBallet:
             Raw network output ``(n, 2)`` float32, ordered (y, x).
         """
         p = self.params
-        # A constant cutout normalizes to 0/0 -> NaN. jax produces the NaN
-        # silently; suppress numpy's RuntimeWarning so the behaviour matches.
-        with np.errstate(divide="ignore", invalid="ignore"):
-            # Per-sample min-max normalization.
-            x = x - x.min(axis=(1, 2, 3), keepdims=True)
+        # Per-sample min-max normalization. A constant cutout normalizes to
+        # 0/0 -> NaN; jax produces the NaN silently, so suppress numpy's
+        # RuntimeWarning on exactly this division to match (the NaNs then
+        # propagate through the layers below warning-free on their own).
+        x = x - x.min(axis=(1, 2, 3), keepdims=True)
+        with np.errstate(invalid="ignore"):
             x = x / x.max(axis=(1, 2, 3), keepdims=True)
 
-            for name in ("Conv_0", "Conv_1", "Conv_2"):
-                x = _conv2d_same(x, p[name]["kernel"], p[name]["bias"])
-                x = np.maximum(x, 0.0)
-                if name != "Conv_2":
-                    x = _max_pool_2x2_same(x)  # 15 -> 8, then 8 -> 4
+        for name in ("Conv_0", "Conv_1", "Conv_2"):
+            x = _conv2d_same(x, p[name]["kernel"], p[name]["bias"])
+            x = np.maximum(x, 0.0)
+            if name != "Conv_2":
+                x = _max_pool_2x2_same(x)  # 15 -> 8, then 8 -> 4
 
-            # Row-major NHWC flatten: matches flax's reshape((batch, -1)) and
-            # therefore the (4096, 2048) layout of the Dense_0 kernel.
-            x = x.reshape(len(x), -1)
-            x = expit(x @ p["Dense_0"]["kernel"] + p["Dense_0"]["bias"])
-            x = expit(x @ p["Dense_1"]["kernel"] + p["Dense_1"]["bias"])
-            return x @ p["Dense_2"]["kernel"] + p["Dense_2"]["bias"]
+        # Row-major NHWC flatten: matches flax's reshape((batch, -1)) and
+        # therefore the (4096, 2048) layout of the Dense_0 kernel.
+        x = x.reshape(len(x), -1)
+        x = expit(x @ p["Dense_0"]["kernel"] + p["Dense_0"]["bias"])
+        x = expit(x @ p["Dense_1"]["kernel"] + p["Dense_1"]["bias"])
+        return x @ p["Dense_2"]["kernel"] + p["Dense_2"]["bias"]

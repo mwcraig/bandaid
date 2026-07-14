@@ -278,7 +278,7 @@ requires-dist = [
     { name = "click" },
     { name = "eloy", git = "https://github.com/mwcraig/eloy?rev=a056c91a945772e0520a89695f8fcd16fda36870" },
     { name = "flax", marker = "extra == 'train'" },
-    { name = "huggingface-hub" },
+    { name = "huggingface-hub", specifier = ">=1.0" },
     { name = "jax", marker = "extra == 'train'" },
     { name = "optax", marker = "extra == 'train'" },
     { name = "photutils" },

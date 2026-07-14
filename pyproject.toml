@@ -42,7 +42,7 @@ dependencies = [
     # Pin eloy to a specific commit on mwcraig's fork until the fix is merged in
     "eloy @ git+https://github.com/mwcraig/eloy@a056c91a945772e0520a89695f8fcd16fda36870",
     # "eloy @ git+https://github.com/lgrcia/eloy@0b53f23f90b12b33ef21473cbb1a785a819aaeeb",
-    "huggingface_hub",
+    "huggingface_hub>=1.0",
     "photutils",
     "pydantic>=2",
     "twirl",
@@ -122,22 +122,14 @@ types = [
 override-dependencies = ["numpy>=2.1"]
 
 # Hatch is building your package's wheel and sdist
-# This tells hatch to only include Python packages (i.e., folders with __init__.py) in the build.
-# read more about package building, here:
-# https://www.pyopensci.org/python-package-guide/package-structure-code/python-package-distribution-files-sdist-wheel.html
-[tool.hatch.build]
-only-packages = true
-
 # This tells Hatch to build the package from the src/ directory.
 # Read more about src layouts here: https://www.pyopensci.org/python-package-guide/package-structure-code/python-package-structure.html
+# Everything under the package directory ships in the wheel, including the
+# bundled meta_json_files/ instrument profiles -- don't set only-packages,
+# which would exclude that (non-package) directory and break `import bandaid`
+# in a non-editable install.
 [tool.hatch.build.targets.wheel]
 packages = ["src/bandaid"]
-
-# only-packages excludes directories without an __init__.py, which would leave
-# the bundled instrument profiles out of the wheel and break `import bandaid`
-# in a non-editable install.
-[tool.hatch.build.targets.wheel.force-include]
-"src/bandaid/meta_json_files" = "bandaid/meta_json_files"
 
 [tool.hatch.metadata]
 allow-direct-references = true
