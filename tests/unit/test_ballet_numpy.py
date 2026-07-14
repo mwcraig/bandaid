@@ -199,9 +199,7 @@ class TestNumpyBalletOffline:
         # Round-off tolerance, not exact equality: einsum/BLAS reduction order
         # varies with batch size. A slicing or concatenate-ordering bug would
         # miss by the magnitude of the outputs, far beyond this atol.
-        np.testing.assert_allclose(
-            model.centroid(cutouts), expected, atol=1e-5, rtol=0
-        )
+        np.testing.assert_allclose(model.centroid(cutouts), expected, atol=1e-5, rtol=0)
 
     def test_max_pool_rejects_non_square_input(self):
         """The pool's odd-size padding assumes H == W; anything else raises."""
