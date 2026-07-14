@@ -9,9 +9,11 @@ import pytest
 
 from bandaid import ballet_numpy
 from bandaid.ballet_numpy import (
-    BALLET_HF_REPO_ID,
-    BALLET_WEIGHTS_FILENAME,
+    _BALLET_HF_REPO_ID,
+    _BALLET_WEIGHTS_FILENAME,
+    _BALLET_WEIGHTS_REVISION,
     NumpyBallet,
+    _quiet_hf_xet,
     download_weights,
 )
 
@@ -186,6 +188,28 @@ class TestNumpyBalletOffline:
             str(w.message) for w in caught
         ]
 
+    def test_chunking_matches_single_pass(self, tmp_path, monkeypatch):
+        """Crossing chunk boundaries changes nothing, ragged final chunk included."""
+        model = NumpyBallet(model_file=_random_weights_npz(tmp_path))
+        cutouts, _ = _make_synthetic_cutouts()  # 16 cutouts, one chunk today
+
+        expected = model.centroid(cutouts)
+        monkeypatch.setattr(ballet_numpy, "_CHUNK", 5)  # 16 -> chunks of 5,5,5,1
+
+        # Round-off tolerance, not exact equality: einsum/BLAS reduction order
+        # varies with batch size. A slicing or concatenate-ordering bug would
+        # miss by the magnitude of the outputs, far beyond this atol.
+        np.testing.assert_allclose(
+            model.centroid(cutouts), expected, atol=1e-5, rtol=0
+        )
+
+    def test_max_pool_rejects_non_square_input(self):
+        """The pool's odd-size padding assumes H == W; anything else raises."""
+        with pytest.raises(ValueError, match="square input required"):
+            ballet_numpy._max_pool_2x2_same(  # noqa: SLF001
+                np.zeros((1, 4, 6, 1), dtype=np.float32)
+            )
+
     def test_default_download_when_no_model_file(self, tmp_path, monkeypatch):
         """With no model_file, the weights come from ``download_weights``."""
         npz = _random_weights_npz(tmp_path)
@@ -203,22 +227,47 @@ class TestNumpyBalletOffline:
         )
 
     def test_download_weights_targets_ballet_repo(self, monkeypatch):
-        """``download_weights`` asks the hub for the Ballet npz, xet disabled."""
+        """``download_weights`` asks the hub for the pinned Ballet npz, xet off."""
         import huggingface_hub  # noqa: PLC0415
 
-        monkeypatch.delenv("HF_HUB_DISABLE_XET", raising=False)
+        # setenv first so monkeypatch records a restore even when the var was
+        # unset; a bare delenv(raising=False) of a missing var restores nothing
+        # and the setdefault inside download_weights would leak past teardown.
+        monkeypatch.setenv("HF_HUB_DISABLE_XET", "placeholder")
+        monkeypatch.delenv("HF_HUB_DISABLE_XET")
         recorded = {}
 
-        def _fake_download(repo_id, filename):
+        def _fake_download(repo_id, filename, revision):
             recorded["repo_id"] = repo_id
             recorded["filename"] = filename
+            recorded["revision"] = revision
             return "/cached/weights.npz"
 
         monkeypatch.setattr(huggingface_hub, "hf_hub_download", _fake_download)
 
         assert download_weights() == "/cached/weights.npz"
         assert recorded == {
-            "repo_id": BALLET_HF_REPO_ID,
-            "filename": BALLET_WEIGHTS_FILENAME,
+            "repo_id": _BALLET_HF_REPO_ID,
+            "filename": _BALLET_WEIGHTS_FILENAME,
+            "revision": _BALLET_WEIGHTS_REVISION,
         }
         assert os.environ["HF_HUB_DISABLE_XET"] == "1"
+
+
+class TestQuietHfXet:
+    """Unit tests for the best-effort ``_quiet_hf_xet`` HF-warning silencer."""
+
+    def test_sets_disable_xet_when_unset(self, monkeypatch):
+        """With no user setting, xet is disabled to avoid its stderr warning."""
+        # setenv-then-delenv so teardown restores the unset state (see
+        # test_download_weights_targets_ballet_repo).
+        monkeypatch.setenv("HF_HUB_DISABLE_XET", "placeholder")
+        monkeypatch.delenv("HF_HUB_DISABLE_XET")
+        _quiet_hf_xet()
+        assert os.environ["HF_HUB_DISABLE_XET"] == "1"
+
+    def test_preserves_user_value(self, monkeypatch):
+        """A user who set the var (e.g. to keep xet) is never overridden."""
+        monkeypatch.setenv("HF_HUB_DISABLE_XET", "0")
+        _quiet_hf_xet()
+        assert os.environ["HF_HUB_DISABLE_XET"] == "0"
