@@ -64,11 +64,9 @@ def download_weights():
 
     # Lazy import: only the no-model_file path needs the hub client, and this
     # keeps module import (and offline use with a local file) network-free.
-    from huggingface_hub import hf_hub_download
+    from huggingface_hub import hf_hub_download  # noqa: PLC0415
 
-    return hf_hub_download(
-        repo_id=BALLET_HF_REPO_ID, filename=BALLET_WEIGHTS_FILENAME
-    )
+    return hf_hub_download(repo_id=BALLET_HF_REPO_ID, filename=BALLET_WEIGHTS_FILENAME)
 
 
 def _conv2d_same(x, kernel, bias):
@@ -136,7 +134,7 @@ class NumpyBallet:
         layer names (``Conv_0`` .. ``Dense_2``).
     """
 
-    def __init__(self, model_file=None):
+    def __init__(self, model_file=None) -> None:
         """
         Load the CNN weights.
 

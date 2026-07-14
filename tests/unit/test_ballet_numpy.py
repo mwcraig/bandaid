@@ -125,7 +125,8 @@ _GOLDEN_CENTROIDS = np.array(
 )
 def test_numpy_matches_jax_ballet(synthetic_cutouts):
     """NumpyBallet reproduces the jax/flax Ballet to float32 round-off."""
-    from eloy.ballet.model import Ballet
+    # Deferred: eloy's Ballet needs flax, which the skipif above gates on.
+    from eloy.ballet.model import Ballet  # noqa: PLC0415
 
     cutouts, _ = synthetic_cutouts
     weights = download_weights()
@@ -159,7 +160,9 @@ class TestNumpyBalletOffline:
 
         assert out.shape == (len(cutouts), 2)
         assert out.dtype == np.float32
-        forward = model._forward(np.asarray(cutouts, dtype=np.float32)[..., None])
+        forward = model._forward(  # noqa: SLF001
+            np.asarray(cutouts, dtype=np.float32)[..., None]
+        )
         np.testing.assert_array_equal(out, forward[:, ::-1])
 
     def test_empty_batch_returns_0x2(self, tmp_path):
@@ -179,9 +182,9 @@ class TestNumpyBalletOffline:
             out = model.centroid(flat)
 
         assert np.isnan(out).all()
-        assert not any(
-            issubclass(w.category, RuntimeWarning) for w in caught
-        ), [str(w.message) for w in caught]
+        assert not any(issubclass(w.category, RuntimeWarning) for w in caught), [
+            str(w.message) for w in caught
+        ]
 
     def test_default_download_when_no_model_file(self, tmp_path, monkeypatch):
         """With no model_file, the weights come from ``download_weights``."""
@@ -201,7 +204,7 @@ class TestNumpyBalletOffline:
 
     def test_download_weights_targets_ballet_repo(self, monkeypatch):
         """``download_weights`` asks the hub for the Ballet npz, xet disabled."""
-        import huggingface_hub
+        import huggingface_hub  # noqa: PLC0415
 
         monkeypatch.delenv("HF_HUB_DISABLE_XET", raising=False)
         recorded = {}
