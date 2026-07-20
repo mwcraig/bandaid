@@ -70,6 +70,7 @@ Download = "https://pypi.org/project/bandaid/#files"
 [dependency-groups]
 dev = [
     "hatch",
+    "poethepoet",
     "pre-commit",
     {include-group = "docs"},
     {include-group = "tests"},
@@ -139,6 +140,15 @@ version-file = "src/bandaid/_version.py"
 
 [tool.hatch.version]
 source = "vcs"
+
+######## Common development tasks ########
+# Run any task with: uv run poe <task>
+[tool.poe.tasks]
+test = "pytest" # fast suite, no network needed
+test-remote = "pytest -m remote_data --remote-data=any" # downloads CNN weights from Hugging Face
+lint = "pre-commit run --all-files" # everything CI's lint job runs
+docs = "mkdocs serve" # live-reload docs at localhost:8000
+docs-build = "mkdocs build" # one-shot build (what Read the Docs does)
 
 ######## Configure pytest for your test suite ########
 # Native pytest 9+ TOML configuration.
