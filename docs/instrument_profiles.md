@@ -22,7 +22,7 @@ Named profiles live in `bandaid.instruments`:
 from bandaid import load_instrument, register_instrument, available_instruments
 from bandaid.config import InstrumentProfile
 
-available_instruments()            # -> ['Seestar50']
+available_instruments()  # -> ['Seestar50']
 profile = load_instrument("Seestar50")
 
 # Share a tuned profile through a file, or register one so load_instrument
@@ -30,7 +30,7 @@ profile = load_instrument("Seestar50")
 profile.to_file("my_scope.json")
 mine = InstrumentProfile.from_file("my_scope.json")
 register_instrument(mine)
-available_instruments()            # -> ['Seestar50', '<mine.name>']
+available_instruments()  # -> ['Seestar50', '<mine.name>']
 ```
 
 Pass a profile to a batch through the config:
@@ -108,7 +108,7 @@ From quickest to most permanent:
     from bandaid.config import InstrumentProfile
 
     register_instrument(InstrumentProfile.from_file("my_scope.json"))
-    load_instrument("MyScope")          # now resolves by name
+    load_instrument("MyScope")  # now resolves by name
     ```
 
     This registration lives only in the current Python session — a separate

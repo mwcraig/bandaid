@@ -17,7 +17,7 @@ the reason — a `FrameError` subclass:
     `False`). The field could not be matched against Gaia, typically because too
     few stars were detected or the pointing was off.
 - **`skipped: FrameMetadataError`** — a required FITS header keyword was missing
-    or unparseable (see *Header field missing* below).
+    or unparsable (see *Header field missing* below).
 - **`skipped: NoUsableStarsError`** — stars were detected but none survived
     photometry filtering, so the frame yields no output.
 

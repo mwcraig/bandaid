@@ -386,10 +386,10 @@ class TestPrepareBatch:
         ],
         ids=["missing-None", "not-a-date", "overflowing-digits"],
     )
-    def test_unparseable_obs_time_raises_clear_metadata_error(
+    def test_unparsable_obs_time_raises_clear_metadata_error(
         self, monkeypatch, bad_obs_time
     ):
-        """A missing/unparseable ``obs_time`` fails as a metadata error, not Gaia."""
+        """A missing/unparsable ``obs_time`` fails as a metadata error, not Gaia."""
         metadata = _batch_metadata()
         metadata["obs_time"] = bad_obs_time
         _patch_prep(monkeypatch, metadata=metadata)

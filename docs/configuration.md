@@ -25,7 +25,7 @@ set — handy for one-off calls from a notebook.
 To see every default (including the derived `inner_annulus`, `outer_annulus`, and
 `contaminant_mag_limit`) live from the code:
 
-```python
+```pycon
 >>> from bandaid import PhotometryConfig
 >>> PhotometryConfig().model_dump()
 ```
@@ -83,11 +83,14 @@ available, or share a user-tuned profile through a file:
 
 ```python
 from bandaid import (
-    PhotometryConfig, load_instrument, register_instrument, available_instruments,
+    PhotometryConfig,
+    load_instrument,
+    register_instrument,
+    available_instruments,
 )
 from bandaid.config import InstrumentProfile
 
-available_instruments()                 # -> ['Seestar50']
+available_instruments()  # -> ['Seestar50']
 profile = load_instrument("Seestar50")
 config = PhotometryConfig(instrument=profile)
 
@@ -135,5 +138,5 @@ pipeline cares about hold by construction instead of needing a validator:
 ```python
 from bandaid import ApertureConfig
 
-ApertureConfig(gap=-1)   # raises: gap must be greater than 0
+ApertureConfig(gap=-1)  # raises: gap must be greater than 0
 ```

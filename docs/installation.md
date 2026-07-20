@@ -8,7 +8,7 @@ That single command is enough to get the `bandaid` command on your path and the
 Python package importable. bandaid needs **Python ≥ 3.12**, so install it into a
 recent virtual environment (a `venv`, conda env, or whatever you already use).
 
-```python
+```pycon
 >>> import bandaid
 >>> bandaid.available_instruments()
 ['Seestar50']

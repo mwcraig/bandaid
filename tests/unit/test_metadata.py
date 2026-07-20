@@ -167,7 +167,7 @@ class TestAirmassFromMetadata:
             _airmass_from_metadata(self._metadata(site_lat=None))
 
     def test_raises_on_malformed_airmass(self):
-        """A present-but-unparseable airmass skips the frame rather than crashing."""
+        """A present-but-unparsable airmass skips the frame rather than crashing."""
         with pytest.raises(FrameMetadataError):
             _airmass_from_metadata(self._metadata(airmass="not-a-number"))
 

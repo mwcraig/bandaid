@@ -77,8 +77,8 @@ writing files:
 from bandaid import photometer_frames
 
 frames, results = photometer_frames(["night/"], output_dir=None)
-table = results[frames[0]]["TR"]   # an astropy Table with all columns
-table.colnames                     # tot_count, count_err, bkgd_count, snr, centroid_drift, …
+table = results[frames[0]]["TR"]  # an astropy Table with all columns
+table.colnames  # tot_count, count_err, bkgd_count, snr, centroid_drift, …
 ```
 
 ### Writing a different format: custom writers
@@ -104,6 +104,7 @@ table per filter:
 ```python
 from bandaid import photometer_frames
 
+
 def write_csv(frame_result, output_path):
     written = []
     for filter_name, table in frame_result.items():
@@ -111,6 +112,7 @@ def write_csv(frame_result, output_path):
         table.write(path, format="ascii.csv", overwrite=True)
         written.append(path)
     return written
+
 
 photometer_frames(["night/"], write_frame=write_csv, output_suffix="")
 ```
