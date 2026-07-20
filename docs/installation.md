@@ -25,6 +25,15 @@ $ cd bandaid
 $ pip install -e .
 ```
 
-The project also uses [Hatch](https://hatch.pypa.io/) environments for the test
-and docs workflows; see [Contributing](contributing.md) and the
-[code style guide](code_style.md) for the developer toolchain.
+Day-to-day development uses [uv](https://docs.astral.sh/uv/) — `uv sync` builds
+the dev environment, and the common workflows are named
+[poe](https://poethepoet.natn.io/) tasks defined in `pyproject.toml`:
+
+```bash
+$ uv run poe test        # run the test suite
+$ uv run poe lint        # run all the pre-commit checks
+$ uv run poe docs        # serve the docs with live reload
+```
+
+See [Contributing](contributing.md) and the [code style guide](code_style.md)
+for the developer toolchain.
