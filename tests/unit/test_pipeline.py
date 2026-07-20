@@ -239,7 +239,7 @@ class TestPrepareImage:
         assert center.ra.deg == pytest.approx(10.0)
         assert center.dec.deg == pytest.approx(20.0)
 
-    def test_unparseable_header_radec_skips_center_check(
+    def test_unparsable_header_radec_skips_center_check(
         self, stub_prepare_image_externals
     ):
         """

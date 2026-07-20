@@ -870,7 +870,7 @@ def _airmass_from_metadata(metadata, *, obs_datetime=None):
     except (KeyError, ValueError, TypeError, OverflowError) as exc:
         msg = (
             "cannot determine airmass: metadata has no parseable airmass and "
-            "is missing/unparseable ra/dec/site_lat/site_lon/obs_time"
+            "is missing/unparsable ra/dec/site_lat/site_lon/obs_time"
         )
         raise FrameMetadataError(msg) from exc
 
@@ -1110,7 +1110,7 @@ class ImageData:
         Raises
         ------
         FrameMetadataError
-            If ``metadata["obs_time"]`` is missing or unparseable.
+            If ``metadata["obs_time"]`` is missing or unparsable.
         """
         if self._time_airmass_cache is None:
             metadata = self.metadata or {}
@@ -1119,7 +1119,7 @@ class ImageData:
             # OverflowError: dateutil raises it for all-digit strings too large
             # for a C long (a corrupted numeric obs_time), per parser.parse.
             except (KeyError, ValueError, TypeError, OverflowError) as exc:
-                msg = "missing or unparseable observation time (obs_time) metadata"
+                msg = "missing or unparsable observation time (obs_time) metadata"
                 raise FrameMetadataError(msg) from exc
             start_jd = Time(obs_datetime).jd
             # Reuse the already-parsed obs_datetime instead of having
@@ -1897,7 +1897,7 @@ def build_photometry_table(
         start time and airmass are resolved once per frame and cached on
         ``img`` (see `ImageData.resolve_time_airmass`), which may raise
         `FrameMetadataError` if the image metadata has a missing or
-        unparseable observation time (``obs_time``); that propagates unchanged.
+        unparsable observation time (``obs_time``); that propagates unchanged.
     """
     config = config or PhotometryConfig()
     if radii is None:

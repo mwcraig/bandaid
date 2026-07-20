@@ -76,7 +76,7 @@ Advice to the user:
    - Note that you can also directly enter, delete and move the filenames in the box.
 - Most of the meta data parsing is automatic, based on the mfg and image type.
    - for the few cases where the mfg has not provided enough information in the fits
-     header and a companion json file (refered to as a sidecar file) you should have
+     header and a companion json file (referred to as a sidecar file) you should have
      a "personal.json" added as last in the meta file list. Here is what you will need,
      prepared in a text editor:
        {

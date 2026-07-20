@@ -28,7 +28,6 @@ readme = {"file" = "README.md", "content-type" = "text/markdown"}
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3 :: Only",
     "Typing :: Typed",
@@ -89,7 +88,7 @@ build = [
     "twine",
 ]
 tests = [
-    "pytest",
+    "pytest >=9",
     "pytest-cov",
     "pytest-mock",
     "pytest-raises",
@@ -142,8 +141,22 @@ version-file = "src/bandaid/_version.py"
 source = "vcs"
 
 ######## Configure pytest for your test suite ########
-[tool.pytest.ini_options]
+# Native pytest 9+ TOML configuration.
+[tool.pytest]
+minversion = "9"
 testpaths = ["tests"] # Tells pytest what directory tests are in
+log_level = "INFO" # Show logs on test failures
+strict = true # Error on unknown markers, misspelled config keys, and passing xfails
+addopts = ["-ra"] # Summarize all non-passing outcomes at the end of a run
+filterwarnings = [
+    "error",
+    # Expected whenever proper motions are propagated without parallaxes/distances
+    # (Gaia rows routinely lack them); ERFA substitutes a default distance.
+    'ignore:ERFA function "pmsafe" yielded:erfa.ErfaWarning',
+    # huggingface_hub calls a deprecated hf_xet API internally when the
+    # remote-data tests download the CNN weights; not ours to fix.
+    "ignore:hf_xet.download_files:DeprecationWarning",
+]
 markers = [
     "raises", # Tells pytest to not raise a warning if you use @pytest.mark.raises
     "remote_data: marks tests that require network access (run with --remote-data)",
