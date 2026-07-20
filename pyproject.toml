@@ -153,6 +153,9 @@ filterwarnings = [
     # Expected whenever proper motions are propagated without parallaxes/distances
     # (Gaia rows routinely lack them); ERFA substitutes a default distance.
     'ignore:ERFA function "pmsafe" yielded:erfa.ErfaWarning',
+    # huggingface_hub calls a deprecated hf_xet API internally when the
+    # remote-data tests download the CNN weights; not ours to fix.
+    "ignore:hf_xet.download_files:DeprecationWarning",
 ]
 markers = [
     "raises", # Tells pytest to not raise a warning if you use @pytest.mark.raises
