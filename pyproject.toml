@@ -30,7 +30,6 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3 :: Only",
-    "Typing :: Typed",
 ]
 keywords = ["photometry", "astronomy", "AAVSO", "smart-telescope", "seestar", "variable-stars"]
 dependencies = [
