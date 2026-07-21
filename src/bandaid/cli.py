@@ -28,13 +28,13 @@ import shutil
 from pathlib import Path
 
 import click
-from eloy.ballet.model import download_weights
 from pydantic import ValidationError
 
+from .ballet_numpy import download_weights
 from .config import InstrumentProfile, PhotometryConfig
 from .instruments import available_instruments, load_instrument
 from .logging_setup import configure_logging
-from .scripts import QA_MANIFEST_FILENAME, _quiet_hf_xet, photometer_frames
+from .scripts import QA_MANIFEST_FILENAME, photometer_frames
 from .writers import get_writer
 
 __all__ = ["main"]
@@ -462,7 +462,6 @@ def weights(output_file):
     click.ClickException
         If the weights cannot be copied to ``output_file``.
     """
-    _quiet_hf_xet()
     cached = download_weights()
     if output_file is not None:
         # A bad destination (unwritable path, missing parent, full disk) should

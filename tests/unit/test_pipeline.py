@@ -11,8 +11,8 @@ from astropy.nddata import CCDData
 from astropy.stats import gaussian_fwhm_to_sigma
 from astropy.table import Table
 from eloy import detection
-from eloy.ballet.model import Ballet
 
+from bandaid.ballet_numpy import NumpyBallet
 from bandaid.config import InstrumentProfile, PhotometryConfig
 from bandaid.exceptions import (
     DegenerateBayerChannelError,
@@ -788,18 +788,19 @@ class TestSmokeRealFrame:
         Drive the *live* Ballet CNN on a real frame end-to-end.
 
         Every other test stubs the CNN, so this is the only coverage of the real
-        ``Ballet`` path the FWHM cap exists to protect: weights download ->
-        JAX inference -> ``ballet_centroid`` -> ePSF registration -> brightest-N
-        cap -> a small FWHM. It guards against eloy API / weight-format drift the
-        stubbed tests are blind to. ``Ballet()`` downloads ``centroid_15x15.npz``
-        from the public ``lgrcia/ballet`` HuggingFace repo (no auth) on first run.
+        centroider path the FWHM cap exists to protect: weights download ->
+        numpy CNN inference -> ``ballet_centroid`` -> ePSF registration ->
+        brightest-N cap -> a small FWHM. It runs the real ``NumpyBallet`` and
+        needs only network access (no jax): ``NumpyBallet()`` downloads
+        ``centroid_15x15.npz`` from the public ``lgrcia/ballet`` HuggingFace
+        repo (no auth) on first run.
         """
         calibrated, metadata, coords, _, _ = calibration_sequence(
             str(_REAL_FRAME),
             threshold=THRESH,
         )
         max_adu = metadata["largest_usable_adu_value"]
-        cnn = Ballet()
+        cnn = NumpyBallet()
 
         n_cap = InstrumentProfile().fwhm_n_stars
         fwhm = _fwhm_from_coords(

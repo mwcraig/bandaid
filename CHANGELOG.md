@@ -56,6 +56,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     sample is empty or has zero variance is now skipped cleanly instead of
     silently dividing by zero during Bayer balancing (#61).
 
+### Changed
+
+- Ballet CNN centroid inference now runs as a pure-numpy forward pass
+    (`bandaid.ballet_numpy.NumpyBallet`), so JAX/Flax/Optax are no longer runtime
+    dependencies: the `eloy[jax]` requirement became plain `eloy` (same pin) plus
+    a direct `huggingface_hub` dependency for the weights download, making
+    installs ~270 MB lighter. Results are identical to the JAX model within
+    float32 round-off, and the `cnn=` pipeline parameter stays duck-typed (any
+    object with a `centroid(cutouts) -> (N, 2)` method still works). The `train`
+    extra still provides JAX for the training scripts.
+
 ### Changed (breaking)
 
 - `measure_photometry` and `build_photometry_table` renamed their keyword-only
@@ -84,6 +95,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Wheel and sdist builds now include the bundled instrument profiles
+    (`bandaid/meta_json_files/`): hatch's `only-packages` option excluded the
+    directory (no `__init__.py`), so `import bandaid` crashed in any
+    non-editable install. Editable dev installs masked the bug. Fixed by
+    dropping `only-packages` — hatchling's default already ships everything
+    under the package directory.
+- The Ballet weights download is pinned to a specific revision of the
+    HuggingFace `lgrcia/ballet` repo, so an upstream re-upload can no longer
+    silently change centroid results.
 - The per-frame FWHM fit now uses only the brightest unsaturated detections
     (`InstrumentProfile.fwhm_n_stars`, default 25) instead of every detection.
     Bayer-balanced detection yields thousands of faint sources whose CNN

@@ -2,7 +2,6 @@
 
 import csv
 import logging
-import os
 from pathlib import Path
 
 import numpy as np
@@ -16,7 +15,6 @@ from bandaid.exceptions import (
     TooFewStarsError,
     WCSSolveError,
 )
-from bandaid.scripts import _quiet_hf_xet
 
 
 def _read_manifest(tmp_path):
@@ -166,22 +164,6 @@ class TestProcessBatch:
         )
 
         assert list(results) == ["good.fits"]
-
-
-class TestQuietHfXet:
-    """Unit tests for the best-effort ``_quiet_hf_xet`` HF-warning silencer."""
-
-    def test_sets_disable_xet_when_unset(self, monkeypatch):
-        """With no user setting, xet is disabled to avoid its stderr warning."""
-        monkeypatch.delenv("HF_HUB_DISABLE_XET", raising=False)
-        _quiet_hf_xet()
-        assert os.environ["HF_HUB_DISABLE_XET"] == "1"
-
-    def test_preserves_user_value(self, monkeypatch):
-        """A user who set the var (e.g. to keep xet) is never overridden."""
-        monkeypatch.setenv("HF_HUB_DISABLE_XET", "0")
-        _quiet_hf_xet()
-        assert os.environ["HF_HUB_DISABLE_XET"] == "0"
 
 
 @pytest.mark.usefixtures("_consistent_headers")
