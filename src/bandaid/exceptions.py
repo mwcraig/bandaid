@@ -20,6 +20,7 @@ __all__ = [
     "FrameError",
     "FrameMetadataError",
     "NoUsableStarsError",
+    "RemoteFetchError",
     "TooFewStarsError",
     "WCSPointingError",
     "WCSScaleError",
@@ -111,6 +112,17 @@ class NoUsableStarsError(FrameError):
 
 class DegenerateBayerChannelError(FrameError):
     """A Bayer channel's pixel sample was empty or had zero variance."""
+
+
+class RemoteFetchError(FrameError):
+    """
+    A frame could not be downloaded from the remote it is streamed from.
+
+    Raised by the streaming transport (`bandaid.streaming`) when fetching one
+    frame fails. Subclassing `FrameError` means a failed download flows through
+    the batch loop's existing skip + QA-manifest machinery: the frame is logged
+    and skipped, and the rest of the stream continues.
+    """
 
 
 class BatchPrepError(BandaidError):

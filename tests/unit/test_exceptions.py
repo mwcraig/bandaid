@@ -14,6 +14,7 @@ from bandaid.exceptions import (
     BandaidError,
     BatchPrepError,
     FrameError,
+    RemoteFetchError,
     TooFewStarsError,
     WCSSolveError,
 )
@@ -38,6 +39,17 @@ class TestHierarchy:
         err = WCSSolveError("twirl found no match")
         assert str(err) == "twirl found no match"
         assert err.file is None
+
+    def test_remote_fetch_error_is_a_frame_error(self):
+        """A failed download skips just that frame, so it must be a ``FrameError``."""
+        assert issubclass(RemoteFetchError, FrameError)
+
+    def test_remote_fetch_error_carries_file(self):
+        """The remote name rides along via the standard ``file=`` kwarg."""
+        err = RemoteFetchError("rclone copyto failed", file="frame_0001.fit")
+        assert str(err) == "frame_0001.fit: rclone copyto failed"
+        assert err.reason == "rclone copyto failed"
+        assert err.file == "frame_0001.fit"
 
     def test_file_can_be_attached_after_construction(self):
         """The 'raise here, label at the caller' pattern updates the message."""
