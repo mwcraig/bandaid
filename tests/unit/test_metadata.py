@@ -244,10 +244,15 @@ class TestGoodStarMask:
     """
     In-bounds tests for ``good_star_mask`` pixel-center bounds (issue #57).
 
-    Coordinates are pixel centers: pixel 0 spans [-0.5, 0.5), so a star is
-    on-frame when its center lies in [-0.5, width - 0.5) (and likewise in y).
-    The old ``> 0`` / ``< width`` test dropped a star centered on column 0 and
-    admitted a center up to a pixel past the last column.
+    Coordinates are pixel centers: pixel 0 spans [-0.5, 0.5), so the last
+    column ends at width - 0.5 and the old ``< width`` test admitted a center
+    up to a pixel past it. A star centered exactly on column 0 survives, where
+    the old ``> 0`` test dropped it.
+
+    The lower bound is 0.0 rather than the geometric -0.5 because the AAVSO
+    schema declares ``StarItem.x``/``.y`` as ``ge=0``: a center in the
+    leftmost/bottom half-pixel cannot be written out, and letting it through
+    raises a ``ValidationError`` that loses the whole frame.
     """
 
     def _mask_for_xy(self, eloy_table, starlist_metadata, x, y):
@@ -269,7 +274,6 @@ class TestGoodStarMask:
         [
             (0.0, 30.0),  # centered on column 0 -- dropped by the old x > 0
             (20.0, 0.0),  # centered on row 0 -- dropped by the old y > 0
-            (-0.5, 30.0),  # left edge of pixel 0: still on-frame
             (99.4, 30.0),  # inside the last column (width 100)
         ],
     )
@@ -288,6 +292,24 @@ class TestGoodStarMask:
     )
     def test_off_frame_centers_dropped(self, eloy_table, starlist_metadata, x, y):
         """Stars whose centers fall off the frame fail the bounds test."""
+        assert not self._mask_for_xy(eloy_table, starlist_metadata, x, y)[0]
+
+    @pytest.mark.parametrize(
+        ("x", "y"),
+        [
+            (-0.2, 30.0),  # inside pixel 0 geometrically, but negative
+            (20.0, -0.5),  # exact lower edge of row 0
+        ],
+    )
+    def test_negative_centers_dropped_for_schema(
+        self, eloy_table, starlist_metadata, x, y
+    ):
+        """
+        Centers in the leftmost/bottom half-pixel are cut, not passed on.
+
+        They are on-frame geometrically, but ``StarItem`` requires ``x, y >=
+        0``; letting one through fails validation for the whole StarList.
+        """
         assert not self._mask_for_xy(eloy_table, starlist_metadata, x, y)[0]
 
 

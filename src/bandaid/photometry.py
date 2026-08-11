@@ -1035,7 +1035,7 @@ def good_star_mask(eloy_table, metadata):
 
     A star is "good" when it has a finite, positive net count and error, lies
     in-bounds (its pixel-center coordinate falls within
-    ``[-0.5, width - 0.5)`` in x and ``[-0.5, height - 0.5)`` in y), and is
+    ``[0, width - 0.5)`` in x and ``[0, height - 0.5)`` in y), and is
     not flagged as contaminated. This is the same predicate
     `eloy_to_starlist` uses to decide which rows reach the output StarList, so
     QA tooling can count good stars without rebuilding the StarList.
@@ -1059,16 +1059,23 @@ def good_star_mask(eloy_table, metadata):
     good &= eloy_table["tot_count"] > 0
     good &= np.isfinite(eloy_table["count_err"])
     good &= eloy_table["count_err"] > 0
-    # x/y are pixel-center coordinates: pixel 0 spans [-0.5, 0.5), so a center
-    # is on-frame when it lies in [-0.5, width - 0.5) (and likewise in y). The
-    # old ``> 0`` / ``< width`` test dropped a star centered on column 0 and
-    # admitted one up to a pixel past the last column (issue #57).
-    edge = -0.5  # lower edge of pixel 0 in pixel-center coordinates
+    # x/y are pixel-center coordinates: pixel 0 spans [-0.5, 0.5), so the last
+    # column ends at width - 0.5; the old ``< width`` test admitted a center up
+    # to a pixel past it (issue #57).
+    #
+    # Geometrically the lower bound is the matching -0.5, but the cut is made
+    # at 0.0 instead: the AAVSO starlist schema declares StarItem.x and .y as
+    # ``ge=0``, so a star centered in the leftmost/bottom half-pixel cannot be
+    # represented in the output at all. Passing it through here raises a
+    # pydantic ValidationError in `eloy_to_starlist`, which loses the *entire
+    # frame* instead of the one star. The cost is a half-pixel-wide strip on
+    # two edges; the alternative is losing whole frames.
+    upper_edge = -0.5  # last column/row ends half a pixel short of width/height
     good &= (
-        (eloy_table["x"] >= edge)
-        & (eloy_table["x"] < metadata["width"] + edge)
-        & (eloy_table["y"] >= edge)
-        & (eloy_table["y"] < metadata["height"] + edge)
+        (eloy_table["x"] >= 0.0)
+        & (eloy_table["x"] < metadata["width"] + upper_edge)
+        & (eloy_table["y"] >= 0.0)
+        & (eloy_table["y"] < metadata["height"] + upper_edge)
     )
     if "contaminated" in eloy_table.colnames:
         good &= ~eloy_table["contaminated"]
