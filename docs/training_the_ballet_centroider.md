@@ -27,9 +27,10 @@ The synthetic-data generator and the training utilities live in
 
 The training scripts need JAX/Flax/Optax (declared as the optional `train` extra) and a
 working `eloy` install — they build on eloy's base `Moffat2D`, `CNN`, and jitted
-train/eval steps. This extra is the **only** place bandaid needs JAX: inference in the
-photometry pipeline runs as a pure-numpy forward pass (`bandaid.ballet_numpy.NumpyBallet`),
-so a regular install carries no JAX/Flax at all:
+train/eval steps. Inference in the photometry pipeline goes through
+`bandaid.ballet.Ballet`, which picks eloy's jax/flax model when the optional `jax` extra
+is installed and otherwise falls back to a pure-numpy forward pass
+(`bandaid.ballet.NumpyBallet`) — so a regular install carries no JAX/Flax at all:
 
 ```bash
 pip install -e ".[train]"
@@ -132,8 +133,9 @@ rows (Phase 3) without regressing the others.
 
 ## Using new weights in the pipeline
 
-The photometry pipeline loads centroid weights through `bandaid.ballet_numpy.NumpyBallet`,
-a pure-numpy reimplementation of the CNN's forward pass that accepts a path to an `.npz`
-file — trained weights drop in with no JAX at runtime. Point `--weights` (CLI) or
-`weights=` (Python) at your trained file instead of the downloaded default to use the
-retrained centroider.
+The photometry pipeline loads centroid weights through `bandaid.ballet.Ballet`, which
+accepts a path to an `.npz` file and dispatches it to whichever backend it selected —
+eloy's jax/flax model, or the pure-numpy fallback reimplementation of the same forward
+pass (`bandaid.ballet.NumpyBallet`) — with no JAX required at runtime unless you asked
+for it. Point `--weights` (CLI) or `weights=` (Python) at your trained file instead of
+the downloaded default to use the retrained centroider.

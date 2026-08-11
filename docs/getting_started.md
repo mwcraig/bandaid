@@ -38,8 +38,11 @@ preparation from idea 2 — and the rest follow quickly.
 The Ballet centroider needs trained weights. The **first** time you run a
 photometry batch, bandaid downloads the default weights from HuggingFace and the
 HuggingFace hub caches them, so subsequent runs reuse the cached copy with no
-network access. The centroider itself runs as a pure-numpy forward pass — no
-GPU or JAX stack is installed or needed.
+network access. Centroiding runs through `bandaid.ballet.Ballet`, which picks
+eloy's jax/flax model when the optional `jax` extra is installed and falls
+back to a pure-numpy forward pass otherwise — no GPU or JAX stack is required
+by default. See [Optional jax acceleration](installation.md#optional-jax-acceleration)
+to opt into the faster path.
 
 To pre-fetch the weights (handy before going offline, or to confirm the download
 works) use the `weights` command, which prints the cached path:

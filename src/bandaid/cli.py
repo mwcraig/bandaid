@@ -30,7 +30,7 @@ from pathlib import Path
 import click
 from pydantic import ValidationError
 
-from .ballet_numpy import download_weights
+from .ballet import download_weights
 from .config import InstrumentProfile, PhotometryConfig
 from .instruments import available_instruments, load_instrument
 from .logging_setup import configure_logging

@@ -48,9 +48,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Optional accelerator: with jax + flax installed, centroiding runs eloy's jax
+# model instead of the numpy forward pass. Deliberately NOT a base dependency --
+# the base install must stay numpy-only so bandaid can run in the browser.
+jax = ["jax", "flax"]
+
 # Extras needed to run the Ballet CNN training scripts (src/bandaid/train_ballet_*.py).
-# Runtime centroiding is numpy-only (bandaid.ballet_numpy), so this extra is the
-# only source of jax/flax/optax -- they are no longer pulled in via eloy.
+# Runtime centroiding defaults to numpy (bandaid.ballet); this extra additionally
+# pulls in optax, and is no longer the only source of jax/flax -- the `jax` extra
+# above also provides those.
 train = [
     "jax",
     "flax",

@@ -1,5 +1,10 @@
 """
-Pure-numpy inference for the Ballet centroid CNN.
+Ballet centroid CNN inference, with or without jax.
+
+`Ballet` is the class the pipeline builds: it runs eloy's jax/flax model when
+jax and flax are installed (`pip install bandaid[jax]`) and the pure-numpy
+engine below otherwise. Both paths use the same pinned weights and agree to
+float32 round-off, so the backend is a speed choice, not a science choice.
 
 `NumpyBallet` is a drop-in replacement for the inference half of eloy's
 jax/flax ``Ballet``: the same pretrained weights (a small ``.npz`` downloaded
@@ -18,6 +23,8 @@ order of a 4-d image batch -- batch (N), height, width, channels -- flax's
 native convolution layout, which this module keeps throughout.
 """
 
+import importlib.util
+import logging
 import os
 
 import numpy as np
@@ -25,13 +32,20 @@ from eloy.ballet.model import load_weights_file
 from scipy.special import expit
 
 __all__ = [
+    "Ballet",
     "NumpyBallet",
     "download_weights",
 ]
 
+logger = logging.getLogger(__name__)
+
+# Env override for the "auto" backend choice, mainly for A/B benchmarking and
+# for users who have jax installed but do not want it used.
+_BACKEND_ENV = "BANDAID_BALLET_BACKEND"
+
 # HuggingFace location of the pretrained Ballet weights (public, no auth).
 # The revision pins the exact weights blob the golden values in
-# test_ballet_numpy.py were captured against, so an upstream re-upload can
+# test_ballet.py were captured against, so an upstream re-upload can
 # neither silently change production centroids nor break that test.
 _BALLET_HF_REPO_ID = "lgrcia/ballet"
 _BALLET_WEIGHTS_FILENAME = "centroid_15x15.npz"
@@ -145,6 +159,179 @@ def _max_pool_2x2_same(x):
     return x.reshape(n, h // 2, 2, w // 2, 2, c).max(axis=(2, 4))
 
 
+def _jax_available():
+    """
+    Report whether the jax backend can actually run.
+
+    Both jax and flax must import-resolve. ``eloy/ballet/model.py`` wraps its
+    flax import in ``try/except ImportError: pass`` and substitutes a stub
+    ``nn.Module`` that raises ``NotImplementedError`` at *call* time, so a
+    successful ``import eloy.ballet.model`` proves nothing; probe both
+    explicitly instead, or a missing flax surfaces as a mid-run crash.
+
+    Returns
+    -------
+    bool
+        True only if both ``jax`` and ``flax`` are importable.
+    """
+    return all(importlib.util.find_spec(mod) is not None for mod in ("jax", "flax"))
+
+
+def _resolve_backend(backend):
+    """
+    Turn a requested backend into the one that will be used, and why.
+
+    Parameters
+    ----------
+    backend : str
+        One of ``"auto"``, ``"jax"`` or ``"numpy"``. ``"auto"`` honours the
+        ``BANDAID_BALLET_BACKEND`` environment variable, then falls back to
+        whichever backend is installed. An explicit ``"jax"``/``"numpy"``
+        outranks the environment variable.
+
+    Returns
+    -------
+    name : str
+        ``"jax"`` or ``"numpy"``.
+    reason : str
+        Short human-readable explanation of the choice, for the log line.
+
+    Raises
+    ------
+    ValueError
+        If ``backend`` (or the environment variable) is not a known name.
+    ImportError
+        If jax was asked for explicitly but jax/flax are not installed. Asking
+        for it and silently getting the slow path would hide the problem.
+    """
+    reason = "requested"
+    if backend == "auto":
+        from_env = os.environ.get(_BACKEND_ENV)
+        if from_env:
+            backend, reason = from_env, _BACKEND_ENV
+
+    if backend not in ("auto", "jax", "numpy"):
+        source = f" (from {reason})" if reason == _BACKEND_ENV else ""
+        msg = (
+            f"unknown Ballet backend {backend!r}{source}; "
+            'expected "auto", "jax" or "numpy"'
+        )
+        raise ValueError(msg)
+
+    available = _jax_available()
+    if backend == "auto":
+        return (
+            ("jax", "eloy/flax") if available else ("numpy", "jax/flax not installed")
+        )
+    if backend == "jax" and not available:
+        source = f" via {reason}" if reason == _BACKEND_ENV else ""
+        msg = (
+            f"the jax Ballet backend was requested{source} but jax and flax are "
+            "not both installed -- `pip install bandaid[jax]`, or use "
+            'backend="numpy"'
+        )
+        raise ImportError(msg)
+    return backend, reason
+
+
+def _chunked_centroid(chunk_fn, x):
+    """
+    Apply a per-chunk forward pass over a batch of cutouts.
+
+    Shared by both backends so the empty-batch, dtype and chunk-boundary
+    behaviour is identical no matter which engine is underneath. The
+    ``np.asarray`` is also what pulls a jax device array back to the host for
+    the downstream ``cutout.to_original_position``.
+
+    Parameters
+    ----------
+    chunk_fn : callable
+        Maps one ``(n, 15, 15)`` float32 chunk to ``(n, 2)`` centroids.
+    x : numpy.ndarray
+        Cutouts of shape ``(N, 15, 15)``, any float dtype.
+
+    Returns
+    -------
+    numpy.ndarray
+        Centroids of shape ``(N, 2)`` float32.
+    """
+    x = np.asarray(x, dtype=np.float32)
+    if len(x) == 0:
+        return np.empty((0, 2), dtype=np.float32)
+    return np.concatenate(
+        [np.asarray(chunk_fn(x[i : i + _CHUNK])) for i in range(0, len(x), _CHUNK)]
+    ).astype(np.float32, copy=False)
+
+
+class Ballet:
+    """
+    Ballet centroider using jax when available, numpy otherwise.
+
+    Attributes
+    ----------
+    backend : str
+        The backend actually in use, ``"jax"`` or ``"numpy"``.
+    """
+
+    def __init__(self, model_file=None, backend="auto") -> None:
+        """
+        Select a backend and load the CNN weights into it.
+
+        Parameters
+        ----------
+        model_file : str or Path, optional
+            Path to the ``.npz`` weights file. If None, the pretrained weights
+            are downloaded from HuggingFace (cached after the first call).
+        backend : str, optional
+            ``"auto"`` (default), ``"jax"`` or ``"numpy"``. See
+            `_resolve_backend`: ``"auto"`` honours ``BANDAID_BALLET_BACKEND``
+            and then falls back to numpy, while ``"jax"`` is strict and raises
+            rather than silently degrading.
+        """
+        backend, reason = _resolve_backend(backend)
+        # Always pass the weights explicitly: eloy's own download_weights()
+        # takes no `revision`, so letting it download would bypass the pin
+        # that makes the golden centroid values meaningful.
+        model_file = model_file or download_weights()
+
+        if backend == "jax":
+            # Deferred: only this branch needs jax, and _resolve_backend has
+            # already established that it is installed.
+            import jax  # noqa: PLC0415
+            from eloy.ballet.model import Ballet as _EloyBallet  # noqa: PLC0415
+
+            engine = _EloyBallet(model_file=model_file)
+            # A run sees at most a couple of distinct batch shapes (the Gaia
+            # catalog is fixed, chunking bounds the rest), so jit compiles
+            # about twice per run rather than per call.
+            chunk_fn = jax.jit(engine.centroid)
+        else:
+            engine = NumpyBallet(model_file=model_file)
+            chunk_fn = lambda c: engine._forward(c[..., None])[:, ::-1]  # noqa: E731, SLF001
+
+        self.backend = backend
+        self._engine = engine
+        self._chunk_fn = chunk_fn
+        logger.info("Ballet centroiding backend: %s (%s)", backend, reason)
+
+    def centroid(self, x):
+        """
+        Predict subpixel centroids for a batch of cutouts.
+
+        Parameters
+        ----------
+        x : numpy.ndarray
+            Cutouts of shape ``(N, 15, 15)``; any float dtype (cast to
+            float32, matching the model's precision).
+
+        Returns
+        -------
+        numpy.ndarray
+            Centroids of shape ``(N, 2)`` float32, ordered ``(x, y)``.
+        """
+        return _chunked_centroid(self._chunk_fn, x)
+
+
 class NumpyBallet:
     """
     Numpy-only Ballet centroid model, output-identical to the jax original.
@@ -187,13 +374,7 @@ class NumpyBallet:
             ``Ballet.centroid``, which downstream
             ``cutout.to_original_position`` depends on.
         """
-        x = np.asarray(x, dtype=np.float32)[..., None]
-        if len(x) == 0:
-            return np.empty((0, 2), dtype=np.float32)
-        out = np.concatenate(
-            [self._forward(x[i : i + _CHUNK]) for i in range(0, len(x), _CHUNK)]
-        )
-        return out[:, ::-1]
+        return _chunked_centroid(lambda c: self._forward(c[..., None])[:, ::-1], x)
 
     def _forward(self, x):
         """

@@ -26,7 +26,7 @@ from astropy.io import fits
 from astropy.time import Time
 from dateutil import parser
 
-from .ballet_numpy import NumpyBallet
+from .ballet import Ballet
 from .catalog import cached_gaia_radecs
 from .config import PhotometryConfig
 from .exceptions import (
@@ -192,7 +192,7 @@ class BatchPrep:
     cnn : object
         The centroiding model to use for every frame: any object with a
         ``centroid(cutouts) -> (N, 2)`` method, such as
-        `~bandaid.ballet_numpy.NumpyBallet`.
+        `~bandaid.ballet.Ballet`.
     bayer_masks : dict
         Mapping of filter name to Bayer mask, as returned by
         `generate_bayer_masks`.
@@ -370,7 +370,7 @@ def prepare_batch(
     cnn : object
         The centroiding model to carry through to every frame: any object with
         a ``centroid(cutouts) -> (N, 2)`` method, such as
-        `~bandaid.ballet_numpy.NumpyBallet`.
+        `~bandaid.ballet.Ballet`.
     config : PhotometryConfig or None, optional
         Photometry configuration carried on the returned `BatchPrep` and applied
         to every frame. Its ``instrument`` settings drive the first-frame FWHM
@@ -1057,7 +1057,7 @@ def photometer_frames(
     Expand a set of file arguments and measure per-frame photometry for each.
 
     The high-level convenience behind ``bandaid process``: it does the file-name
-    expansion (`expand_frame_paths`), builds the `NumpyBallet` centroider, and
+    expansion (`expand_frame_paths`), builds the `Ballet` centroider, and
     runs `prepare_batch` (seeded from the first frame) followed by
     `process_batch`.
     Driving the whole flow from Python is one call to this function; the CLI is a
@@ -1073,7 +1073,7 @@ def photometer_frames(
         `PhotometryConfig` (Seestar50).
     cnn : object or None, optional
         A pre-built centroider: any object with a ``centroid(cutouts) -> (N, 2)``
-        method. None (default) builds a `~bandaid.ballet_numpy.NumpyBallet` from
+        method. None (default) builds a `~bandaid.ballet.Ballet` from
         ``weights``.
     weights : str or None, optional
         Path to Ballet weights used when ``cnn`` is None; None downloads the
@@ -1118,7 +1118,7 @@ def photometer_frames(
 
     config = config or PhotometryConfig()
     if cnn is None:
-        cnn = NumpyBallet(model_file=weights)
+        cnn = Ballet(model_file=weights)
 
     prep = prepare_batch(frames[0], cnn=cnn, config=config, append_l4=append_l4)
     results = process_batch(

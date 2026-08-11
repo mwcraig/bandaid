@@ -12,7 +12,7 @@ from astropy.stats import gaussian_fwhm_to_sigma
 from astropy.table import Table
 from eloy import detection
 
-from bandaid.ballet_numpy import NumpyBallet
+from bandaid.ballet import NumpyBallet
 from bandaid.config import InstrumentProfile, PhotometryConfig
 from bandaid.exceptions import (
     DegenerateBayerChannelError,

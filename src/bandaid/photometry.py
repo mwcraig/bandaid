@@ -627,7 +627,7 @@ def _fwhm_from_coords(
     photometry aperture, which is sized in FWHM.
 
     With a ``cnn`` (any object with a ``centroid(cutouts) -> (N, 2)`` method,
-    e.g. `~bandaid.ballet_numpy.NumpyBallet`), the centers are first refined with
+    e.g. `~bandaid.ballet.Ballet`), the centers are first refined with
     `ballet_centroid` and the cutouts are sub-pixel-registered to them before
     stacking, so the measured FWHM tracks the true PSF regardless of the opening.
 
