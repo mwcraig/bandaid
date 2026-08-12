@@ -27,6 +27,7 @@ from dateutil import parser
 from eloy import centroid, detection, photometry, psf, utils
 from eloy.centroid import ballet_centroid
 from photutils.aperture import ApertureStats, CircularAnnulus, CircularAperture
+from pydantic import ValidationError
 from scipy.ndimage import shift as ndshift
 from twirl import compute_wcs
 
@@ -40,6 +41,7 @@ from .exceptions import (
     DegenerateBayerChannelError,
     FrameMetadataError,
     NoUsableStarsError,
+    StarListValidationError,
     TooFewStarsError,
     WCSPointingError,
     WCSScaleError,
@@ -1021,12 +1023,21 @@ def eloy_to_starlist(eloy_table, metadata):
     NoUsableStarsError
         If no rows survive filtering, so the frame would produce an empty
         StarList. The source file is not known here; the caller attaches it.
+    StarListValidationError
+        If a surviving row fails schema validation in ``StarList.from_table``
+        -- a constraint `good_star_mask` does not mirror. Translated from the
+        pydantic ``ValidationError`` so the batch loop skips the frame instead
+        of aborting the run.
     """
     good = good_star_mask(eloy_table, metadata)
     if not np.any(good):
         msg = "no stars survived photometry filtering"
         raise NoUsableStarsError(msg)
-    return StarList.from_table(eloy_table[good], metadata=metadata)
+    try:
+        return StarList.from_table(eloy_table[good], metadata=metadata)
+    except ValidationError as exc:
+        msg = f"starlist schema rejected the frame: {exc}"
+        raise StarListValidationError(msg) from exc
 
 
 def good_star_mask(eloy_table, metadata):
@@ -1035,17 +1046,18 @@ def good_star_mask(eloy_table, metadata):
 
     A star is "good" when it has a finite, positive net count and error, lies
     in-bounds (its pixel-center coordinate falls within
-    ``[0, width - 0.5)`` in x and ``[0, height - 0.5)`` in y), and is
-    not flagged as contaminated. This is the same predicate
-    `eloy_to_starlist` uses to decide which rows reach the output StarList, so
-    QA tooling can count good stars without rebuilding the StarList.
+    ``[0, width - 0.5)`` in x and ``[0, height - 0.5)`` in y), has a finite,
+    nonnegative peak count, and is not flagged as contaminated. This is the
+    same predicate `eloy_to_starlist` uses to decide which rows reach the
+    output StarList, so QA tooling can count good stars without rebuilding the
+    StarList.
 
     Parameters
     ----------
     eloy_table : astropy.table.Table
         Per-image photometry table; one row per star. Must include
         ``tot_count``, ``count_err``, ``x``, and ``y`` (and optionally
-        ``contaminated``).
+        ``peak_count`` and ``contaminated``, each checked only when present).
     metadata : dict
         Must include the frame ``width`` and ``height`` used for the in-bounds
         test.
@@ -1070,13 +1082,20 @@ def good_star_mask(eloy_table, metadata):
     # pydantic ValidationError in `eloy_to_starlist`, which loses the *entire
     # frame* instead of the one star. The cost is a half-pixel-wide strip on
     # two edges; the alternative is losing whole frames.
-    upper_edge = -0.5  # last column/row ends half a pixel short of width/height
     good &= (
         (eloy_table["x"] >= 0.0)
-        & (eloy_table["x"] < metadata["width"] + upper_edge)
+        & (eloy_table["x"] < metadata["width"] - 0.5)
         & (eloy_table["y"] >= 0.0)
-        & (eloy_table["y"] < metadata["height"] + upper_edge)
+        & (eloy_table["y"] < metadata["height"] - 0.5)
     )
+    # StarItem.peak_count is also ge=0, and the raw (non-background-subtracted)
+    # peak box can legitimately produce a negative value for a faint star in a
+    # noise-dominated region, or NaN when every pixel in the box is masked.
+    # Same call as the half-pixel strip above: the star cannot be represented
+    # in the output, so drop the row rather than lose the frame.
+    if "peak_count" in eloy_table.colnames:
+        peak = eloy_table["peak_count"]
+        good &= np.isfinite(peak) & (peak >= 0.0)
     if "contaminated" in eloy_table.colnames:
         good &= ~eloy_table["contaminated"]
     return np.asarray(good)

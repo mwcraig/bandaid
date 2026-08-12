@@ -58,29 +58,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Ballet CNN centroid inference now runs as a pure-numpy forward pass
-    (`bandaid.ballet.NumpyBallet`), so JAX/Flax/Optax are no longer runtime
-    dependencies: the `eloy[jax]` requirement became plain `eloy` (same pin) plus
-    a direct `huggingface_hub` dependency for the weights download, making
-    installs ~270 MB lighter. Results are identical to the JAX model within
-    float32 round-off, and the `cnn=` pipeline parameter stays duck-typed (any
-    object with a `centroid(cutouts) -> (N, 2)` method still works). The `train`
-    extra still provides JAX for the training scripts.
-- `bandaid.ballet` (renamed from `bandaid.ballet_numpy`) now exposes a
-    `Ballet` selector class alongside `NumpyBallet`.
-    `Ballet(model_file=None, backend="auto")` picks eloy's jax/flax model when
-    both jax and flax are importable, else the numpy engine; centroiding is
-    roughly 2--3x faster on the jax path, with identical results.
-    `backend="jax"` is strict and raises
-    `ImportError` (pointing at `pip install bandaid[jax]`) instead of silently
-    falling back, and `backend="numpy"` forces the numpy engine. The
-    `BANDAID_BALLET_BACKEND` env var overrides the `"auto"` choice (useful for
-    A/B benchmarking, or to opt out of an installed jax), and an explicit
-    `backend=` argument beats the env var. The chosen backend is logged once at
-    INFO on construction and readable as `.backend`. The base install stays
-    numpy-only so bandaid keeps running in the browser (Pyodide, where jax is
-    unavailable); `pip install bandaid[jax]` opts into the faster jax path.
-    Results agree with the numpy engine to float32 round-off.
+- Ballet CNN centroiding no longer needs JAX at runtime: inference is a
+    pure-numpy forward pass matching the JAX model to float32 round-off, so
+    jax/flax/optax drop out of the runtime dependencies (~270 MB lighter;
+    `huggingface_hub` added for the weights download). The `cnn=` pipeline
+    parameter stays duck-typed; the `train` extra still provides JAX.
+- `bandaid.ballet` (renamed from `bandaid.ballet_numpy`) adds a `Ballet`
+    selector class: `backend="auto"` (default) uses jax/flax when installed
+    (~2-3x faster, identical results) and numpy otherwise, `backend="jax"`
+    raises instead of silently falling back, and `BANDAID_BALLET_BACKEND`
+    overrides the default. The chosen backend is logged at INFO and exposed
+    as `.backend`; the base install stays numpy-only (it keeps bandaid
+    running under Pyodide), and `pip install bandaid[jax]` opts in.
 
 ### Changed (breaking)
 

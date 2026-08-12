@@ -4,6 +4,7 @@ import astropy.units as u
 import numpy as np
 import pytest
 from _helpers import _seestar_header
+from aavso_starlist_schema import StarItem
 from astropy.coordinates import AltAz, EarthLocation, SkyCoord
 from astropy.io import fits
 from astropy.table import Table
@@ -12,6 +13,7 @@ from bandaid.config import InstrumentProfile
 from bandaid.exceptions import (
     FrameMetadataError,
     NoUsableStarsError,
+    StarListValidationError,
 )
 from bandaid.instruments import load_instrument
 from bandaid.photometry import (
@@ -241,21 +243,9 @@ class TestMetadataFromHeader:
 
 
 class TestGoodStarMask:
-    """
-    In-bounds tests for ``good_star_mask`` pixel-center bounds (issue #57).
+    """Bounds/quality cuts of ``good_star_mask``; see its source comment (#57)."""
 
-    Coordinates are pixel centers: pixel 0 spans [-0.5, 0.5), so the last
-    column ends at width - 0.5 and the old ``< width`` test admitted a center
-    up to a pixel past it. A star centered exactly on column 0 survives, where
-    the old ``> 0`` test dropped it.
-
-    The lower bound is 0.0 rather than the geometric -0.5 because the AAVSO
-    schema declares ``StarItem.x``/``.y`` as ``ge=0``: a center in the
-    leftmost/bottom half-pixel cannot be written out, and letting it through
-    raises a ``ValidationError`` that loses the whole frame.
-    """
-
-    def _mask_for_xy(self, eloy_table, starlist_metadata, x, y):
+    def _mask_for_xy(self, eloy_table, starlist_metadata, x, y, **overrides: float):
         """Return the good_star_mask for a single otherwise-good star at x, y."""
         row = {
             "x": x,
@@ -266,6 +256,7 @@ class TestGoodStarMask:
             "count_err": 5.0,
             "bkgd_count": 1.0,
             "peak_count": 200.0,
+            **overrides,
         }
         return good_star_mask(eloy_table([row]), starlist_metadata)
 
@@ -304,13 +295,34 @@ class TestGoodStarMask:
     def test_negative_centers_dropped_for_schema(
         self, eloy_table, starlist_metadata, x, y
     ):
-        """
-        Centers in the leftmost/bottom half-pixel are cut, not passed on.
-
-        They are on-frame geometrically, but ``StarItem`` requires ``x, y >=
-        0``; letting one through fails validation for the whole StarList.
-        """
+        """Centers in [-0.5, 0) are cut; see the ``good_star_mask`` source comment."""
         assert not self._mask_for_xy(eloy_table, starlist_metadata, x, y)[0]
+
+    @pytest.mark.parametrize("peak", [np.nan, -3.0])
+    def test_bad_peak_count_dropped(self, eloy_table, starlist_metadata, peak):
+        """A NaN or negative peak_count is cut; ``StarItem.peak_count`` is ge=0."""
+        assert not self._mask_for_xy(
+            eloy_table, starlist_metadata, 20.0, 30.0, peak_count=peak
+        )[0]
+
+    def test_zero_peak_count_survives(self, eloy_table, starlist_metadata):
+        """peak_count == 0 is schema-representable, so the mask keeps it."""
+        assert self._mask_for_xy(
+            eloy_table, starlist_metadata, 20.0, 30.0, peak_count=0.0
+        )[0]
+
+    @pytest.mark.parametrize("name", ["x", "y", "peak_count"])
+    def test_mask_bound_matches_schema(self, name):
+        """
+        The mask's hardcoded 0.0 cuts mirror the schema's ``ge`` bounds.
+
+        aavso-starlist-schema is a git-pinned dependency; if a re-pin ever
+        changes these constraints, this test flags the silent drift.
+        """
+        ge_bounds = [
+            m.ge for m in StarItem.model_fields[name].metadata if hasattr(m, "ge")
+        ]
+        assert ge_bounds == [0.0]
 
 
 class TestEloyToStarlist:
@@ -350,6 +362,11 @@ class TestEloyToStarlist:
         bad_zero_err = {**good_a, "count_err": 0.0}
         bad_x_out = {**good_a, "x": 150.0}
         bad_y_out = {**good_a, "y": -5.0}
+        # On-frame geometrically but schema-unrepresentable (StarItem.x is
+        # ge=0); passing it through would fail validation for the whole frame.
+        bad_x_boundary = {**good_a, "x": -0.2}
+        bad_peak_nan = {**good_a, "peak_count": np.nan}
+        bad_peak_negative = {**good_a, "peak_count": -3.0}
 
         table = eloy_table(
             [
@@ -361,12 +378,39 @@ class TestEloyToStarlist:
                 bad_zero_err,
                 bad_x_out,
                 bad_y_out,
+                bad_x_boundary,
+                bad_peak_nan,
+                bad_peak_negative,
             ],
         )
         starlist = eloy_to_starlist(table, starlist_metadata)
 
         kept_x = sorted(item.x for item in starlist.staritems)
         assert kept_x == [20.0, 70.0]
+
+    def test_schema_rejection_raises_frame_error(self, eloy_table, starlist_metadata):
+        """
+        A schema constraint the mask does not mirror costs the frame, not the batch.
+
+        ``dec`` is unmasked, so a row with dec > 90 reaches ``StarList.from_table``;
+        the pydantic ``ValidationError`` must surface as a `FrameError` subclass so
+        the batch loop skips the frame instead of aborting the run.
+        """
+        good = {
+            "x": 20.0,
+            "y": 30.0,
+            "ra": 10.0,
+            "dec": 20.0,
+            "tot_count": 100.0,
+            "count_err": 5.0,
+            "bkgd_count": 1.0,
+            "peak_count": 200.0,
+        }
+        bad_dec = {**good, "x": 70.0, "dec": 95.0}
+        table = eloy_table([good, bad_dec])
+
+        with pytest.raises(StarListValidationError, match="dec"):
+            eloy_to_starlist(table, starlist_metadata)
 
     def test_contaminated_rows_excluded(self, eloy_table, starlist_metadata):
         """A ``contaminated`` column drops flagged rows even when otherwise good."""

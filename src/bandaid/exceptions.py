@@ -20,6 +20,7 @@ __all__ = [
     "FrameError",
     "FrameMetadataError",
     "NoUsableStarsError",
+    "StarListValidationError",
     "TooFewStarsError",
     "WCSPointingError",
     "WCSScaleError",
@@ -107,6 +108,19 @@ class FrameMetadataError(FrameError):
 
 class NoUsableStarsError(FrameError):
     """No stars survived photometry filtering, so the frame yields no output."""
+
+
+class StarListValidationError(FrameError):
+    """
+    A photometry row passed filtering but failed AAVSO starlist validation.
+
+    `good_star_mask` mirrors the schema constraints it knows about (finite
+    positive counts, in-bounds nonnegative centers, nonnegative peak), but the
+    schema is a git-pinned dependency and can grow constraints the mask does
+    not check. This wrapper translates the pydantic ``ValidationError`` raised
+    by ``StarList.from_table`` into a `FrameError`, so a schema rejection
+    costs at worst the one frame instead of aborting the whole batch.
+    """
 
 
 class DegenerateBayerChannelError(FrameError):
