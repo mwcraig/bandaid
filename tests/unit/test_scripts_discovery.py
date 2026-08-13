@@ -196,7 +196,9 @@ class TestPhotometerFrames:
 
         calls = {}
         monkeypatch.setattr(
-            scripts, "Ballet", lambda model_file=None: calls.update(ballet=model_file)
+            scripts,
+            "Ballet",
+            lambda model_file=None: calls.update(ballet=model_file),
         )
 
         def fake_prepare(first_file, *, cnn, config=None, append_l4=False):

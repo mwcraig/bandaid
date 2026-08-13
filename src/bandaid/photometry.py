@@ -27,6 +27,7 @@ from dateutil import parser
 from eloy import centroid, detection, photometry, psf, utils
 from eloy.centroid import ballet_centroid
 from photutils.aperture import ApertureStats, CircularAnnulus, CircularAperture
+from pydantic import ValidationError
 from scipy.ndimage import shift as ndshift
 from twirl import compute_wcs
 
@@ -40,6 +41,7 @@ from .exceptions import (
     DegenerateBayerChannelError,
     FrameMetadataError,
     NoUsableStarsError,
+    StarListValidationError,
     TooFewStarsError,
     WCSPointingError,
     WCSScaleError,
@@ -626,7 +628,8 @@ def _fwhm_from_coords(
     detection opening that yields jittery centroids inflates the FWHM -- and hence the
     photometry aperture, which is sized in FWHM.
 
-    With a ``cnn`` (an ``eloy.centroid.Ballet``), the centers are first refined with
+    With a ``cnn`` (any object with a ``centroid(cutouts) -> (N, 2)`` method,
+    e.g. `~bandaid.ballet.Ballet`), the centers are first refined with
     `ballet_centroid` and the cutouts are sub-pixel-registered to them before
     stacking, so the measured FWHM tracks the true PSF regardless of the opening.
 
@@ -638,9 +641,10 @@ def _fwhm_from_coords(
         Detected source centers as ``(x, y)`` in pixels.
     max_adu : float
         Saturation ceiling; saturated cutouts are excluded from the fit.
-    cnn : eloy.centroid.Ballet or None, optional
-        If given, re-centroid sources with the CNN and sub-pixel-register the cutouts
-        before fitting. Default None (legacy integer-cutout stack).
+    cnn : object or None, optional
+        Centroiding model: any object with a ``centroid(cutouts) -> (N, 2)``
+        method. If given, re-centroid sources with the CNN and sub-pixel-register
+        the cutouts before fitting. Default None (legacy integer-cutout stack).
     fwhm_cutout_half : int, optional
         Half-width (px) of the square cutout used to build the effective PSF.
         Defaults to ``_FWHM_CUTOUT_HALF`` (a 50x50 window).
@@ -703,10 +707,12 @@ def calibration_sequence(
         *copy* of the data. The returned ``calibrated_data`` is always the
         original unbalanced array, so downstream photometry still measures real
         counts. Default False preserves detection on the raw data.
-    cnn : eloy.centroid.Ballet or None, optional
-        If given, the FWHM is measured by re-centroiding detections with the CNN and
-        sub-pixel-registering their cutouts before the PSF fit, so the FWHM (and the
-        FWHM-sized photometry aperture) is independent of the detection ``opening``.
+    cnn : object or None, optional
+        Centroiding model: any object with a ``centroid(cutouts) -> (N, 2)``
+        method. If given, the FWHM is measured by re-centroiding detections with
+        the CNN and sub-pixel-registering their cutouts before the PSF fit, so
+        the FWHM (and the FWHM-sized photometry aperture) is independent of the
+        detection ``opening``.
         Default None preserves the legacy integer-cutout FWHM. See
         `_fwhm_from_coords`.
     fwhm_cutout_half : int, optional
@@ -1017,12 +1023,21 @@ def eloy_to_starlist(eloy_table, metadata):
     NoUsableStarsError
         If no rows survive filtering, so the frame would produce an empty
         StarList. The source file is not known here; the caller attaches it.
+    StarListValidationError
+        If a surviving row fails schema validation in ``StarList.from_table``
+        -- a constraint `good_star_mask` does not mirror. Translated from the
+        pydantic ``ValidationError`` so the batch loop skips the frame instead
+        of aborting the run.
     """
     good = good_star_mask(eloy_table, metadata)
     if not np.any(good):
         msg = "no stars survived photometry filtering"
         raise NoUsableStarsError(msg)
-    return StarList.from_table(eloy_table[good], metadata=metadata)
+    try:
+        return StarList.from_table(eloy_table[good], metadata=metadata)
+    except ValidationError as exc:
+        msg = f"starlist schema rejected the frame: {exc}"
+        raise StarListValidationError(msg) from exc
 
 
 def good_star_mask(eloy_table, metadata):
@@ -1031,17 +1046,18 @@ def good_star_mask(eloy_table, metadata):
 
     A star is "good" when it has a finite, positive net count and error, lies
     in-bounds (its pixel-center coordinate falls within
-    ``[-0.5, width - 0.5)`` in x and ``[-0.5, height - 0.5)`` in y), and is
-    not flagged as contaminated. This is the same predicate
-    `eloy_to_starlist` uses to decide which rows reach the output StarList, so
-    QA tooling can count good stars without rebuilding the StarList.
+    ``[0, width - 0.5)`` in x and ``[0, height - 0.5)`` in y), has a finite,
+    nonnegative peak count, and is not flagged as contaminated. This is the
+    same predicate `eloy_to_starlist` uses to decide which rows reach the
+    output StarList, so QA tooling can count good stars without rebuilding the
+    StarList.
 
     Parameters
     ----------
     eloy_table : astropy.table.Table
         Per-image photometry table; one row per star. Must include
         ``tot_count``, ``count_err``, ``x``, and ``y`` (and optionally
-        ``contaminated``).
+        ``peak_count`` and ``contaminated``, each checked only when present).
     metadata : dict
         Must include the frame ``width`` and ``height`` used for the in-bounds
         test.
@@ -1055,17 +1071,31 @@ def good_star_mask(eloy_table, metadata):
     good &= eloy_table["tot_count"] > 0
     good &= np.isfinite(eloy_table["count_err"])
     good &= eloy_table["count_err"] > 0
-    # x/y are pixel-center coordinates: pixel 0 spans [-0.5, 0.5), so a center
-    # is on-frame when it lies in [-0.5, width - 0.5) (and likewise in y). The
-    # old ``> 0`` / ``< width`` test dropped a star centered on column 0 and
-    # admitted one up to a pixel past the last column (issue #57).
-    edge = -0.5  # lower edge of pixel 0 in pixel-center coordinates
+    # x/y are pixel-center coordinates: pixel 0 spans [-0.5, 0.5), so the last
+    # column ends at width - 0.5; the old ``< width`` test admitted a center up
+    # to a pixel past it (issue #57).
+    #
+    # Geometrically the lower bound is the matching -0.5, but the cut is made
+    # at 0.0 instead: the AAVSO starlist schema declares StarItem.x and .y as
+    # ``ge=0``, so a star centered in the leftmost/bottom half-pixel cannot be
+    # represented in the output at all. Passing it through here raises a
+    # pydantic ValidationError in `eloy_to_starlist`, which loses the *entire
+    # frame* instead of the one star. The cost is a half-pixel-wide strip on
+    # two edges; the alternative is losing whole frames.
     good &= (
-        (eloy_table["x"] >= edge)
-        & (eloy_table["x"] < metadata["width"] + edge)
-        & (eloy_table["y"] >= edge)
-        & (eloy_table["y"] < metadata["height"] + edge)
+        (eloy_table["x"] >= 0.0)
+        & (eloy_table["x"] < metadata["width"] - 0.5)
+        & (eloy_table["y"] >= 0.0)
+        & (eloy_table["y"] < metadata["height"] - 0.5)
     )
+    # StarItem.peak_count is also ge=0, and the raw (non-background-subtracted)
+    # peak box can legitimately produce a negative value for a faint star in a
+    # noise-dominated region, or NaN when every pixel in the box is masked.
+    # Same call as the half-pixel strip above: the star cannot be represented
+    # in the output, so drop the row rather than lose the frame.
+    if "peak_count" in eloy_table.colnames:
+        peak = eloy_table["peak_count"]
+        good &= np.isfinite(peak) & (peak >= 0.0)
     if "contaminated" in eloy_table.colnames:
         good &= ~eloy_table["contaminated"]
     return np.asarray(good)
@@ -1415,8 +1445,9 @@ def centroid_stars(calibrated_data, aligned_coords, cnn):
         Calibrated image data.
     aligned_coords : numpy.ndarray
         Pixel coordinates at which to centroid.
-    cnn : eloy.centroid.Ballet
-        Centroiding CNN model.
+    cnn : object
+        Centroiding CNN model: any object with a ``centroid(cutouts) -> (N, 2)``
+        method.
 
     Returns
     -------
@@ -1699,8 +1730,9 @@ def prepare_image(
         Path to the FITS file.
     radecs : numpy.ndarray
         Gaia reference sky coordinates (RA/Dec) used for WCS alignment.
-    cnn : eloy.centroid.Ballet
-        Centroiding CNN model.
+    cnn : object
+        Centroiding CNN model: any object with a ``centroid(cutouts) -> (N, 2)``
+        method.
     config : PhotometryConfig or None, optional
         Photometry configuration. The ``instrument`` settings (detection
         threshold, opening, and FWHM cutout window) drive the detection call. If
@@ -2001,8 +2033,9 @@ def process_one_image(
         User-specific metadata to include in the output.
     radecs : numpy.ndarray
         Gaia reference sky coordinates (RA/Dec) used for WCS alignment.
-    cnn : eloy.centroid.Ballet
-        Centroiding CNN model.
+    cnn : object
+        Centroiding CNN model: any object with a ``centroid(cutouts) -> (N, 2)``
+        method.
     bayer_masks : dict of {str: numpy.ndarray or None}
         Dictionary mapping each filter name to the Bayer mask to apply to the
         image. The filter name is stamped into each returned table's metadata so

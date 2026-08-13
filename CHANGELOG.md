@@ -56,6 +56,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     sample is empty or has zero variance is now skipped cleanly instead of
     silently dividing by zero during Bayer balancing (#61).
 
+### Changed
+
+- Ballet CNN centroiding no longer needs JAX at runtime: inference is a
+    pure-numpy forward pass matching the JAX model to float32 round-off, so
+    jax/flax/optax drop out of the runtime dependencies (~270 MB lighter;
+    `huggingface_hub` added for the weights download). The `cnn=` pipeline
+    parameter stays duck-typed; the `train` extra still provides JAX.
+- `bandaid.ballet` (renamed from `bandaid.ballet_numpy`) adds a `Ballet`
+    selector class: `backend="auto"` (default) uses jax/flax when installed
+    (~2-3x faster, identical results) and numpy otherwise, `backend="jax"`
+    raises instead of silently falling back, and `BANDAID_BALLET_BACKEND`
+    overrides the default. The chosen backend is logged at INFO and exposed
+    as `.backend`; the base install stays numpy-only (it keeps bandaid
+    running under Pyodide), and `pip install bandaid[jax]` opts in.
+
 ### Changed (breaking)
 
 - `measure_photometry` and `build_photometry_table` renamed their keyword-only
@@ -84,6 +99,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Wheel and sdist builds now include the bundled instrument profiles
+    (`bandaid/meta_json_files/`): hatch's `only-packages` option excluded the
+    directory (no `__init__.py`), so `import bandaid` crashed in any
+    non-editable install. Editable dev installs masked the bug. Fixed by
+    dropping `only-packages` — hatchling's default already ships everything
+    under the package directory.
+- The Ballet weights download is pinned to a specific revision of the
+    HuggingFace `lgrcia/ballet` repo, so an upstream re-upload can no longer
+    silently change centroid results.
 - The per-frame FWHM fit now uses only the brightest unsaturated detections
     (`InstrumentProfile.fwhm_n_stars`, default 25) instead of every detection.
     Bayer-balanced detection yields thousands of faint sources whose CNN

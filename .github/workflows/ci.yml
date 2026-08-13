@@ -43,6 +43,22 @@ jobs:
       - name: Run pytest
         run: uv run pytest
 
+  tests-jax:
+    name: tests (jax backend)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --group tests --extra jax --python 3.12
+      - name: Run pytest
+        # Deliberately no --remote-data: this job runs an offline random-weights
+        # jax-vs-numpy parity test, so a HuggingFace outage can't break it.
+        run: uv run pytest
+
   remote-tests:
     name: remote-data (CNN weights)
     runs-on: ubuntu-latest
