@@ -64,6 +64,11 @@ the `.star` file entirely (a warning names the dropped filters in the run log,
 and the frame's `qa_manifest.csv` row records them in `dropped_filters`); the
 frame itself is skipped only when no filter has any usable star.
 
+Targets passed on the command line with `--forced-targets` (see
+[Command-line usage](command_line.md)) appear in this same table,
+indistinguishable from the Gaia-catalog stars around them: `StarItem` has no
+name/ID field, so a forced row is identified only by its `ra`/`dec`.
+
 Read one back in Python with the same schema bandaid uses to write it:
 
 ```python
@@ -225,3 +230,9 @@ So "contaminated stars are dropped" is true, but the drop happens once, up front
 to the target list — not as a per-frame, per-row column you can inspect. If you
 need a star that bandaid considers contaminated, loosen
 `instrument.contamination_tolerance` (see [Configuration](configuration.md)).
+
+`--forced-targets` stars are never evaluated by this check — it needs a Gaia
+magnitude to size the separation model, and a forced target (a nova or
+supernova, by definition absent from Gaia) has none. A forced target that
+happens to sit on top of a bright star is therefore not flagged or dropped for
+contamination.

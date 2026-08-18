@@ -43,30 +43,40 @@ identically named frames from different directories stay distinct without
 mangling their names (two source directories that share a name are disambiguated
 with a numeric suffix on the subdirectory).
 
-| Option                             | Default          | Meaning                                                                    |
-| ---------------------------------- | ---------------- | -------------------------------------------------------------------------- |
-| `FILES...`                         | —                | Frames to photometer: directories, globs, and/or paths.                    |
-| `-o, --output-dir DIR`             | `.`              | Where to write the `.star` files and QA manifest.                          |
-| `--instrument NAME`                | `Seestar50`      | A bundled/registered instrument profile (see `bandaid instrument list`).   |
-| `--profile FILE`                   | —                | An instrument-profile JSON file (alternative to `--instrument`).           |
-| `--config FILE`                    | —                | A full `PhotometryConfig` JSON file (see `bandaid config init`).           |
-| `--gaia-mag-limit LIMIT`           | `15.0`           | Magnitude limit for the photometry targets (overrides the config).         |
-| `--min-snr SNR`                    | `2.0`            | Minimum SNR a star must have to reach the output (overrides the config).   |
-| `--weights PATH`                   | downloads        | Ballet centroider weights; omit to download the defaults from HuggingFace. |
-| `--user-metadata FILE`             | `{}`             | A JSON object of per-frame user-specific metadata to record.               |
-| `--append-l4 / --no-append-l4`     | on               | Add a full-frame L4 luminance channel to the Bayer masks.                  |
-| `--fail-fast / --no-fail-fast`     | `--no-fail-fast` | Re-raise unexpected per-frame errors instead of skipping the frame.        |
-| `--output-format NAME`             | `starlist`       | A registered output writer (see [Understanding the output](outputs.md)).   |
-| `--output-suffix SUFFIX`           | `.star`          | Suffix for the per-frame output files.                                     |
-| `--qa-manifest / --no-qa-manifest` | on               | Write a per-frame QA manifest alongside the `.star` files.                 |
-| `-v, --verbose`                    | off              | Stream per-frame progress to the terminal (`-v` = INFO, `-vv` = DEBUG).    |
-| `--log-file PATH`                  | —                | Also write log records to this file, at the same level as the terminal.    |
+| Option                             | Default          | Meaning                                                                                                          |
+| ---------------------------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `FILES...`                         | —                | Frames to photometer: directories, globs, and/or paths.                                                          |
+| `-o, --output-dir DIR`             | `.`              | Where to write the `.star` files and QA manifest.                                                                |
+| `--instrument NAME`                | `Seestar50`      | A bundled/registered instrument profile (see `bandaid instrument list`).                                         |
+| `--profile FILE`                   | —                | An instrument-profile JSON file (alternative to `--instrument`).                                                 |
+| `--config FILE`                    | —                | A full `PhotometryConfig` JSON file (see `bandaid config init`).                                                 |
+| `--gaia-mag-limit LIMIT`           | `15.0`           | Magnitude limit for the photometry targets (overrides the config).                                               |
+| `--min-snr SNR`                    | `2.0`            | Minimum SNR a star must have to reach the output (overrides the config).                                         |
+| `--weights PATH`                   | downloads        | Ballet centroider weights; omit to download the defaults from HuggingFace.                                       |
+| `--user-metadata FILE`             | `{}`             | A JSON object of per-frame user-specific metadata to record.                                                     |
+| `--forced-targets FILE`            | —                | A CSV/ECSV table (`name`, `ra`, `dec` in degrees) of extra targets absent from Gaia (e.g. a nova) to photometer. |
+| `--append-l4 / --no-append-l4`     | on               | Add a full-frame L4 luminance channel to the Bayer masks.                                                        |
+| `--fail-fast / --no-fail-fast`     | `--no-fail-fast` | Re-raise unexpected per-frame errors instead of skipping the frame.                                              |
+| `--output-format NAME`             | `starlist`       | A registered output writer (see [Understanding the output](outputs.md)).                                         |
+| `--output-suffix SUFFIX`           | `.star`          | Suffix for the per-frame output files.                                                                           |
+| `--qa-manifest / --no-qa-manifest` | on               | Write a per-frame QA manifest alongside the `.star` files.                                                       |
+| `-v, --verbose`                    | off              | Stream per-frame progress to the terminal (`-v` = INFO, `-vv` = DEBUG).                                          |
+| `--log-file PATH`                  | —                | Also write log records to this file, at the same level as the terminal.                                          |
 
 `--config` loads the full configuration; an explicit `--instrument` or
 `--profile` then overrides only its instrument. Use one of `--instrument` /
 `--profile`, not both. `--gaia-mag-limit` and `--min-snr` then override only
 those two `source_selection` fields, leaving the rest of the loaded config
 (including a `--config` file's `contaminant_mag_offset`) untouched.
+
+`--forced-targets` appends its rows to the photometry target list for every
+frame in the batch. They are **not checked against the Gaia
+magnitude/contamination model** (there is no Gaia magnitude for a nova or
+supernova to size that check against), but every other output quality cut
+still applies: a target too faint to measure, or off the edge of a given
+frame, is simply absent from that frame's output — not an error. The `name`
+column is input-side documentation only; it is not written to the `.star`
+output (see [Understanding the output](outputs.md)).
 
 The default `--no-fail-fast` is the friendlier choice for unattended overnight
 runs: a single bad frame is logged and skipped rather than aborting the batch.

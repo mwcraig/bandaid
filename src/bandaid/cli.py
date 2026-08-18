@@ -27,7 +27,11 @@ import logging
 import shutil
 from pathlib import Path
 
+import astropy.units as u
 import click
+import numpy as np
+from astropy.coordinates import SkyCoord
+from astropy.table import Table
 from pydantic import ValidationError
 
 from .ballet import download_weights
@@ -199,6 +203,64 @@ def _load_metadata(metadata_file):
     return data
 
 
+_FORCED_TARGET_COLUMNS = ("name", "ra", "dec")
+
+
+def _load_forced_targets(path):
+    """
+    Load user-supplied forced-photometry targets for the batch.
+
+    These are extra sky positions to photometer that are absent from the Gaia
+    catalog (e.g. a nova or supernova), forwarded to
+    `~bandaid.scripts.photometer_frames` as ``forced_targets``. ``name`` is
+    input-side self-documentation only -- the ``.star`` output schema has no
+    name/ID field, so forced rows are identified in the output only by their
+    ra/dec.
+
+    Parameters
+    ----------
+    path : str or None
+        Path passed to ``--forced-targets`` holding a CSV/ECSV table with
+        ``name``, ``ra``, and ``dec`` (degrees) columns, or None.
+
+    Returns
+    -------
+    astropy.coordinates.SkyCoord or None
+        The forced-target sky positions, or None when ``--forced-targets`` is
+        omitted.
+
+    Raises
+    ------
+    click.ClickException
+        If the file cannot be read as a table, is missing a required column,
+        has no rows, or has non-numeric/out-of-range ``ra``/``dec`` values.
+    """
+    if path is None:
+        return None
+    try:
+        table = Table.read(path)
+    except Exception as exc:
+        msg = f"could not read --forced-targets {path!r}: {exc}"
+        raise click.ClickException(msg) from exc
+
+    for column in _FORCED_TARGET_COLUMNS:
+        if column not in table.colnames:
+            msg = f"--forced-targets {path!r} is missing required column {column!r}"
+            raise click.ClickException(msg)
+
+    if len(table) == 0:
+        msg = f"--forced-targets {path!r} has no rows"
+        raise click.ClickException(msg)
+
+    try:
+        ra = np.asarray(table["ra"], dtype=float)
+        dec = np.asarray(table["dec"], dtype=float)
+        return SkyCoord(ra * u.deg, dec * u.deg)
+    except (TypeError, ValueError) as exc:
+        msg = f"--forced-targets {path!r} has invalid ra/dec values: {exc}"
+        raise click.ClickException(msg) from exc
+
+
 @click.group()
 @click.version_option(package_name="bandaid")
 def main():
@@ -259,6 +321,16 @@ def main():
     help="Path to a JSON object of per-frame user-specific metadata.",
 )
 @click.option(
+    "--forced-targets",
+    "forced_targets_file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help=(
+        "Path to a CSV/ECSV table (columns name, ra, dec in degrees) of extra "
+        "targets to photometer that are absent from the Gaia catalog."
+    ),
+)
+@click.option(
     "--append-l4/--no-append-l4",
     default=True,
     show_default=True,
@@ -311,6 +383,7 @@ def process(
     min_snr,
     weights,
     metadata_file,
+    forced_targets_file,
     append_l4,
     fail_fast,
     output_format,
@@ -348,6 +421,10 @@ def process(
         Path to Ballet centroider weights; None downloads the defaults.
     metadata_file : str or None
         Path to a JSON object of per-frame user-specific metadata.
+    forced_targets_file : str or None
+        Path to a CSV/ECSV table (columns ``name``, ``ra``, ``dec`` in
+        degrees) of extra targets to photometer that are absent from the
+        Gaia catalog.
     append_l4 : bool
         Whether to add a full-frame L4 luminance channel to the Bayer masks.
     fail_fast : bool
@@ -368,7 +445,7 @@ def process(
     ------
     click.ClickException
         If the arguments expand to no FITS frames, a path argument is missing or
-        not a FITS frame, a config/profile/metadata file or a
+        not a FITS frame, a config/profile/metadata/forced-targets file or a
         ``--gaia-mag-limit``/``--min-snr`` override fails validation, or every
         frame in the batch fails.
     """
@@ -391,6 +468,7 @@ def process(
         min_snr=min_snr,
     )
     metadata = _load_metadata(metadata_file)
+    forced_targets = _load_forced_targets(forced_targets_file)
     # Resolve the output format up front so an unknown name fails before any
     # (expensive) frame processing, as a clean CLI error rather than a traceback.
     try:
@@ -413,6 +491,7 @@ def process(
             write_frame=write_frame,
             fail_fast=fail_fast,
             write_qa_manifest=qa_manifest,
+            forced_targets=forced_targets,
         )
     except (ValueError, FileNotFoundError) as exc:
         raise click.ClickException(str(exc)) from exc

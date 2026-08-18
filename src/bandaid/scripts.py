@@ -353,6 +353,7 @@ def prepare_batch(
     cnn,
     config=None,
     append_l4=True,
+    forced_targets=None,
 ):
     """
     Compute the once-per-batch photometry inputs from the first frame.
@@ -384,6 +385,13 @@ def prepare_batch(
     append_l4 : bool, optional
         Whether to add a full-frame "L4" luminance channel to the Bayer masks.
         Default True.
+    forced_targets : astropy.coordinates.SkyCoord or None, optional
+        Extra sky positions to photometer that are absent from the Gaia
+        catalog (e.g. a nova or supernova) -- appended to
+        ``photometry_coords`` only, never to ``radecs`` (the WCS-solve
+        reference catalog). They bypass contamination flagging (there is no
+        Gaia magnitude to size that model against) but are still subject to
+        every downstream quality cut. None (default) adds nothing.
 
     Returns
     -------
@@ -519,6 +527,20 @@ def prepare_batch(
     )
     flagged_target = flagged[target[contaminant]]
     photometry_coords = SkyCoord(target_radecs[~flagged_target], unit="deg")
+
+    # Forced targets (novae/supernovae -- absent from Gaia) go into
+    # photometry_coords only, never radecs: they aren't astrometric
+    # references for the WCS solve. Two deliberate properties follow:
+    # (1) contamination flagging is bypassed for them -- it needs a Gaia
+    # magnitude to size the separation model, and a forced target has none,
+    # so a forced target sitting on top of a bright star is not flagged.
+    # (2) every downstream quality cut still applies unchanged; an off-frame
+    # forced target is silently dropped by the existing x/y bounds cut, by
+    # design, not an error.
+    if forced_targets is not None and len(forced_targets) > 0:
+        # astropy.coordinates.concatenate is pending deprecation in favor of
+        # np.concatenate, which SkyCoord supports directly.
+        photometry_coords = np.concatenate([photometry_coords, forced_targets])
 
     bayer_masks = generate_bayer_masks(
         (metadata["height"], metadata["width"]),
@@ -1115,6 +1137,7 @@ def photometer_frames(
     write_frame=write_starlist_set,
     fail_fast=False,
     write_qa_manifest=True,
+    forced_targets=None,
 ):
     """
     Expand a set of file arguments and measure per-frame photometry for each.
@@ -1161,6 +1184,9 @@ def photometer_frames(
     write_qa_manifest : bool, optional
         Whether to write a per-frame QA manifest alongside the outputs. Default
         True.
+    forced_targets : astropy.coordinates.SkyCoord or None, optional
+        Extra sky positions to photometer that are absent from the Gaia
+        catalog, forwarded to `prepare_batch`. None (default) adds nothing.
 
     Returns
     -------
@@ -1183,7 +1209,13 @@ def photometer_frames(
     if cnn is None:
         cnn = Ballet(model_file=weights)
 
-    prep = prepare_batch(frames[0], cnn=cnn, config=config, append_l4=append_l4)
+    prep = prepare_batch(
+        frames[0],
+        cnn=cnn,
+        config=config,
+        append_l4=append_l4,
+        forced_targets=forced_targets,
+    )
     results = process_batch(
         frames,
         prep,

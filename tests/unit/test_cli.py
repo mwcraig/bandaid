@@ -13,6 +13,7 @@ wiring and the clean-error handling; the engine itself is covered in
 import json
 import logging
 
+import numpy as np
 import pytest
 from click.testing import CliRunner
 
@@ -90,6 +91,9 @@ def test_process_forwards_every_flag(runner, patched_photometer, tmp_path):
 
     out_dir = tmp_path / "out"
 
+    forced = tmp_path / "forced.csv"
+    forced.write_text("name,ra,dec\nSN2024a,123.456,-10.0\n")
+
     result = runner.invoke(
         cli.main,
         [
@@ -108,6 +112,8 @@ def test_process_forwards_every_flag(runner, patched_photometer, tmp_path):
             "--output-suffix",
             ".starlist",
             "--no-qa-manifest",
+            "--forced-targets",
+            str(forced),
         ],
     )
 
@@ -129,6 +135,9 @@ def test_process_forwards_every_flag(runner, patched_photometer, tmp_path):
     assert config.instrument.name == "Seestar50"
     # The summary reflects the returned (results, frames) counts.
     assert "Processed 1 of 2 frames" in result.output
+    forced_targets = patched_photometer["forced_targets"]
+    np.testing.assert_allclose(forced_targets.ra.deg, [123.456])
+    np.testing.assert_allclose(forced_targets.dec.deg, [-10.0])
 
 
 @pytest.mark.usefixtures("fully_failed_photometer")
@@ -260,6 +269,19 @@ def test_process_uses_robust_defaults(runner, patched_photometer, tmp_path):
     assert patched_photometer["append_l4"] is True
     assert patched_photometer["fail_fast"] is False
     assert patched_photometer["write_qa_manifest"] is True
+
+
+def test_process_omitted_forced_targets_defaults_to_none(
+    runner, patched_photometer, tmp_path
+):
+    """Omitting ``--forced-targets`` forwards ``None`` (no forced targets)."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+
+    result = runner.invoke(cli.main, ["process", str(frame)])
+
+    assert result.exit_code == 0, result.output
+    assert patched_photometer["forced_targets"] is None
 
 
 def test_process_forwards_multiple_directories(runner, patched_photometer, tmp_path):
@@ -467,6 +489,66 @@ def test_process_non_object_metadata_is_clean_error(runner, tmp_path):
 
     assert result.exit_code == 1
     assert "object" in result.output.lower()
+
+
+def test_process_forced_targets_missing_column_is_clean_error(runner, tmp_path):
+    """A forced-targets file missing a required column names it in the error."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+    forced = tmp_path / "forced.csv"
+    forced.write_text("name,ra\nSN2024a,123.456\n")
+
+    result = runner.invoke(
+        cli.main, ["process", str(frame), "--forced-targets", str(forced)]
+    )
+
+    assert result.exit_code == 1
+    assert "dec" in result.output.lower()
+
+
+def test_process_forced_targets_no_rows_is_clean_error(runner, tmp_path):
+    """A header-only forced-targets file is rejected as having no rows."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+    forced = tmp_path / "forced.csv"
+    forced.write_text("name,ra,dec\n")
+
+    result = runner.invoke(
+        cli.main, ["process", str(frame), "--forced-targets", str(forced)]
+    )
+
+    assert result.exit_code == 1
+    assert "no rows" in result.output.lower()
+
+
+def test_process_forced_targets_non_numeric_ra_is_clean_error(runner, tmp_path):
+    """Non-numeric ``ra`` values in the forced-targets file are a clean error."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+    forced = tmp_path / "forced.csv"
+    forced.write_text("name,ra,dec\nSN2024a,not-a-number,-10.0\n")
+
+    result = runner.invoke(
+        cli.main, ["process", str(frame), "--forced-targets", str(forced)]
+    )
+
+    assert result.exit_code == 1
+    assert result.output.strip() != ""
+
+
+def test_process_forced_targets_out_of_range_dec_is_clean_error(runner, tmp_path):
+    """An out-of-range ``dec`` in the forced-targets file is a clean error."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+    forced = tmp_path / "forced.csv"
+    forced.write_text("name,ra,dec\nSN2024a,123.456,100.0\n")
+
+    result = runner.invoke(
+        cli.main, ["process", str(frame), "--forced-targets", str(forced)]
+    )
+
+    assert result.exit_code == 1
+    assert result.output.strip() != ""
 
 
 def test_instrument_list(runner):

@@ -725,6 +725,54 @@ class TestPrepareBatch:
         with pytest.raises(BatchPrepError, match="could not query Gaia"):
             scripts.prepare_batch("frame1.fits", cnn=object())
 
+    def test_forced_targets_appended_to_photometry_coords_only(self, monkeypatch):
+        """A forced target lands in ``photometry_coords`` but not ``radecs``."""
+        radecs, mags = _batch_radecs_mags()
+        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+        forced = SkyCoord([20.0] * u.deg, [5.0] * u.deg)
+
+        prep = scripts.prepare_batch("frame1.fits", cnn=object(), forced_targets=forced)
+
+        # radecs is the Gaia-only alignment catalog -- the forced target never
+        # appears there.
+        np.testing.assert_array_equal(prep.radecs, radecs)
+        # photometry_coords is the contamination-filtered Gaia targets plus the
+        # forced target appended at the end.
+        expected_ra = np.concatenate([radecs[[2, 3], 0], [20.0]])
+        expected_dec = np.concatenate([radecs[[2, 3], 1], [5.0]])
+        np.testing.assert_allclose(prep.photometry_coords.ra.deg, expected_ra)
+        np.testing.assert_allclose(prep.photometry_coords.dec.deg, expected_dec)
+
+    def test_forced_targets_bypass_contamination_flagging(self, monkeypatch):
+        """A forced target near a bright star still reaches ``photometry_coords``."""
+        # A mag-8 star and a forced target ~1 arcsec away -- well inside the
+        # contamination model's separation for a bright star -- but the forced
+        # target has no Gaia magnitude to size that model against, so it is
+        # never evaluated for contamination and always survives.
+        radecs = np.array([[10.0, 0.0], [10.2, 0.0]])
+        mags = np.array([8.0, 10.0])
+        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+        forced = SkyCoord(
+            [10.0 + 1.0 / 3600.0] * u.deg,
+            [0.0] * u.deg,
+        )
+
+        prep = scripts.prepare_batch("frame1.fits", cnn=object(), forced_targets=forced)
+
+        assert forced.ra.deg[0] in prep.photometry_coords.ra.deg
+        assert forced.dec.deg[0] in prep.photometry_coords.dec.deg
+
+    def test_forced_targets_empty_skycoord_is_a_no_op(self, monkeypatch):
+        """An empty ``forced_targets`` SkyCoord changes nothing."""
+        radecs, mags = _batch_radecs_mags()
+        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+        forced = SkyCoord([] * u.deg, [] * u.deg)
+
+        prep = scripts.prepare_batch("frame1.fits", cnn=object(), forced_targets=forced)
+
+        np.testing.assert_allclose(prep.photometry_coords.ra.deg, radecs[[2, 3], 0])
+        np.testing.assert_allclose(prep.photometry_coords.dec.deg, radecs[[2, 3], 1])
+
 
 class TestCheckFrameConsistency:
     """Unit tests for the per-frame pointing/shape guard."""
