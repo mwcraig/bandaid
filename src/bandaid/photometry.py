@@ -1049,14 +1049,6 @@ def good_star_mask(eloy_table, metadata, *, min_snr=None):
     """
     Boolean mask of rows that survive photometry filtering.
 
-    A star is "good" when it has a finite, positive net count and error, lies
-    in-bounds (its pixel-center coordinate falls within
-    ``[0, width - 0.5)`` in x and ``[0, height - 0.5)`` in y), has a finite,
-    nonnegative peak count, meets the minimum SNR floor, and is not flagged as
-    contaminated. This is the same predicate `eloy_to_starlist` uses to decide
-    which rows reach the output StarList, so QA tooling can count good stars
-    without rebuilding the StarList.
-
     Parameters
     ----------
     eloy_table : astropy.table.Table
@@ -1076,6 +1068,16 @@ def good_star_mask(eloy_table, metadata, *, min_snr=None):
     -------
     numpy.ndarray
         Boolean array, ``True`` for rows that pass the filter.
+
+    Notes
+    -----
+    A star is "good" when it has a finite, positive net count and error, lies
+    in-bounds (its pixel-center coordinate falls within
+    ``[0, width - 0.5)`` in x and ``[0, height - 0.5)`` in y), has a finite,
+    nonnegative peak count, meets the minimum SNR floor, and is not flagged as
+    contaminated. This is the same predicate `eloy_to_starlist` uses to decide
+    which rows reach the output StarList, so QA tooling can count good stars
+    without rebuilding the StarList.
     """
     good = ~np.isnan(eloy_table["tot_count"])
     good &= eloy_table["tot_count"] > 0

@@ -673,9 +673,11 @@ def _qa_record_ok(file, by_filter):
     has_bounds = {"width", "height"} <= set(full_meta)
     good = None
     if has_phot_cols and has_bounds:
-        good = good_star_mask(
-            representative, full_meta, min_snr=representative.meta.get("min_snr")
-        )
+        # min_snr is read from table meta on purpose, not threaded in from the
+        # run config: the writer applies the stamped value, and reading the
+        # same stamp here keeps the QA count aligned with what was actually
+        # written -- even for tables produced under a different config.
+        good = good_star_mask(representative, full_meta, min_snr=meta.get("min_snr"))
         n_good_stars = int(np.sum(good))
 
     # The drift flag is computed from centroid_coords/aligned_coords/fwhm before
@@ -922,7 +924,8 @@ def process_batch(
         `write_starlist_set` (one `StarListSet` JSON per frame). Ignored in
         in-memory mode (``output_dir`` is None). A `FrameError` raised by the
         writer (e.g. the default writer's `NoUsableStarsError` when no star
-        survives filtering) marks the frame skipped and the batch continues;
+        survives filtering in any filter) marks the frame skipped and the batch
+        continues;
         any other writer exception is treated as a systemic write failure and
         propagates, aborting the run.
     fail_fast : bool, optional
@@ -1019,7 +1022,8 @@ def process_batch(
             # frame, so it must abort the run rather than be skipped as a
             # "bad frame". A writer can still raise a frame-quality error at
             # write time, though -- the default writer raises
-            # NoUsableStarsError when no star survives filtering (#78) -- so
+            # NoUsableStarsError when no star survives filtering in any
+            # filter (#78) -- so
             # split on exception type: a FrameError is this frame's problem
             # and is skipped like any other, everything else propagates.
             manifest_records.append(_qa_record_ok(file, by_filter))

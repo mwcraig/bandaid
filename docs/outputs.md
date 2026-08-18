@@ -56,6 +56,13 @@ its centroid lands in-bounds, and its SNR meets the `source_selection.min_snr`
 floor (`2.0` by default). Stars that fail (saturated, off the chip, no usable
 flux, too faint) are simply absent — there is no row for them.
 
+The cut is per star *and per filter*: because SNR is color-dependent, a star can
+survive in one filter and fall below the floor in another, so a
+color-disadvantaged channel (say, `TB` on a red-star field) can hold fewer
+stars than its siblings. A filter in which **no** star survives is dropped from
+the `.star` file entirely (a warning names the dropped filters in the run log);
+the frame itself is skipped only when no filter has any usable star.
+
 Read one back in Python with the same schema bandaid uses to write it:
 
 ```python
@@ -155,9 +162,17 @@ bad frames in a night without opening every `.star` file.
 | `sky_median`       | Median sky background — rises with clouds, moonlight, or haze.                                                                                                                                                        |
 | `fwhm`             | Measured FWHM (seeing); a spike flags a soft or trailed frame.                                                                                                                                                        |
 | `wcs_solved`       | `True` if a WCS solved; `False` on a plate-solve failure; blank if the frame failed earlier.                                                                                                                          |
-| `n_good_stars`     | Stars that survived filtering and reached the `.star` output.                                                                                                                                                         |
+| `n_good_stars`     | Stars that survived filtering on the frame's *representative* channel: `L4` when present, else the first filter, under the same `min_snr` floor the writer applies. See below.                                        |
 | `n_centroid_drift` | Stars with the `centroid_drift` flag set (see below) — a frame-health signal on its own.                                                                                                                              |
 | `n_drift_rejected` | The subset of `n_centroid_drift` that also passes `good_star_mask` — the stars a future gate on this flag would actually remove, since most drifted stars are already dropped by the existing flux/error/bounds cuts. |
+
+`n_good_stars` is a single-channel count, not a per-filter tally: the SNR floor
+is color-dependent, so a per-filter `.star` output can contain fewer stars than
+`n_good_stars` in a color-disadvantaged channel (and `L4`, when present, can
+keep a star an individual channel drops). The representative-channel number is
+the right one for its QA use — cloud and transparency episodes are common-mode
+across channels — but do not read it as the exact row count of every filter's
+StarList.
 
 A frame that was skipped or errored still gets a row (with its diagnostics left
 blank), so the manifest accounts for **every** input frame, not just the

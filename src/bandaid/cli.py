@@ -79,7 +79,11 @@ def _override_source_selection(config, *, gaia_mag_limit, min_snr):
     if not overrides:
         return config
 
-    base = config.source_selection.model_dump(exclude={"contaminant_mag_limit"})
+    # Exclude computed fields so the dump round-trips through the constructor;
+    # the set form self-maintains if another @computed_field is added.
+    base = config.source_selection.model_dump(
+        exclude=set(SourceSelectionConfig.model_computed_fields)
+    )
     try:
         new_source_selection = SourceSelectionConfig(**{**base, **overrides})
     except ValidationError as exc:

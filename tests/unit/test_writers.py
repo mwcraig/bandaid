@@ -13,6 +13,7 @@ import pytest
 from aavso_starlist_schema import StarListSet
 
 from bandaid import writers
+from bandaid.exceptions import NoUsableStarsError
 from bandaid.writers import (
     available_writers,
     get_writer,
@@ -109,3 +110,44 @@ class TestWriteStarlistSet:
         for star_list in star_list_set.star_lists:
             kept_x = [item.x for item in star_list.staritems]
             assert kept_x == [20.0]
+
+    def test_all_faint_filter_dropped_not_the_frame(self, tmp_path, by_filter, caplog):
+        """
+        A filter with no surviving stars is dropped; the rest still write.
+
+        Regression test for the PR #109 review finding: one all-below-threshold
+        Bayer channel must not discard the whole frame's output.
+        """
+        output_path = tmp_path / "frame1.star"
+        frame_result = by_filter(filters=("TR", "TG"))
+        frame_result["TR"]["snr"] = [1.0, 1.0]
+        frame_result["TG"]["snr"] = [10.0, 1.0]
+        for table in frame_result.values():
+            table.meta["min_snr"] = 5.0
+
+        with caplog.at_level("WARNING", logger="bandaid.writers"):
+            returned = write_starlist_set(frame_result, output_path)
+
+        assert returned == output_path
+        star_list_set = StarListSet.model_validate_json(output_path.read_text())
+        assert len(star_list_set.star_lists) == 1
+        kept_x = [item.x for item in star_list_set.star_lists[0].staritems]
+        assert kept_x == [20.0]
+        # The dropped channel must be diagnosable from the run log.
+        assert any(
+            "TR" in record.message and output_path.name in record.message
+            for record in caplog.records
+        )
+
+    def test_raises_only_when_no_filter_survives(self, tmp_path, by_filter):
+        """Every filter empty keeps the frame-skip contract: raise, write nothing."""
+        output_path = tmp_path / "frame1.star"
+        frame_result = by_filter(filters=("TR", "TG"))
+        for table in frame_result.values():
+            table["snr"] = [1.0, 1.0]
+            table.meta["min_snr"] = 5.0
+
+        with pytest.raises(NoUsableStarsError):
+            write_starlist_set(frame_result, output_path)
+
+        assert not output_path.exists()

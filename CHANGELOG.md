@@ -71,7 +71,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     any SNR is now dropped if its SNR falls below `2.0`. This is a deliberate
     behavior change; pass `--min-snr 0` (CLI) or
     `SourceSelectionConfig(min_snr=0.0)` to restore the previous, unfiltered
-    behavior (#101).
+    behavior (#101). The cut is per filter as well as per star: because SNR is
+    color-dependent, a color-disadvantaged channel can keep fewer stars than
+    its siblings, and a filter in which no star survives is dropped from the
+    frame's `.star` output (with a warning naming the dropped filters) while
+    the surviving filters still write. A frame is skipped with
+    `NoUsableStarsError` only when no filter has any usable star.
 - Ballet CNN centroiding no longer needs JAX at runtime: inference is a
     pure-numpy forward pass matching the JAX model to float32 round-off, so
     jax/flax/optax drop out of the runtime dependencies (~270 MB lighter;
