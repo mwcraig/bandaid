@@ -55,6 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `DegenerateBayerChannelError` (a `FrameError`): a frame whose CFA channel
     sample is empty or has zero variance is now skipped cleanly instead of
     silently dividing by zero during Bayer balancing (#61).
+- `bandaid process --log-file PATH` also writes log records to a file, at the
+    same level as the terminal (#92).
 
 ### Changed
 

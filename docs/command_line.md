@@ -58,6 +58,7 @@ with a numeric suffix on the subdirectory).
 | `--output-suffix SUFFIX`           | `.star`          | Suffix for the per-frame output files.                                     |
 | `--qa-manifest / --no-qa-manifest` | on               | Write a per-frame QA manifest alongside the `.star` files.                 |
 | `-v, --verbose`                    | off              | Stream per-frame progress to the terminal (`-v` = INFO, `-vv` = DEBUG).    |
+| `--log-file PATH`                  | —                | Also write log records to this file, at the same level as the terminal.    |
 
 `--config` loads the full configuration; an explicit `--instrument` or
 `--profile` then overrides only its instrument. Use one of `--instrument` /
