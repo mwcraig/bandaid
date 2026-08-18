@@ -19,7 +19,7 @@ from astropy.io import fits
 from astropy.table import Table
 from astropy.time import Time
 
-from bandaid.config import InstrumentProfile
+from bandaid.config import InstrumentProfile, PhotometryConfig, SourceSelectionConfig
 from bandaid.photometry import (
     ANNULUS,
     RELATIVE_RADII,
@@ -137,6 +137,22 @@ class TestBuildPhotometryTable:
         max_aper = np.max(RELATIVE_RADII) * fwhm
         expected_annulus = (max(max_aper, ANNULUS[0] * fwhm), ANNULUS[1] * fwhm)
         assert table.meta["annulus_radii"] == pytest.approx(expected_annulus)
+
+    def test_min_snr_stamped_on_table_meta(self, make_test_image):
+        """The table meta carries the config's min_snr for downstream writers."""
+        image, coords, _fwhm, _ = _single_source_photometry_inputs(make_test_image)
+        img = _make_image_data(_make_tan_wcs(image.shape), coords, None)
+        img.calibrated_data = image
+
+        default_table = build_photometry_table(img, mask=None)
+        assert default_table.meta["min_snr"] == SourceSelectionConfig().min_snr
+
+        custom_min_snr = 4.5
+        custom_config = PhotometryConfig(
+            source_selection=SourceSelectionConfig(min_snr=custom_min_snr)
+        )
+        custom_table = build_photometry_table(img, mask=None, config=custom_config)
+        assert custom_table.meta["min_snr"] == custom_min_snr
 
     def test_centroid_drift_column(self, monkeypatch):
         """Output has a bool ``centroid_drift`` column reflecting per-star drift."""

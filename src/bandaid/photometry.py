@@ -36,6 +36,7 @@ from .config import (
     DriftConfig,
     InstrumentProfile,
     PhotometryConfig,
+    SourceSelectionConfig,
 )
 from .exceptions import (
     DegenerateBayerChannelError,
@@ -997,7 +998,7 @@ def metadata_from_header(header, *, profile=None):
     return metadata
 
 
-def eloy_to_starlist(eloy_table, metadata):
+def eloy_to_starlist(eloy_table, metadata, *, min_snr=None):
     """
     Convert a single-image photometry table from eloy to a StarList.
 
@@ -1013,6 +1014,10 @@ def eloy_to_starlist(eloy_table, metadata):
         Required keys: site_lat, site_lon, site_elev, observer, filter,
         block_filter, exposure, tel_manufac, tel_model, tel_firmware,
         adc_depth, largest_usable_adu_value, egain, width, height, refframe.
+    min_snr : float or None, optional
+        Minimum SNR a star must have to survive, passed through to
+        `good_star_mask`. If None (default), the `~bandaid.config.
+        SourceSelectionConfig` default (2.0) applies.
 
     Returns
     -------
@@ -1029,7 +1034,7 @@ def eloy_to_starlist(eloy_table, metadata):
         pydantic ``ValidationError`` so the batch loop skips the frame instead
         of aborting the run.
     """
-    good = good_star_mask(eloy_table, metadata)
+    good = good_star_mask(eloy_table, metadata, min_snr=min_snr)
     if not np.any(good):
         msg = "no stars survived photometry filtering"
         raise NoUsableStarsError(msg)
@@ -1040,27 +1045,32 @@ def eloy_to_starlist(eloy_table, metadata):
         raise StarListValidationError(msg) from exc
 
 
-def good_star_mask(eloy_table, metadata):
+def good_star_mask(eloy_table, metadata, *, min_snr=None):
     """
     Boolean mask of rows that survive photometry filtering.
 
     A star is "good" when it has a finite, positive net count and error, lies
     in-bounds (its pixel-center coordinate falls within
     ``[0, width - 0.5)`` in x and ``[0, height - 0.5)`` in y), has a finite,
-    nonnegative peak count, and is not flagged as contaminated. This is the
-    same predicate `eloy_to_starlist` uses to decide which rows reach the
-    output StarList, so QA tooling can count good stars without rebuilding the
-    StarList.
+    nonnegative peak count, meets the minimum SNR floor, and is not flagged as
+    contaminated. This is the same predicate `eloy_to_starlist` uses to decide
+    which rows reach the output StarList, so QA tooling can count good stars
+    without rebuilding the StarList.
 
     Parameters
     ----------
     eloy_table : astropy.table.Table
         Per-image photometry table; one row per star. Must include
         ``tot_count``, ``count_err``, ``x``, and ``y`` (and optionally
-        ``peak_count`` and ``contaminated``, each checked only when present).
+        ``peak_count``, ``snr``, and ``contaminated``, each checked only when
+        present).
     metadata : dict
         Must include the frame ``width`` and ``height`` used for the in-bounds
         test.
+    min_snr : float or None, optional
+        Minimum SNR a star must have to survive, checked only when ``eloy_table``
+        has an ``snr`` column. If None (default), the `~bandaid.config.
+        SourceSelectionConfig` default (2.0) applies.
 
     Returns
     -------
@@ -1096,6 +1106,9 @@ def good_star_mask(eloy_table, metadata):
     if "peak_count" in eloy_table.colnames:
         peak = eloy_table["peak_count"]
         good &= np.isfinite(peak) & (peak >= 0.0)
+    if "snr" in eloy_table.colnames:
+        threshold = SourceSelectionConfig().min_snr if min_snr is None else min_snr
+        good &= eloy_table["snr"] >= threshold
     if "contaminated" in eloy_table.colnames:
         good &= ~eloy_table["contaminated"]
     return np.asarray(good)
@@ -2007,6 +2020,7 @@ def build_photometry_table(
     data.meta["fwhm"] = float(img.fwhm)
     data.meta["aperture_radii"] = phot["aperture_radii"]
     data.meta["annulus_radii"] = phot["annulus_radii"]
+    data.meta["min_snr"] = config.source_selection.min_snr
 
     return data
 

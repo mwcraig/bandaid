@@ -66,7 +66,9 @@ def write_starlist_set(frame_result, output_path):
     if a filter yields no usable stars.
     """
     star_lists = [
-        eloy_to_starlist(table, table.meta["full_image_meta"])
+        eloy_to_starlist(
+            table, table.meta["full_image_meta"], min_snr=table.meta.get("min_snr")
+        )
         for table in frame_result.values()
     ]
     star_list_set = StarListSet(star_lists=star_lists)

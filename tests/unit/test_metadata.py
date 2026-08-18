@@ -245,7 +245,9 @@ class TestMetadataFromHeader:
 class TestGoodStarMask:
     """Bounds/quality cuts of ``good_star_mask``; see its source comment (#57)."""
 
-    def _mask_for_xy(self, eloy_table, starlist_metadata, x, y, **overrides: float):
+    def _mask_for_xy(
+        self, eloy_table, starlist_metadata, x, y, *, min_snr=None, **overrides: float
+    ):
         """Return the good_star_mask for a single otherwise-good star at x, y."""
         row = {
             "x": x,
@@ -258,7 +260,7 @@ class TestGoodStarMask:
             "peak_count": 200.0,
             **overrides,
         }
-        return good_star_mask(eloy_table([row]), starlist_metadata)
+        return good_star_mask(eloy_table([row]), starlist_metadata, min_snr=min_snr)
 
     @pytest.mark.parametrize(
         ("x", "y"),
@@ -323,6 +325,34 @@ class TestGoodStarMask:
             m.ge for m in StarItem.model_fields[name].metadata if hasattr(m, "ge")
         ]
         assert ge_bounds == [0.0]
+
+    @pytest.mark.parametrize(
+        ("snr", "expected_kept"),
+        [
+            (1.9, False),
+            (2.0, True),
+            (5.0, True),
+        ],
+    )
+    def test_snr_floor_defaults_to_two(
+        self, eloy_table, starlist_metadata, snr, expected_kept
+    ):
+        """With no explicit floor, a star's SNR is checked against the 2.0 default."""
+        assert (
+            self._mask_for_xy(eloy_table, starlist_metadata, 20.0, 30.0, snr=snr)[0]
+            == expected_kept
+        )
+
+    def test_snr_column_absent_is_not_checked(self, eloy_table, starlist_metadata):
+        """No ``snr`` column means the SNR floor is simply not applied."""
+        assert self._mask_for_xy(eloy_table, starlist_metadata, 20.0, 30.0)[0]
+
+    def test_custom_min_snr_overrides_default(self, eloy_table, starlist_metadata):
+        """An explicit ``min_snr`` replaces the 2.0 default floor."""
+        # snr=3.0 clears the 2.0 default but not a custom 5.0 floor.
+        assert not self._mask_for_xy(
+            eloy_table, starlist_metadata, 20.0, 30.0, snr=3.0, min_snr=5.0
+        )[0]
 
 
 class TestEloyToStarlist:
@@ -428,6 +458,27 @@ class TestEloyToStarlist:
         table = eloy_table([good, contaminated_good], contaminated=[False, True])
 
         starlist = eloy_to_starlist(table, starlist_metadata)
+
+        kept_x = [item.x for item in starlist.staritems]
+        assert kept_x == [20.0]
+
+    def test_min_snr_forwarded_to_good_star_mask(self, eloy_table, starlist_metadata):
+        """``min_snr`` reaches ``good_star_mask`` through ``eloy_to_starlist``."""
+        good = {
+            "x": 20.0,
+            "y": 30.0,
+            "ra": 10.0,
+            "dec": 20.0,
+            "tot_count": 100.0,
+            "count_err": 5.0,
+            "bkgd_count": 1.0,
+            "peak_count": 200.0,
+        }
+        high_snr = {**good, "snr": 10.0}
+        low_snr = {**good, "x": 70.0, "snr": 1.0}
+        table = eloy_table([high_snr, low_snr])
+
+        starlist = eloy_to_starlist(table, starlist_metadata, min_snr=5.0)
 
         kept_x = [item.x for item in starlist.staritems]
         assert kept_x == [20.0]

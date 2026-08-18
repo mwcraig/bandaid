@@ -57,9 +57,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     silently dividing by zero during Bayer balancing (#61).
 - `bandaid process --log-file PATH` also writes log records to a file, at the
     same level as the terminal (#92).
+- `SourceSelectionConfig.min_snr` (default `2.0`): a minimum-SNR floor a star
+    must clear to reach the output, applied by `good_star_mask` alongside its
+    existing flux/error/bounds/contamination cuts. New `bandaid process`
+    `--gaia-mag-limit` and `--min-snr` flags override the corresponding
+    `source_selection` fields without needing a full `--config` file (#101,
+    #102).
 
 ### Changed
 
+- Output now enforces a minimum SNR of `2.0` by default (`good_star_mask`,
+    `SourceSelectionConfig.min_snr`): a star that used to reach the output at
+    any SNR is now dropped if its SNR falls below `2.0`. This is a deliberate
+    behavior change; pass `--min-snr 0` (CLI) or
+    `SourceSelectionConfig(min_snr=0.0)` to restore the previous, unfiltered
+    behavior (#101).
 - Ballet CNN centroiding no longer needs JAX at runtime: inference is a
     pure-numpy forward pass matching the JAX model to float32 round-off, so
     jax/flax/optax drop out of the runtime dependencies (~270 MB lighter;

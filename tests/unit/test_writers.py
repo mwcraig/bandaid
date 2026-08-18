@@ -94,3 +94,18 @@ class TestWriteStarlistSet:
         for star_list in star_list_set.star_lists:
             kept_x = sorted(item.x for item in star_list.staritems)
             assert kept_x == [20.0, 70.0]
+
+    def test_honors_table_meta_min_snr_override(self, tmp_path, by_filter):
+        """A ``min_snr`` stamped on the table meta is forwarded to the filter."""
+        output_path = tmp_path / "frame1.star"
+        frame_result = by_filter()
+        for table in frame_result.values():
+            table["snr"] = [10.0, 1.0]
+            table.meta["min_snr"] = 5.0
+
+        write_starlist_set(frame_result, output_path)
+
+        star_list_set = StarListSet.model_validate_json(output_path.read_text())
+        for star_list in star_list_set.star_lists:
+            kept_x = [item.x for item in star_list.staritems]
+            assert kept_x == [20.0]

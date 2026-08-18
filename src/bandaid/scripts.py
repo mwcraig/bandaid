@@ -673,7 +673,9 @@ def _qa_record_ok(file, by_filter):
     has_bounds = {"width", "height"} <= set(full_meta)
     good = None
     if has_phot_cols and has_bounds:
-        good = good_star_mask(representative, full_meta)
+        good = good_star_mask(
+            representative, full_meta, min_snr=representative.meta.get("min_snr")
+        )
         n_good_stars = int(np.sum(good))
 
     # The drift flag is computed from centroid_coords/aligned_coords/fwhm before

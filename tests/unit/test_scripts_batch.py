@@ -504,6 +504,31 @@ class TestProcessBatchToDisk:
         assert rows[0]["n_centroid_drift"] == "1"
         assert rows[0]["n_drift_rejected"] == "0"
 
+    def test_qa_manifest_n_good_stars_honors_default_min_snr_floor(
+        self, patched_process_one_image, tmp_path, by_filter
+    ):
+        """
+        ``n_good_stars`` applies the SNR >= 2 default floor (#101).
+
+        ``by_filter`` tables carry no stamped ``min_snr`` meta, so
+        `_qa_record_ok` -> `good_star_mask` falls back to the 2.0 default; that
+        fallback is exactly what this test pins.
+        """
+        result = by_filter()
+        result["TR"]["snr"] = [5.0, 1.0]
+        patched_process_one_image(result)
+
+        scripts.process_batch(
+            ["a.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+        )
+
+        rows = _read_manifest(tmp_path)
+
+        assert rows[0]["n_good_stars"] == "1"
+
     def test_qa_manifest_can_be_disabled(
         self, patched_process_one_image, tmp_path, by_filter
     ):

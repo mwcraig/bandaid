@@ -52,8 +52,9 @@ enclosing `StarList`, not on each star.
 
 Only stars that pass photometry filtering reach the file: a row is kept only when
 its `tot_count` is finite and positive, its `count_err` is finite and positive,
-and its centroid lands in-bounds. Stars that fail (saturated, off the chip, no
-usable flux) are simply absent — there is no row for them.
+its centroid lands in-bounds, and its SNR meets the `source_selection.min_snr`
+floor (`2.0` by default). Stars that fail (saturated, off the chip, no usable
+flux, too faint) are simply absent — there is no row for them.
 
 Read one back in Python with the same schema bandaid uses to write it:
 

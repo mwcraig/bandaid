@@ -31,7 +31,7 @@ import click
 from pydantic import ValidationError
 
 from .ballet import download_weights
-from .config import InstrumentProfile, PhotometryConfig
+from .config import InstrumentProfile, PhotometryConfig, SourceSelectionConfig
 from .instruments import available_instruments, load_instrument
 from .logging_setup import configure_logging
 from .scripts import QA_MANIFEST_FILENAME, photometer_frames
@@ -43,13 +43,62 @@ __all__ = ["main"]
 _DEBUG_VERBOSITY = 2
 
 
-def _build_config(instrument, profile, config_file):
+def _override_source_selection(config, *, gaia_mag_limit, min_snr):
+    """
+    Apply ``--gaia-mag-limit``/``--min-snr`` overrides to ``config.source_selection``.
+
+    Rebuilds the sub-config from *all* of its current fields (robust if more are
+    added later) with just the given overrides applied, so an unset field --
+    e.g. a ``--config`` file's ``contaminant_mag_offset`` -- carries forward
+    unchanged. A no-op (returns ``config`` unchanged) when both overrides are None.
+
+    Parameters
+    ----------
+    config : PhotometryConfig
+        The config to layer the override onto.
+    gaia_mag_limit : float or None
+        Value passed to ``--gaia-mag-limit``; None leaves the field untouched.
+    min_snr : float or None
+        Value passed to ``--min-snr``; None leaves the field untouched.
+
+    Returns
+    -------
+    PhotometryConfig
+        ``config``, or a copy with ``source_selection`` replaced.
+
+    Raises
+    ------
+    click.ClickException
+        If the resulting `~bandaid.config.SourceSelectionConfig` fails validation.
+    """
+    overrides = {
+        k: v
+        for k, v in {"gaia_mag_limit": gaia_mag_limit, "min_snr": min_snr}.items()
+        if v is not None
+    }
+    if not overrides:
+        return config
+
+    base = config.source_selection.model_dump(exclude={"contaminant_mag_limit"})
+    try:
+        new_source_selection = SourceSelectionConfig(**{**base, **overrides})
+    except ValidationError as exc:
+        raise click.ClickException(str(exc)) from exc
+    return config.model_copy(update={"source_selection": new_source_selection})
+
+
+def _build_config(
+    instrument, profile, config_file, *, gaia_mag_limit=None, min_snr=None
+):
     """
     Build the `PhotometryConfig` for a run from the instrument/config options.
 
     ``--config`` supplies the full config; ``--instrument`` or ``--profile`` then
-    override only its instrument (the frozen config is copied, not mutated). With
-    no options a default `PhotometryConfig` (Seestar50) is returned.
+    override only its instrument (the frozen config is copied, not mutated).
+    ``--gaia-mag-limit``/``--min-snr`` then override only those fields of the
+    resulting ``source_selection``, carrying its other fields (e.g. a
+    ``--config`` file's ``contaminant_mag_offset``) forward unchanged. With no
+    options a default `PhotometryConfig` (Seestar50) is returned.
 
     Parameters
     ----------
@@ -61,6 +110,12 @@ def _build_config(instrument, profile, config_file):
         :meth:`~bandaid.config.InstrumentProfile.from_file`.
     config_file : str or None
         Path passed to ``--config``, loaded as a full `PhotometryConfig`.
+    gaia_mag_limit : float or None, optional
+        Value passed to ``--gaia-mag-limit``; None (default) leaves
+        ``source_selection.gaia_mag_limit`` untouched.
+    min_snr : float or None, optional
+        Value passed to ``--min-snr``; None (default) leaves
+        ``source_selection.min_snr`` untouched.
 
     Returns
     -------
@@ -71,8 +126,8 @@ def _build_config(instrument, profile, config_file):
     ------
     click.ClickException
         If ``--instrument`` and ``--profile`` are given together, a named
-        instrument cannot be resolved, or a ``--config``/``--profile`` file fails
-        validation.
+        instrument cannot be resolved, or a ``--config``/``--profile``/source-
+        selection override fails validation.
     """
     if instrument is not None and profile is not None:
         msg = "use only one of --instrument and --profile, not both"
@@ -102,7 +157,10 @@ def _build_config(instrument, profile, config_file):
 
     if override is not None:
         config = config.model_copy(update={"instrument": override})
-    return config
+
+    return _override_source_selection(
+        config, gaia_mag_limit=gaia_mag_limit, min_snr=min_snr
+    )
 
 
 def _load_metadata(metadata_file):
@@ -176,6 +234,18 @@ def main():
     help="Path to a full PhotometryConfig JSON file.",
 )
 @click.option(
+    "--gaia-mag-limit",
+    default=None,
+    type=float,
+    help="Magnitude limit for the photometry targets (overrides the config).",
+)
+@click.option(
+    "--min-snr",
+    default=None,
+    type=float,
+    help="Minimum SNR a star must have to reach the output (overrides the config).",
+)
+@click.option(
     "--weights",
     default=None,
     type=click.Path(exists=True, dir_okay=False),
@@ -237,6 +307,8 @@ def process(
     instrument,
     profile,
     config_file,
+    gaia_mag_limit,
+    min_snr,
     weights,
     metadata_file,
     append_l4,
@@ -266,6 +338,12 @@ def process(
         Path to an instrument-profile JSON file (alternative to ``instrument``).
     config_file : str or None
         Path to a full `PhotometryConfig` JSON file.
+    gaia_mag_limit : float or None
+        Magnitude limit for the photometry targets; overrides
+        ``source_selection.gaia_mag_limit`` when given.
+    min_snr : float or None
+        Minimum SNR a star must have to reach the output; overrides
+        ``source_selection.min_snr`` when given.
     weights : str or None
         Path to Ballet centroider weights; None downloads the defaults.
     metadata_file : str or None
@@ -290,8 +368,9 @@ def process(
     ------
     click.ClickException
         If the arguments expand to no FITS frames, a path argument is missing or
-        not a FITS frame, a config/profile/metadata file fails validation, or
-        every frame in the batch fails.
+        not a FITS frame, a config/profile/metadata file or a
+        ``--gaia-mag-limit``/``--min-snr`` override fails validation, or every
+        frame in the batch fails.
     """
     # Always route bandaid's records to stderr so per-frame skip/error warnings
     # are never silently lost: WARNING+ (skips, unexpected errors) shows even
@@ -304,7 +383,13 @@ def process(
         level = logging.WARNING
     configure_logging(level=level, logfile=log_file)
 
-    config = _build_config(instrument, profile, config_file)
+    config = _build_config(
+        instrument,
+        profile,
+        config_file,
+        gaia_mag_limit=gaia_mag_limit,
+        min_snr=min_snr,
+    )
     metadata = _load_metadata(metadata_file)
     # Resolve the output format up front so an unknown name fails before any
     # (expensive) frame processing, as a clean CLI error rather than a traceback.

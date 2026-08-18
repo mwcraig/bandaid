@@ -40,6 +40,10 @@ EXPECTED_DETECTION_OPENING = 5
 EXPECTED_FWHM_CUTOUT_HALF = 25
 EXPECTED_FWHM_N_STARS = 25
 EXPECTED_WCS_SCALE_TOLERANCE = 0.05
+# Not a legacy constant: the "SNR >= 2" floor did not previously exist anywhere
+# in bandaid (issue #101). 2.0 is a new, deliberate default, pinned here so an
+# accidental change to it is caught.
+EXPECTED_MIN_SNR = 2.0
 
 
 class TestDefaultsMatchLegacyConstants:
@@ -55,13 +59,14 @@ class TestDefaultsMatchLegacyConstants:
         assert tuple(cfg.annulus) == EXPECTED_ANNULUS
 
     def test_source_selection(self):
-        """The Gaia limit defaults to 15 and the contaminant limit to limit + 3."""
+        """The Gaia limit defaults to 15, offset to 3, and the SNR floor to 2."""
         cfg = SourceSelectionConfig()
         assert cfg.gaia_mag_limit == EXPECTED_GAIA_MAG_LIMIT
         assert (
             cfg.contaminant_mag_limit
             == EXPECTED_GAIA_MAG_LIMIT + EXPECTED_CONTAMINANT_OFFSET
         )
+        assert cfg.min_snr == EXPECTED_MIN_SNR
 
     def test_drift(self):
         """Centroid-drift cuts default to the legacy literal values."""
@@ -222,6 +227,16 @@ class TestValidators:
         with pytest.raises(ValidationError):
             DriftConfig(drift_cap_pix=-1.0)
 
+    def test_non_finite_min_snr_rejected(self):
+        """A non-finite minimum SNR floor is rejected with a clear message."""
+        with pytest.raises(ValidationError, match="min_snr"):
+            SourceSelectionConfig(min_snr=float("inf"))
+
+    def test_negative_min_snr_rejected(self):
+        """A negative minimum SNR floor is rejected; 0 is the permissive floor."""
+        with pytest.raises(ValidationError, match="min_snr"):
+            SourceSelectionConfig(min_snr=-1.0)
+
 
 class TestOverrides:
     """Non-default values round-trip through construction."""
@@ -246,3 +261,9 @@ class TestOverrides:
             max(radii) + gap,
             max(radii) + gap + annulus_width,
         )
+
+    def test_source_selection_override(self):
+        """A custom min_snr is preserved on the nested config."""
+        min_snr = 5.0
+        cfg = PhotometryConfig(source_selection=SourceSelectionConfig(min_snr=min_snr))
+        assert cfg.source_selection.min_snr == min_snr
