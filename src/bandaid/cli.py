@@ -224,6 +224,13 @@ def main():
     count=True,
     help="Show per-frame progress in the terminal (-vv for debug detail).",
 )
+@click.option(
+    "--log-file",
+    "log_file",
+    default=None,
+    type=click.Path(dir_okay=False),
+    help="Also write log records to this file (same level as the terminal).",
+)
 def process(
     files,
     output_dir,
@@ -238,6 +245,7 @@ def process(
     output_suffix,
     qa_manifest,
     verbose,
+    log_file,
 ):
     """
     Photometer a batch of FITS frames into per-frame .star photometry files.
@@ -275,6 +283,8 @@ def process(
     verbose : int
         Verbosity count from ``-v``: 0 logs only WARNING+ (skips/errors) to
         stderr, 1 adds per-frame progress at INFO, 2+ adds DEBUG detail.
+    log_file : str or None
+        Path to also write log records to, at the same level as the terminal.
 
     Raises
     ------
@@ -292,7 +302,7 @@ def process(
         level = logging.INFO
     else:
         level = logging.WARNING
-    configure_logging(level=level)
+    configure_logging(level=level, logfile=log_file)
 
     config = _build_config(instrument, profile, config_file)
     metadata = _load_metadata(metadata_file)

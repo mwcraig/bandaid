@@ -198,7 +198,7 @@ def test_process_quiet_by_default_still_logs_warnings(
     result = runner.invoke(cli.main, ["process", str(frame)])
 
     assert result.exit_code == 0, result.output
-    assert spy_configure_logging == [{"level": logging.WARNING}]
+    assert spy_configure_logging == [{"level": logging.WARNING, "logfile": None}]
 
 
 @pytest.mark.usefixtures("patched_photometer")
@@ -210,7 +210,7 @@ def test_process_verbose_enables_info_logging(runner, spy_configure_logging, tmp
     result = runner.invoke(cli.main, ["process", str(frame), "-v"])
 
     assert result.exit_code == 0, result.output
-    assert spy_configure_logging == [{"level": logging.INFO}]
+    assert spy_configure_logging == [{"level": logging.INFO, "logfile": None}]
 
 
 @pytest.mark.usefixtures("patched_photometer")
@@ -224,7 +224,26 @@ def test_process_double_verbose_enables_debug_logging(
     result = runner.invoke(cli.main, ["process", str(frame), "-vv"])
 
     assert result.exit_code == 0, result.output
-    assert spy_configure_logging == [{"level": logging.DEBUG}]
+    assert spy_configure_logging == [{"level": logging.DEBUG, "logfile": None}]
+
+
+@pytest.mark.usefixtures("patched_photometer")
+def test_process_log_file_forwards_to_configure_logging(
+    runner, spy_configure_logging, tmp_path
+):
+    """``--log-file PATH`` is forwarded to ``configure_logging`` as ``logfile``."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+    log_file = tmp_path / "run.log"
+
+    result = runner.invoke(
+        cli.main, ["process", str(frame), "--log-file", str(log_file)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert spy_configure_logging == [
+        {"level": logging.WARNING, "logfile": str(log_file)}
+    ]
 
 
 def test_process_uses_robust_defaults(runner, patched_photometer, tmp_path):
