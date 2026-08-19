@@ -50,6 +50,8 @@ with a numeric suffix on the subdirectory).
 | `--instrument NAME`                | `Seestar50`      | A bundled/registered instrument profile (see `bandaid instrument list`).   |
 | `--profile FILE`                   | —                | An instrument-profile JSON file (alternative to `--instrument`).           |
 | `--config FILE`                    | —                | A full `PhotometryConfig` JSON file (see `bandaid config init`).           |
+| `--gaia-mag-limit LIMIT`           | `15.0`           | Magnitude limit for the photometry targets (overrides the config).         |
+| `--min-snr SNR`                    | `2.0`            | Minimum SNR a star must have to reach the output (overrides the config).   |
 | `--weights PATH`                   | downloads        | Ballet centroider weights; omit to download the defaults from HuggingFace. |
 | `--user-metadata FILE`             | `{}`             | A JSON object of per-frame user-specific metadata to record.               |
 | `--append-l4 / --no-append-l4`     | on               | Add a full-frame L4 luminance channel to the Bayer masks.                  |
@@ -62,7 +64,9 @@ with a numeric suffix on the subdirectory).
 
 `--config` loads the full configuration; an explicit `--instrument` or
 `--profile` then overrides only its instrument. Use one of `--instrument` /
-`--profile`, not both.
+`--profile`, not both. `--gaia-mag-limit` and `--min-snr` then override only
+those two `source_selection` fields, leaving the rest of the loaded config
+(including a `--config` file's `contaminant_mag_offset`) untouched.
 
 The default `--no-fail-fast` is the friendlier choice for unattended overnight
 runs: a single bad frame is logged and skipped rather than aborting the batch.

@@ -29,9 +29,14 @@ list of Path``:
   mapping -- typically the ``Path`` (or list of paths) actually written.
 """
 
+import logging
+
 from aavso_starlist_schema import StarListSet
 
+from .exceptions import NoUsableStarsError
 from .photometry import eloy_to_starlist
+
+logger = logging.getLogger(__name__)
 
 # User-registered writers, keyed by name. The bundled ``starlist`` writer is
 # registered at import (see bottom of module); re-registering a name overrides it.
@@ -60,15 +65,45 @@ def write_starlist_set(frame_result, output_path):
     pathlib.Path
         ``output_path``, the file written.
 
+    Raises
+    ------
+    NoUsableStarsError
+        If no filter yields any usable stars, so there is nothing to write.
+        The batch loop records the frame as a skip.
+
     Notes
     -----
-    Propagates `~bandaid.exceptions.NoUsableStarsError` from `eloy_to_starlist`
-    if a filter yields no usable stars.
+    A filter whose table yields *no* usable stars is dropped from the set
+    (with a warning naming the dropped filters) rather than failing the whole
+    frame -- with an SNR floor configured, an all-faint channel (e.g. TB on a
+    red-star field) is routine, and the surviving channels still carry good
+    data. ``StarListSet`` puts no per-filter requirement on its ``star_lists``,
+    so a partial set is schema-valid.
     """
-    star_lists = [
-        eloy_to_starlist(table, table.meta["full_image_meta"])
-        for table in frame_result.values()
-    ]
+    star_lists = []
+    dropped = []
+    for filter_name, table in frame_result.items():
+        try:
+            star_lists.append(
+                eloy_to_starlist(
+                    table,
+                    table.meta["full_image_meta"],
+                    min_snr=table.meta.get("min_snr"),
+                )
+            )
+        except NoUsableStarsError:
+            dropped.append(filter_name)
+    if not star_lists:
+        msg = "no stars survived photometry filtering in any filter"
+        raise NoUsableStarsError(msg)
+    if dropped:
+        logger.warning(
+            "%s: dropping filter(s) %s with no stars surviving filtering; "
+            "writing the %d surviving filter(s)",
+            output_path.name,
+            ", ".join(dropped),
+            len(star_lists),
+        )
     star_list_set = StarListSet(star_lists=star_lists)
     output_path.write_text(star_list_set.model_dump_json(indent=2))
     return output_path

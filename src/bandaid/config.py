@@ -155,6 +155,10 @@ class SourceSelectionConfig(BaseModel, frozen=True):
         How many magnitudes deeper than ``gaia_mag_limit`` the *contaminant*
         catalogue runs. Must be positive (and finite), which guarantees the
         contaminant list is always deeper than the target list.
+    min_snr : float
+        Minimum signal-to-noise ratio a star must have to reach the output (see
+        `~bandaid.photometry.good_star_mask`). Must be finite and non-negative;
+        ``0`` is the fully permissive floor (no star is dropped on SNR alone).
     """
 
     # Finiteness is enforced by the `allow_inf_nan=False` annotation: a non-finite
@@ -163,6 +167,7 @@ class SourceSelectionConfig(BaseModel, frozen=True):
     # construction rather than caught deep in a batch.
     gaia_mag_limit: Annotated[float, Field(allow_inf_nan=False)] = 15.0
     contaminant_mag_offset: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 3.0
+    min_snr: Annotated[float, Field(ge=0, allow_inf_nan=False)] = 2.0
 
     @computed_field
     @property

@@ -17,7 +17,7 @@ import pytest
 from click.testing import CliRunner
 
 from bandaid import cli
-from bandaid.config import InstrumentProfile, PhotometryConfig
+from bandaid.config import InstrumentProfile, PhotometryConfig, SourceSelectionConfig
 from bandaid.instruments import _REGISTERED, register_instrument
 from bandaid.writers import write_starlist_set
 
@@ -309,6 +309,96 @@ def test_process_profile_file_override(runner, patched_photometer, tmp_path):
     assert result.exit_code == 0, result.output
     config = patched_photometer["config"]
     assert config.instrument.name == "MyScope"
+
+
+# CLI-override values for the source_selection override tests below: distinct
+# from both the SourceSelectionConfig defaults and the config-file values in
+# test_process_gaia_mag_limit_and_min_snr_win_over_config_file, so a passing
+# assertion actually proves the CLI flag (not some other default) won.
+_OVERRIDE_GAIA_MAG_LIMIT = 13.0
+_OVERRIDE_MIN_SNR = 3.0
+_CONFIG_FILE_GAIA_MAG_LIMIT = 10.0
+_CONFIG_FILE_MIN_SNR = 1.0
+_CONFIG_FILE_CONTAMINANT_OFFSET = 2.5
+
+
+def test_process_gaia_mag_limit_override(runner, patched_photometer, tmp_path):
+    """``--gaia-mag-limit`` overrides the source-selection default."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+
+    result = runner.invoke(
+        cli.main,
+        ["process", str(frame), "--gaia-mag-limit", str(_OVERRIDE_GAIA_MAG_LIMIT)],
+    )
+
+    assert result.exit_code == 0, result.output
+    source_selection = patched_photometer["config"].source_selection
+    assert source_selection.gaia_mag_limit == _OVERRIDE_GAIA_MAG_LIMIT
+
+
+def test_process_min_snr_override(runner, patched_photometer, tmp_path):
+    """``--min-snr`` overrides the source-selection default."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+
+    result = runner.invoke(
+        cli.main, ["process", str(frame), "--min-snr", str(_OVERRIDE_MIN_SNR)]
+    )
+
+    assert result.exit_code == 0, result.output
+    source_selection = patched_photometer["config"].source_selection
+    assert source_selection.min_snr == _OVERRIDE_MIN_SNR
+
+
+def test_process_gaia_mag_limit_and_min_snr_win_over_config_file(
+    runner, patched_photometer, tmp_path
+):
+    """CLI flags override a ``--config`` file's source_selection, field for field."""
+    base_config = PhotometryConfig(
+        source_selection=SourceSelectionConfig(
+            gaia_mag_limit=_CONFIG_FILE_GAIA_MAG_LIMIT,
+            min_snr=_CONFIG_FILE_MIN_SNR,
+            contaminant_mag_offset=_CONFIG_FILE_CONTAMINANT_OFFSET,
+        )
+    )
+    config_file = tmp_path / "config.json"
+    config_file.write_text(base_config.model_dump_json())
+
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+
+    result = runner.invoke(
+        cli.main,
+        [
+            "process",
+            str(frame),
+            "--config",
+            str(config_file),
+            "--gaia-mag-limit",
+            str(_OVERRIDE_GAIA_MAG_LIMIT),
+            "--min-snr",
+            str(_OVERRIDE_MIN_SNR),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    source_selection = patched_photometer["config"].source_selection
+    assert source_selection.gaia_mag_limit == _OVERRIDE_GAIA_MAG_LIMIT
+    assert source_selection.min_snr == _OVERRIDE_MIN_SNR
+    # The config file's other source_selection field is preserved, not reset.
+    assert source_selection.contaminant_mag_offset == _CONFIG_FILE_CONTAMINANT_OFFSET
+
+
+def test_process_non_finite_min_snr_is_clean_error(runner, tmp_path):
+    """A non-finite ``--min-snr`` fails validation as a clean Click error."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+
+    result = runner.invoke(cli.main, ["process", str(frame), "--min-snr", "inf"])
+
+    assert result.exit_code == 1
+    assert result.output.strip() != ""
 
 
 def test_process_no_files_errors(runner, tmp_path):

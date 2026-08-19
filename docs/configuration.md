@@ -45,6 +45,7 @@ These are ordinary analysis choices and are safe to set for any run.
 | `apertures`        | `annulus_width`          | `3.0`    | Radial width of the background annulus, in FWHM  |
 | `source_selection` | `gaia_mag_limit`         | `15.0`   | Magnitude limit for the photometry targets       |
 | `source_selection` | `contaminant_mag_offset` | `3.0`    | Contaminant-catalog depth below `gaia_mag_limit` |
+| `source_selection` | `min_snr`                | `2.0`    | Minimum SNR a star must have to reach the output |
 | `drift`            | `drift_tolerance_fwhm`   | `1.0`    | Max centroid drift, in FWHM                      |
 | `drift`            | `drift_cap_pix`          | `4.0`    | Absolute pixel cap on centroid drift             |
 

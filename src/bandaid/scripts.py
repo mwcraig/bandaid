@@ -60,6 +60,7 @@ QA_MANIFEST_COLUMNS = (
     "fwhm",
     "wcs_solved",
     "n_good_stars",
+    "dropped_filters",
     "n_centroid_drift",
     "n_drift_rejected",
 )
@@ -618,6 +619,53 @@ def check_frame_consistency(file, header, prep):
         raise FrameError(msg, file=file)
 
 
+def _dropped_filters(by_filter):
+    """
+    Report the filters `~bandaid.writers.write_starlist_set` would drop.
+
+    Mirrors the writer's own per-filter drop criterion (#109): a filter is
+    "dropped" when its table has no `good_star_mask` survivors. Runs over
+    every filter in ``by_filter`` (including L4), unlike the QA manifest's
+    representative-channel diagnostics, so a drop is visible even when the
+    representative channel itself is the one starved but a sibling filter
+    carried the frame.
+
+    Parameters
+    ----------
+    by_filter : dict of {str: astropy.table.Table}
+        The ``process_one_image`` result for one frame.
+
+    Returns
+    -------
+    str or None
+        Semicolon-joined dropped filter names in ``by_filter`` order; ``""``
+        when every filter was evaluable and none was dropped; ``None`` when
+        some filter's table lacks the columns needed to evaluate it (so
+        "nothing was dropped" can't be claimed).
+    """
+    dropped = []
+    all_evaluable = True
+    for filter_name, table in by_filter.items():
+        table_meta = table.meta
+        table_full_meta = table_meta.get("full_image_meta", {})
+        table_cols = set(table.colnames)
+        has_phot_cols = {"tot_count", "count_err", "x", "y"} <= table_cols
+        has_bounds = {"width", "height"} <= set(table_full_meta)
+        if not (has_phot_cols and has_bounds):
+            # Can't evaluate this filter's survivors -- don't claim it was
+            # dropped, but also don't claim the frame is clean.
+            all_evaluable = False
+            continue
+        table_good = good_star_mask(
+            table, table_full_meta, min_snr=table_meta.get("min_snr")
+        )
+        if not np.any(table_good):
+            dropped.append(filter_name)
+    if dropped:
+        return ";".join(dropped)
+    return "" if all_evaluable else None
+
+
 def _qa_record_ok(file, by_filter):
     """
     Build the QA manifest record for a frame that processed cleanly.
@@ -625,6 +673,12 @@ def _qa_record_ok(file, by_filter):
     Diagnostics are pulled defensively from a representative channel (L4 if
     present, else the first), so a frame missing a given column simply records a
     blank for it rather than failing the whole manifest.
+
+    ``dropped_filters`` (see `_dropped_filters`) is evaluated across every
+    filter, not just the representative channel, so the frame can still be
+    ``status`` ``"ok"`` (with even ``n_good_stars`` at 0) when the
+    representative channel itself is the one starved but a sibling filter
+    carried the frame.
 
     ``n_centroid_drift`` and ``n_drift_rejected`` instrument the
     `centroid_drift` flag (see `centroid_drift_flag`) without wiring it into
@@ -673,8 +727,14 @@ def _qa_record_ok(file, by_filter):
     has_bounds = {"width", "height"} <= set(full_meta)
     good = None
     if has_phot_cols and has_bounds:
-        good = good_star_mask(representative, full_meta)
+        # min_snr is read from table meta on purpose, not threaded in from the
+        # run config: the writer applies the stamped value, and reading the
+        # same stamp here keeps the QA count aligned with what was actually
+        # written -- even for tables produced under a different config.
+        good = good_star_mask(representative, full_meta, min_snr=meta.get("min_snr"))
         n_good_stars = int(np.sum(good))
+
+    dropped_filters_value = _dropped_filters(by_filter)
 
     # The drift flag is computed from centroid_coords/aligned_coords/fwhm before
     # channel masking, so it is identical across TR/TG/TB/L4 and the
@@ -695,6 +755,7 @@ def _qa_record_ok(file, by_filter):
         "fwhm": meta.get("fwhm"),
         "wcs_solved": True,
         "n_good_stars": n_good_stars,
+        "dropped_filters": dropped_filters_value,
         "n_centroid_drift": n_centroid_drift,
         "n_drift_rejected": n_drift_rejected,
     }
@@ -920,7 +981,8 @@ def process_batch(
         `write_starlist_set` (one `StarListSet` JSON per frame). Ignored in
         in-memory mode (``output_dir`` is None). A `FrameError` raised by the
         writer (e.g. the default writer's `NoUsableStarsError` when no star
-        survives filtering) marks the frame skipped and the batch continues;
+        survives filtering in any filter) marks the frame skipped and the batch
+        continues;
         any other writer exception is treated as a systemic write failure and
         propagates, aborting the run.
     fail_fast : bool, optional
@@ -1017,7 +1079,8 @@ def process_batch(
             # frame, so it must abort the run rather than be skipped as a
             # "bad frame". A writer can still raise a frame-quality error at
             # write time, though -- the default writer raises
-            # NoUsableStarsError when no star survives filtering (#78) -- so
+            # NoUsableStarsError when no star survives filtering in any
+            # filter (#78) -- so
             # split on exception type: a FrameError is this frame's problem
             # and is skipped like any other, everything else propagates.
             manifest_records.append(_qa_record_ok(file, by_filter))
