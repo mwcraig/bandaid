@@ -60,8 +60,9 @@ The cut is per star *and per filter*: because SNR is color-dependent, a star can
 survive in one filter and fall below the floor in another, so a
 color-disadvantaged channel (say, `TB` on a red-star field) can hold fewer
 stars than its siblings. A filter in which **no** star survives is dropped from
-the `.star` file entirely (a warning names the dropped filters in the run log);
-the frame itself is skipped only when no filter has any usable star.
+the `.star` file entirely (a warning names the dropped filters in the run log,
+and the frame's `qa_manifest.csv` row records them in `dropped_filters`); the
+frame itself is skipped only when no filter has any usable star.
 
 Read one back in Python with the same schema bandaid uses to write it:
 
@@ -127,7 +128,9 @@ photometer_frames(["night/"], write_frame=write_csv, output_suffix="")
 
 A writer that wants AAVSO-starlist semantics can still call
 `good_star_mask` / `eloy_to_starlist` itself (see `bandaid.writers` for the
-default `write_starlist_set`).
+default `write_starlist_set`). Pass `min_snr=table.meta.get("min_snr")` when you
+do — that is the floor the run was configured with; omitting it silently applies
+the 2.0 default, overriding even an explicit `--min-snr 0`.
 
 ### Choosing a writer on the command line
 
@@ -163,6 +166,7 @@ bad frames in a night without opening every `.star` file.
 | `fwhm`             | Measured FWHM (seeing); a spike flags a soft or trailed frame.                                                                                                                                                        |
 | `wcs_solved`       | `True` if a WCS solved; `False` on a plate-solve failure; blank if the frame failed earlier.                                                                                                                          |
 | `n_good_stars`     | Stars that survived filtering on the frame's *representative* channel: `L4` when present, else the first filter, under the same `min_snr` floor the writer applies. See below.                                        |
+| `dropped_filters`  | Semicolon-joined names of filters dropped from the `.star` output because no star survived filtering (e.g. `TB` or `TR;TB`), or empty for a frame where every filter kept at least one star. See below.               |
 | `n_centroid_drift` | Stars with the `centroid_drift` flag set (see below) — a frame-health signal on its own.                                                                                                                              |
 | `n_drift_rejected` | The subset of `n_centroid_drift` that also passes `good_star_mask` — the stars a future gate on this flag would actually remove, since most drifted stars are already dropped by the existing flux/error/bounds cuts. |
 
@@ -172,7 +176,10 @@ is color-dependent, so a per-filter `.star` output can contain fewer stars than
 keep a star an individual channel drops). The representative-channel number is
 the right one for its QA use — cloud and transparency episodes are common-mode
 across channels — but do not read it as the exact row count of every filter's
-StarList.
+StarList. In particular, a row can show `status='ok'` with `n_good_stars=0`
+when the representative channel itself was the one dropped but a sibling
+filter survived and was written — `dropped_filters` is how to detect that a
+frame is partial rather than reading `n_good_stars` alone.
 
 A frame that was skipped or errored still gets a row (with its diagnostics left
 blank), so the manifest accounts for **every** input frame, not just the

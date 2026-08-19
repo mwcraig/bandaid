@@ -76,7 +76,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     its siblings, and a filter in which no star survives is dropped from the
     frame's `.star` output (with a warning naming the dropped filters) while
     the surviving filters still write. A frame is skipped with
-    `NoUsableStarsError` only when no filter has any usable star.
+    `NoUsableStarsError` only when no filter has any usable star. The QA
+    manifest's `dropped_filters` column names any filters dropped this way for
+    a `status='ok'` row (empty when none were), so a partial frame is visible
+    without grepping the run log.
 - Ballet CNN centroiding no longer needs JAX at runtime: inference is a
     pure-numpy forward pass matching the JAX model to float32 round-off, so
     jax/flax/optax drop out of the runtime dependencies (~270 MB lighter;

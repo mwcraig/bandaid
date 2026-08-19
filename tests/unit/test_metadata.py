@@ -9,7 +9,7 @@ from astropy.coordinates import AltAz, EarthLocation, SkyCoord
 from astropy.io import fits
 from astropy.table import Table
 
-from bandaid.config import InstrumentProfile
+from bandaid.config import InstrumentProfile, SourceSelectionConfig
 from bandaid.exceptions import (
     FrameMetadataError,
     NoUsableStarsError,
@@ -17,6 +17,7 @@ from bandaid.exceptions import (
 )
 from bandaid.instruments import load_instrument
 from bandaid.photometry import (
+    MIN_SNR,
     _airmass_from_metadata,
     eloy_to_starlist,
     good_star_mask,
@@ -329,19 +330,23 @@ class TestGoodStarMask:
     @pytest.mark.parametrize(
         ("snr", "expected_kept"),
         [
-            (1.9, False),
-            (2.0, True),
-            (5.0, True),
+            (MIN_SNR - 0.1, False),
+            (MIN_SNR, True),
+            (MIN_SNR + 3.0, True),
         ],
     )
-    def test_snr_floor_defaults_to_two(
+    def test_snr_floor_defaults_to_module_constant(
         self, eloy_table, starlist_metadata, snr, expected_kept
     ):
-        """With no explicit floor, a star's SNR is checked against the 2.0 default."""
+        """With no explicit floor, a star's SNR is checked against `MIN_SNR`."""
         assert (
             self._mask_for_xy(eloy_table, starlist_metadata, 20.0, 30.0, snr=snr)[0]
             == expected_kept
         )
+
+    def test_min_snr_constant_matches_config_default(self):
+        """`MIN_SNR` tracks `SourceSelectionConfig`'s default, not a stale copy."""
+        assert SourceSelectionConfig().min_snr == MIN_SNR
 
     def test_snr_column_absent_is_not_checked(self, eloy_table, starlist_metadata):
         """No ``snr`` column means the SNR floor is simply not applied."""

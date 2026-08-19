@@ -108,6 +108,7 @@ MIN_STARS_FOR_PAIRS = 2
 _DEFAULT_APERTURES = ApertureConfig()
 _DEFAULT_DRIFT = DriftConfig()
 _DEFAULT_INSTRUMENT = InstrumentProfile()
+_DEFAULT_SOURCE_SELECTION = SourceSelectionConfig()
 
 # Source-detection threshold (in units of the background sigma) passed to
 # `detection.stars_detection`.
@@ -134,6 +135,9 @@ _FWHM_N_STARS = _DEFAULT_INSTRUMENT.fwhm_n_stars
 # well above the correct-scale solve spread and far below twirl's wrong-scale
 # solves; the empirical basis for this value is in #83.
 WCS_SCALE_TOLERANCE = _DEFAULT_INSTRUMENT.wcs_scale_tolerance
+
+# Minimum SNR a star must have to reach the output (see `good_star_mask`).
+MIN_SNR = _DEFAULT_SOURCE_SELECTION.min_snr
 
 # Relative radii and annulus are multiplied by each image's FWHM to determine the
 # actual aperture sizes. Only one radius is needed for STWG, but it must be in an
@@ -1016,8 +1020,8 @@ def eloy_to_starlist(eloy_table, metadata, *, min_snr=None):
         adc_depth, largest_usable_adu_value, egain, width, height, refframe.
     min_snr : float or None, optional
         Minimum SNR a star must have to survive, passed through to
-        `good_star_mask`. If None (default), the `~bandaid.config.
-        SourceSelectionConfig` default (2.0) applies.
+        `good_star_mask`. If None (default), the module-level `MIN_SNR`
+        (the `~bandaid.config.SourceSelectionConfig` default, 2.0) applies.
 
     Returns
     -------
@@ -1061,8 +1065,8 @@ def good_star_mask(eloy_table, metadata, *, min_snr=None):
         test.
     min_snr : float or None, optional
         Minimum SNR a star must have to survive, checked only when ``eloy_table``
-        has an ``snr`` column. If None (default), the `~bandaid.config.
-        SourceSelectionConfig` default (2.0) applies.
+        has an ``snr`` column. If None (default), the module-level `MIN_SNR`
+        (the `~bandaid.config.SourceSelectionConfig` default, 2.0) applies.
 
     Returns
     -------
@@ -1109,7 +1113,7 @@ def good_star_mask(eloy_table, metadata, *, min_snr=None):
         peak = eloy_table["peak_count"]
         good &= np.isfinite(peak) & (peak >= 0.0)
     if "snr" in eloy_table.colnames:
-        threshold = SourceSelectionConfig().min_snr if min_snr is None else min_snr
+        threshold = MIN_SNR if min_snr is None else min_snr
         good &= eloy_table["snr"] >= threshold
     if "contaminated" in eloy_table.colnames:
         good &= ~eloy_table["contaminated"]
