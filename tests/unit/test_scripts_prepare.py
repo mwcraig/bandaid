@@ -725,6 +725,100 @@ class TestPrepareBatch:
         with pytest.raises(BatchPrepError, match="could not query Gaia"):
             scripts.prepare_batch("frame1.fits", cnn=object())
 
+    def test_forced_targets_appended_to_photometry_coords_only(self, monkeypatch):
+        """A forced target lands in ``photometry_coords`` but not ``radecs``."""
+        radecs, mags = _batch_radecs_mags()
+        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+        forced = SkyCoord([20.0] * u.deg, [5.0] * u.deg)
+
+        prep = scripts.prepare_batch("frame1.fits", cnn=object(), forced_targets=forced)
+
+        # radecs is the Gaia-only alignment catalog -- the forced target never
+        # appears there.
+        np.testing.assert_array_equal(prep.radecs, radecs)
+        # photometry_coords is the contamination-filtered Gaia targets plus the
+        # forced target appended at the end.
+        expected_ra = np.concatenate([radecs[[2, 3], 0], [20.0]])
+        expected_dec = np.concatenate([radecs[[2, 3], 1], [5.0]])
+        np.testing.assert_allclose(prep.photometry_coords.ra.deg, expected_ra)
+        np.testing.assert_allclose(prep.photometry_coords.dec.deg, expected_dec)
+
+    def test_forced_targets_bypass_contamination_flagging(self, monkeypatch):
+        """A forced target near a bright star still reaches ``photometry_coords``."""
+        # A mag-8 star and a forced target ~1 arcsec away -- well inside the
+        # contamination model's separation for a bright star -- but the forced
+        # target has no Gaia magnitude to size that model against, so it is
+        # never evaluated for contamination and always survives.
+        radecs = np.array([[10.0, 0.0], [10.2, 0.0]])
+        mags = np.array([8.0, 10.0])
+        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+        forced = SkyCoord(
+            [10.0 + 1.0 / 3600.0] * u.deg,
+            [0.0] * u.deg,
+        )
+
+        prep = scripts.prepare_batch("frame1.fits", cnn=object(), forced_targets=forced)
+
+        assert forced.ra.deg[0] in prep.photometry_coords.ra.deg
+        assert forced.dec.deg[0] in prep.photometry_coords.dec.deg
+
+    def test_forced_targets_scalar_skycoord_appended_as_one_target(self, monkeypatch):
+        """A scalar ``forced_targets`` SkyCoord (e.g. ``from_name``) is accepted."""
+        # A scalar SkyCoord (no list/array) has no len(); prepare_batch must
+        # reshape it to a 1-element array before concatenating, not crash.
+        radecs, mags = _batch_radecs_mags()
+        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+        forced = SkyCoord(20.0 * u.deg, 5.0 * u.deg)
+        assert forced.isscalar
+
+        prep = scripts.prepare_batch("frame1.fits", cnn=object(), forced_targets=forced)
+
+        expected_ra = np.concatenate([radecs[[2, 3], 0], [20.0]])
+        expected_dec = np.concatenate([radecs[[2, 3], 1], [5.0]])
+        np.testing.assert_allclose(prep.photometry_coords.ra.deg, expected_ra)
+        np.testing.assert_allclose(prep.photometry_coords.dec.deg, expected_dec)
+
+    def test_forced_targets_non_icrs_frame_lands_as_icrs(self, monkeypatch):
+        """An FK5 ``forced_targets`` is transformed to ICRS before concatenating."""
+        # photometry_coords is built as plain ICRS; concatenating a differently
+        # framed SkyCoord without transforming first raises a confusing
+        # TypeError, so prepare_batch must convert to ICRS itself.
+        radecs, mags = _batch_radecs_mags()
+        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+        forced_icrs = SkyCoord([20.0] * u.deg, [5.0] * u.deg)
+        forced_fk5 = forced_icrs.transform_to("fk5")
+
+        prep = scripts.prepare_batch(
+            "frame1.fits", cnn=object(), forced_targets=forced_fk5
+        )
+
+        assert prep.photometry_coords.frame.name == "icrs"
+        # Same sky position, round-tripped through FK5; arcsec-level agreement
+        # confirms the frame conversion, not just that concatenation ran.
+        max_separation_arcsec = 1e-3
+        appended = prep.photometry_coords[-1]
+        assert appended.separation(forced_icrs).arcsec[0] < max_separation_arcsec
+
+    def test_forced_targets_stored_on_batchprep(self, monkeypatch):
+        """``BatchPrep.forced_targets`` carries the (reshaped, ICRS) forced targets."""
+        radecs, mags = _batch_radecs_mags()
+        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+        forced = SkyCoord([20.0] * u.deg, [5.0] * u.deg)
+
+        prep = scripts.prepare_batch("frame1.fits", cnn=object(), forced_targets=forced)
+
+        assert prep.forced_targets is not None
+        np.testing.assert_allclose(prep.forced_targets.ra.deg, [20.0])
+        np.testing.assert_allclose(prep.forced_targets.dec.deg, [5.0])
+
+    def test_forced_targets_none_by_default_on_batchprep(self, monkeypatch):
+        """``BatchPrep.forced_targets`` is None when no forced targets are given."""
+        _patch_prep(monkeypatch)
+
+        prep = scripts.prepare_batch("frame1.fits", cnn=object())
+
+        assert prep.forced_targets is None
+
 
 class TestCheckFrameConsistency:
     """Unit tests for the per-frame pointing/shape guard."""
@@ -858,3 +952,54 @@ class TestCheckFrameConsistency:
             user_specific_metadata={},
         )
         assert list(results) == ["good.fits"]
+
+
+class TestQaRecordOkForcedTargets:
+    """Unit tests for ``_qa_record_ok``'s ``n_forced_measured`` QA column."""
+
+    def test_blank_without_forced_targets(self, by_filter):
+        """``n_forced_measured`` is None when the batch has no forced targets."""
+        record = scripts._qa_record_ok(  # noqa: SLF001
+            "a.fits", by_filter(), forced_targets=None
+        )
+
+        assert record["n_forced_measured"] is None
+
+    def test_counts_forced_targets_matching_good_rows(self, by_filter):
+        """A forced target at a good row's exact position is counted."""
+        # by_filter's two rows are both good (finite/positive/in-bounds) and
+        # sit at ra/dec (10.0, 20.0) and (11.0, 21.0); photometry runs at the
+        # catalog positions, so a real match lands there essentially exactly.
+        forced = SkyCoord([10.0, 11.0], [20.0, 21.0], unit="deg")
+        expected_matches = 2
+
+        record = scripts._qa_record_ok(  # noqa: SLF001
+            "a.fits", by_filter(), forced_targets=forced
+        )
+
+        assert record["n_forced_measured"] == expected_matches
+
+    def test_zero_when_forced_target_has_no_good_row_match(self, by_filter):
+        """A forced target far from every good row counts as 0, not None."""
+        forced = SkyCoord([200.0], [-50.0], unit="deg")
+
+        record = scripts._qa_record_ok(  # noqa: SLF001
+            "a.fits", by_filter(), forced_targets=forced
+        )
+
+        assert record["n_forced_measured"] == 0
+
+    def test_none_when_needed_columns_unavailable(self, by_filter):
+        """Forced targets configured but no evaluable photometry columns -> None."""
+        # Strip the columns good_star_mask needs so `good` stays None; the
+        # missing-data blank must win over a misleadingly precise 0.
+        result = by_filter()
+        for table in result.values():
+            table.remove_columns(["tot_count", "count_err"])
+        forced = SkyCoord([10.0], [20.0], unit="deg")
+
+        record = scripts._qa_record_ok(  # noqa: SLF001
+            "a.fits", result, forced_targets=forced
+        )
+
+        assert record["n_forced_measured"] is None

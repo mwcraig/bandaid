@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from _helpers import _CONSISTENT_HEADER, _dummy_prep
+from astropy.coordinates import SkyCoord
 
 from bandaid import scripts
 from bandaid.config import (
@@ -134,12 +135,15 @@ class TestPhotometerFrames:
             calls["ballet"] = model_file
             return cnn_sentinel
 
-        def fake_prepare(first_file, *, cnn, config=None, append_l4=False):
+        def fake_prepare(
+            first_file, *, cnn, config=None, append_l4=False, forced_targets=None
+        ):
             calls["prepare"] = {
                 "first_file": first_file,
                 "cnn": cnn,
                 "config": config,
                 "append_l4": append_l4,
+                "forced_targets": forced_targets,
             }
             return prep_sentinel
 
@@ -201,10 +205,13 @@ class TestPhotometerFrames:
             lambda model_file=None: calls.update(ballet=model_file),
         )
 
-        def fake_prepare(first_file, *, cnn, config=None, append_l4=False):
+        def fake_prepare(
+            first_file, *, cnn, config=None, append_l4=False, forced_targets=None
+        ):
             calls["prepare"] = (first_file, cnn)
             calls["append_l4"] = append_l4
             calls["config"] = config
+            calls["forced_targets"] = forced_targets
             return object()
 
         monkeypatch.setattr(scripts, "prepare_batch", fake_prepare)
@@ -226,6 +233,26 @@ class TestPhotometerFrames:
         assert kwargs["output_dir"] == "."
         assert kwargs["output_suffix"] == ".star"
 
+    def test_forced_targets_forwarded_to_prepare_batch(self, monkeypatch, tmp_path):
+        """The ``forced_targets`` SkyCoord reaches ``prepare_batch`` unchanged."""
+        frame = tmp_path / "a.fit"
+        frame.write_bytes(b"")
+
+        calls = {}
+        monkeypatch.setattr(scripts, "Ballet", lambda model_file=None: object())
+
+        def fake_prepare(_first_file, *, forced_targets=None, **_kwargs: object):
+            calls["forced_targets"] = forced_targets
+            return object()
+
+        monkeypatch.setattr(scripts, "prepare_batch", fake_prepare)
+        monkeypatch.setattr(scripts, "process_batch", lambda files, prep, **kwargs: {})
+
+        forced = SkyCoord([10.0], [5.0], unit="deg")
+        scripts.photometer_frames([str(frame)], forced_targets=forced)
+
+        assert calls["forced_targets"] is forced
+
     def test_identical_names_write_distinct_starlists(
         self, monkeypatch, tmp_path, by_filter
     ):
@@ -240,11 +267,8 @@ class TestPhotometerFrames:
         inputs = [str(n1), str(n2)]
 
         monkeypatch.setattr(scripts, "Ballet", lambda model_file=None: object())
-        monkeypatch.setattr(
-            scripts,
-            "prepare_batch",
-            lambda first_file, *, cnn, config=None, append_l4=False: _dummy_prep(),
-        )
+
+        monkeypatch.setattr(scripts, "prepare_batch", lambda *a, **k: _dummy_prep())
         monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
         monkeypatch.setattr(
             scripts.fits, "getheader", lambda _file: dict(_CONSISTENT_HEADER)

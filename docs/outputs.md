@@ -64,6 +64,11 @@ the `.star` file entirely (a warning names the dropped filters in the run log,
 and the frame's `qa_manifest.csv` row records them in `dropped_filters`); the
 frame itself is skipped only when no filter has any usable star.
 
+Targets passed on the command line with `--forced-targets` (see
+[Command-line usage](command_line.md)) appear in this same table,
+indistinguishable from the Gaia-catalog stars around them: `StarItem` has no
+name/ID field, so a forced row is identified only by its `ra`/`dec`.
+
 Read one back in Python with the same schema bandaid uses to write it:
 
 ```python
@@ -157,18 +162,19 @@ registering for the CLI.
 One row per input frame, written once per run. It is the fastest way to find the
 bad frames in a night without opening every `.star` file.
 
-| Column             | Meaning                                                                                                                                                                                                               |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `file`             | The input frame this row describes.                                                                                                                                                                                   |
-| `status`           | `ok`, `skipped: <FrameError type>`, or `error: <type>`.                                                                                                                                                               |
-| `n_detected`       | Stars detected in the frame.                                                                                                                                                                                          |
-| `sky_median`       | Median sky background — rises with clouds, moonlight, or haze.                                                                                                                                                        |
-| `fwhm`             | Measured FWHM (seeing); a spike flags a soft or trailed frame.                                                                                                                                                        |
-| `wcs_solved`       | `True` if a WCS solved; `False` on a plate-solve failure; blank if the frame failed earlier.                                                                                                                          |
-| `n_good_stars`     | Stars that survived filtering on the frame's *representative* channel: `L4` when present, else the first filter, under the same `min_snr` floor the writer applies. See below.                                        |
-| `dropped_filters`  | Semicolon-joined names of filters dropped from the `.star` output because no star survived filtering (e.g. `TB` or `TR;TB`), or empty for a frame where every filter kept at least one star. See below.               |
-| `n_centroid_drift` | Stars with the `centroid_drift` flag set (see below) — a frame-health signal on its own.                                                                                                                              |
-| `n_drift_rejected` | The subset of `n_centroid_drift` that also passes `good_star_mask` — the stars a future gate on this flag would actually remove, since most drifted stars are already dropped by the existing flux/error/bounds cuts. |
+| Column              | Meaning                                                                                                                                                                                                                                                                                                                           |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `file`              | The input frame this row describes.                                                                                                                                                                                                                                                                                               |
+| `status`            | `ok`, `skipped: <FrameError type>`, or `error: <type>`.                                                                                                                                                                                                                                                                           |
+| `n_detected`        | Stars detected in the frame.                                                                                                                                                                                                                                                                                                      |
+| `sky_median`        | Median sky background — rises with clouds, moonlight, or haze.                                                                                                                                                                                                                                                                    |
+| `fwhm`              | Measured FWHM (seeing); a spike flags a soft or trailed frame.                                                                                                                                                                                                                                                                    |
+| `wcs_solved`        | `True` if a WCS solved; `False` on a plate-solve failure; blank if the frame failed earlier.                                                                                                                                                                                                                                      |
+| `n_good_stars`      | Stars that survived filtering on the frame's *representative* channel: `L4` when present, else the first filter, under the same `min_snr` floor the writer applies. See below.                                                                                                                                                    |
+| `dropped_filters`   | Semicolon-joined names of filters dropped from the `.star` output because no star survived filtering (e.g. `TB` or `TR;TB`), or empty for a frame where every filter kept at least one star. See below.                                                                                                                           |
+| `n_centroid_drift`  | Stars with the `centroid_drift` flag set (see below) — a frame-health signal on its own.                                                                                                                                                                                                                                          |
+| `n_drift_rejected`  | The subset of `n_centroid_drift` that also passes `good_star_mask` — the stars a future gate on this flag would actually remove, since most drifted stars are already dropped by the existing flux/error/bounds cuts.                                                                                                             |
+| `n_forced_measured` | Forced targets (see [Command-line usage](command_line.md)) with a good, output-surviving measurement in the frame's representative channel, matched by sky position — answers "was my nova actually measured in this frame" without float-matching `ra`/`dec` across `.star` files. Blank when no forced targets were configured. |
 
 `n_good_stars` is a single-channel count, not a per-filter tally: the SNR floor
 is color-dependent, so a per-filter `.star` output can contain fewer stars than
@@ -225,3 +231,15 @@ So "contaminated stars are dropped" is true, but the drop happens once, up front
 to the target list — not as a per-frame, per-row column you can inspect. If you
 need a star that bandaid considers contaminated, loosen
 `instrument.contamination_tolerance` (see [Configuration](configuration.md)).
+
+`--forced-targets` stars are never evaluated by this check — it needs a Gaia
+magnitude to size the separation model, and a forced target (a nova or
+supernova, by definition absent from Gaia) has none. A forced target that
+happens to sit on top of a bright star is therefore not flagged or dropped for
+contamination. The bypass runs in the other direction too: a bright forced
+target (the nova itself) near a Gaia comparison star is likewise invisible to
+*that* star's contamination check, so the comparison star is not flagged
+either. bandaid's stance is that a user forcing a target is expected to have
+already taken any contamination it causes into account; if that is not the
+case, loosen `instrument.contamination_tolerance` (see
+[Configuration](configuration.md)) or exclude the comparison star manually.
