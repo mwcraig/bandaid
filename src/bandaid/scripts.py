@@ -213,10 +213,9 @@ class BatchPrep:
     config : PhotometryConfig
         The photometry configuration to apply to every frame in the batch.
     forced_targets : astropy.coordinates.SkyCoord or None
-        The (reshaped, ICRS) extra sky positions appended to
-        ``photometry_coords`` by `prepare_batch`, kept here so `process_batch`
-        can report their measurement outcome in the QA manifest
-        (``n_forced_measured``). None when the batch was prepared without any.
+        The ICRS forced-target sky positions appended to
+        ``photometry_coords`` by `prepare_batch`. None when the batch was
+        prepared without any.
     """
 
     radecs: np.ndarray
@@ -752,16 +751,6 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None):
     high-proper-motion stars whose *catalog* position was stale, not on genuine
     drift.
 
-    ``n_forced_measured`` counts how many of ``forced_targets`` landed on a
-    `good_star_mask`-passing row of the representative channel, matched by
-    sky position within a generous 1 arcsec tolerance -- photometry runs at
-    the catalog positions themselves, so a real match is essentially exact
-    and 1 arcsec is only slack for float precision, not a real search radius.
-    It is None (blank) when the batch was prepared without forced targets,
-    and also None -- rather than a misleadingly precise 0 -- when the
-    representative channel lacks the columns/bounds needed to evaluate
-    `good_star_mask` in the first place.
-
     Parameters
     ----------
     file : str or Path
@@ -776,6 +765,18 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None):
     -------
     dict
         One manifest row keyed by `QA_MANIFEST_COLUMNS`.
+
+    Notes
+    -----
+    ``n_forced_measured`` counts how many of ``forced_targets`` landed on a
+    `good_star_mask`-passing row of the representative channel, matched by
+    sky position within a generous 1 arcsec tolerance -- photometry runs at
+    the catalog positions themselves, so a real match is essentially exact
+    and 1 arcsec is only slack for float precision, not a real search radius.
+    It is None (blank) when the batch was prepared without forced targets,
+    and also None -- rather than a misleadingly precise 0 -- when the
+    representative channel lacks the columns/bounds needed to evaluate
+    `good_star_mask` in the first place.
     """
     if "L4" in by_filter:
         representative = by_filter["L4"]

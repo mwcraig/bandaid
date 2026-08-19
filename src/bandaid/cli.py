@@ -215,13 +215,6 @@ def _forced_target_column_degrees(table, column_name, path):
     """
     Return one forced-targets column (``ra`` or ``dec``) as degrees, float64.
 
-    A masked/blank cell is filled with NaN first -- reading a `MaskedColumn`
-    straight through ``np.asarray(..., dtype=float)`` silently drops the mask
-    and reads a blank cell as 0.0, which this must not do. A column carrying
-    an explicit angular unit (e.g. an ECSV column in ``hourangle``) is then
-    converted through ``Quantity.to_value``; a unitless column keeps the
-    documented "ICRS degrees" interpretation.
-
     Parameters
     ----------
     table : astropy.table.Table
@@ -242,6 +235,15 @@ def _forced_target_column_degrees(table, column_name, path):
     click.ClickException
         If the column has a unit that is not convertible to an angle, or its
         values cannot be read as numbers at all.
+
+    Notes
+    -----
+    A masked/blank cell is filled with NaN first -- reading a `MaskedColumn`
+    straight through ``np.asarray(..., dtype=float)`` silently drops the mask
+    and reads a blank cell as 0.0, which this must not do. A column carrying
+    an explicit angular unit (e.g. an ECSV column in ``hourangle``) is then
+    converted through ``Quantity.to_value``; a unitless column keeps the
+    documented "ICRS degrees" interpretation.
     """
     column = table[column_name]
     if getattr(column, "mask", None) is not None and np.any(column.mask):
@@ -273,13 +275,7 @@ def _load_forced_targets(path):
 
     These are extra sky positions to photometer that are absent from the Gaia
     catalog (e.g. a nova or supernova), forwarded to
-    `~bandaid.scripts.photometer_frames` as ``forced_targets``. Column names
-    are matched case-insensitively (``RA``, ``Ra``, and ``ra`` are all the
-    same column; a file defining more than one spelling of the same column
-    is rejected as ambiguous rather than silently picking one). ``name`` is
-    an optional, input-side self-documentation column -- the ``.star``
-    output schema has no name/ID field, so forced rows are identified in the
-    output only by their ra/dec.
+    `~bandaid.scripts.photometer_frames` as ``forced_targets``.
 
     Parameters
     ----------
@@ -303,6 +299,15 @@ def _load_forced_targets(path):
         a ``ra``/``dec`` column has a non-angular unit or non-numeric values,
         any row's ``ra``/``dec`` is non-finite, ``ra`` is outside
         ``[0, 360)`` degrees, or ``dec`` is outside the valid latitude range.
+
+    Notes
+    -----
+    Column names are matched case-insensitively (``RA``, ``Ra``, and ``ra``
+    are all the same column; a file defining more than one spelling of the
+    same column is rejected as ambiguous rather than silently picking one).
+    ``name`` is an optional, input-side self-documentation column -- the
+    ``.star`` output schema has no name/ID field, so forced rows are
+    identified in the output only by their ra/dec.
     """
     if path is None:
         return None
