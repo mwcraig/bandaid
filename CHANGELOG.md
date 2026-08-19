@@ -63,15 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `--gaia-mag-limit` and `--min-snr` flags override the corresponding
     `source_selection` fields without needing a full `--config` file (#101,
     #102).
-- `bandaid process --forced-targets FILE` and `prepare_batch`/`photometer_frames`
-    (`forced_targets=`) let you photometer extra sky positions that are absent
-    from the Gaia catalog, such as a nova or supernova (#100). The targets are
-    read from a CSV/ECSV table (`name`, `ra`, `dec` in degrees; `name` is
-    input-side documentation only) and appended to the photometry target list
-    for every frame. They bypass the Gaia-magnitude-based contamination model
-    (there is no Gaia magnitude to size it against), but every other output
-    quality cut still applies unchanged, so a too-faint or off-frame forced
-    target is silently absent from that frame's output rather than an error.
+- `bandaid process --forced-targets FILE` (and `forced_targets=` on
+    `prepare_batch`/`photometer_frames`): photometer extra sky positions
+    absent from the Gaia catalog, e.g. a nova (#100). `FILE` is a CSV/ECSV
+    table with `ra`/`dec` in ICRS degrees. Forced targets skip the
+    Gaia-magnitude contamination model; all other quality cuts still apply
+    (see the docs for details).
 
 ### Changed
 

@@ -203,7 +203,68 @@ def _load_metadata(metadata_file):
     return data
 
 
-_FORCED_TARGET_COLUMNS = ("name", "ra", "dec")
+#: Columns every forced-targets table must carry (after lowercasing). ``name``
+#: is accepted too but is optional -- see `_load_forced_targets`.
+_FORCED_TARGET_REQUIRED_COLUMNS = ("ra", "dec")
+
+#: Upper (exclusive) bound of a valid forced-targets ``ra`` in degrees.
+_RA_DEGREES_UPPER_BOUND = 360
+
+
+def _forced_target_column_degrees(table, column_name, path):
+    """
+    Return one forced-targets column (``ra`` or ``dec``) as degrees, float64.
+
+    A masked/blank cell is filled with NaN first -- reading a `MaskedColumn`
+    straight through ``np.asarray(..., dtype=float)`` silently drops the mask
+    and reads a blank cell as 0.0, which this must not do. A column carrying
+    an explicit angular unit (e.g. an ECSV column in ``hourangle``) is then
+    converted through ``Quantity.to_value``; a unitless column keeps the
+    documented "ICRS degrees" interpretation.
+
+    Parameters
+    ----------
+    table : astropy.table.Table
+        The forced-targets table, with column names already lowercased.
+    column_name : str
+        Column to read -- ``"ra"`` or ``"dec"``.
+    path : str
+        Original ``--forced-targets`` path, used only in error messages.
+
+    Returns
+    -------
+    numpy.ndarray
+        The column's values in degrees, one per row; a formerly-masked cell
+        reads as NaN.
+
+    Raises
+    ------
+    click.ClickException
+        If the column has a unit that is not convertible to an angle, or its
+        values cannot be read as numbers at all.
+    """
+    column = table[column_name]
+    if getattr(column, "mask", None) is not None and np.any(column.mask):
+        column = column.astype(float).filled(np.nan)
+
+    if column.unit is not None:
+        try:
+            return np.asarray(column.quantity.to_value(u.deg), dtype=float)
+        except u.UnitConversionError as exc:
+            msg = (
+                f"--forced-targets {path!r} column {column_name!r} has a unit "
+                f"that is not an angle ({column.unit}): {exc}"
+            )
+            raise click.ClickException(msg) from exc
+
+    try:
+        return np.asarray(column, dtype=float)
+    except (TypeError, ValueError) as exc:
+        msg = (
+            f"--forced-targets {path!r} column {column_name!r} has "
+            f"non-numeric values: {exc}"
+        )
+        raise click.ClickException(msg) from exc
 
 
 def _load_forced_targets(path):
@@ -212,28 +273,36 @@ def _load_forced_targets(path):
 
     These are extra sky positions to photometer that are absent from the Gaia
     catalog (e.g. a nova or supernova), forwarded to
-    `~bandaid.scripts.photometer_frames` as ``forced_targets``. ``name`` is
-    input-side self-documentation only -- the ``.star`` output schema has no
-    name/ID field, so forced rows are identified in the output only by their
-    ra/dec.
+    `~bandaid.scripts.photometer_frames` as ``forced_targets``. Column names
+    are matched case-insensitively (``RA``, ``Ra``, and ``ra`` are all the
+    same column; a file defining more than one spelling of the same column
+    is rejected as ambiguous rather than silently picking one). ``name`` is
+    an optional, input-side self-documentation column -- the ``.star``
+    output schema has no name/ID field, so forced rows are identified in the
+    output only by their ra/dec.
 
     Parameters
     ----------
     path : str or None
         Path passed to ``--forced-targets`` holding a CSV/ECSV table with
-        ``name``, ``ra``, and ``dec`` (degrees) columns, or None.
+        required ``ra``/``dec`` columns (ICRS degrees, unless the column
+        carries an explicit angular unit, e.g. an ECSV ``hourangle`` column)
+        and an optional ``name`` column, or None.
 
     Returns
     -------
     astropy.coordinates.SkyCoord or None
-        The forced-target sky positions, or None when ``--forced-targets`` is
-        omitted.
+        The forced-target sky positions in the ICRS frame, or None when
+        ``--forced-targets`` is omitted.
 
     Raises
     ------
     click.ClickException
-        If the file cannot be read as a table, is missing a required column,
-        has no rows, or has non-numeric/out-of-range ``ra``/``dec`` values.
+        If the file cannot be read as a table, its column names collide
+        case-insensitively, it is missing a required column, it has no rows,
+        a ``ra``/``dec`` column has a non-angular unit or non-numeric values,
+        any row's ``ra``/``dec`` is non-finite, ``ra`` is outside
+        ``[0, 360)`` degrees, or ``dec`` is outside the valid latitude range.
     """
     if path is None:
         return None
@@ -243,19 +312,63 @@ def _load_forced_targets(path):
         msg = f"could not read --forced-targets {path!r}: {exc}"
         raise click.ClickException(msg) from exc
 
-    for column in _FORCED_TARGET_COLUMNS:
-        if column not in table.colnames:
-            msg = f"--forced-targets {path!r} is missing required column {column!r}"
-            raise click.ClickException(msg)
+    # Column names are matched case-insensitively; a file defining more than
+    # one spelling of the same column (e.g. both "RA" and "ra") is rejected
+    # rather than silently picking one of them.
+    by_lower_name = {}
+    for column in table.colnames:
+        by_lower_name.setdefault(column.lower(), []).append(column)
+    collided = sorted(
+        original
+        for originals in by_lower_name.values()
+        if len(originals) > 1
+        for original in originals
+    )
+    if collided:
+        msg = (
+            f"--forced-targets {path!r} has column names that collide "
+            f"case-insensitively: {', '.join(collided)}"
+        )
+        raise click.ClickException(msg)
+    table.rename_columns(table.colnames, [name.lower() for name in table.colnames])
+
+    missing = [
+        column
+        for column in _FORCED_TARGET_REQUIRED_COLUMNS
+        if column not in table.colnames
+    ]
+    if missing:
+        msg = (
+            f"--forced-targets {path!r} is missing required column(s): "
+            f"{', '.join(missing)}"
+        )
+        raise click.ClickException(msg)
 
     if len(table) == 0:
         msg = f"--forced-targets {path!r} has no rows"
         raise click.ClickException(msg)
 
+    ra = _forced_target_column_degrees(table, "ra", path)
+    dec = _forced_target_column_degrees(table, "dec", path)
+
+    non_finite_rows = np.flatnonzero(~np.isfinite(ra) | ~np.isfinite(dec)) + 1
+    if len(non_finite_rows):
+        rows = ", ".join(str(row) for row in non_finite_rows)
+        msg = f"--forced-targets {path!r} has non-finite ra/dec at row(s): {rows}"
+        raise click.ClickException(msg)
+
+    out_of_range_rows = np.flatnonzero((ra < 0) | (ra >= _RA_DEGREES_UPPER_BOUND)) + 1
+    if len(out_of_range_rows):
+        rows = ", ".join(str(row) for row in out_of_range_rows)
+        msg = (
+            f"--forced-targets {path!r} has ra outside [0, 360) degrees at "
+            f"row(s): {rows}"
+        )
+        raise click.ClickException(msg)
+
+    # dec's valid range ([-90, 90]) is left to SkyCoord's own Latitude check.
     try:
-        ra = np.asarray(table["ra"], dtype=float)
-        dec = np.asarray(table["dec"], dtype=float)
-        return SkyCoord(ra * u.deg, dec * u.deg)
+        return SkyCoord(ra * u.deg, dec * u.deg, frame="icrs")
     except (TypeError, ValueError) as exc:
         msg = f"--forced-targets {path!r} has invalid ra/dec values: {exc}"
         raise click.ClickException(msg) from exc
@@ -326,8 +439,10 @@ def main():
     default=None,
     type=click.Path(exists=True, dir_okay=False),
     help=(
-        "Path to a CSV/ECSV table (columns name, ra, dec in degrees) of extra "
-        "targets to photometer that are absent from the Gaia catalog."
+        "Path to a CSV/ECSV table (required columns ra, dec in ICRS degrees; "
+        "column names are case-insensitive; an optional name column is "
+        "accepted and ignored) of extra targets to photometer that are "
+        "absent from the Gaia catalog."
     ),
 )
 @click.option(

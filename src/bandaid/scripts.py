@@ -20,6 +20,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
@@ -63,6 +64,7 @@ QA_MANIFEST_COLUMNS = (
     "dropped_filters",
     "n_centroid_drift",
     "n_drift_rejected",
+    "n_forced_measured",
 )
 
 logger = logging.getLogger(__name__)
@@ -210,6 +212,11 @@ class BatchPrep:
         Expected ``(height, width)`` of every frame.
     config : PhotometryConfig
         The photometry configuration to apply to every frame in the batch.
+    forced_targets : astropy.coordinates.SkyCoord or None
+        The (reshaped, ICRS) extra sky positions appended to
+        ``photometry_coords`` by `prepare_batch`, kept here so `process_batch`
+        can report their measurement outcome in the QA manifest
+        (``n_forced_measured``). None when the batch was prepared without any.
     """
 
     radecs: np.ndarray
@@ -220,6 +227,7 @@ class BatchPrep:
     fov_rad: float
     shape: tuple
     config: PhotometryConfig = field(default_factory=PhotometryConfig)
+    forced_targets: SkyCoord | None = None
 
 
 def estimate_center_from_header(metadata, profile):
@@ -391,7 +399,11 @@ def prepare_batch(
         ``photometry_coords`` only, never to ``radecs`` (the WCS-solve
         reference catalog). They bypass contamination flagging (there is no
         Gaia magnitude to size that model against) but are still subject to
-        every downstream quality cut. None (default) adds nothing.
+        every downstream quality cut. Any frame is accepted (e.g. FK5) and
+        transformed to ICRS, matching ``photometry_coords``. A scalar
+        `~astropy.coordinates.SkyCoord` (e.g. from
+        `~astropy.coordinates.SkyCoord.from_name`) is accepted and treated as
+        one target. None (default) adds nothing.
 
     Returns
     -------
@@ -530,17 +542,44 @@ def prepare_batch(
 
     # Forced targets (novae/supernovae -- absent from Gaia) go into
     # photometry_coords only, never radecs: they aren't astrometric
-    # references for the WCS solve. Two deliberate properties follow:
+    # references for the WCS solve. Two deliberate properties follow, and
+    # both cut in each direction:
     # (1) contamination flagging is bypassed for them -- it needs a Gaia
     # magnitude to size the separation model, and a forced target has none,
-    # so a forced target sitting on top of a bright star is not flagged.
+    # so a forced target sitting on top of a bright star is not flagged. The
+    # reverse direction is equally invisible: a bright forced target (the
+    # nova itself) near a Gaia comparison star does not size a flag radius
+    # against that comp star either, so the comp star's contamination goes
+    # unflagged too. Accepted -- a user forcing a target is expected to have
+    # already weighed potential contamination.
     # (2) every downstream quality cut still applies unchanged; an off-frame
     # forced target is silently dropped by the existing x/y bounds cut, by
     # design, not an error.
-    if forced_targets is not None and len(forced_targets) > 0:
+    if forced_targets is not None:
+        # A scalar SkyCoord (e.g. SkyCoord.from_name(...) for a single nova)
+        # has no len(); reshape to a 1-element array so it concatenates like
+        # any other forced-target list.
+        forced_targets = forced_targets.reshape(-1)
+        # photometry_coords is plain ICRS (SkyCoord(..., unit="deg") above);
+        # transform any other frame (e.g. FK5) before concatenating, else
+        # np.concatenate raises a confusing frame-mismatch error. Rebuild a
+        # bare SkyCoord from the transformed ra/dec rather than keeping
+        # ``.icrs`` directly: astropy's SkyCoord remembers "extra" frame
+        # attributes (e.g. FK5's equinox) across a transform, and
+        # np.concatenate then rejects the mismatch against photometry_coords,
+        # which carries none.
+        icrs = forced_targets.icrs
+        forced_targets = SkyCoord(icrs.ra, icrs.dec)
         # astropy.coordinates.concatenate is pending deprecation in favor of
-        # np.concatenate, which SkyCoord supports directly.
+        # np.concatenate, which SkyCoord supports directly. An empty
+        # forced_targets is a no-op here (astropy's own concatenate
+        # semantics); the CLI already rejects an empty forced-targets table
+        # before it reaches this function.
         photometry_coords = np.concatenate([photometry_coords, forced_targets])
+        logger.info(
+            "appended %d forced target(s) to the photometry coords",
+            len(forced_targets),
+        )
 
     bayer_masks = generate_bayer_masks(
         (metadata["height"], metadata["width"]),
@@ -557,6 +596,7 @@ def prepare_batch(
         fov_rad=metadata["fov_rad"],
         shape=(metadata["height"], metadata["width"]),
         config=config,
+        forced_targets=forced_targets,
     )
 
 
@@ -688,7 +728,7 @@ def _dropped_filters(by_filter):
     return "" if all_evaluable else None
 
 
-def _qa_record_ok(file, by_filter):
+def _qa_record_ok(file, by_filter, *, forced_targets=None):
     """
     Build the QA manifest record for a frame that processed cleanly.
 
@@ -712,12 +752,25 @@ def _qa_record_ok(file, by_filter):
     high-proper-motion stars whose *catalog* position was stale, not on genuine
     drift.
 
+    ``n_forced_measured`` counts how many of ``forced_targets`` landed on a
+    `good_star_mask`-passing row of the representative channel, matched by
+    sky position within a generous 1 arcsec tolerance -- photometry runs at
+    the catalog positions themselves, so a real match is essentially exact
+    and 1 arcsec is only slack for float precision, not a real search radius.
+    It is None (blank) when the batch was prepared without forced targets,
+    and also None -- rather than a misleadingly precise 0 -- when the
+    representative channel lacks the columns/bounds needed to evaluate
+    `good_star_mask` in the first place.
+
     Parameters
     ----------
     file : str or Path
         The processed input frame.
     by_filter : dict of {str: astropy.table.Table}
         The ``process_one_image`` result for this frame.
+    forced_targets : astropy.coordinates.SkyCoord or None, optional
+        The batch's forced targets (`BatchPrep.forced_targets`), used only to
+        compute ``n_forced_measured``. None (default) records it as blank.
 
     Returns
     -------
@@ -769,6 +822,16 @@ def _qa_record_ok(file, by_filter):
         if good is not None:
             n_drift_rejected = int(np.sum(drift & good))
 
+    n_forced_measured = None
+    if forced_targets is not None and good is not None and {"ra", "dec"} <= cols:
+        good_rows = representative[good]
+        if len(good_rows) == 0:
+            n_forced_measured = 0
+        else:
+            good_coords = SkyCoord(good_rows["ra"], good_rows["dec"], unit="deg")
+            _idx, sep2d, _ = forced_targets.match_to_catalog_sky(good_coords)
+            n_forced_measured = int(np.sum(sep2d < 1 * u.arcsec))
+
     return {
         "file": str(file),
         "status": "ok",
@@ -780,6 +843,7 @@ def _qa_record_ok(file, by_filter):
         "dropped_filters": dropped_filters_value,
         "n_centroid_drift": n_centroid_drift,
         "n_drift_rejected": n_drift_rejected,
+        "n_forced_measured": n_forced_measured,
     }
 
 
@@ -1105,7 +1169,9 @@ def process_batch(
             # filter (#78) -- so
             # split on exception type: a FrameError is this frame's problem
             # and is skipped like any other, everything else propagates.
-            manifest_records.append(_qa_record_ok(file, by_filter))
+            manifest_records.append(
+                _qa_record_ok(file, by_filter, forced_targets=prep.forced_targets)
+            )
             if output_dir is not None:
                 try:
                     results[file] = write_frame(by_filter, output_paths[file])
@@ -1186,7 +1252,9 @@ def photometer_frames(
         True.
     forced_targets : astropy.coordinates.SkyCoord or None, optional
         Extra sky positions to photometer that are absent from the Gaia
-        catalog, forwarded to `prepare_batch`. None (default) adds nothing.
+        catalog, forwarded to `prepare_batch`. Any frame is accepted (e.g.
+        FK5) and transformed to ICRS; a scalar `~astropy.coordinates.SkyCoord`
+        is accepted and treated as one target. None (default) adds nothing.
 
     Returns
     -------

@@ -13,8 +13,10 @@ wiring and the clean-error handling; the engine itself is covered in
 import json
 import logging
 
+import astropy.units as u
 import numpy as np
 import pytest
+from astropy.table import Table
 from click.testing import CliRunner
 
 from bandaid import cli
@@ -549,6 +551,184 @@ def test_process_forced_targets_out_of_range_dec_is_clean_error(runner, tmp_path
 
     assert result.exit_code == 1
     assert result.output.strip() != ""
+
+
+def test_process_forced_targets_uppercase_columns_are_accepted(
+    runner, patched_photometer, tmp_path
+):
+    """Column names are matched case-insensitively (``RA``, ``Dec``, ``Name``)."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+    forced = tmp_path / "forced.csv"
+    forced.write_text("Name,RA,Dec\nSN2024a,123.456,-10.0\n")
+
+    result = runner.invoke(
+        cli.main, ["process", str(frame), "--forced-targets", str(forced)]
+    )
+
+    assert result.exit_code == 0, result.output
+    forced_targets = patched_photometer["forced_targets"]
+    np.testing.assert_allclose(forced_targets.ra.deg, [123.456])
+    np.testing.assert_allclose(forced_targets.dec.deg, [-10.0])
+
+
+def test_process_forced_targets_case_collision_is_clean_error(runner, tmp_path):
+    """Columns colliding case-insensitively (both ``RA`` and ``ra``) are rejected."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+    forced = tmp_path / "forced.csv"
+    forced.write_text("RA,ra,dec\n1.0,2.0,3.0\n")
+
+    result = runner.invoke(
+        cli.main, ["process", str(frame), "--forced-targets", str(forced)]
+    )
+
+    assert result.exit_code == 1
+    assert "collide" in result.output.lower()
+    assert "RA" in result.output
+    assert "ra" in result.output
+
+
+def test_process_forced_targets_name_column_is_optional(
+    runner, patched_photometer, tmp_path
+):
+    """A forced-targets file with only ``ra``/``dec`` (no ``name``) is accepted."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+    forced = tmp_path / "forced.csv"
+    forced.write_text("ra,dec\n123.456,-10.0\n")
+
+    result = runner.invoke(
+        cli.main, ["process", str(frame), "--forced-targets", str(forced)]
+    )
+
+    assert result.exit_code == 0, result.output
+    forced_targets = patched_photometer["forced_targets"]
+    np.testing.assert_allclose(forced_targets.ra.deg, [123.456])
+    np.testing.assert_allclose(forced_targets.dec.deg, [-10.0])
+
+
+def test_process_forced_targets_missing_both_ra_and_dec_lists_both(runner, tmp_path):
+    """A file missing both required columns names both in a single error."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+    forced = tmp_path / "forced.csv"
+    forced.write_text("name,mag\nSN2024a,12.0\n")
+
+    result = runner.invoke(
+        cli.main, ["process", str(frame), "--forced-targets", str(forced)]
+    )
+
+    assert result.exit_code == 1
+    assert "ra" in result.output.lower()
+    assert "dec" in result.output.lower()
+
+
+def test_process_forced_targets_blank_ra_cell_is_clean_error(runner, tmp_path):
+    """A blank/masked ``ra`` cell is a clean error, not silently read as 0.0."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+    forced = tmp_path / "forced.csv"
+    forced.write_text("name,ra,dec\nSN2024a,,-10.0\nSN2024b,50.0,10.0\n")
+
+    result = runner.invoke(
+        cli.main, ["process", str(frame), "--forced-targets", str(forced)]
+    )
+
+    assert result.exit_code == 1
+    assert "row" in result.output.lower()
+    assert "1" in result.output
+
+
+def test_process_forced_targets_literal_nan_value_is_clean_error(runner, tmp_path):
+    """A literal ``nan`` typed in the file is rejected, not silently propagated."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+    forced = tmp_path / "forced.csv"
+    forced.write_text("name,ra,dec\nSN2024a,nan,-10.0\n")
+
+    result = runner.invoke(
+        cli.main, ["process", str(frame), "--forced-targets", str(forced)]
+    )
+
+    assert result.exit_code == 1
+    assert "row" in result.output.lower()
+
+
+@pytest.mark.parametrize("bad_ra", [400.0, -30.0])
+def test_process_forced_targets_out_of_range_ra_is_clean_error(
+    runner, tmp_path, bad_ra
+):
+    """A ``ra`` outside ``[0, 360)`` degrees is a clean error, not silent wrapping."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+    forced = tmp_path / "forced.csv"
+    forced.write_text(f"name,ra,dec\nSN2024a,{bad_ra},-10.0\n")
+
+    result = runner.invoke(
+        cli.main, ["process", str(frame), "--forced-targets", str(forced)]
+    )
+
+    assert result.exit_code == 1
+    assert result.output.strip() != ""
+
+
+def test_process_forced_targets_hourangle_unit_is_converted(
+    runner, patched_photometer, tmp_path
+):
+    """An ECSV ``ra`` column in hourangle units converts correctly to degrees."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+
+    table = Table()
+    table["ra"] = [10.0] * u.hourangle
+    table["dec"] = [20.0] * u.deg
+    forced = tmp_path / "forced.ecsv"
+    table.write(forced, format="ascii.ecsv")
+
+    result = runner.invoke(
+        cli.main, ["process", str(frame), "--forced-targets", str(forced)]
+    )
+
+    assert result.exit_code == 0, result.output
+    forced_targets = patched_photometer["forced_targets"]
+    np.testing.assert_allclose(forced_targets.ra.deg, [150.0])
+    np.testing.assert_allclose(forced_targets.dec.deg, [20.0])
+
+
+def test_process_forced_targets_non_angular_unit_is_clean_error(runner, tmp_path):
+    """A ``ra``/``dec`` column carrying a non-angular unit is a clean error."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+
+    table = Table()
+    table["ra"] = [10.0] * u.m
+    table["dec"] = [20.0] * u.deg
+    forced = tmp_path / "forced.ecsv"
+    table.write(forced, format="ascii.ecsv")
+
+    result = runner.invoke(
+        cli.main, ["process", str(frame), "--forced-targets", str(forced)]
+    )
+
+    assert result.exit_code == 1
+    assert "unit" in result.output.lower()
+
+
+def test_process_forced_targets_frame_is_icrs(runner, patched_photometer, tmp_path):
+    """The returned forced-targets ``SkyCoord`` uses the ICRS frame explicitly."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+    forced = tmp_path / "forced.csv"
+    forced.write_text("ra,dec\n10.0,20.0\n")
+
+    result = runner.invoke(
+        cli.main, ["process", str(frame), "--forced-targets", str(forced)]
+    )
+
+    assert result.exit_code == 0, result.output
+    forced_targets = patched_photometer["forced_targets"]
+    assert forced_targets.frame.name == "icrs"
 
 
 def test_instrument_list(runner):
