@@ -1,5 +1,6 @@
 """Unit tests for the detect/align/centroid pipeline (prepare_image, process)."""
 
+import gzip
 from pathlib import Path
 
 import numpy as np
@@ -514,6 +515,32 @@ class TestCalibrationSequence:
             calibration_sequence(path, threshold=1, detect_on_bayer_balanced=True)
         assert exc_info.value.file == path
 
+    def test_opens_the_file_exactly_once(self, make_test_image, tmp_path, mocker):
+        """calibration_sequence opens the file exactly once, not per field (#44)."""
+        image = _detectable_image(make_test_image, n_sources=5)
+        path = _write_seestar_fits(tmp_path / "open_once.fits", image)
+        # Spy at the HDUList level: every open route (fits.open, getdata,
+        # getheader) funnels through fromfile, so a reintroduced extra read
+        # is counted no matter which convenience function performs it.
+        spy = mocker.spy(fits.HDUList, "fromfile")
+
+        calibration_sequence(path, threshold=1)
+
+        assert spy.call_count == 1
+
+    def test_gz_compressed_frame_opened_once(self, make_test_image, tmp_path, mocker):
+        """A gzip-compressed frame is still opened exactly once, not per field (#44)."""
+        image = _detectable_image(make_test_image, n_sources=5)
+        raw_path = _write_seestar_fits(tmp_path / "open_once.fits", image)
+        gz_path = tmp_path / "open_once.fits.gz"
+        with raw_path.open("rb") as f_in, gzip.open(gz_path, "wb") as f_out:
+            f_out.write(f_in.read())
+        spy = mocker.spy(fits.HDUList, "fromfile")
+
+        calibration_sequence(str(gz_path), threshold=1)
+
+        assert spy.call_count == 1
+
 
 class TestPrepareImageBranches:
     """Branch coverage for ``prepare_image`` beyond the alignment fallback."""
@@ -650,6 +677,20 @@ class TestProcessOneImage:
             + result["TB"]["tot_count"]
         )
         np.testing.assert_allclose(result["L4"]["tot_count"], rgb_sum)
+
+    def test_opens_the_file_exactly_once(
+        self, make_test_image, tmp_path, monkeypatch, bayer_masks_rggb, mocker
+    ):
+        """process_one_image opens the file exactly once end-to-end (#44)."""
+        _stub_wcs_and_centroid(monkeypatch)
+        image = _detectable_image(make_test_image)
+        path = _write_seestar_fits(tmp_path / "open_once.fits", image)
+        masks = bayer_masks_rggb(image.shape, append_l4=True)
+        spy = mocker.spy(fits.HDUList, "fromfile")
+
+        process_one_image(path, {}, _REF_RADECS, None, masks)
+
+        assert spy.call_count == 1
 
 
 # --- Real-frame smoke test -------------------------------------------------

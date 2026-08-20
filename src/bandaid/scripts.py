@@ -23,7 +23,6 @@ from pathlib import Path
 import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
-from astropy.io import fits
 from astropy.time import Time
 from dateutil import parser
 
@@ -40,6 +39,8 @@ from .exceptions import (
 from .image2sl_qt import generate_bayer_masks
 from .photometry import (
     N_GAIA_STARS_ALIGN_RETRY,
+    LoadedFrame,
+    _load_frame,
     calibration_sequence,
     good_star_mask,
     metadata_from_header,
@@ -71,6 +72,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "BatchPrep",
+    "LoadedFrame",
     "check_frame_consistency",
     "estimate_center_from_header",
     "expand_frame_paths",
@@ -142,9 +144,9 @@ def expand_frame_paths(paths):
     or a literal file path. Directory and glob matches that are not FITS *files*
     are silently skipped -- including a directory or symlink whose name merely
     ends in a FITS suffix (e.g. ``bundle.fits/``), which would otherwise blow up
-    later in ``fits.getheader``. A literal path is validated to exist and to be a
-    FITS file, so a typo fails here with a clear error rather than as a traceback
-    deep in ``prepare_batch``.
+    later in `~bandaid.photometry._load_frame`. A literal path is validated to
+    exist and to be a FITS file, so a typo fails here with a clear error rather
+    than as a traceback deep in ``prepare_batch``.
 
     The combined result is de-duplicated by *resolved* path -- so the same file
     reached two ways (a directory and an explicit path, ``a.fit`` vs ``./a.fit``)
@@ -216,6 +218,13 @@ class BatchPrep:
         The ICRS forced-target sky positions appended to
         ``photometry_coords`` by `prepare_batch`. None when the batch was
         prepared without any.
+
+    Notes
+    -----
+    `prepare_batch` opens the first frame once to derive the batch prep and
+    stashes that load privately (``_first_frame_cache``) so `process_batch`
+    can reuse it via `_take_first_frame` instead of reopening the same file
+    (issue #44).
     """
 
     radecs: np.ndarray
@@ -227,6 +236,40 @@ class BatchPrep:
     shape: tuple
     config: PhotometryConfig = field(default_factory=PhotometryConfig)
     forced_targets: SkyCoord | None = None
+    # Populated by `prepare_batch` with (resolved first-frame path, LoadedFrame)
+    # so `process_batch` can reuse that already-opened frame instead of
+    # reopening it (issue #44); consumed (set back to None) by
+    # `_take_first_frame` the first time it matches, so the array is
+    # garbage-collectable for the rest of the batch.
+    _first_frame_cache: tuple | None = field(default=None, repr=False, compare=False)
+
+    def _take_first_frame(self, file):
+        """
+        Return the cached first-frame load if ``file`` is that frame; consume it.
+
+        `prepare_batch` opens the first frame once and stashes the load on
+        ``_first_frame_cache``, keyed by its resolved path. This lets
+        `process_batch` reuse that load for the matching frame instead of
+        opening the file again, while every other frame in the batch (or a
+        repeated path, or a `BatchPrep` reused across batches) falls through to
+        a fresh load -- graceful degradation, not an error.
+
+        Parameters
+        ----------
+        file : str or Path
+            The frame path to check against the cached first frame.
+
+        Returns
+        -------
+        LoadedFrame or None
+            The cached frame if ``file`` resolves to the cached path (and the
+            cache has not already been consumed), otherwise None.
+        """
+        cache = self._first_frame_cache
+        if cache is not None and Path(file).resolve() == cache[0]:
+            object.__setattr__(self, "_first_frame_cache", None)
+            return cache[1]
+        return None
 
 
 def estimate_center_from_header(metadata, profile):
@@ -418,7 +461,19 @@ def prepare_batch(
         If the first frame's metadata has no parseable observation time
         (``obs_time``, usually mapped from ``DATE-OBS``), which is needed to
         propagate the Gaia positions to the observation epoch.
+
+    Notes
+    -----
+    ``first_file`` is opened exactly once here; the load is stashed on the
+    returned `BatchPrep` (``_first_frame_cache``) so a later `process_batch`
+    call over a file list that includes ``first_file`` reuses it instead of
+    reopening the same file (issue #44).
     """
+    # Load the first frame once here; process_batch reuses this same load for
+    # this frame (via BatchPrep._take_first_frame) instead of reopening it
+    # (issue #44).
+    frame = _load_frame(first_file)
+
     # A too-few-stars failure on the *first* frame is fatal for the whole batch
     # (no FWHM/pointing to prepare from), so translate the recoverable
     # per-frame TooFewStarsError into a fatal BatchPrepError.
@@ -440,6 +495,7 @@ def prepare_batch(
             fwhm_cutout_half=instrument.fwhm_cutout_half,
             fwhm_n_stars=instrument.fwhm_n_stars,
             profile=instrument,
+            frame=frame,
         )
     except TooFewStarsError as exc:
         msg = f"too few stars detected in {first_file!r} to prepare the batch"
@@ -596,6 +652,7 @@ def prepare_batch(
         shape=(metadata["height"], metadata["width"]),
         config=config,
         forced_targets=forced_targets,
+        _first_frame_cache=(Path(first_file).resolve(), frame),
     )
 
 
@@ -1111,6 +1168,13 @@ def process_batch(
     Exception
         Any unexpected (non-`FrameError`) error raised while processing a frame
         is re-raised when ``fail_fast`` is True (the default).
+
+    Notes
+    -----
+    Each frame is opened exactly once: a frame is loaded fresh unless it is the
+    same file `prepare_batch` already opened to build ``prep``, in which case
+    that cached load (``prep._first_frame_cache``) is reused instead (issue
+    #44).
     """
     results = {}
     # One QA record per frame (ok/skipped/error), written to a manifest at the
@@ -1135,7 +1199,11 @@ def process_batch(
         # configure_logging, alongside the skip/error warnings logged below.
         logger.info("processing %d/%d: %s", idx, len(files), file)
         try:
-            check_frame_consistency(file, fits.getheader(file), prep)
+            # Reuse prepare_batch's already-opened first frame when this is
+            # that frame, else load it now -- exactly one open per frame for
+            # the whole run (issue #44).
+            frame = prep._take_first_frame(file) or _load_frame(file)  # noqa: SLF001
+            check_frame_consistency(file, frame.header, prep)
             by_filter = process_one_image(
                 file,
                 user_specific_metadata,
@@ -1144,6 +1212,7 @@ def process_batch(
                 prep.bayer_masks,
                 config=prep.config,
                 input_photometry_coords=prep.photometry_coords,
+                frame=frame,
             )
         except FrameError as exc:
             # Expected per-frame failure: skip the frame and keep going.

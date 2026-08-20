@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from _helpers import _dummy_prep
+from _helpers import _CONSISTENT_HEADER, _dummy_prep, _patch_prep
 from aavso_starlist_schema import StarListSet
 from astropy.table import Table
 
@@ -164,6 +164,61 @@ class TestProcessBatch:
         )
 
         assert list(results) == ["good.fits"]
+
+    def test_loads_each_frame_exactly_once(self, monkeypatch):
+        """process_batch loads each frame exactly once via the shared loader (#44)."""
+        prep = _dummy_prep()
+        monkeypatch.setattr(
+            scripts,
+            "process_one_image",
+            lambda *_a, **_k: {"TR": Table({"tot_count": [1.0]})},
+        )
+        calls = []
+
+        def fake_load_frame(file):
+            calls.append(file)
+            return scripts.LoadedFrame(np.zeros((2, 2)), dict(_CONSISTENT_HEADER))
+
+        monkeypatch.setattr(scripts, "_load_frame", fake_load_frame)
+
+        files = ["a.fits", "b.fits"]
+        scripts.process_batch(files, prep, user_specific_metadata={})
+
+        assert calls == files
+
+    def test_first_frame_from_prepare_batch_is_reused_by_process_batch(
+        self, monkeypatch
+    ):
+        """
+        process_batch reuses prepare_batch's cached first-frame load (#44).
+
+        Encodes "exactly once per run" including the first-frame double-open:
+        ``prepare_batch`` already loaded "first.fits" to derive the batch prep,
+        so ``process_batch`` must reuse that cached load rather than reopening
+        it, while still loading every other frame normally.
+        """
+        _patch_prep(monkeypatch)
+        monkeypatch.setattr(
+            scripts,
+            "process_one_image",
+            lambda *_a, **_k: {"TR": Table({"tot_count": [1.0]})},
+        )
+
+        prep = scripts.prepare_batch("first.fits", cnn=object())
+
+        calls = []
+
+        def counting_load_frame(file):
+            calls.append(file)
+            return scripts.LoadedFrame(np.zeros((2, 2)), dict(_CONSISTENT_HEADER))
+
+        monkeypatch.setattr(scripts, "_load_frame", counting_load_frame)
+
+        scripts.process_batch(
+            ["first.fits", "second.fits"], prep, user_specific_metadata={}
+        )
+
+        assert calls == ["second.fits"]
 
 
 @pytest.mark.usefixtures("_consistent_headers")

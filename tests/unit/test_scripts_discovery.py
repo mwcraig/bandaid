@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 import pytest
-from _helpers import _CONSISTENT_HEADER, _dummy_prep
+from _helpers import _dummy_prep
 from astropy.coordinates import SkyCoord
 
 from bandaid import scripts
@@ -253,6 +253,7 @@ class TestPhotometerFrames:
 
         assert calls["forced_targets"] is forced
 
+    @pytest.mark.usefixtures("_consistent_headers")
     def test_identical_names_write_distinct_starlists(
         self, monkeypatch, tmp_path, by_filter
     ):
@@ -270,9 +271,6 @@ class TestPhotometerFrames:
 
         monkeypatch.setattr(scripts, "prepare_batch", lambda *a, **k: _dummy_prep())
         monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
-        monkeypatch.setattr(
-            scripts.fits, "getheader", lambda _file: dict(_CONSISTENT_HEADER)
-        )
 
         frames, results = scripts.photometer_frames(inputs, output_dir=str(out))
 

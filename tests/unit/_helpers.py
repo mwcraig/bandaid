@@ -14,7 +14,7 @@ from astropy.table import Table
 from astropy.wcs import WCS
 
 from bandaid import measure_photometry, scripts
-from bandaid.photometry import ANNULUS, RELATIVE_RADII, ImageData
+from bandaid.photometry import ANNULUS, RELATIVE_RADII, ImageData, LoadedFrame
 
 # Fixed random seed for reproducible noise in generated test images.
 SEED = 843032
@@ -284,6 +284,74 @@ def _consistency_header(**overrides: object) -> dict:
     }
     header.update(overrides)
     return header
+
+
+def _batch_metadata():
+    """Return a metadata dict like the one ``calibration_sequence`` produces."""
+    return {
+        "ra": 10.0,
+        "dec": 0.0,
+        "obs_time": "2026-04-28T03:03:43.270038",
+        "fov_rad": 0.74,
+        "pixscale": 2.4,
+        "width": 1080,
+        "height": 1920,
+        "bayerpat": "GRBG",
+        "roworder": "top-down",
+        "ybayroff": 0,
+        "egain": 0.3116,
+    }
+
+
+def _batch_radecs_mags():
+    """
+    Sky positions + mags with one tight equal-brightness pair to be dropped.
+
+    The first two stars sit ~1 arcsec apart at equal magnitude, so both are
+    contaminated; the remaining two are degrees away and survive.
+    """
+    radecs = np.array(
+        [
+            [10.0, 0.0],
+            [10.0 + 1.0 / 3600.0, 0.0],
+            [10.1, 0.0],
+            [10.2, 0.0],
+        ],
+    )
+    mags = np.array([12.0, 12.0, 10.0, 11.0])
+    return radecs, mags
+
+
+def _patch_prep(monkeypatch, *, metadata=None, radecs_mags=None, fwhm_pix=2.0):
+    """Monkeypatch the heavy prep dependencies and return the spied call args."""
+    metadata = metadata if metadata is not None else _batch_metadata()
+    radecs, mags = radecs_mags if radecs_mags is not None else _batch_radecs_mags()
+
+    # These tests exercise the mag-cut/contamination plumbing with deliberately
+    # tiny synthetic catalogs, so relax the "enough Gaia stars to solve a WCS"
+    # floor; the floor itself is covered by TestPrepareBatch's guard tests.
+    monkeypatch.setattr(scripts, "N_GAIA_STARS_ALIGN_RETRY", 1)
+
+    calls = {}
+
+    def fake_calibration_sequence(file, *, cnn=None, profile=None, **_kwargs: object):
+        calls["calibration_file"] = file
+        calls["calibration_cnn"] = cnn
+        calls["calibration_profile"] = profile
+        return np.zeros((4, 4)), metadata, np.zeros((3, 2)), fwhm_pix, object()
+
+    def fake_cached_gaia_radecs(center, fov, *, obs_epoch=None):
+        calls["center"] = center
+        calls["fov"] = fov
+        calls["obs_epoch"] = obs_epoch
+        return radecs, mags
+
+    monkeypatch.setattr(scripts, "calibration_sequence", fake_calibration_sequence)
+    monkeypatch.setattr(scripts, "cached_gaia_radecs", fake_cached_gaia_radecs)
+    monkeypatch.setattr(
+        scripts, "_load_frame", lambda _f: LoadedFrame(np.zeros((4, 4)), {})
+    )
+    return calls, metadata, radecs, mags, fwhm_pix
 
 
 def _dummy_prep():

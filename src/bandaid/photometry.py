@@ -683,6 +683,38 @@ def _fwhm_from_coords(
     return psf.gaussian_sigma_to_fwhm * np.mean([params["sigma_x"], params["sigma_y"]])
 
 
+@dataclass(frozen=True)
+class LoadedFrame:
+    """A science frame's pixel data and header from a single file open."""
+
+    data: np.ndarray
+    header: fits.Header
+
+
+def _load_frame(file):
+    """
+    Open a science frame exactly once and return its data and header.
+
+    ``memmap=False`` plus reading ``.data`` inside the ``with`` block fully
+    materializes the array before the file closes -- a memmapped array would
+    die with its backing file, and memmapping a compressed (``.gz``) file is
+    not possible anyway -- so this is one code path for compressed and
+    uncompressed frames.
+
+    Parameters
+    ----------
+    file : str or Path
+        Path to the FITS file.
+
+    Returns
+    -------
+    LoadedFrame
+        The frame's pixel data and header, read from the primary HDU.
+    """
+    with fits.open(file, memmap=False) as hdul:
+        return LoadedFrame(data=hdul[0].data, header=hdul[0].header)
+
+
 def calibration_sequence(
     file,
     threshold=1,
@@ -693,6 +725,7 @@ def calibration_sequence(
     fwhm_cutout_half=_FWHM_CUTOUT_HALF,
     fwhm_n_stars=_FWHM_N_STARS,
     profile=None,
+    frame=None,
 ) -> tuple:
     """
     Find sources and compute FWHM for an image.
@@ -731,6 +764,8 @@ def calibration_sequence(
         The instrument whose ``header_map`` resolves the frame metadata, passed
         through to `metadata_from_header`. Defaults to the bundled Seestar50
         profile.
+    frame : LoadedFrame or None, optional
+        Pre-loaded frame; when None the file is opened once via the loader.
 
     Returns
     -------
@@ -752,8 +787,10 @@ def calibration_sequence(
         with the source file attached).
 
     """
-    data = fits.getdata(file)
-    header = fits.getheader(file)
+    if frame is None:
+        frame = _load_frame(file)
+    data = frame.data
+    header = frame.header
 
     try:
         metadata = metadata_from_header(header, profile=profile)
@@ -1739,6 +1776,7 @@ def prepare_image(
     photometry_coords=None,
     user_specific_metadata=None,
     wcs=None,
+    frame=None,
 ):
     """
     Detect sources, align, and centroid for a single image.
@@ -1768,6 +1806,8 @@ def prepare_image(
     wcs : `astropy.wcs.WCS` or None, optional
         Precomputed WCS to reuse instead of solving one for this image; passed
         through to `align`. By default None.
+    frame : LoadedFrame or None, optional
+        Pre-loaded frame; when None the file is opened once via the loader.
 
     Returns
     -------
@@ -1794,6 +1834,8 @@ def prepare_image(
     # FrameError) when the frame is unusable; let it propagate to the batch loop.
     # Pass the CNN so the FWHM that sizes the photometry aperture is measured by
     # re-centroiding detections, keeping it independent of the detection opening.
+    if frame is None:
+        frame = _load_frame(file)
     config = config or PhotometryConfig()
     instrument = config.instrument
     calibrated_data, metadata, coords, fwhm, _ = calibration_sequence(
@@ -1805,6 +1847,7 @@ def prepare_image(
         fwhm_cutout_half=instrument.fwhm_cutout_half,
         fwhm_n_stars=instrument.fwhm_n_stars,
         profile=instrument,
+        frame=frame,
     )
 
     if user_specific_metadata is not None:
@@ -1879,8 +1922,6 @@ def prepare_image(
         raise
     centroid_coords = centroid_stars(working_image, aligned_coords, cnn)
 
-    header = fits.getheader(file)
-
     return ImageData(
         calibrated_data=calibrated_data,
         coords=coords,
@@ -1888,7 +1929,7 @@ def prepare_image(
         centroid_coords=centroid_coords,
         aligned_coords=aligned_coords,
         wcs=this_wcs,
-        header=header,
+        header=frame.header,
         input_photometry_coords=photometry_coords,
         metadata=metadata,
     )
@@ -2041,6 +2082,7 @@ def process_one_image(
     config=None,
     bayer_balance_detection=True,
     input_photometry_coords=None,
+    frame=None,
 ):
     """
     Process a single image file and return one photometry table per input mask.
@@ -2074,6 +2116,8 @@ def process_one_image(
         If provided, these sky coordinates are used for centroiding instead of those
         detected in this image. The sky coordinates passed in are recorded as the
         sky coordinates in the output.
+    frame : LoadedFrame or None, optional
+        Pre-loaded frame; when None the file is opened once via the loader.
 
     Returns
     -------
@@ -2101,6 +2145,7 @@ def process_one_image(
         detect_on_bayer_balanced=bayer_balance_detection,
         photometry_coords=input_photometry_coords,
         user_specific_metadata=user_specific_metadata,
+        frame=frame,
     )
 
     by_filter_data = {}
