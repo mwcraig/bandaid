@@ -683,7 +683,9 @@ def _fwhm_from_coords(
     return psf.gaussian_sigma_to_fwhm * np.mean([params["sigma_x"], params["sigma_y"]])
 
 
-@dataclass(frozen=True)
+# eq=False: the dataclass-generated __eq__/__hash__ raise on the numpy field
+# (ambiguous array truth value / unhashable array), so keep identity semantics.
+@dataclass(frozen=True, eq=False)
 class LoadedFrame:
     """A science frame's pixel data and header from a single file open."""
 
@@ -695,12 +697,6 @@ def _load_frame(file):
     """
     Open a science frame exactly once and return its data and header.
 
-    ``memmap=False`` plus reading ``.data`` inside the ``with`` block fully
-    materializes the array before the file closes -- a memmapped array would
-    die with its backing file, and memmapping a compressed (``.gz``) file is
-    not possible anyway -- so this is one code path for compressed and
-    uncompressed frames.
-
     Parameters
     ----------
     file : str or Path
@@ -710,6 +706,14 @@ def _load_frame(file):
     -------
     LoadedFrame
         The frame's pixel data and header, read from the primary HDU.
+
+    Notes
+    -----
+    ``memmap=False`` plus reading ``.data`` inside the ``with`` block fully
+    materializes the array before the file closes -- a memmapped array would
+    die with its backing file, and memmapping a compressed (``.gz``) file is
+    not possible anyway -- so this is one code path for compressed and
+    uncompressed frames.
     """
     with fits.open(file, memmap=False) as hdul:
         return LoadedFrame(data=hdul[0].data, header=hdul[0].header)

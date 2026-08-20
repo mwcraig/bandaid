@@ -127,19 +127,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Each science frame is now opened exactly once per run instead of up to four
-    times (`fits.getdata`/`fits.getheader` calls in `calibration_sequence`,
-    `prepare_image`, and `process_batch`'s consistency check each reopened the
-    file) -- and the first frame, previously opened by both `prepare_batch`
-    and `process_batch`, is now loaded once and reused. A single loader,
-    `_load_frame`, reads the data and header together into a frozen
-    `LoadedFrame` and is threaded through `calibration_sequence`,
-    `prepare_image`, and `process_one_image` via a keyword-only `frame=`
-    argument; `BatchPrep` caches the first frame's load for `process_batch` to
-    reuse. Every open of a `.gz`-compressed frame re-decodes the gzip stream
-    from the start, so this also fixes the extra decompression overhead PR #43
-    introduced for compressed batches, and reduces uncompressed-batch I/O as a
-    side effect (#44).
+- Each science frame is now opened exactly once per run -- previously up to
+    four times, plus a repeat of the first frame across `prepare_batch` and
+    `process_batch`. The biggest win is for `.gz` frames, where every reopen
+    re-decoded the entire gzip stream (#44).
 - Wheel and sdist builds now include the bundled instrument profiles
     (`bandaid/meta_json_files/`): hatch's `only-packages` option excluded the
     directory (no `__init__.py`), so `import bandaid` crashed in any

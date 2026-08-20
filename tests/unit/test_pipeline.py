@@ -366,6 +366,39 @@ def _stub_wcs_and_centroid(
     monkeypatch.setattr("bandaid.photometry.centroid_stars", fake_centroid_stars)
 
 
+@pytest.fixture
+def fromfile_spy(mocker):
+    """
+    Factory installing a spy on ``fits.HDUList.fromfile`` to count file opens.
+
+    Spying at the HDUList level rather than at ``fits.open`` (or ``getdata``,
+    ``getheader``) is deliberate: every one of those convenience functions
+    funnels through ``fromfile``, so a reintroduced extra read is counted no
+    matter which of them performs it. This does couple the test to an
+    astropy-internal classmethod, but only in this one place, so an astropy
+    release that reroutes how ``fits.open`` constructs an ``HDUList`` gives a
+    single spot to re-verify; the failure mode if that ever happens is a
+    silent under-count that keeps the test green while counting nothing.
+
+    A factory rather than the spy itself because ``writeto`` also funnels
+    through ``fromfile``: the spy must be installed *after* the test writes
+    its FITS fixture file, or the write is counted as an open.
+
+    Parameters
+    ----------
+    mocker : pytest_mock.MockerFixture
+        The pytest-mock fixture used to install the spy.
+
+    Returns
+    -------
+    collections.abc.Callable
+        Zero-argument callable installing and returning the spy (a
+        `unittest.mock.MagicMock` wrapping ``fits.HDUList.fromfile``); assert
+        on the spy's ``call_count``.
+    """
+    return lambda: mocker.spy(fits.HDUList, "fromfile")
+
+
 class TestCalibrationSequence:
     """Unit tests for detection + FWHM estimation in ``calibration_sequence``."""
 
@@ -515,29 +548,27 @@ class TestCalibrationSequence:
             calibration_sequence(path, threshold=1, detect_on_bayer_balanced=True)
         assert exc_info.value.file == path
 
-    def test_opens_the_file_exactly_once(self, make_test_image, tmp_path, mocker):
-        """calibration_sequence opens the file exactly once, not per field (#44)."""
+    @pytest.mark.parametrize("compressed", [False, True], ids=["plain", "gz"])
+    def test_opens_the_file_exactly_once(
+        self, make_test_image, tmp_path, fromfile_spy, compressed
+    ):
+        """
+        calibration_sequence opens the file exactly once, not per field (#44).
+
+        Covers both a plain FITS file and a gzip-compressed one, since
+        compressed frames go through an extra decompression step that could
+        (re)introduce a second open.
+        """
         image = _detectable_image(make_test_image, n_sources=5)
         path = _write_seestar_fits(tmp_path / "open_once.fits", image)
-        # Spy at the HDUList level: every open route (fits.open, getdata,
-        # getheader) funnels through fromfile, so a reintroduced extra read
-        # is counted no matter which convenience function performs it.
-        spy = mocker.spy(fits.HDUList, "fromfile")
+        if compressed:
+            gz_path = tmp_path / "open_once.fits.gz"
+            with path.open("rb") as f_in, gzip.open(gz_path, "wb") as f_out:
+                f_out.write(f_in.read())
+            path = str(gz_path)
+        spy = fromfile_spy()
 
         calibration_sequence(path, threshold=1)
-
-        assert spy.call_count == 1
-
-    def test_gz_compressed_frame_opened_once(self, make_test_image, tmp_path, mocker):
-        """A gzip-compressed frame is still opened exactly once, not per field (#44)."""
-        image = _detectable_image(make_test_image, n_sources=5)
-        raw_path = _write_seestar_fits(tmp_path / "open_once.fits", image)
-        gz_path = tmp_path / "open_once.fits.gz"
-        with raw_path.open("rb") as f_in, gzip.open(gz_path, "wb") as f_out:
-            f_out.write(f_in.read())
-        spy = mocker.spy(fits.HDUList, "fromfile")
-
-        calibration_sequence(str(gz_path), threshold=1)
 
         assert spy.call_count == 1
 
@@ -679,14 +710,14 @@ class TestProcessOneImage:
         np.testing.assert_allclose(result["L4"]["tot_count"], rgb_sum)
 
     def test_opens_the_file_exactly_once(
-        self, make_test_image, tmp_path, monkeypatch, bayer_masks_rggb, mocker
+        self, make_test_image, tmp_path, monkeypatch, bayer_masks_rggb, fromfile_spy
     ):
         """process_one_image opens the file exactly once end-to-end (#44)."""
         _stub_wcs_and_centroid(monkeypatch)
         image = _detectable_image(make_test_image)
         path = _write_seestar_fits(tmp_path / "open_once.fits", image)
         masks = bayer_masks_rggb(image.shape, append_l4=True)
-        spy = mocker.spy(fits.HDUList, "fromfile")
+        spy = fromfile_spy()
 
         process_one_image(path, {}, _REF_RADECS, None, masks)
 

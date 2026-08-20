@@ -218,13 +218,6 @@ class BatchPrep:
         The ICRS forced-target sky positions appended to
         ``photometry_coords`` by `prepare_batch`. None when the batch was
         prepared without any.
-
-    Notes
-    -----
-    `prepare_batch` opens the first frame once to derive the batch prep and
-    stashes that load privately (``_first_frame_cache``) so `process_batch`
-    can reuse it via `_take_first_frame` instead of reopening the same file
-    (issue #44).
     """
 
     radecs: np.ndarray
@@ -236,40 +229,6 @@ class BatchPrep:
     shape: tuple
     config: PhotometryConfig = field(default_factory=PhotometryConfig)
     forced_targets: SkyCoord | None = None
-    # Populated by `prepare_batch` with (resolved first-frame path, LoadedFrame)
-    # so `process_batch` can reuse that already-opened frame instead of
-    # reopening it (issue #44); consumed (set back to None) by
-    # `_take_first_frame` the first time it matches, so the array is
-    # garbage-collectable for the rest of the batch.
-    _first_frame_cache: tuple | None = field(default=None, repr=False, compare=False)
-
-    def _take_first_frame(self, file):
-        """
-        Return the cached first-frame load if ``file`` is that frame; consume it.
-
-        `prepare_batch` opens the first frame once and stashes the load on
-        ``_first_frame_cache``, keyed by its resolved path. This lets
-        `process_batch` reuse that load for the matching frame instead of
-        opening the file again, while every other frame in the batch (or a
-        repeated path, or a `BatchPrep` reused across batches) falls through to
-        a fresh load -- graceful degradation, not an error.
-
-        Parameters
-        ----------
-        file : str or Path
-            The frame path to check against the cached first frame.
-
-        Returns
-        -------
-        LoadedFrame or None
-            The cached frame if ``file`` resolves to the cached path (and the
-            cache has not already been consumed), otherwise None.
-        """
-        cache = self._first_frame_cache
-        if cache is not None and Path(file).resolve() == cache[0]:
-            object.__setattr__(self, "_first_frame_cache", None)
-            return cache[1]
-        return None
 
 
 def estimate_center_from_header(metadata, profile):
@@ -404,6 +363,7 @@ def prepare_batch(
     config=None,
     append_l4=True,
     forced_targets=None,
+    frame=None,
 ):
     """
     Compute the once-per-batch photometry inputs from the first frame.
@@ -446,6 +406,11 @@ def prepare_batch(
         `~astropy.coordinates.SkyCoord` (e.g. from
         `~astropy.coordinates.SkyCoord.from_name`) is accepted and treated as
         one target. None (default) adds nothing.
+    frame : LoadedFrame or None, optional
+        The already-loaded contents of ``first_file``, if the caller has them
+        (`photometer_frames` shares one load between this and `process_batch`
+        so the whole run opens each frame exactly once, issue #44). None
+        (default) loads ``first_file`` here.
 
     Returns
     -------
@@ -461,18 +426,9 @@ def prepare_batch(
         If the first frame's metadata has no parseable observation time
         (``obs_time``, usually mapped from ``DATE-OBS``), which is needed to
         propagate the Gaia positions to the observation epoch.
-
-    Notes
-    -----
-    ``first_file`` is opened exactly once here; the load is stashed on the
-    returned `BatchPrep` (``_first_frame_cache``) so a later `process_batch`
-    call over a file list that includes ``first_file`` reuses it instead of
-    reopening the same file (issue #44).
     """
-    # Load the first frame once here; process_batch reuses this same load for
-    # this frame (via BatchPrep._take_first_frame) instead of reopening it
-    # (issue #44).
-    frame = _load_frame(first_file)
+    if frame is None:
+        frame = _load_frame(first_file)
 
     # A too-few-stars failure on the *first* frame is fatal for the whole batch
     # (no FWHM/pointing to prepare from), so translate the recoverable
@@ -652,7 +608,6 @@ def prepare_batch(
         shape=(metadata["height"], metadata["width"]),
         config=config,
         forced_targets=forced_targets,
-        _first_frame_cache=(Path(first_file).resolve(), frame),
     )
 
 
@@ -1092,6 +1047,7 @@ def process_batch(
     fail_fast=True,
     write_qa_manifest=True,
     qa_manifest_name=QA_MANIFEST_FILENAME,
+    first_frame=None,
 ):
     """
     Photometer every frame in a batch using a shared `BatchPrep`.
@@ -1146,6 +1102,11 @@ def process_batch(
     qa_manifest_name : str, optional
         Filename for the QA manifest within ``output_dir``. Default
         `QA_MANIFEST_FILENAME`.
+    first_frame : LoadedFrame or None, optional
+        The already-loaded contents of the first file in ``files``, if the
+        caller has them (`photometer_frames` shares `prepare_batch`'s load so
+        the whole run opens each frame exactly once, issue #44). None
+        (default) loads the first frame like any other.
 
     Returns
     -------
@@ -1171,10 +1132,9 @@ def process_batch(
 
     Notes
     -----
-    Each frame is opened exactly once: a frame is loaded fresh unless it is the
-    same file `prepare_batch` already opened to build ``prep``, in which case
-    that cached load (``prep._first_frame_cache``) is reused instead (issue
-    #44).
+    Each frame is opened exactly once: the first frame reuses ``first_frame``
+    when the caller provides it, and every other frame is loaded fresh here
+    (issue #44).
     """
     results = {}
     # One QA record per frame (ok/skipped/error), written to a manifest at the
@@ -1199,10 +1159,14 @@ def process_batch(
         # configure_logging, alongside the skip/error warnings logged below.
         logger.info("processing %d/%d: %s", idx, len(files), file)
         try:
-            # Reuse prepare_batch's already-opened first frame when this is
-            # that frame, else load it now -- exactly one open per frame for
-            # the whole run (issue #44).
-            frame = prep._take_first_frame(file) or _load_frame(file)  # noqa: SLF001
+            # Reuse the caller's already-opened first frame when given, else
+            # load it now -- exactly one open per frame for the whole run
+            # (issue #44).
+            frame = (
+                first_frame
+                if idx == 1 and first_frame is not None
+                else _load_frame(file)
+            )
             check_frame_consistency(file, frame.header, prep)
             by_filter = process_one_image(
                 file,
@@ -1214,6 +1178,10 @@ def process_batch(
                 input_photometry_coords=prep.photometry_coords,
                 frame=frame,
             )
+            # The raw pixel array is not needed past this point; drop the
+            # reference now so it does not stay alive through the write step
+            # (matching the pre-#44 per-frame peak-memory profile).
+            del frame
         except FrameError as exc:
             # Expected per-frame failure: skip the frame and keep going.
             manifest_records.append(_record_frame_skip(file, exc))
@@ -1347,12 +1315,17 @@ def photometer_frames(
     if cnn is None:
         cnn = Ballet(model_file=weights)
 
+    # Open the first frame once and hand the load to both stages --
+    # prepare_batch derives the prep from it and process_batch photometers it
+    # -- so the whole run opens each frame exactly once (issue #44).
+    first_frame = _load_frame(frames[0])
     prep = prepare_batch(
         frames[0],
         cnn=cnn,
         config=config,
         append_l4=append_l4,
         forced_targets=forced_targets,
+        frame=first_frame,
     )
     results = process_batch(
         frames,
@@ -1363,5 +1336,6 @@ def photometer_frames(
         write_frame=write_frame,
         fail_fast=fail_fast,
         write_qa_manifest=write_qa_manifest,
+        first_frame=first_frame,
     )
     return frames, results

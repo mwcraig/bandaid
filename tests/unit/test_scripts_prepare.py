@@ -1,7 +1,5 @@
 """Unit tests for once-per-batch preparation and frame-consistency checks."""
 
-from pathlib import Path
-
 import astropy.units as u
 import numpy as np
 import pytest
@@ -10,6 +8,7 @@ from _helpers import (
     _batch_radecs_mags,
     _consistency_header,
     _patch_prep,
+    _stub_load_frame,
 )
 from astropy.coordinates import SkyCoord
 from astropy.table import MaskedColumn, Table
@@ -31,7 +30,6 @@ from bandaid.exceptions import (
     TooFewStarsError,
 )
 from bandaid.photometry import (
-    LoadedFrame,
     min_separation_fwhm,
     neighbor_contamination_flag_sky,
 )
@@ -153,14 +151,8 @@ class TestPrepareBatch:
         assert set(prep.bayer_masks) == {"TR", "TB", "TG", "L4"}
         assert prep.bayer_masks["L4"] is None
 
-    def test_loads_first_frame_exactly_once_and_caches_it(self, monkeypatch):
-        """
-        prepare_batch loads the first frame once and caches it for reuse (#44).
-
-        ``process_batch`` reuses this cached load instead of reopening the same
-        file, so ``prepare_batch`` must load it exactly once here and stash the
-        result (keyed by the resolved path) for `BatchPrep._take_first_frame`.
-        """
+    def test_loads_first_frame_exactly_once(self, monkeypatch):
+        """Without a caller-provided frame, the first frame is loaded once (#44)."""
         _patch_prep(monkeypatch)
         frame = scripts.LoadedFrame(np.zeros((4, 4)), {})
         calls = []
@@ -171,13 +163,30 @@ class TestPrepareBatch:
 
         monkeypatch.setattr(scripts, "_load_frame", counting_load_frame)
 
-        prep = scripts.prepare_batch("frame1.fits", cnn=object())
+        scripts.prepare_batch("frame1.fits", cnn=object())
 
         assert calls == ["frame1.fits"]
-        assert prep._first_frame_cache == (  # noqa: SLF001
-            Path("frame1.fits").resolve(),
-            frame,
-        )
+
+    def test_provided_frame_is_used_without_loading(self, monkeypatch):
+        """
+        A caller-provided ``frame=`` skips the load entirely (#44).
+
+        ``photometer_frames`` opens the first frame once and hands the load to
+        both ``prepare_batch`` and ``process_batch``, so a provided frame must
+        reach the calibration step without ``_load_frame`` being called.
+        """
+        calls, *_ = _patch_prep(monkeypatch)
+        frame = scripts.LoadedFrame(np.zeros((4, 4)), {})
+
+        def fail_load_frame(file):
+            msg = f"unexpected _load_frame({file!r}) with frame= provided"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(scripts, "_load_frame", fail_load_frame)
+
+        scripts.prepare_batch("frame1.fits", cnn=object(), frame=frame)
+
+        assert calls["calibration_frame"] is frame
 
     def test_first_frame_resolved_with_config_instrument_profile(self, monkeypatch):
         """
@@ -216,9 +225,7 @@ class TestPrepareBatch:
             raise TooFewStarsError(msg)
 
         monkeypatch.setattr(scripts, "calibration_sequence", fake_calibration_sequence)
-        monkeypatch.setattr(
-            scripts, "_load_frame", lambda _f: LoadedFrame(np.zeros((4, 4)), {})
-        )
+        _stub_load_frame(monkeypatch)
 
         config = PhotometryConfig(
             instrument=InstrumentProfile(name="Seestar50", fwhm_n_stars=fwhm_n_stars)
@@ -432,9 +439,7 @@ class TestPrepareBatch:
                 object(),
             ),
         )
-        monkeypatch.setattr(
-            scripts, "_load_frame", lambda _f: LoadedFrame(np.zeros((4, 4)), {})
-        )
+        _stub_load_frame(monkeypatch)
 
         prep = scripts.prepare_batch("frame1.fits", cnn=object())
 
@@ -662,9 +667,7 @@ class TestPrepareBatch:
             raise TooFewStarsError(msg, file=file)
 
         monkeypatch.setattr(scripts, "calibration_sequence", _too_few)
-        monkeypatch.setattr(
-            scripts, "_load_frame", lambda _f: LoadedFrame(np.zeros((4, 4)), {})
-        )
+        _stub_load_frame(monkeypatch)
         with pytest.raises(BatchPrepError, match="too few stars"):
             scripts.prepare_batch("frame1.fits", cnn=object())
 
@@ -697,9 +700,7 @@ class TestPrepareBatch:
                 object(),
             ),
         )
-        monkeypatch.setattr(
-            scripts, "_load_frame", lambda _f: LoadedFrame(np.zeros((4, 4)), {})
-        )
+        _stub_load_frame(monkeypatch)
 
         def _boom(*_args: object, **_kwargs: object):
             msg = "no network"

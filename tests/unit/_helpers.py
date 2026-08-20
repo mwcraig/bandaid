@@ -322,6 +322,26 @@ def _batch_radecs_mags():
     return radecs, mags
 
 
+def _stub_load_frame(monkeypatch, shape=(4, 4)):
+    """
+    Stub ``scripts._load_frame`` with a zero-filled frame and an empty header.
+
+    The single place the ``prepare_batch`` tests neutralize the frame loader,
+    so a change to ``LoadedFrame``'s constructor or ``_load_frame``'s signature
+    is one edit here rather than a copy-pasted lambda per test.
+
+    Parameters
+    ----------
+    monkeypatch : pytest.MonkeyPatch
+        The monkeypatch fixture used to install the stub.
+    shape : tuple of int, optional
+        Shape of the zero-filled data array. Default ``(4, 4)``.
+    """
+    monkeypatch.setattr(
+        scripts, "_load_frame", lambda _f: LoadedFrame(np.zeros(shape), {})
+    )
+
+
 def _patch_prep(monkeypatch, *, metadata=None, radecs_mags=None, fwhm_pix=2.0):
     """Monkeypatch the heavy prep dependencies and return the spied call args."""
     metadata = metadata if metadata is not None else _batch_metadata()
@@ -334,10 +354,13 @@ def _patch_prep(monkeypatch, *, metadata=None, radecs_mags=None, fwhm_pix=2.0):
 
     calls = {}
 
-    def fake_calibration_sequence(file, *, cnn=None, profile=None, **_kwargs: object):
+    def fake_calibration_sequence(
+        file, *, cnn=None, profile=None, frame=None, **_kwargs: object
+    ):
         calls["calibration_file"] = file
         calls["calibration_cnn"] = cnn
         calls["calibration_profile"] = profile
+        calls["calibration_frame"] = frame
         return np.zeros((4, 4)), metadata, np.zeros((3, 2)), fwhm_pix, object()
 
     def fake_cached_gaia_radecs(center, fov, *, obs_epoch=None):
@@ -348,9 +371,7 @@ def _patch_prep(monkeypatch, *, metadata=None, radecs_mags=None, fwhm_pix=2.0):
 
     monkeypatch.setattr(scripts, "calibration_sequence", fake_calibration_sequence)
     monkeypatch.setattr(scripts, "cached_gaia_radecs", fake_cached_gaia_radecs)
-    monkeypatch.setattr(
-        scripts, "_load_frame", lambda _f: LoadedFrame(np.zeros((4, 4)), {})
-    )
+    _stub_load_frame(monkeypatch)
     return calls, metadata, radecs, mags, fwhm_pix
 
 
