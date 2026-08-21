@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from _helpers import _dummy_prep
+from _helpers import _CONSISTENT_HEADER, _dummy_prep
 from aavso_starlist_schema import StarListSet
 from astropy.table import Table
 
@@ -44,6 +44,24 @@ def _raise_on(trigger, exc, otherwise):
         return otherwise()
 
     return _stub
+
+
+def _count_load_frame_calls(monkeypatch):
+    """
+    Replace ``scripts._load_frame`` with a counting stub; return its call list.
+
+    The stub's frame carries a header matching ``_dummy_prep`` so every frame
+    passes ``check_frame_consistency``; the returned list records the file
+    arguments in call order, for the open-each-frame-once assertions (#44).
+    """
+    calls = []
+
+    def counting_load_frame(file):
+        calls.append(file)
+        return scripts.LoadedFrame(np.zeros((2, 2)), dict(_CONSISTENT_HEADER))
+
+    monkeypatch.setattr(scripts, "_load_frame", counting_load_frame)
+    return calls
 
 
 @pytest.mark.usefixtures("_consistent_headers")
@@ -164,6 +182,43 @@ class TestProcessBatch:
         )
 
         assert list(results) == ["good.fits"]
+
+    def test_loads_each_frame_exactly_once(
+        self, patched_process_one_image, monkeypatch
+    ):
+        """process_batch loads each frame exactly once via the shared loader (#44)."""
+        patched_process_one_image({"TR": Table({"tot_count": [1.0]})})
+        calls = _count_load_frame_calls(monkeypatch)
+
+        files = ["a.fits", "b.fits"]
+        scripts.process_batch(files, _dummy_prep(), user_specific_metadata={})
+
+        assert calls == files
+
+    def test_provided_first_frame_is_not_reloaded(
+        self, patched_process_one_image, monkeypatch
+    ):
+        """
+        process_batch reuses a caller-provided first-frame load (#44).
+
+        Encodes "exactly once per run" including the first-frame double-open:
+        ``photometer_frames`` already opened the first file for ``prepare_batch``
+        and hands that load in as ``first_frame=``, so ``process_batch`` must not
+        reopen it, while still loading every other frame normally.
+        """
+        patched_process_one_image({"TR": Table({"tot_count": [1.0]})})
+        calls = _count_load_frame_calls(monkeypatch)
+        first = scripts.LoadedFrame(np.zeros((2, 2)), dict(_CONSISTENT_HEADER))
+
+        scripts.process_batch(
+            ["first.fits", "second.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            first_frame=first,
+        )
+
+        # Only the second frame reaches the loader; the first came in preloaded.
+        assert calls == ["second.fits"]
 
 
 @pytest.mark.usefixtures("_consistent_headers")

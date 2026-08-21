@@ -23,7 +23,6 @@ from pathlib import Path
 import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
-from astropy.io import fits
 from astropy.time import Time
 from dateutil import parser
 
@@ -40,6 +39,8 @@ from .exceptions import (
 from .image2sl_qt import generate_bayer_masks
 from .photometry import (
     N_GAIA_STARS_ALIGN_RETRY,
+    LoadedFrame,
+    _load_frame,
     calibration_sequence,
     good_star_mask,
     metadata_from_header,
@@ -71,6 +72,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "BatchPrep",
+    "LoadedFrame",
     "check_frame_consistency",
     "estimate_center_from_header",
     "expand_frame_paths",
@@ -142,9 +144,9 @@ def expand_frame_paths(paths):
     or a literal file path. Directory and glob matches that are not FITS *files*
     are silently skipped -- including a directory or symlink whose name merely
     ends in a FITS suffix (e.g. ``bundle.fits/``), which would otherwise blow up
-    later in ``fits.getheader``. A literal path is validated to exist and to be a
-    FITS file, so a typo fails here with a clear error rather than as a traceback
-    deep in ``prepare_batch``.
+    later in `~bandaid.photometry._load_frame`. A literal path is validated to
+    exist and to be a FITS file, so a typo fails here with a clear error rather
+    than as a traceback deep in ``prepare_batch``.
 
     The combined result is de-duplicated by *resolved* path -- so the same file
     reached two ways (a directory and an explicit path, ``a.fit`` vs ``./a.fit``)
@@ -361,6 +363,7 @@ def prepare_batch(
     config=None,
     append_l4=True,
     forced_targets=None,
+    frame=None,
 ):
     """
     Compute the once-per-batch photometry inputs from the first frame.
@@ -403,6 +406,9 @@ def prepare_batch(
         `~astropy.coordinates.SkyCoord` (e.g. from
         `~astropy.coordinates.SkyCoord.from_name`) is accepted and treated as
         one target. None (default) adds nothing.
+    frame : LoadedFrame or None, optional
+        The already-loaded contents of ``first_file``. None (default) loads
+        ``first_file`` here.
 
     Returns
     -------
@@ -419,6 +425,9 @@ def prepare_batch(
         (``obs_time``, usually mapped from ``DATE-OBS``), which is needed to
         propagate the Gaia positions to the observation epoch.
     """
+    if frame is None:
+        frame = _load_frame(first_file)
+
     # A too-few-stars failure on the *first* frame is fatal for the whole batch
     # (no FWHM/pointing to prepare from), so translate the recoverable
     # per-frame TooFewStarsError into a fatal BatchPrepError.
@@ -440,6 +449,7 @@ def prepare_batch(
             fwhm_cutout_half=instrument.fwhm_cutout_half,
             fwhm_n_stars=instrument.fwhm_n_stars,
             profile=instrument,
+            frame=frame,
         )
     except TooFewStarsError as exc:
         msg = f"too few stars detected in {first_file!r} to prepare the batch"
@@ -1035,6 +1045,7 @@ def process_batch(
     fail_fast=True,
     write_qa_manifest=True,
     qa_manifest_name=QA_MANIFEST_FILENAME,
+    first_frame=None,
 ):
     """
     Photometer every frame in a batch using a shared `BatchPrep`.
@@ -1089,6 +1100,9 @@ def process_batch(
     qa_manifest_name : str, optional
         Filename for the QA manifest within ``output_dir``. Default
         `QA_MANIFEST_FILENAME`.
+    first_frame : LoadedFrame or None, optional
+        The already-loaded contents of the first file in ``files``. None
+        (default) loads the first frame like any other.
 
     Returns
     -------
@@ -1111,6 +1125,12 @@ def process_batch(
     Exception
         Any unexpected (non-`FrameError`) error raised while processing a frame
         is re-raised when ``fail_fast`` is True (the default).
+
+    Notes
+    -----
+    Each frame is opened exactly once: the first frame reuses ``first_frame``
+    when the caller provides it, and every other frame is loaded fresh here
+    (issue #44).
     """
     results = {}
     # One QA record per frame (ok/skipped/error), written to a manifest at the
@@ -1135,7 +1155,15 @@ def process_batch(
         # configure_logging, alongside the skip/error warnings logged below.
         logger.info("processing %d/%d: %s", idx, len(files), file)
         try:
-            check_frame_consistency(file, fits.getheader(file), prep)
+            # Reuse the caller's already-opened first frame when given, else
+            # load it now -- exactly one open per frame for the whole run
+            # (issue #44).
+            frame = (
+                first_frame
+                if idx == 1 and first_frame is not None
+                else _load_frame(file)
+            )
+            check_frame_consistency(file, frame.header, prep)
             by_filter = process_one_image(
                 file,
                 user_specific_metadata,
@@ -1144,7 +1172,12 @@ def process_batch(
                 prep.bayer_masks,
                 config=prep.config,
                 input_photometry_coords=prep.photometry_coords,
+                frame=frame,
             )
+            # The raw pixel array is not needed past this point; drop the
+            # reference now so it does not stay alive through the write step
+            # (matching the pre-#44 per-frame peak-memory profile).
+            del frame
         except FrameError as exc:
             # Expected per-frame failure: skip the frame and keep going.
             manifest_records.append(_record_frame_skip(file, exc))
@@ -1278,12 +1311,17 @@ def photometer_frames(
     if cnn is None:
         cnn = Ballet(model_file=weights)
 
+    # Open the first frame once and hand the load to both stages --
+    # prepare_batch derives the prep from it and process_batch photometers it
+    # -- so the whole run opens each frame exactly once (issue #44).
+    first_frame = _load_frame(frames[0])
     prep = prepare_batch(
         frames[0],
         cnn=cnn,
         config=config,
         append_l4=append_l4,
         forced_targets=forced_targets,
+        frame=first_frame,
     )
     results = process_batch(
         frames,
@@ -1294,5 +1332,6 @@ def photometer_frames(
         write_frame=write_frame,
         fail_fast=fail_fast,
         write_qa_manifest=write_qa_manifest,
+        first_frame=first_frame,
     )
     return frames, results

@@ -127,6 +127,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Each science frame is now opened exactly once per run -- previously up to
+    four times, plus a repeat of the first frame across `prepare_batch` and
+    `process_batch`. The biggest win is for `.gz` frames, where every reopen
+    re-decoded the entire gzip stream (#44).
 - Wheel and sdist builds now include the bundled instrument profiles
     (`bandaid/meta_json_files/`): hatch's `only-packages` option excluded the
     directory (no `__init__.py`), so `import bandaid` crashed in any

@@ -7,19 +7,22 @@ import pytest
 from _helpers import _CONSISTENT_HEADER, _make_tan_wcs
 
 from bandaid import scripts
+from bandaid.photometry import LoadedFrame
 
 
 @pytest.fixture
 def _consistent_headers(monkeypatch):
     """
-    Stub fits.getheader so every frame passes check_frame_consistency.
+    Stub the frame loader so every frame passes check_frame_consistency.
 
-    process_batch reads each frame's header unconditionally; the process_batch
-    tests use fake paths and exercise the processing/output paths, not the
-    consistency check, so return a header that matches _dummy_prep for all of them.
+    process_batch loads each frame unconditionally; the process_batch tests use
+    fake paths and exercise the processing/output paths, not the consistency
+    check, so return a frame whose header matches _dummy_prep for all of them.
     """
     monkeypatch.setattr(
-        scripts.fits, "getheader", lambda _file: dict(_CONSISTENT_HEADER)
+        scripts,
+        "_load_frame",
+        lambda _file: LoadedFrame(np.zeros((2, 2)), dict(_CONSISTENT_HEADER)),
     )
 
 
@@ -30,10 +33,10 @@ def stub_prepare_image_externals(mocker):
 
     Patches ``calibration_sequence`` (returns a configurable
     ``(calibrated, metadata, coords, fwhm, None)`` 5-tuple), ``align`` (returns
-    ``(coords, wcs)``), ``centroid_stars`` (identity) and ``fits.getheader``
-    (``{"creator": "spy"}``). Returns the four mocks so callers can assert on
-    their ``.call_args``; override ``.return_value`` / ``.side_effect`` to tune a
-    single external per test.
+    ``(coords, wcs)``), ``centroid_stars`` (identity) and ``_load_frame``
+    (returns a ``LoadedFrame`` with header ``{"creator": "spy"}``). Returns the
+    four mocks so callers can assert on their ``.call_args``; override
+    ``.return_value`` / ``.side_effect`` to tune a single external per test.
 
     Parameters
     ----------
@@ -45,7 +48,7 @@ def stub_prepare_image_externals(mocker):
     callable
         ``_stub(*, metadata=None, coords=None, calibrated=None, fwhm=2.0)`` -> a
         namespace with ``.calibration_sequence``, ``.align``, ``.centroid_stars``
-        and ``.getheader`` mocks.
+        and ``.load_frame`` mocks.
     """
 
     def _stub(*, metadata=None, coords=None, calibrated=None, fwhm=2.0):
@@ -67,15 +70,17 @@ def stub_prepare_image_externals(mocker):
             "bandaid.photometry.centroid_stars",
             side_effect=lambda _data, coords, _cnn: coords,
         )
-        getheader = mocker.patch(
-            "bandaid.photometry.fits.getheader",
-            side_effect=lambda _file: {"creator": "spy"},
+        load_frame = mocker.patch(
+            "bandaid.photometry._load_frame",
+            side_effect=lambda _file: LoadedFrame(
+                np.zeros((10, 10)), {"creator": "spy"}
+            ),
         )
         return SimpleNamespace(
             calibration_sequence=calibration_sequence,
             align=align,
             centroid_stars=centroid_stars,
-            getheader=getheader,
+            load_frame=load_frame,
         )
 
     return _stub

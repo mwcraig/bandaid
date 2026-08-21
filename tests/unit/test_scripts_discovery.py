@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 import pytest
-from _helpers import _CONSISTENT_HEADER, _dummy_prep
+from _helpers import _dummy_prep, _stub_load_frame
 from astropy.coordinates import SkyCoord
 
 from bandaid import scripts
@@ -130,13 +130,25 @@ class TestPhotometerFrames:
         calls = {}
         cnn_sentinel = object()
         prep_sentinel = object()
+        frame_sentinel = object()
+        loads = []
+
+        def fake_load_frame(file):
+            loads.append(file)
+            return frame_sentinel
 
         def fake_ballet(model_file=None):
             calls["ballet"] = model_file
             return cnn_sentinel
 
         def fake_prepare(
-            first_file, *, cnn, config=None, append_l4=False, forced_targets=None
+            first_file,
+            *,
+            cnn,
+            config=None,
+            append_l4=False,
+            forced_targets=None,
+            frame=None,
         ):
             calls["prepare"] = {
                 "first_file": first_file,
@@ -144,6 +156,7 @@ class TestPhotometerFrames:
                 "config": config,
                 "append_l4": append_l4,
                 "forced_targets": forced_targets,
+                "frame": frame,
             }
             return prep_sentinel
 
@@ -152,6 +165,7 @@ class TestPhotometerFrames:
             calls["process"] = {"files": files, "prep": prep, "kwargs": kwargs}
             return {f: f + ".star" for f in files}
 
+        monkeypatch.setattr(scripts, "_load_frame", fake_load_frame)
         monkeypatch.setattr(scripts, "Ballet", fake_ballet)
         monkeypatch.setattr(scripts, "prepare_batch", fake_prepare)
         monkeypatch.setattr(scripts, "process_batch", fake_process)
@@ -178,7 +192,12 @@ class TestPhotometerFrames:
         assert calls["prepare"]["append_l4"] is True
         assert calls["process"]["prep"] is prep_sentinel
         assert calls["process"]["files"] == expected
+        # The first frame is opened once and the same load handed to both
+        # stages, so the whole run opens each frame exactly once (#44).
+        assert loads == [expected[0]]
+        assert calls["prepare"]["frame"] is frame_sentinel
         kwargs = calls["process"]["kwargs"]
+        assert kwargs["first_frame"] is frame_sentinel
         assert kwargs["user_specific_metadata"] == {"observer": "MWC"}
         assert kwargs["output_dir"] == str(tmp_path / "out")
         assert kwargs["output_suffix"] == ".sl"
@@ -199,6 +218,7 @@ class TestPhotometerFrames:
         frame.write_bytes(b"")
 
         calls = {}
+        _stub_load_frame(monkeypatch)
         monkeypatch.setattr(
             scripts,
             "Ballet",
@@ -206,7 +226,13 @@ class TestPhotometerFrames:
         )
 
         def fake_prepare(
-            first_file, *, cnn, config=None, append_l4=False, forced_targets=None
+            first_file,
+            *,
+            cnn,
+            config=None,
+            append_l4=False,
+            forced_targets=None,
+            **_kwargs: object,
         ):
             calls["prepare"] = (first_file, cnn)
             calls["append_l4"] = append_l4
@@ -239,6 +265,7 @@ class TestPhotometerFrames:
         frame.write_bytes(b"")
 
         calls = {}
+        _stub_load_frame(monkeypatch)
         monkeypatch.setattr(scripts, "Ballet", lambda model_file=None: object())
 
         def fake_prepare(_first_file, *, forced_targets=None, **_kwargs: object):
@@ -253,6 +280,7 @@ class TestPhotometerFrames:
 
         assert calls["forced_targets"] is forced
 
+    @pytest.mark.usefixtures("_consistent_headers")
     def test_identical_names_write_distinct_starlists(
         self, monkeypatch, tmp_path, by_filter
     ):
@@ -270,9 +298,6 @@ class TestPhotometerFrames:
 
         monkeypatch.setattr(scripts, "prepare_batch", lambda *a, **k: _dummy_prep())
         monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
-        monkeypatch.setattr(
-            scripts.fits, "getheader", lambda _file: dict(_CONSISTENT_HEADER)
-        )
 
         frames, results = scripts.photometer_frames(inputs, output_dir=str(out))
 

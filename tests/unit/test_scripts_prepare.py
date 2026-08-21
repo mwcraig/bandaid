@@ -3,7 +3,13 @@
 import astropy.units as u
 import numpy as np
 import pytest
-from _helpers import _consistency_header
+from _helpers import (
+    _batch_metadata,
+    _batch_radecs_mags,
+    _consistency_header,
+    _patch_prep,
+    _stub_load_frame,
+)
 from astropy.coordinates import SkyCoord
 from astropy.table import MaskedColumn, Table
 from astropy.time import Time
@@ -23,72 +29,10 @@ from bandaid.exceptions import (
     FrameMetadataError,
     TooFewStarsError,
 )
-from bandaid.photometry import min_separation_fwhm, neighbor_contamination_flag_sky
-
-
-def _batch_metadata():
-    """Return a metadata dict like the one ``calibration_sequence`` produces."""
-    return {
-        "ra": 10.0,
-        "dec": 0.0,
-        "obs_time": "2026-04-28T03:03:43.270038",
-        "fov_rad": 0.74,
-        "pixscale": 2.4,
-        "width": 1080,
-        "height": 1920,
-        "bayerpat": "GRBG",
-        "roworder": "top-down",
-        "ybayroff": 0,
-        "egain": 0.3116,
-    }
-
-
-def _batch_radecs_mags():
-    """
-    Sky positions + mags with one tight equal-brightness pair to be dropped.
-
-    The first two stars sit ~1 arcsec apart at equal magnitude, so both are
-    contaminated; the remaining two are degrees away and survive.
-    """
-    radecs = np.array(
-        [
-            [10.0, 0.0],
-            [10.0 + 1.0 / 3600.0, 0.0],
-            [10.1, 0.0],
-            [10.2, 0.0],
-        ],
-    )
-    mags = np.array([12.0, 12.0, 10.0, 11.0])
-    return radecs, mags
-
-
-def _patch_prep(monkeypatch, *, metadata=None, radecs_mags=None, fwhm_pix=2.0):
-    """Monkeypatch the heavy prep dependencies and return the spied call args."""
-    metadata = metadata if metadata is not None else _batch_metadata()
-    radecs, mags = radecs_mags if radecs_mags is not None else _batch_radecs_mags()
-
-    # These tests exercise the mag-cut/contamination plumbing with deliberately
-    # tiny synthetic catalogs, so relax the "enough Gaia stars to solve a WCS"
-    # floor; the floor itself is covered by TestPrepareBatch's guard tests.
-    monkeypatch.setattr(scripts, "N_GAIA_STARS_ALIGN_RETRY", 1)
-
-    calls = {}
-
-    def fake_calibration_sequence(file, *, cnn=None, profile=None, **_kwargs: object):
-        calls["calibration_file"] = file
-        calls["calibration_cnn"] = cnn
-        calls["calibration_profile"] = profile
-        return np.zeros((4, 4)), metadata, np.zeros((3, 2)), fwhm_pix, object()
-
-    def fake_cached_gaia_radecs(center, fov, *, obs_epoch=None):
-        calls["center"] = center
-        calls["fov"] = fov
-        calls["obs_epoch"] = obs_epoch
-        return radecs, mags
-
-    monkeypatch.setattr(scripts, "calibration_sequence", fake_calibration_sequence)
-    monkeypatch.setattr(scripts, "cached_gaia_radecs", fake_cached_gaia_radecs)
-    return calls, metadata, radecs, mags, fwhm_pix
+from bandaid.photometry import (
+    min_separation_fwhm,
+    neighbor_contamination_flag_sky,
+)
 
 
 class TestEstimateCenterFromHeader:
@@ -207,6 +151,43 @@ class TestPrepareBatch:
         assert set(prep.bayer_masks) == {"TR", "TB", "TG", "L4"}
         assert prep.bayer_masks["L4"] is None
 
+    def test_loads_first_frame_exactly_once(self, monkeypatch):
+        """Without a caller-provided frame, the first frame is loaded once (#44)."""
+        _patch_prep(monkeypatch)
+        frame = scripts.LoadedFrame(np.zeros((4, 4)), {})
+        calls = []
+
+        def counting_load_frame(file):
+            calls.append(file)
+            return frame
+
+        monkeypatch.setattr(scripts, "_load_frame", counting_load_frame)
+
+        scripts.prepare_batch("frame1.fits", cnn=object())
+
+        assert calls == ["frame1.fits"]
+
+    def test_provided_frame_is_used_without_loading(self, monkeypatch):
+        """
+        A caller-provided ``frame=`` skips the load entirely (#44).
+
+        ``photometer_frames`` opens the first frame once and hands the load to
+        both ``prepare_batch`` and ``process_batch``, so a provided frame must
+        reach the calibration step without ``_load_frame`` being called.
+        """
+        calls, *_ = _patch_prep(monkeypatch)
+        frame = scripts.LoadedFrame(np.zeros((4, 4)), {})
+
+        def fail_load_frame(file):
+            msg = f"unexpected _load_frame({file!r}) with frame= provided"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(scripts, "_load_frame", fail_load_frame)
+
+        scripts.prepare_batch("frame1.fits", cnn=object(), frame=frame)
+
+        assert calls["calibration_frame"] is frame
+
     def test_first_frame_resolved_with_config_instrument_profile(self, monkeypatch):
         """
         The config's instrument is threaded into the first-frame calibration.
@@ -244,6 +225,7 @@ class TestPrepareBatch:
             raise TooFewStarsError(msg)
 
         monkeypatch.setattr(scripts, "calibration_sequence", fake_calibration_sequence)
+        _stub_load_frame(monkeypatch)
 
         config = PhotometryConfig(
             instrument=InstrumentProfile(name="Seestar50", fwhm_n_stars=fwhm_n_stars)
@@ -457,6 +439,7 @@ class TestPrepareBatch:
                 object(),
             ),
         )
+        _stub_load_frame(monkeypatch)
 
         prep = scripts.prepare_batch("frame1.fits", cnn=object())
 
@@ -684,6 +667,7 @@ class TestPrepareBatch:
             raise TooFewStarsError(msg, file=file)
 
         monkeypatch.setattr(scripts, "calibration_sequence", _too_few)
+        _stub_load_frame(monkeypatch)
         with pytest.raises(BatchPrepError, match="too few stars"):
             scripts.prepare_batch("frame1.fits", cnn=object())
 
@@ -716,6 +700,7 @@ class TestPrepareBatch:
                 object(),
             ),
         )
+        _stub_load_frame(monkeypatch)
 
         def _boom(*_args: object, **_kwargs: object):
             msg = "no network"
@@ -936,11 +921,11 @@ class TestCheckFrameConsistency:
         """process_batch skips an off-field frame and keeps the good one."""
         prep = self._prep()
 
-        def _header(file):
+        def _fake_load_frame(file):
             ra = 10.0 if file == "good.fits" else 50.0
-            return _consistency_header(RA=ra)
+            return scripts.LoadedFrame(np.zeros((2, 2)), _consistency_header(RA=ra))
 
-        monkeypatch.setattr(scripts.fits, "getheader", _header)
+        monkeypatch.setattr(scripts, "_load_frame", _fake_load_frame)
         monkeypatch.setattr(
             scripts,
             "process_one_image",
