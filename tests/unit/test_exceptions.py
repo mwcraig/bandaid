@@ -50,21 +50,18 @@ class TestHierarchy:
 class TestAlignRaisesWCSSolveError:
     """``align`` turns a failed solve into a typed, recoverable error."""
 
-    def test_none_result_raises(self, monkeypatch):
+    def test_none_result_raises(self, mocker):
         """A None result from twirl (no match) becomes a ``WCSSolveError``."""
-        monkeypatch.setattr(photometry, "compute_wcs", lambda *a, **k: None)
+        mocker.patch("bandaid.photometry.compute_wcs", return_value=None)
         coords = radecs = np.zeros((20, 2))
         with pytest.raises(WCSSolveError):
             photometry.align(coords, radecs)
 
-    def test_underlying_exception_is_wrapped_and_chained(self, monkeypatch):
+    def test_underlying_exception_is_wrapped_and_chained(self, mocker):
         """An error from twirl is wrapped, preserving the original as __cause__."""
         boom = ValueError("only one matching pair of points")
 
-        def _raise(*_args: object, **_kwargs: object):
-            raise boom
-
-        monkeypatch.setattr(photometry, "compute_wcs", _raise)
+        mocker.patch("bandaid.photometry.compute_wcs", side_effect=boom)
         coords = radecs = np.zeros((20, 2))
         with pytest.raises(WCSSolveError) as excinfo:
             photometry.align(coords, radecs)

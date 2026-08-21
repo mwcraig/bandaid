@@ -6,12 +6,11 @@ import numpy as np
 import pytest
 from _helpers import _CONSISTENT_HEADER, _make_tan_wcs
 
-from bandaid import scripts
 from bandaid.photometry import LoadedFrame
 
 
 @pytest.fixture
-def _consistent_headers(monkeypatch):
+def _consistent_headers(mocker):
     """
     Stub the frame loader so every frame passes check_frame_consistency.
 
@@ -19,10 +18,11 @@ def _consistent_headers(monkeypatch):
     fake paths and exercise the processing/output paths, not the consistency
     check, so return a frame whose header matches _dummy_prep for all of them.
     """
-    monkeypatch.setattr(
-        scripts,
-        "_load_frame",
-        lambda _file: LoadedFrame(np.zeros((2, 2)), dict(_CONSISTENT_HEADER)),
+    mocker.patch(
+        "bandaid.scripts._load_frame",
+        side_effect=lambda _file: LoadedFrame(
+            np.zeros((2, 2)), dict(_CONSISTENT_HEADER)
+        ),
     )
 
 
