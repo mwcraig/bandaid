@@ -38,13 +38,13 @@ class TestAlign:
         np.testing.assert_allclose(aligned, expected)
         assert aligned.shape == (2, 2)
 
-    def test_solves_wcs_from_detections_when_none_supplied(self, monkeypatch):
+    def test_solves_wcs_from_detections_when_none_supplied(self, mocker):
         """
         With wcs=None, align slices image and Gaia coords *independently*.
 
         Detections are capped at N_IMAGE_STARS_ALIGN and Gaia references at
         N_GAIA_STARS_ALIGN -- the two counts are decoupled so the matcher can be
-        fed more references than detections. The constants are monkeypatched to
+        fed more references than detections. The constants are patched to
         distinct values here to prove the slices are independent rather than a
         single shared cap. compute_wcs (twirl's slow, stochastic asterism solver)
         is stubbed with a sentinel WCS; the unit under test is align's slicing,
@@ -52,18 +52,13 @@ class TestAlign:
         """
         n_image = 4
         n_gaia = 7
-        monkeypatch.setattr("bandaid.photometry.N_IMAGE_STARS_ALIGN", n_image)
-        monkeypatch.setattr("bandaid.photometry.N_GAIA_STARS_ALIGN", n_gaia)
+        mocker.patch("bandaid.photometry.N_IMAGE_STARS_ALIGN", n_image)
+        mocker.patch("bandaid.photometry.N_GAIA_STARS_ALIGN", n_gaia)
         sentinel_wcs = _make_tan_wcs()
-        calls = {}
 
-        def fake_compute_wcs(coords, radecs, tolerance):
-            calls["coords"] = coords
-            calls["radecs"] = radecs
-            calls["tolerance"] = tolerance
-            return sentinel_wcs
-
-        monkeypatch.setattr("bandaid.photometry.compute_wcs", fake_compute_wcs)
+        compute_wcs = mocker.patch(
+            "bandaid.photometry.compute_wcs", return_value=sentinel_wcs
+        )
 
         n_detected = 12  # more than either cap
         coords = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
@@ -73,14 +68,15 @@ class TestAlign:
 
         assert returned_wcs is sentinel_wcs
         # The two lists are sliced by their own caps, independently.
-        assert len(calls["coords"]) == n_image
-        assert len(calls["radecs"]) == n_gaia
+        recorded_coords, recorded_radecs = compute_wcs.call_args.args
+        assert len(recorded_coords) == n_image
+        assert len(recorded_radecs) == n_gaia
         # align passes the tolerance constant through to twirl.
-        assert calls["tolerance"] == WCS_MATCH_TOLERANCE
+        assert compute_wcs.call_args.kwargs["tolerance"] == WCS_MATCH_TOLERANCE
         # With no photometry_coords, aligned coords are the detections themselves.
         np.testing.assert_array_equal(aligned, coords)
 
-    def test_suppresses_compute_wcs_stdout(self, monkeypatch, capsys):
+    def test_suppresses_compute_wcs_stdout(self, mocker, capsys):
         """
         Swallow the stdout twirl's asterism matcher prints.
 
@@ -95,7 +91,7 @@ class TestAlign:
             print(7)  # noqa: T201
             return sentinel_wcs
 
-        monkeypatch.setattr("bandaid.photometry.compute_wcs", noisy_compute_wcs)
+        mocker.patch("bandaid.photometry.compute_wcs", side_effect=noisy_compute_wcs)
 
         coords = align_coords(N_IMAGE_STARS_ALIGN)
         radecs = coords.copy()
@@ -117,13 +113,9 @@ class TestAlign:
         ],
         ids=["fit_wcs_from_points-ValueError", "cross_match-IndexError"],
     )
-    def test_twirl_raising_becomes_wcs_solve_error(self, monkeypatch, twirl_error):
+    def test_twirl_raising_becomes_wcs_solve_error(self, mocker, twirl_error):
         """A too-few-stars raise from twirl surfaces as a recoverable WCSSolveError."""
-
-        def failing_compute_wcs(coords, radecs, tolerance):  # noqa: ARG001
-            raise twirl_error
-
-        monkeypatch.setattr("bandaid.photometry.compute_wcs", failing_compute_wcs)
+        mocker.patch("bandaid.photometry.compute_wcs", side_effect=twirl_error)
 
         coords = align_coords(N_IMAGE_STARS_ALIGN)
 
@@ -132,34 +124,26 @@ class TestAlign:
         # The original twirl error is preserved on the chain for the log.
         assert excinfo.value.__cause__ is twirl_error
 
-    def test_twirl_returning_none_becomes_wcs_solve_error(self, monkeypatch):
+    def test_twirl_returning_none_becomes_wcs_solve_error(self, mocker):
         """compute_wcs returning None (no match) surfaces as WCSSolveError."""
-
-        def none_compute_wcs(coords, radecs, tolerance):  # noqa: ARG001
-            return None
-
-        monkeypatch.setattr("bandaid.photometry.compute_wcs", none_compute_wcs)
+        mocker.patch("bandaid.photometry.compute_wcs", return_value=None)
 
         coords = align_coords(N_IMAGE_STARS_ALIGN)
 
         with pytest.raises(WCSSolveError, match="no acceptable WCS"):
             align(coords, coords.copy(), photometry_coords=None)
 
-    def test_unexpected_twirl_error_propagates(self, monkeypatch):
+    def test_unexpected_twirl_error_propagates(self, mocker):
         """A non too-few-stars error is a bug and is left to propagate, not masked."""
         bug = TypeError("genuine bug, not a bad frame")
-
-        def buggy_compute_wcs(coords, radecs, tolerance):  # noqa: ARG001
-            raise bug
-
-        monkeypatch.setattr("bandaid.photometry.compute_wcs", buggy_compute_wcs)
+        mocker.patch("bandaid.photometry.compute_wcs", side_effect=bug)
 
         coords = align_coords(N_IMAGE_STARS_ALIGN)
 
         with pytest.raises(TypeError, match="genuine bug"):
             align(coords, coords.copy(), photometry_coords=None)
 
-    def test_retries_with_deeper_gaia_pool_on_failure(self, monkeypatch):
+    def test_retries_with_deeper_gaia_pool_on_failure(self, mocker):
         """
         A shallow-pool match failure retries once at the deeper retry pool.
 
@@ -169,17 +153,17 @@ class TestAlign:
         never pays the larger, slower asterism search.
         """
         sentinel_wcs = _make_tan_wcs()
-        pool_sizes = []
         shallow_failure = ValueError("Initial guess is outside of provided bounds")
 
         def fake_compute_wcs(coords, radecs, tolerance):  # noqa: ARG001
-            pool_sizes.append(len(radecs))
             # Fail at the shallow pool, succeed once the pool is deepened.
             if len(radecs) <= N_GAIA_STARS_ALIGN:
                 raise shallow_failure
             return sentinel_wcs
 
-        monkeypatch.setattr("bandaid.photometry.compute_wcs", fake_compute_wcs)
+        compute_wcs = mocker.patch(
+            "bandaid.photometry.compute_wcs", side_effect=fake_compute_wcs
+        )
 
         n_detected = N_GAIA_STARS_ALIGN_RETRY + 5  # more than either pool
         coords = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
@@ -189,6 +173,7 @@ class TestAlign:
 
         assert returned_wcs is sentinel_wcs
         # Shallow pool tried first, then the deeper retry pool -- in that order.
+        pool_sizes = [len(call.args[1]) for call in compute_wcs.call_args_list]
         assert pool_sizes == [N_GAIA_STARS_ALIGN, N_GAIA_STARS_ALIGN_RETRY]
 
     @pytest.mark.parametrize(
@@ -205,7 +190,7 @@ class TestAlign:
         ],
     )
     def test_scale_check_gates_on_expected_pixscale(
-        self, monkeypatch, pixscale, expected_pixscale, raises
+        self, mocker, pixscale, expected_pixscale, raises
     ):
         """
         The plate-scale check accepts, rejects, or is skipped per expected_pixscale.
@@ -217,10 +202,7 @@ class TestAlign:
         entirely (back-compat), trusting even a wrong-scale WCS.
         """
         solved_wcs = _make_tan_wcs(pixscale=pixscale)
-        monkeypatch.setattr(
-            "bandaid.photometry.compute_wcs",
-            lambda coords, radecs, tolerance: solved_wcs,
-        )
+        mocker.patch("bandaid.photometry.compute_wcs", return_value=solved_wcs)
         coords = align_coords(N_IMAGE_STARS_ALIGN)
 
         if raises is not None:
@@ -245,7 +227,7 @@ class TestAlign:
         "failure_mode",
         ["scale", "center"],
     )
-    def test_retries_deeper_pool_on_bad_first_solve(self, monkeypatch, failure_mode):
+    def test_retries_deeper_pool_on_bad_first_solve(self, mocker, failure_mode):
         """
         A wrong-scale or mispointed shallow solve retries at the deeper Gaia pool.
 
@@ -265,13 +247,13 @@ class TestAlign:
                 "expected_center": SkyCoord(10.0, 20.0, unit="deg"),
                 "shape": (500, 500),
             }
-        pool_sizes = []
 
         def fake_compute_wcs(coords, radecs, tolerance):  # noqa: ARG001
-            pool_sizes.append(len(radecs))
             return bad_wcs if len(radecs) <= N_GAIA_STARS_ALIGN else good_wcs
 
-        monkeypatch.setattr("bandaid.photometry.compute_wcs", fake_compute_wcs)
+        compute_wcs = mocker.patch(
+            "bandaid.photometry.compute_wcs", side_effect=fake_compute_wcs
+        )
 
         n_detected = N_GAIA_STARS_ALIGN_RETRY + 5
         coords = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
@@ -280,6 +262,7 @@ class TestAlign:
         _, returned_wcs = align(coords, radecs, photometry_coords=None, **align_kwargs)
 
         assert returned_wcs is good_wcs
+        pool_sizes = [len(call.args[1]) for call in compute_wcs.call_args_list]
         assert pool_sizes == [N_GAIA_STARS_ALIGN, N_GAIA_STARS_ALIGN_RETRY]
 
     def test_supplied_wcs_scale_not_checked(self):
@@ -291,7 +274,7 @@ class TestAlign:
 
         assert returned_wcs is bad_wcs
 
-    def test_scale_tolerance_param_controls_the_check(self, monkeypatch):
+    def test_scale_tolerance_param_controls_the_check(self, mocker):
         """
         The ``scale_tolerance`` argument gates the check, not the module default.
 
@@ -300,10 +283,7 @@ class TestAlign:
         threaded in from the config actually drives the decision.
         """
         wcs_10pct_off = _make_tan_wcs(pixscale=2.4 * 1.10)
-        monkeypatch.setattr(
-            "bandaid.photometry.compute_wcs",
-            lambda coords, radecs, tolerance: wcs_10pct_off,
-        )
+        mocker.patch("bandaid.photometry.compute_wcs", return_value=wcs_10pct_off)
         coords = align_coords(N_IMAGE_STARS_ALIGN)
 
         _, returned_wcs = align(
@@ -344,7 +324,7 @@ class TestAlign:
         ],
     )
     def test_center_check_gates_on_expected_center(
-        self, monkeypatch, crval, expected_center, raises
+        self, mocker, crval, expected_center, raises
     ):
         """
         The in-frame check accepts, rejects, or is skipped per expected_center.
@@ -360,10 +340,7 @@ class TestAlign:
         half-diagonal). expected_center=None skips the check (back-compat).
         """
         solved_wcs = _make_tan_wcs(crval=crval)
-        monkeypatch.setattr(
-            "bandaid.photometry.compute_wcs",
-            lambda coords, radecs, tolerance: solved_wcs,
-        )
+        mocker.patch("bandaid.photometry.compute_wcs", return_value=solved_wcs)
         coords = align_coords(N_IMAGE_STARS_ALIGN)
         expected = (
             SkyCoord(*expected_center, unit="deg")
@@ -406,7 +383,7 @@ class TestAlign:
 
         assert returned_wcs is mispointed_wcs
 
-    def test_wrong_scale_wins_over_bad_center(self, monkeypatch):
+    def test_wrong_scale_wins_over_bad_center(self, mocker):
         """
         A WCS failing both checks is reported as a scale error, not pointing.
 
@@ -415,10 +392,7 @@ class TestAlign:
         the bogus scale also throws the projected center off-frame.
         """
         doubly_bad_wcs = _make_tan_wcs(pixscale=4.2, crval=(15.0, 20.0))
-        monkeypatch.setattr(
-            "bandaid.photometry.compute_wcs",
-            lambda coords, radecs, tolerance: doubly_bad_wcs,
-        )
+        mocker.patch("bandaid.photometry.compute_wcs", return_value=doubly_bad_wcs)
         coords = align_coords(N_IMAGE_STARS_ALIGN)
 
         with pytest.raises(WCSScaleError, match="scale"):
