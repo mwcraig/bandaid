@@ -6,6 +6,8 @@ and build objects; the split ``test_*`` files import from here rather than each
 carrying its own copy. Fixtures that need pytest wiring live in ``conftest.py``.
 """
 
+from types import SimpleNamespace
+
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
@@ -322,7 +324,7 @@ def _batch_radecs_mags():
     return radecs, mags
 
 
-def _stub_load_frame(monkeypatch, shape=(4, 4)):
+def _stub_load_frame(mocker, shape=(4, 4)):
     """
     Stub ``scripts._load_frame`` with a zero-filled frame and an empty header.
 
@@ -332,47 +334,81 @@ def _stub_load_frame(monkeypatch, shape=(4, 4)):
 
     Parameters
     ----------
-    monkeypatch : pytest.MonkeyPatch
-        The monkeypatch fixture used to install the stub.
+    mocker : pytest_mock.MockerFixture
+        The pytest-mock fixture used to install the stub.
     shape : tuple of int, optional
         Shape of the zero-filled data array. Default ``(4, 4)``.
     """
-    monkeypatch.setattr(
-        scripts, "_load_frame", lambda _f: LoadedFrame(np.zeros(shape), {})
+    mocker.patch(
+        "bandaid.scripts._load_frame",
+        side_effect=lambda _f: LoadedFrame(np.zeros(shape), {}),
     )
 
 
-def _patch_prep(monkeypatch, *, metadata=None, radecs_mags=None, fwhm_pix=2.0):
-    """Monkeypatch the heavy prep dependencies and return the spied call args."""
+def _patch_prep(mocker, *, metadata=None, radecs_mags=None, fwhm_pix=2.0):
+    """
+    Patch the heavy ``prepare_batch`` externals; return the mocks plus the data.
+
+    Patches ``scripts.calibration_sequence`` (to return the given/default
+    metadata, radecs/mags and fwhm), ``scripts.cached_gaia_radecs`` (to return
+    the given/default radecs/mags) and ``scripts._load_frame`` (via
+    `_stub_load_frame`). Also relaxes ``N_GAIA_STARS_ALIGN_RETRY`` to 1, since
+    these tests exercise the mag-cut/contamination plumbing with deliberately
+    tiny synthetic catalogs; the real floor is covered by
+    ``TestPrepareBatch``'s guard tests.
+
+    Parameters
+    ----------
+    mocker : pytest_mock.MockerFixture
+        The pytest-mock fixture used to install the patches.
+    metadata : dict, optional
+        Metadata dict for the stubbed ``calibration_sequence`` to return.
+        Defaults to `_batch_metadata`.
+    radecs_mags : tuple, optional
+        ``(radecs, mags)`` for the stubbed ``cached_gaia_radecs`` to return.
+        Defaults to `_batch_radecs_mags`.
+    fwhm_pix : float, optional
+        FWHM (pixels) for the stubbed ``calibration_sequence`` to return.
+
+    Returns
+    -------
+    types.SimpleNamespace
+        ``metadata``, ``radecs``, ``mags``, ``fwhm_pix`` (the resolved data),
+        plus the ``calibration_sequence`` and ``cached_gaia_radecs`` mocks so
+        callers can inspect ``.call_args`` for the ``cnn``/``profile``/
+        ``frame`` and ``center``/``fov``/``obs_epoch`` arguments passed
+        through.
+    """
     metadata = metadata if metadata is not None else _batch_metadata()
     radecs, mags = radecs_mags if radecs_mags is not None else _batch_radecs_mags()
 
     # These tests exercise the mag-cut/contamination plumbing with deliberately
     # tiny synthetic catalogs, so relax the "enough Gaia stars to solve a WCS"
     # floor; the floor itself is covered by TestPrepareBatch's guard tests.
-    monkeypatch.setattr(scripts, "N_GAIA_STARS_ALIGN_RETRY", 1)
+    mocker.patch("bandaid.scripts.N_GAIA_STARS_ALIGN_RETRY", 1)
 
-    calls = {}
-
-    def fake_calibration_sequence(
-        file, *, cnn=None, profile=None, frame=None, **_kwargs: object
-    ):
-        calls["calibration_file"] = file
-        calls["calibration_cnn"] = cnn
-        calls["calibration_profile"] = profile
-        calls["calibration_frame"] = frame
-        return np.zeros((4, 4)), metadata, np.zeros((3, 2)), fwhm_pix, object()
-
-    def fake_cached_gaia_radecs(center, fov, *, obs_epoch=None):
-        calls["center"] = center
-        calls["fov"] = fov
-        calls["obs_epoch"] = obs_epoch
-        return radecs, mags
-
-    monkeypatch.setattr(scripts, "calibration_sequence", fake_calibration_sequence)
-    monkeypatch.setattr(scripts, "cached_gaia_radecs", fake_cached_gaia_radecs)
-    _stub_load_frame(monkeypatch)
-    return calls, metadata, radecs, mags, fwhm_pix
+    calibration_sequence = mocker.patch(
+        "bandaid.scripts.calibration_sequence",
+        return_value=(
+            np.zeros((4, 4)),
+            metadata,
+            np.zeros((3, 2)),
+            fwhm_pix,
+            object(),
+        ),
+    )
+    cached_gaia_radecs = mocker.patch(
+        "bandaid.scripts.cached_gaia_radecs", return_value=(radecs, mags)
+    )
+    _stub_load_frame(mocker)
+    return SimpleNamespace(
+        metadata=metadata,
+        radecs=radecs,
+        mags=mags,
+        fwhm_pix=fwhm_pix,
+        calibration_sequence=calibration_sequence,
+        cached_gaia_radecs=cached_gaia_radecs,
+    )
 
 
 def _dummy_prep():
