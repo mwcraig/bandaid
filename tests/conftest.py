@@ -1,5 +1,4 @@
 from contextlib import contextmanager
-from unittest.mock import MagicMock
 
 import astropy.units as u
 import numpy as np
@@ -8,7 +7,6 @@ from astropy.modeling.models import Gaussian2D
 from astropy.table import MaskedColumn, Table
 from photutils.datasets import make_model_image, make_noise_image
 
-from bandaid import catalog, scripts
 from bandaid.image2sl_qt import generate_bayer_masks
 
 
@@ -37,18 +35,16 @@ def gaia_table():
 
 
 @pytest.fixture
-def fake_vizier(monkeypatch, gaia_table):
+def fake_vizier(mocker, gaia_table):
     """
     Patch in a Vizier stand-in returning ``gaia_table``; yield the class mock.
 
     The returned mock records construction args in ``fake_vizier.call_args`` and
     the query call in ``fake_vizier.return_value.query_region.call_args``.
     """
-    instance = MagicMock(name="vizier_instance")
-    instance.query_region.return_value = [gaia_table]
-    vizier_cls = MagicMock(name="Vizier", return_value=instance)
-    monkeypatch.setattr(catalog, "Vizier", vizier_cls)
-    return vizier_cls
+    vizier = mocker.patch("bandaid.catalog.Vizier")
+    vizier.return_value.query_region.return_value = [gaia_table]
+    return vizier
 
 
 @pytest.fixture
@@ -291,18 +287,18 @@ def by_filter(eloy_table, starlist_metadata):
 
 
 @pytest.fixture
-def patched_process_one_image(monkeypatch):
+def patched_process_one_image(mocker):
     """
     Factory patching ``scripts.process_one_image`` to return a fixed result.
 
     Replaces the repeated
-    ``monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: ...)``
+    ``mocker.patch("bandaid.scripts.process_one_image", return_value=...)``
     preamble in the batch/disk tests.
 
     Parameters
     ----------
-    monkeypatch : pytest.MonkeyPatch
-        The built-in monkeypatch fixture used to install the patch.
+    mocker : pytest_mock.MockerFixture
+        The pytest-mock fixture used to install the patch.
 
     Returns
     -------
@@ -311,7 +307,7 @@ def patched_process_one_image(monkeypatch):
     """
 
     def _patch(result):
-        monkeypatch.setattr(scripts, "process_one_image", lambda *_a, **_k: result)
+        mocker.patch("bandaid.scripts.process_one_image", return_value=result)
         return result
 
     return _patch
