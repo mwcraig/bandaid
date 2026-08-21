@@ -36,15 +36,15 @@ from bandaid.photometry import (
 
 
 class TestPrepareImage:
-    def test_no_photometry_coord_input(self, make_test_image, tmp_path, monkeypatch):
+    def test_no_photometry_coord_input(self, make_test_image, tmp_path, mocker):
         """Aligned coords fall back to detected coords when none are provided."""
         # This test only checks the alignment fallback, not centroiding, so stub
         # centroid_stars to avoid constructing the real Ballet CNN (which would pull
         # model weights from HuggingFace). The stub returns the aligned coords
         # unchanged.
-        monkeypatch.setattr(
+        mocker.patch(
             "bandaid.photometry.centroid_stars",
-            lambda data, coords, cnn: coords,
+            side_effect=lambda data, coords, cnn: coords,
         )
         image_size = (500, 500)
 
@@ -334,9 +334,8 @@ _REF_RADECS = np.array(
 
 
 def _stub_wcs_and_centroid(
-    monkeypatch,
+    mocker,
     *,
-    record_centroid_data=None,
     wcs_image_size=(500, 500),
     wcs_crval=(10.0, 20.0),
 ):
@@ -345,25 +344,44 @@ def _stub_wcs_and_centroid(
 
     ``compute_wcs`` (twirl's stochastic asterism solver) returns a fixed TAN WCS
     and ``centroid_stars`` (the HuggingFace-backed Ballet CNN) returns its input
-    coordinates unchanged. If ``record_centroid_data`` is a list, the image
-    actually handed to centroiding is appended to it so tests can inspect it.
+    coordinates unchanged. A test that needs to inspect the image actually
+    handed to centroiding can read it off the returned centroid mock's
+    ``.call_args``.
 
     ``wcs_image_size``/``wcs_crval`` size and center the stubbed TAN WCS; the
     defaults match the synthetic-FITS callers, while the real-frame smoke test
     passes the actual frame shape and field center so the cosmetic RA/Dec columns
     land near the real field.
+
+    Parameters
+    ----------
+    mocker : pytest_mock.MockerFixture
+        The pytest-mock fixture used to install the stubs.
+    wcs_image_size : tuple[int, int], optional
+        Pixel shape (ny, nx) used to build the stubbed TAN WCS.
+    wcs_crval : tuple[float, float], optional
+        Field center (ra, dec) in degrees used to build the stubbed TAN WCS.
+
+    Returns
+    -------
+    unittest.mock.MagicMock
+        The mock installed in place of ``compute_wcs``.
+    unittest.mock.MagicMock
+        The mock installed in place of ``centroid_stars``; call
+        ``.call_args`` on it to inspect the coordinates/image a test handed
+        to centroiding.
     """
-    monkeypatch.setattr(
+    wcs_mock = mocker.patch(
         "bandaid.photometry.compute_wcs",
-        lambda coords, radecs, tolerance: _make_tan_wcs(wcs_image_size, wcs_crval),
+        return_value=_make_tan_wcs(wcs_image_size, wcs_crval),
     )
 
-    def fake_centroid_stars(data, coords, _cnn):
-        if record_centroid_data is not None:
-            record_centroid_data.append(data)
-        return coords
+    centroid_mock = mocker.patch(
+        "bandaid.photometry.centroid_stars",
+        side_effect=lambda data, coords, _cnn: coords,
+    )
 
-    monkeypatch.setattr("bandaid.photometry.centroid_stars", fake_centroid_stars)
+    return wcs_mock, centroid_mock
 
 
 @pytest.fixture
@@ -446,43 +464,36 @@ class TestCalibrationSequence:
         with pytest.raises(TooFewStarsError, match="saturated"):
             calibration_sequence(path, threshold=1)
 
-    def test_forwards_opening_to_detection(
-        self, make_test_image, tmp_path, monkeypatch
-    ):
+    def test_forwards_opening_to_detection(self, make_test_image, tmp_path, mocker):
         """
         calibration_sequence passes the opening kernel size through to detection.
 
         The morphological opening (not the threshold) is what gates faint-star
         detection, so the pipeline default must reach eloy's stars_detection. The
-        detector is stubbed to capture its kwargs and return no regions; the
-        resulting TooFewStarsError is incidental -- the assertion is the forwarded
-        opening.
+        detector is stubbed to return no regions; the resulting TooFewStarsError
+        is incidental -- the assertion is the forwarded opening, read back off
+        the mock's ``call_args``.
         """
         image = _detectable_image(make_test_image, n_sources=5)
         path = _write_seestar_fits(tmp_path / "open.fits", image)
-        captured = {}
 
-        def fake_stars_detection(data, threshold=5, opening=5):  # noqa: ARG001
-            captured["opening"] = opening
-            return []
-
-        monkeypatch.setattr(
-            "bandaid.photometry.detection.stars_detection", fake_stars_detection
+        stars_detection_mock = mocker.patch(
+            "bandaid.photometry.detection.stars_detection", return_value=[]
         )
 
         # Default: the pipeline's DETECTION_OPENING reaches the detector.
         with pytest.raises(TooFewStarsError):
             calibration_sequence(path, threshold=1)
-        assert captured["opening"] == DETECTION_OPENING
+        assert stars_detection_mock.call_args.kwargs["opening"] == DETECTION_OPENING
 
         # And an explicit override is honored.
         custom_opening = 7
         with pytest.raises(TooFewStarsError):
             calibration_sequence(path, threshold=1, opening=custom_opening)
-        assert captured["opening"] == custom_opening
+        assert stars_detection_mock.call_args.kwargs["opening"] == custom_opening
 
     def test_detects_on_balanced_copy_when_flagged(
-        self, make_test_image, tmp_path, monkeypatch
+        self, make_test_image, tmp_path, mocker
     ):
         """
         detect_on_bayer_balanced runs detection/FWHM on a balanced copy (#22).
@@ -500,17 +511,21 @@ class TestCalibrationSequence:
             # transform so a balanced array is trivially distinguishable.
             arr += marker
 
-        monkeypatch.setattr("bandaid.photometry.bayer_balance_image", fake_balance)
+        mocker.patch("bandaid.photometry.bayer_balance_image", side_effect=fake_balance)
 
         seen = {}
         real_detection = detection.stars_detection
 
         def capturing_detection(data, threshold=5, opening=5):
+            # Copy defensively: the array is reused (and, further downstream,
+            # could be mutated) after this call, so a bare reference would not
+            # reliably reflect what detection actually saw.
             seen["data"] = np.array(data, copy=True)
             return real_detection(data, threshold=threshold, opening=opening)
 
-        monkeypatch.setattr(
-            "bandaid.photometry.detection.stars_detection", capturing_detection
+        mocker.patch(
+            "bandaid.photometry.detection.stars_detection",
+            side_effect=capturing_detection,
         )
 
         n_sources = 5
@@ -533,7 +548,7 @@ class TestCalibrationSequence:
         assert coords.shape == (n_sources, 2)
 
     def test_attaches_file_when_bayer_balance_is_degenerate(
-        self, make_test_image, tmp_path, monkeypatch
+        self, make_test_image, tmp_path, mocker
     ):
         """A degenerate-channel error from bayer_balance_image gets the file (#61)."""
 
@@ -541,7 +556,9 @@ class TestCalibrationSequence:
             msg = "zero variance"
             raise DegenerateBayerChannelError(msg)
 
-        monkeypatch.setattr("bandaid.photometry.bayer_balance_image", raising_balance)
+        mocker.patch(
+            "bandaid.photometry.bayer_balance_image", side_effect=raising_balance
+        )
 
         image = _detectable_image(make_test_image)
         path = _write_seestar_fits(tmp_path / "degenerate.fits", image)
@@ -592,11 +609,9 @@ class TestPrepareImageBranches:
         with pytest.raises(TooFewStarsError, match="stars detected"):
             prepare_image(path, _REF_RADECS, None)
 
-    def test_merges_user_specific_metadata(
-        self, make_test_image, tmp_path, monkeypatch
-    ):
+    def test_merges_user_specific_metadata(self, make_test_image, tmp_path, mocker):
         """user_specific_metadata overrides values pulled from the header."""
-        _stub_wcs_and_centroid(monkeypatch)
+        _stub_wcs_and_centroid(mocker)
         image = _detectable_image(make_test_image)
         path = _write_seestar_fits(tmp_path / "meta.fits", image)
 
@@ -612,11 +627,13 @@ class TestPrepareImageBranches:
         assert img.metadata["egain"] == override_egain
 
     def test_detect_on_bayer_balanced_uses_working_copy(
-        self, make_test_image, tmp_path, monkeypatch
+        self, make_test_image, tmp_path, mocker
     ):
         """Bayer balancing feeds a balanced copy to centroiding, not the original."""
-        centroid_inputs = []
-        _stub_wcs_and_centroid(monkeypatch, record_centroid_data=centroid_inputs)
+        # centroid_stars's argument is not mutated after the call (prepare_image
+        # does nothing further with ``working_image`` once centroiding returns),
+        # so reading it back off .call_args is safe -- no defensive copy needed.
+        _, centroid_stars_mock = _stub_wcs_and_centroid(mocker)
         image = _detectable_image(make_test_image)
         path = _write_seestar_fits(tmp_path / "bayer.fits", image)
 
@@ -631,11 +648,12 @@ class TestPrepareImageBranches:
         np.testing.assert_allclose(img.calibrated_data, image)
         # ...while the image handed to centroiding was balanced in place (so it
         # differs from the untouched calibrated frame).
-        assert len(centroid_inputs) == 1
-        assert not np.allclose(centroid_inputs[0], img.calibrated_data)
+        centroid_stars_mock.assert_called_once()
+        centroid_data = centroid_stars_mock.call_args.args[0]
+        assert not np.allclose(centroid_data, img.calibrated_data)
 
     def test_attaches_file_when_centroiding_bayer_balance_is_degenerate(
-        self, make_test_image, tmp_path, monkeypatch
+        self, make_test_image, tmp_path, mocker
     ):
         """
         A degenerate-channel error from the centroiding balance pass gets the file.
@@ -646,20 +664,22 @@ class TestPrepareImageBranches:
         (centroiding) call raise, isolating that call site's own file-attaching
         ``try``/``except`` (issue #61).
         """
-        _stub_wcs_and_centroid(monkeypatch)
+        _stub_wcs_and_centroid(mocker)
         image = _detectable_image(make_test_image)
         path = _write_seestar_fits(tmp_path / "degenerate2.fits", image)
 
-        calls = {"n": 0}
+        call_count = {"n": 0}
 
         def flaky_balance(_arr):
-            calls["n"] += 1
-            if calls["n"] == 1:
+            call_count["n"] += 1
+            if call_count["n"] == 1:
                 return
             msg = "zero variance"
             raise DegenerateBayerChannelError(msg)
 
-        monkeypatch.setattr("bandaid.photometry.bayer_balance_image", flaky_balance)
+        bayer_balance_mock = mocker.patch(
+            "bandaid.photometry.bayer_balance_image", side_effect=flaky_balance
+        )
         expected_call_count = 2  # detection (succeeds), then centroiding (raises)
 
         with pytest.raises(DegenerateBayerChannelError) as exc_info:
@@ -670,7 +690,7 @@ class TestPrepareImageBranches:
                 detect_on_bayer_balanced=True,
             )
         assert exc_info.value.file == path
-        assert calls["n"] == expected_call_count
+        assert bayer_balance_mock.call_count == expected_call_count
 
 
 class TestProcessOneImage:
@@ -693,10 +713,10 @@ class TestProcessOneImage:
             process_one_image(path, {}, _REF_RADECS, None, masks)
 
     def test_full_path_builds_per_filter_tables_with_l4(
-        self, make_test_image, tmp_path, monkeypatch, bayer_masks_rggb
+        self, make_test_image, tmp_path, mocker, bayer_masks_rggb
     ):
         """Every filter gets a table and the L4 channel sums the RGB counts."""
-        _stub_wcs_and_centroid(monkeypatch)
+        _stub_wcs_and_centroid(mocker)
         image = _detectable_image(make_test_image)
         path = _write_seestar_fits(tmp_path / "proc.fits", image)
         masks = bayer_masks_rggb(image.shape, append_l4=True)
@@ -712,10 +732,10 @@ class TestProcessOneImage:
         np.testing.assert_allclose(result["L4"]["tot_count"], rgb_sum)
 
     def test_opens_the_file_exactly_once(
-        self, make_test_image, tmp_path, monkeypatch, bayer_masks_rggb, fromfile_spy
+        self, make_test_image, tmp_path, mocker, bayer_masks_rggb, fromfile_spy
     ):
         """process_one_image opens the file exactly once end-to-end (#44)."""
-        _stub_wcs_and_centroid(monkeypatch)
+        _stub_wcs_and_centroid(mocker)
         image = _detectable_image(make_test_image)
         path = _write_seestar_fits(tmp_path / "open_once.fits", image)
         masks = bayer_masks_rggb(image.shape, append_l4=True)
@@ -778,7 +798,7 @@ class TestSmokeRealFrame:
         assert metadata["width"] == calibrated.shape[1]
         assert metadata["height"] == calibrated.shape[0]
 
-    def test_process_one_image_builds_per_filter_tables(self, monkeypatch):
+    def test_process_one_image_builds_per_filter_tables(self, mocker):
         """Every Bayer filter gets a non-empty table and L4 sums the RGB counts."""
         header = fits.getheader(str(_REAL_FRAME))
         data = fits.getdata(str(_REAL_FRAME))
@@ -787,7 +807,7 @@ class TestSmokeRealFrame:
         # Center the stubbed WCS on the real field so the cosmetic ra/dec columns
         # are plausible in a failure dump.
         _stub_wcs_and_centroid(
-            monkeypatch,
+            mocker,
             wcs_image_size=data.shape,
             wcs_crval=(header["RA"], header["DEC"]),
         )
