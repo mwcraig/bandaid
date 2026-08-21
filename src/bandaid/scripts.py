@@ -407,10 +407,8 @@ def prepare_batch(
         `~astropy.coordinates.SkyCoord.from_name`) is accepted and treated as
         one target. None (default) adds nothing.
     frame : LoadedFrame or None, optional
-        The already-loaded contents of ``first_file``, if the caller has them
-        (`photometer_frames` shares one load between this and `process_batch`
-        so the whole run opens each frame exactly once, issue #44). None
-        (default) loads ``first_file`` here.
+        The already-loaded contents of ``first_file``. None (default) loads
+        ``first_file`` here.
 
     Returns
     -------
@@ -1103,9 +1101,7 @@ def process_batch(
         Filename for the QA manifest within ``output_dir``. Default
         `QA_MANIFEST_FILENAME`.
     first_frame : LoadedFrame or None, optional
-        The already-loaded contents of the first file in ``files``, if the
-        caller has them (`photometer_frames` shares `prepare_batch`'s load so
-        the whole run opens each frame exactly once, issue #44). None
+        The already-loaded contents of the first file in ``files``. None
         (default) loads the first frame like any other.
 
     Returns

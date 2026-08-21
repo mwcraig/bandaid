@@ -371,6 +371,20 @@ def fromfile_spy(mocker):
     """
     Factory installing a spy on ``fits.HDUList.fromfile`` to count file opens.
 
+    Parameters
+    ----------
+    mocker : pytest_mock.MockerFixture
+        The pytest-mock fixture used to install the spy.
+
+    Returns
+    -------
+    collections.abc.Callable
+        Zero-argument callable installing and returning the spy (a
+        `unittest.mock.MagicMock` wrapping ``fits.HDUList.fromfile``); assert
+        on the spy's ``call_count``.
+
+    Notes
+    -----
     Spying at the HDUList level rather than at ``fits.open`` (or ``getdata``,
     ``getheader``) is deliberate: every one of those convenience functions
     funnels through ``fromfile``, so a reintroduced extra read is counted no
@@ -383,18 +397,6 @@ def fromfile_spy(mocker):
     A factory rather than the spy itself because ``writeto`` also funnels
     through ``fromfile``: the spy must be installed *after* the test writes
     its FITS fixture file, or the write is counted as an open.
-
-    Parameters
-    ----------
-    mocker : pytest_mock.MockerFixture
-        The pytest-mock fixture used to install the spy.
-
-    Returns
-    -------
-    collections.abc.Callable
-        Zero-argument callable installing and returning the spy (a
-        `unittest.mock.MagicMock` wrapping ``fits.HDUList.fromfile``); assert
-        on the spy's ``call_count``.
     """
     return lambda: mocker.spy(fits.HDUList, "fromfile")
 
