@@ -4,7 +4,7 @@ Unit tests for the ``bandaid`` command-line interface in :mod:`bandaid.cli`.
 The CLI is a thin dressing over :func:`bandaid.scripts.photometer_frames`: it turns
 command-line flags into a `PhotometryConfig` and a metadata dict, then delegates
 the file-expansion + ``prepare_batch`` → ``process_batch`` flow to that function.
-These tests monkeypatch ``photometer_frames`` out and assert the flag-to-argument
+These tests patch ``photometer_frames`` out and assert the flag-to-argument
 wiring and the clean-error handling; the engine itself is covered in
 ``test_scripts.py``. The instrument/config commands run against the real bundled
 ``Seestar50`` profile and the real ``PhotometryConfig`` (both offline).
@@ -41,27 +41,23 @@ def extra_instrument():
 
 
 @pytest.fixture
-def patched_photometer(monkeypatch):
+def patched_photometer(mocker):
     """
-    Patch ``cli.photometer_frames`` and record how the CLI called it.
+    Patch ``cli.photometer_frames`` and return the mock so calls can be inspected.
 
-    Returns a dict the test can inspect: every keyword the CLI forwarded plus the
-    positional ``files`` argument. The fake returns a ``(frames, results)`` pair
-    with a deliberate frame/result count mismatch so the summary line is testable.
+    The fake returns a ``(frames, results)`` pair with a deliberate frame/result
+    count mismatch so the summary line is testable. Tests inspect what the CLI
+    forwarded via ``patched_photometer.call_args`` -- ``.args[0]`` for the
+    positional ``files`` argument, ``.kwargs[...]`` for everything else.
     """
-    calls = {}
-
-    def fake_photometer(files, **kwargs: object):
-        calls["files"] = list(files)
-        calls.update(kwargs)
-        return ["frame1", "frame2"], {"frame1": "frame1.star"}
-
-    monkeypatch.setattr(cli, "photometer_frames", fake_photometer)
-    return calls
+    return mocker.patch(
+        "bandaid.cli.photometer_frames",
+        return_value=(["frame1", "frame2"], {"frame1": "frame1.star"}),
+    )
 
 
 @pytest.fixture
-def fully_failed_photometer(monkeypatch):
+def fully_failed_photometer(mocker):
     """
     Patch ``cli.photometer_frames`` to simulate every frame in the batch failing.
 
@@ -76,7 +72,7 @@ def fully_failed_photometer(monkeypatch):
         scripts_logger.warning("skipping b.fit: not a FITS file")
         return ["a.fit", "b.fit"], {}
 
-    monkeypatch.setattr(cli, "photometer_frames", fake_photometer)
+    mocker.patch("bandaid.cli.photometer_frames", side_effect=fake_photometer)
 
 
 def test_process_forwards_every_flag(runner, patched_photometer, tmp_path):
@@ -120,24 +116,25 @@ def test_process_forwards_every_flag(runner, patched_photometer, tmp_path):
     )
 
     assert result.exit_code == 0, result.output
+    call_kwargs = patched_photometer.call_args.kwargs
     # The raw argument is forwarded; photometer_frames does the expansion.
-    assert patched_photometer["files"] == [str(frame_dir)]
-    assert patched_photometer["weights"] == str(weights)
-    assert patched_photometer["user_specific_metadata"] == {"observer": "MWC"}
-    assert patched_photometer["output_dir"] == str(out_dir)
-    assert patched_photometer["append_l4"] is False
-    assert patched_photometer["fail_fast"] is True
+    assert patched_photometer.call_args.args[0] == (str(frame_dir),)
+    assert call_kwargs["weights"] == str(weights)
+    assert call_kwargs["user_specific_metadata"] == {"observer": "MWC"}
+    assert call_kwargs["output_dir"] == str(out_dir)
+    assert call_kwargs["append_l4"] is False
+    assert call_kwargs["fail_fast"] is True
     # --output-format resolves to the registered writer callable, not the name.
-    assert patched_photometer["write_frame"] is write_starlist_set
-    assert patched_photometer["output_suffix"] == ".starlist"
-    assert patched_photometer["write_qa_manifest"] is False
+    assert call_kwargs["write_frame"] is write_starlist_set
+    assert call_kwargs["output_suffix"] == ".starlist"
+    assert call_kwargs["write_qa_manifest"] is False
     # The config carries the default (Seestar50) instrument.
-    config = patched_photometer["config"]
+    config = call_kwargs["config"]
     assert isinstance(config, PhotometryConfig)
     assert config.instrument.name == "Seestar50"
     # The summary reflects the returned (results, frames) counts.
     assert "Processed 1 of 2 frames" in result.output
-    forced_targets = patched_photometer["forced_targets"]
+    forced_targets = call_kwargs["forced_targets"]
     np.testing.assert_allclose(forced_targets.ra.deg, [123.456])
     np.testing.assert_allclose(forced_targets.dec.deg, [-10.0])
 
@@ -191,11 +188,9 @@ def test_process_partial_failure_still_exits_zero(runner, tmp_path):
 
 
 @pytest.fixture
-def spy_configure_logging(monkeypatch):
-    """Record the level ``cli.configure_logging`` is called with (if at all)."""
-    calls = []
-    monkeypatch.setattr(cli, "configure_logging", lambda **kwargs: calls.append(kwargs))
-    return calls
+def spy_configure_logging(mocker):
+    """Return the mock recording how ``cli.configure_logging`` was called."""
+    return mocker.patch("bandaid.cli.configure_logging")
 
 
 @pytest.mark.usefixtures("patched_photometer")
@@ -209,7 +204,7 @@ def test_process_quiet_by_default_still_logs_warnings(
     result = runner.invoke(cli.main, ["process", str(frame)])
 
     assert result.exit_code == 0, result.output
-    assert spy_configure_logging == [{"level": logging.WARNING, "logfile": None}]
+    spy_configure_logging.assert_called_once_with(level=logging.WARNING, logfile=None)
 
 
 @pytest.mark.usefixtures("patched_photometer")
@@ -221,7 +216,7 @@ def test_process_verbose_enables_info_logging(runner, spy_configure_logging, tmp
     result = runner.invoke(cli.main, ["process", str(frame), "-v"])
 
     assert result.exit_code == 0, result.output
-    assert spy_configure_logging == [{"level": logging.INFO, "logfile": None}]
+    spy_configure_logging.assert_called_once_with(level=logging.INFO, logfile=None)
 
 
 @pytest.mark.usefixtures("patched_photometer")
@@ -235,7 +230,7 @@ def test_process_double_verbose_enables_debug_logging(
     result = runner.invoke(cli.main, ["process", str(frame), "-vv"])
 
     assert result.exit_code == 0, result.output
-    assert spy_configure_logging == [{"level": logging.DEBUG, "logfile": None}]
+    spy_configure_logging.assert_called_once_with(level=logging.DEBUG, logfile=None)
 
 
 @pytest.mark.usefixtures("patched_photometer")
@@ -252,9 +247,9 @@ def test_process_log_file_forwards_to_configure_logging(
     )
 
     assert result.exit_code == 0, result.output
-    assert spy_configure_logging == [
-        {"level": logging.WARNING, "logfile": str(log_file)}
-    ]
+    spy_configure_logging.assert_called_once_with(
+        level=logging.WARNING, logfile=str(log_file)
+    )
 
 
 def test_process_uses_robust_defaults(runner, patched_photometer, tmp_path):
@@ -265,12 +260,13 @@ def test_process_uses_robust_defaults(runner, patched_photometer, tmp_path):
     result = runner.invoke(cli.main, ["process", str(frame)])
 
     assert result.exit_code == 0, result.output
-    assert patched_photometer["weights"] is None
-    assert patched_photometer["user_specific_metadata"] == {}
+    call_kwargs = patched_photometer.call_args.kwargs
+    assert call_kwargs["weights"] is None
+    assert call_kwargs["user_specific_metadata"] == {}
     # append_l4 now defaults ON.
-    assert patched_photometer["append_l4"] is True
-    assert patched_photometer["fail_fast"] is False
-    assert patched_photometer["write_qa_manifest"] is True
+    assert call_kwargs["append_l4"] is True
+    assert call_kwargs["fail_fast"] is False
+    assert call_kwargs["write_qa_manifest"] is True
 
 
 def test_process_omitted_forced_targets_defaults_to_none(
@@ -283,7 +279,7 @@ def test_process_omitted_forced_targets_defaults_to_none(
     result = runner.invoke(cli.main, ["process", str(frame)])
 
     assert result.exit_code == 0, result.output
-    assert patched_photometer["forced_targets"] is None
+    assert patched_photometer.call_args.kwargs["forced_targets"] is None
 
 
 def test_process_forwards_multiple_directories(runner, patched_photometer, tmp_path):
@@ -298,7 +294,7 @@ def test_process_forwards_multiple_directories(runner, patched_photometer, tmp_p
     result = runner.invoke(cli.main, ["process", str(n1), str(n2)])
 
     assert result.exit_code == 0, result.output
-    assert patched_photometer["files"] == [str(n1), str(n2)]
+    assert patched_photometer.call_args.args[0] == (str(n1), str(n2))
 
 
 def test_process_instrument_override(
@@ -313,7 +309,7 @@ def test_process_instrument_override(
     )
 
     assert result.exit_code == 0, result.output
-    config = patched_photometer["config"]
+    config = patched_photometer.call_args.kwargs["config"]
     assert config.instrument.name == extra_instrument.name
 
 
@@ -331,7 +327,7 @@ def test_process_profile_file_override(runner, patched_photometer, tmp_path):
     )
 
     assert result.exit_code == 0, result.output
-    config = patched_photometer["config"]
+    config = patched_photometer.call_args.kwargs["config"]
     assert config.instrument.name == "MyScope"
 
 
@@ -357,7 +353,7 @@ def test_process_gaia_mag_limit_override(runner, patched_photometer, tmp_path):
     )
 
     assert result.exit_code == 0, result.output
-    source_selection = patched_photometer["config"].source_selection
+    source_selection = patched_photometer.call_args.kwargs["config"].source_selection
     assert source_selection.gaia_mag_limit == _OVERRIDE_GAIA_MAG_LIMIT
 
 
@@ -371,7 +367,7 @@ def test_process_min_snr_override(runner, patched_photometer, tmp_path):
     )
 
     assert result.exit_code == 0, result.output
-    source_selection = patched_photometer["config"].source_selection
+    source_selection = patched_photometer.call_args.kwargs["config"].source_selection
     assert source_selection.min_snr == _OVERRIDE_MIN_SNR
 
 
@@ -407,7 +403,7 @@ def test_process_gaia_mag_limit_and_min_snr_win_over_config_file(
     )
 
     assert result.exit_code == 0, result.output
-    source_selection = patched_photometer["config"].source_selection
+    source_selection = patched_photometer.call_args.kwargs["config"].source_selection
     assert source_selection.gaia_mag_limit == _OVERRIDE_GAIA_MAG_LIMIT
     assert source_selection.min_snr == _OVERRIDE_MIN_SNR
     # The config file's other source_selection field is preserved, not reset.
@@ -567,7 +563,7 @@ def test_process_forced_targets_uppercase_columns_are_accepted(
     )
 
     assert result.exit_code == 0, result.output
-    forced_targets = patched_photometer["forced_targets"]
+    forced_targets = patched_photometer.call_args.kwargs["forced_targets"]
     np.testing.assert_allclose(forced_targets.ra.deg, [123.456])
     np.testing.assert_allclose(forced_targets.dec.deg, [-10.0])
 
@@ -603,7 +599,7 @@ def test_process_forced_targets_name_column_is_optional(
     )
 
     assert result.exit_code == 0, result.output
-    forced_targets = patched_photometer["forced_targets"]
+    forced_targets = patched_photometer.call_args.kwargs["forced_targets"]
     np.testing.assert_allclose(forced_targets.ra.deg, [123.456])
     np.testing.assert_allclose(forced_targets.dec.deg, [-10.0])
 
@@ -691,7 +687,7 @@ def test_process_forced_targets_hourangle_unit_is_converted(
     )
 
     assert result.exit_code == 0, result.output
-    forced_targets = patched_photometer["forced_targets"]
+    forced_targets = patched_photometer.call_args.kwargs["forced_targets"]
     np.testing.assert_allclose(forced_targets.ra.deg, [150.0])
     np.testing.assert_allclose(forced_targets.dec.deg, [20.0])
 
@@ -727,7 +723,7 @@ def test_process_forced_targets_frame_is_icrs(runner, patched_photometer, tmp_pa
     )
 
     assert result.exit_code == 0, result.output
-    forced_targets = patched_photometer["forced_targets"]
+    forced_targets = patched_photometer.call_args.kwargs["forced_targets"]
     assert forced_targets.frame.name == "icrs"
 
 
@@ -807,11 +803,11 @@ def test_config_validate_bad(runner, tmp_path):
     assert result.output.strip() != ""
 
 
-def test_weights_print(runner, monkeypatch, tmp_path):
+def test_weights_print(runner, mocker, tmp_path):
     """Bare ``weights`` prints the cached default weights path."""
     cached = tmp_path / "centroid_15x15.npz"
     cached.write_bytes(b"npzdata")
-    monkeypatch.setattr(cli, "download_weights", lambda: str(cached))
+    mocker.patch("bandaid.cli.download_weights", return_value=str(cached))
 
     result = runner.invoke(cli.main, ["weights"])
 
@@ -819,11 +815,11 @@ def test_weights_print(runner, monkeypatch, tmp_path):
     assert str(cached) in result.output
 
 
-def test_weights_copy(runner, monkeypatch, tmp_path):
+def test_weights_copy(runner, mocker, tmp_path):
     """``weights -o DEST`` copies the cached ``.npz`` and prints the destination."""
     cached = tmp_path / "centroid_15x15.npz"
     cached.write_bytes(b"npzdata")
-    monkeypatch.setattr(cli, "download_weights", lambda: str(cached))
+    mocker.patch("bandaid.cli.download_weights", return_value=str(cached))
 
     dest = tmp_path / "copied.npz"
     result = runner.invoke(cli.main, ["weights", "-o", str(dest)])
@@ -833,11 +829,11 @@ def test_weights_copy(runner, monkeypatch, tmp_path):
     assert str(dest) in result.output
 
 
-def test_weights_copy_unwritable_is_clean_error(runner, monkeypatch, tmp_path):
+def test_weights_copy_unwritable_is_clean_error(runner, mocker, tmp_path):
     """``weights -o`` to an unwritable destination fails as a clean CLI error."""
     cached = tmp_path / "centroid_15x15.npz"
     cached.write_bytes(b"npzdata")
-    monkeypatch.setattr(cli, "download_weights", lambda: str(cached))
+    mocker.patch("bandaid.cli.download_weights", return_value=str(cached))
 
     dest = tmp_path / "nonexistent" / "copied.npz"  # parent dir does not exist
     result = runner.invoke(cli.main, ["weights", "-o", str(dest)])
