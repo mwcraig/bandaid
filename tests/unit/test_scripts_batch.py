@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from _helpers import _CONSISTENT_HEADER, _dummy_prep
+from _helpers import _CONSISTENT_HEADER, _dummy_prep, _make_tan_wcs
 from aavso_starlist_schema import StarListSet
 from astropy.table import Table
 
@@ -15,6 +15,49 @@ from bandaid.exceptions import (
     TooFewStarsError,
     WCSSolveError,
 )
+
+
+def _wcs_for_dummy_prep():
+    """Return a TAN WCS matching ``_dummy_prep``'s shape and (RA, Dec) center."""
+    prep = _dummy_prep()
+    return _make_tan_wcs(image_size=prep.shape, crval=prep.center, pixscale=2.4)
+
+
+def _fake_process_one_image_with_wcs(wcs, calls, *, fails_on=()):
+    """
+    Build a ``process_one_image`` stub recording its calls and carrying ``wcs``.
+
+    Every call that does not match a file in ``fails_on`` is appended to
+    ``calls`` (a list the caller supplies) as ``(args, kwargs)``, and every
+    returned table carries ``meta["wcs"] = wcs``.
+
+    Parameters
+    ----------
+    wcs : astropy.wcs.WCS
+        The WCS to stamp into every returned table's ``meta["wcs"]``.
+    calls : list
+        List to append each successful call's ``(args, kwargs)`` to, in call
+        order.
+    fails_on : collections.abc.Container of str, optional
+        Filenames for which the stub raises `WCSSolveError` instead of
+        returning a result. By default empty (every frame succeeds).
+
+    Returns
+    -------
+    collections.abc.Callable
+        A ``process_one_image``-compatible stub.
+    """
+
+    def _fake(file, *args: object, **kwargs: object):
+        if file in fails_on:
+            msg = "could not solve"
+            raise WCSSolveError(msg, file=file)
+        calls.append((args, kwargs))
+        table = Table({"tot_count": [1.0]})
+        table.meta["wcs"] = wcs
+        return {"TR": table}
+
+    return _fake
 
 
 def _read_manifest(tmp_path):
@@ -210,6 +253,91 @@ class TestProcessBatch:
 
         # Only the second frame reaches the loader; the first came in preloaded.
         assert [call.args[0] for call in load_frame.call_args_list] == ["second.fits"]
+
+    def test_clips_photometry_catalog_after_first_solved_frame(self, mocker):
+        """
+        Frames after the first successfully solved one get only the in-frame stars.
+
+        `_dummy_prep`'s two photometry_coords sit one in-frame and one off-frame
+        against a WCS matching its shape/center: the first frame (which supplies
+        the WCS) still gets the full list, and every later frame gets the
+        clipped, single-star list (issue #115).
+        """
+        prep = _dummy_prep()
+        wcs = _wcs_for_dummy_prep()
+        calls = []
+        mocker.patch(
+            "bandaid.scripts.process_one_image",
+            side_effect=_fake_process_one_image_with_wcs(wcs, calls),
+        )
+
+        files = ["a.fits", "b.fits", "c.fits"]
+        scripts.process_batch(files, prep, user_specific_metadata={})
+
+        assert len(calls) == len(files)
+        _, first_kwargs = calls[0]
+        assert len(first_kwargs["input_photometry_coords"]) == len(
+            prep.photometry_coords
+        )
+        for later_args, later_kwargs in calls[1:]:
+            assert len(later_kwargs["input_photometry_coords"]) == 1
+            # prep.radecs (the WCS-solve reference list) is untouched by the clip.
+            assert later_args[1] is prep.radecs
+
+    def test_clip_deferred_until_first_successful_frame(self, mocker):
+        """
+        "First frame" means the first frame that solves, not literally frame 1.
+
+        When frame 1 raises `WCSSolveError` and is skipped, the clip is deferred
+        to the first frame that actually processes cleanly.
+        """
+        prep = _dummy_prep()
+        wcs = _wcs_for_dummy_prep()
+        calls = []
+        mocker.patch(
+            "bandaid.scripts.process_one_image",
+            side_effect=_fake_process_one_image_with_wcs(
+                wcs, calls, fails_on={"bad.fits"}
+            ),
+        )
+
+        files = ["bad.fits", "good1.fits", "good2.fits"]
+        scripts.process_batch(files, prep, user_specific_metadata={})
+
+        # bad.fits never reaches the stub's calls list (it raises before appending).
+        assert len(calls) == len(files) - 1
+        _, good1_kwargs = calls[0]
+        assert len(good1_kwargs["input_photometry_coords"]) == len(
+            prep.photometry_coords
+        )
+        _, good2_kwargs = calls[1]
+        assert len(good2_kwargs["input_photometry_coords"]) == 1
+
+    def test_no_wcs_in_meta_leaves_catalog_unclipped(self, mocker):
+        """
+        A result with no ``meta["wcs"]`` never triggers the clip.
+
+        Keeps existing stubbed ``process_one_image`` results (which carry no
+        WCS) valid: the catalog is passed through unchanged on every frame.
+        """
+        prep = _dummy_prep()
+        calls = []
+
+        def _fake_no_wcs(file, *args: object, **kwargs: object):  # noqa: ARG001
+            calls.append(kwargs)
+            return {"TR": Table({"tot_count": [1.0]})}
+
+        mocker.patch(
+            "bandaid.scripts.process_one_image",
+            side_effect=_fake_no_wcs,
+        )
+
+        files = ["a.fits", "b.fits", "c.fits"]
+        scripts.process_batch(files, prep, user_specific_metadata={})
+
+        assert len(calls) == len(files)
+        for kwargs in calls:
+            assert len(kwargs["input_photometry_coords"]) == len(prep.photometry_coords)
 
 
 @pytest.mark.usefixtures("_consistent_headers")

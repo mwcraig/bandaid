@@ -17,6 +17,7 @@ from bandaid.photometry import (
     N_IMAGE_STARS_ALIGN,
     WCS_MATCH_TOLERANCE,
     align,
+    clip_coords_to_frame,
 )
 
 
@@ -408,3 +409,80 @@ class TestAlign:
     def test_wcs_pointing_error_is_wcs_solve_error(self):
         """WCSPointingError is a WCSSolveError so the batch loop still skips."""
         assert issubclass(WCSPointingError, WCSSolveError)
+
+    # --- clip_coords_to_frame -----------------------------------------------
+    #
+    # A 500x500 frame at pixscale=2.4 arcsec/px, centered at (RA, Dec) =
+    # (10.0, 20.0). At the default 2' margin, the pixel margin is
+    # 2.0 * 60 / 2.4 = 50 px, so the frame plus margin spans pixel
+    # [-50, 549) in both axes (width - 1 + margin = 499 + 50 = 549).
+
+    def test_clip_coords_to_frame_keeps_star_at_frame_center(self):
+        """A star projecting to the frame center is kept."""
+        wcs = _make_tan_wcs(image_size=(500, 500), pixscale=2.4)
+        center = SkyCoord([wcs.pixel_to_world(249, 249)])
+
+        mask = clip_coords_to_frame(center, wcs, (500, 500))
+
+        assert mask.tolist() == [True]
+
+    def test_clip_coords_to_frame_drops_star_far_outside(self):
+        """A star far outside the frame plus margin is dropped."""
+        wcs = _make_tan_wcs(image_size=(500, 500), pixscale=2.4)
+        far = SkyCoord([wcs.pixel_to_world(5000, 5000)])
+
+        mask = clip_coords_to_frame(far, wcs, (500, 500))
+
+        assert mask.tolist() == [False]
+
+    def test_clip_coords_to_frame_keeps_star_just_outside_edge_within_margin(self):
+        """A star just past the frame edge but inside the margin is kept."""
+        wcs = _make_tan_wcs(image_size=(500, 500), pixscale=2.4)
+        # Pixel 548 is past the width-1=499 edge but inside the 549 margin bound.
+        just_outside = SkyCoord([wcs.pixel_to_world(548, 249)])
+
+        mask = clip_coords_to_frame(just_outside, wcs, (500, 500))
+
+        assert mask.tolist() == [True]
+
+    def test_clip_coords_to_frame_drops_star_just_beyond_margin(self):
+        """A star just past the margin bound is dropped."""
+        wcs = _make_tan_wcs(image_size=(500, 500), pixscale=2.4)
+        # Pixel 550 is past the 549 margin bound.
+        beyond = SkyCoord([wcs.pixel_to_world(550, 249)])
+
+        mask = clip_coords_to_frame(beyond, wcs, (500, 500))
+
+        assert mask.tolist() == [False]
+
+    def test_clip_coords_to_frame_drops_non_finite_projection(self):
+        """A star that fails to project (antipodal point) is dropped, not raised."""
+        wcs = _make_tan_wcs(image_size=(500, 500), crval=(10.0, 20.0), pixscale=2.4)
+        antipode = SkyCoord([SkyCoord(ra=190.0 * u.deg, dec=-20.0 * u.deg)])
+
+        mask = clip_coords_to_frame(antipode, wcs, (500, 500))
+
+        assert mask.tolist() == [False]
+
+    def test_clip_coords_to_frame_zero_margin_is_bare_bounds(self):
+        """margin_arcmin=0 reduces the mask to the bare in-frame pixel bounds."""
+        wcs = _make_tan_wcs(image_size=(500, 500), pixscale=2.4)
+        inside = wcs.pixel_to_world(0.0, 0.0)
+        # Past width - 1 == 499 (the exclusive upper bound with no margin).
+        outside = wcs.pixel_to_world(500.0, 0.0)
+        coords = SkyCoord([inside, outside])
+
+        mask = clip_coords_to_frame(coords, wcs, (500, 500), margin_arcmin=0)
+
+        assert mask.tolist() == [True, False]
+
+    def test_clip_coords_to_frame_mask_matches_input_length(self):
+        """The returned mask has exactly one entry per input coordinate."""
+        wcs = _make_tan_wcs(image_size=(500, 500), pixscale=2.4)
+        coords = SkyCoord(
+            [wcs.pixel_to_world(x, 249) for x in (100.0, 5000.0, -5000.0)]
+        )
+
+        mask = clip_coords_to_frame(coords, wcs, (500, 500))
+
+        assert len(mask) == len(coords)

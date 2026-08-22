@@ -62,6 +62,7 @@ __all__ = [
     "calibration_sequence",
     "centroid_drift_flag",
     "centroid_stars",
+    "clip_coords_to_frame",
     "eloy_to_starlist",
     "good_star_mask",
     "measure_photometry",
@@ -94,6 +95,12 @@ N_GAIA_STARS_ALIGN = 15
 N_GAIA_STARS_ALIGN_RETRY = 20
 # Pixel tolerance handed to twirl's WCS solve.
 WCS_MATCH_TOLERANCE = 1
+
+# Margin (arcmin) added around a frame's footprint by `clip_coords_to_frame`
+# when reducing the photometry catalog to the first solved frame (issue #115).
+# Covers the few-arcmin Seestar pointing drift over a night; a star that drifts
+# off-frame later is still removed per frame by `good_star_mask`.
+FOOTPRINT_MARGIN_ARCMIN = 2.0
 
 # Minimum number of detected stars required before an image can be processed.
 MIN_DETECTED_STARS = 3
@@ -1495,6 +1502,50 @@ def align(
     return aligned_coords, this_wcs
 
 
+def clip_coords_to_frame(coords, wcs, shape, *, margin_arcmin=FOOTPRINT_MARGIN_ARCMIN):
+    """
+    Return a mask of which `coords` project inside a frame, plus a margin.
+
+    Used to reduce the batch's photometry catalog to the footprint of the
+    first solved frame (issue #115): projecting `coords` through `wcs` exactly
+    as `align` does and keeping only those that land within `shape` plus
+    `margin_arcmin` avoids repeating detection/centroiding/photometry work on
+    stars that can never appear in this field.
+
+    Parameters
+    ----------
+    coords : astropy.coordinates.SkyCoord
+        Sky coordinates to test.
+    wcs : astropy.wcs.WCS
+        WCS to project `coords` through.
+    shape : tuple of int
+        Frame shape ``(height, width)`` in pixels.
+    margin_arcmin : float, optional
+        Margin, in arcminutes, added around the frame bounds before the
+        in-frame test. Converted to pixels via the WCS plate scale. Defaults
+        to the module-level `FOOTPRINT_MARGIN_ARCMIN`.
+
+    Returns
+    -------
+    numpy.ndarray
+        Boolean mask, the same length as `coords`, True for coordinates that
+        project within the frame plus margin. A coordinate that fails to
+        project (a non-finite pixel position) is False.
+    """
+    height, width = shape
+    margin_px = margin_arcmin * 60.0 / _wcs_pixscale_arcsec(wcs)
+    x, y = wcs.world_to_pixel(coords)
+    x = np.atleast_1d(x)
+    y = np.atleast_1d(y)
+    with np.errstate(invalid="ignore"):
+        return (
+            (x >= -margin_px)
+            & (x < width - 1 + margin_px)
+            & (y >= -margin_px)
+            & (y < height - 1 + margin_px)
+        )
+
+
 def centroid_stars(calibrated_data, aligned_coords, cnn):
     """
     Centroid stars at the given pixel coordinates.
@@ -2127,9 +2178,12 @@ def process_one_image(
     -------
     dict of {str: Table}
         Dictionary mapping each filter name to the photometry table for that
-        filter. If the frame cannot be processed, the `FrameError` raised by
-        `prepare_image` (too few stars, unsolvable WCS, ...) propagates
-        unchanged; `process_batch` catches it, logs it, and skips the frame.
+        filter. Each table's ``meta["wcs"]`` carries this frame's solved WCS
+        (kept out of ``meta["full_image_meta"]``, which is serialized to disk;
+        see `clip_coords_to_frame`). If the frame cannot be processed, the
+        `FrameError` raised by `prepare_image` (too few stars, unsolvable WCS,
+        ...) propagates unchanged; `process_batch` catches it, logs it, and
+        skips the frame.
 
     Notes
     -----
@@ -2157,6 +2211,12 @@ def process_one_image(
         data = build_photometry_table(img, mask, config=config)
         data.meta["filter"] = filter_name
         data.meta["full_image_meta"] = img.metadata
+        # Top-level meta key, not full_image_meta: full_image_meta becomes
+        # StarList metadata and is serialized to disk by writers.py, and a WCS
+        # object there would break/bloat .star output. This key is read by
+        # process_batch to clip the photometry catalog to the frame footprint
+        # (issue #115); it is ignored by the writer, which reads named keys only.
+        data.meta["wcs"] = img.wcs
         if filter_name == "L4":
             # L4 is the channel sum of TR/TG/TB, so those must already have been
             # processed. generate_bayer_masks orders L4 last to guarantee this;

@@ -745,6 +745,31 @@ class TestProcessOneImage:
 
         assert spy.call_count == 1
 
+    def test_solved_wcs_is_in_meta_but_not_full_image_meta(
+        self, make_test_image, tmp_path, mocker, bayer_masks_rggb
+    ):
+        """
+        Every returned table carries the solved WCS in top-level meta.
+
+        `process_batch` needs the solved WCS to clip the photometry catalog to
+        the frame footprint (issue #115) without it leaking into
+        ``full_image_meta``, which becomes `StarList` metadata and is
+        serialized to disk -- a WCS object there would break/bloat `.star`
+        output.
+        """
+        wcs_mock, _ = _stub_wcs_and_centroid(mocker)
+        image = _detectable_image(make_test_image)
+        path = _write_seestar_fits(tmp_path / "wcs_meta.fits", image)
+        masks = bayer_masks_rggb(image.shape, append_l4=True)
+
+        result = process_one_image(path, {}, _REF_RADECS, None, masks)
+
+        solved_wcs = wcs_mock.return_value
+        assert set(result) == {"TR", "TG", "TB", "L4"}
+        for table in result.values():
+            assert table.meta["wcs"] is solved_wcs
+            assert "wcs" not in table.meta["full_image_meta"]
+
 
 # --- Real-frame smoke test -------------------------------------------------
 

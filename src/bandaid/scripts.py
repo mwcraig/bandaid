@@ -17,7 +17,7 @@ functions: no shared mutable state, no "is it done yet?" bookkeeping.
 import csv
 import glob
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import astropy.units as u
@@ -42,6 +42,7 @@ from .photometry import (
     LoadedFrame,
     _load_frame,
     calibration_sequence,
+    clip_coords_to_frame,
     good_star_mask,
     metadata_from_header,
     neighbor_contamination_flag_sky,
@@ -1034,6 +1035,80 @@ def _ensure_output_dirs(output_dir, output_paths):
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
 
+def clip_prep_to_frame(prep, wcs):
+    """
+    Reduce ``prep.photometry_coords`` to those that project inside a frame.
+
+    Called once per batch, after the first successfully solved frame, so every
+    later frame skips detection/centroiding/photometry work for the roughly
+    half of `~bandaid.photometry.prepare_batch`'s cone-queried catalog that
+    cannot appear in this field (issue #115). ``prep.radecs`` (the WCS-solve
+    reference list) is left untouched.
+
+    Parameters
+    ----------
+    prep : BatchPrep
+        The batch prep bundle to reduce.
+    wcs : astropy.wcs.WCS
+        The solved WCS whose footprint (``prep.shape`` plus the
+        `~bandaid.photometry.FOOTPRINT_MARGIN_ARCMIN` margin) defines the keep
+        mask.
+
+    Returns
+    -------
+    BatchPrep
+        A copy of `prep` with ``photometry_coords`` reduced to the in-frame
+        subset; every other field is unchanged.
+    """
+    keep = clip_coords_to_frame(prep.photometry_coords, wcs, prep.shape)
+    logger.info(
+        "clipped photometry catalog to frame footprint: %d of %d kept",
+        keep.sum(),
+        keep.size,
+    )
+    return replace(prep, photometry_coords=prep.photometry_coords[keep])
+
+
+def _clip_prep_once(prep, by_filter, clipped):
+    """
+    Clip ``prep`` to a solved frame's footprint, but only the first time.
+
+    Called unconditionally, once per successfully processed frame in
+    `process_batch`'s loop, so the "has this already happened" branch lives
+    here instead of adding to the loop's own complexity. "First frame" means
+    the first frame that solves cleanly, not literally the first frame in the
+    batch: an earlier frame can raise `WCSSolveError` and be skipped, so
+    `clipped` -- not the loop index -- tracks whether the clip has happened
+    yet.
+
+    Parameters
+    ----------
+    prep : BatchPrep
+        The current batch prep bundle.
+    by_filter : dict of {str: Table}
+        This frame's `process_one_image` result, whose per-filter tables carry
+        the solved WCS in ``meta["wcs"]`` (absent -- e.g. a test stub -- when
+        no WCS is available yet).
+    clipped : bool
+        Whether the catalog has already been clipped by an earlier frame.
+
+    Returns
+    -------
+    BatchPrep
+        `prep`, clipped to this frame's footprint when this is the first
+        solved frame and it carries a WCS; `prep` unchanged otherwise.
+    bool
+        True once the catalog has been clipped by this or an earlier call;
+        matches the input `clipped` once it is True.
+    """
+    if clipped:
+        return prep, True
+    wcs = next(iter(by_filter.values())).meta.get("wcs")
+    if wcs is not None:
+        prep = clip_prep_to_frame(prep, wcs)
+    return prep, True
+
+
 def process_batch(
     files,
     prep,
@@ -1131,12 +1206,25 @@ def process_batch(
     Each frame is opened exactly once: the first frame reuses ``first_frame``
     when the caller provides it, and every other frame is loaded fresh here
     (issue #44).
+
+    After the first frame that solves cleanly, ``prep.photometry_coords`` is
+    reduced to the stars that project inside that frame's footprint (plus a
+    margin; see `clip_prep_to_frame`) and every later frame reuses the reduced
+    list -- a star outside the first solved frame's footprint plus margin
+    cannot reappear later in the run (issue #115). ``prep.radecs`` (the
+    WCS-solve reference list) is unaffected, and per-frame output is unchanged
+    for stars `good_star_mask` would keep anyway.
     """
     results = {}
     # One QA record per frame (ok/skipped/error), written to a manifest at the
     # end when in write-to-disk mode and the caller has not opted out.
     write_manifest = output_dir is not None and write_qa_manifest
     manifest_records = []
+    # True once prep.photometry_coords has been clipped to the first solved
+    # frame's footprint (issue #115). Tracked with a flag rather than
+    # ``idx == 1`` because the first frame can raise WCSSolveError and be
+    # skipped; the clip is deferred to whichever frame solves first.
+    clipped = False
     # Materialize the frames so the output names can be planned up front: two
     # frames sharing a basename must not collide on disk (see _unique_output_paths).
     files = list(files)
@@ -1193,16 +1281,21 @@ def process_batch(
             )
             continue
         else:
-            # The frame processed cleanly. Writing its output is deliberately
-            # outside the try above: a write failure (bad output_dir,
-            # permissions, full disk) is systemic, not a property of this
-            # frame, so it must abort the run rather than be skipped as a
-            # "bad frame". A writer can still raise a frame-quality error at
-            # write time, though -- the default writer raises
-            # NoUsableStarsError when no star survives filtering in any
-            # filter (#78) -- so
-            # split on exception type: a FrameError is this frame's problem
-            # and is skipped like any other, everything else propagates.
+            # The frame processed cleanly. The frame that supplies the WCS keeps
+            # the full photometry_coords list (it is already processed);
+            # good_star_mask still applies the exact per-frame bounds cut, so
+            # its output is unaffected. Every later frame reuses the clipped
+            # list (issue #115).
+            prep, clipped = _clip_prep_once(prep, by_filter, clipped)
+            # Writing the frame's output is deliberately outside the try
+            # above: a write failure (bad output_dir, permissions, full disk)
+            # is systemic, not a property of this frame, so it must abort the
+            # run rather than be skipped as a "bad frame". A writer can still
+            # raise a frame-quality error at write time, though -- the default
+            # writer raises NoUsableStarsError when no star survives filtering
+            # in any filter (#78) -- so split on exception type: a FrameError
+            # is this frame's problem and is skipped like any other,
+            # everything else propagates.
             manifest_records.append(
                 _qa_record_ok(file, by_filter, forced_targets=prep.forced_targets)
             )
