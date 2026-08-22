@@ -31,12 +31,12 @@ from bandaid.photometry import (
 
 
 class TestBuildPhotometryTable:
-    def test_uses_photometry_coords_when_provided(self, monkeypatch):
+    def test_uses_photometry_coords_when_provided(self, mocker):
         """RA/Dec come straight from photometry_coords, not the WCS round-trip."""
         n_stars = 3
-        monkeypatch.setattr(
+        mocker.patch(
             "bandaid.photometry.measure_photometry",
-            _fake_phot_factory(n_stars),
+            side_effect=_fake_phot_factory(n_stars),
         )
         wcs = _make_tan_wcs()
         # Centroids near the image center; their WCS sky positions are close to
@@ -63,12 +63,12 @@ class TestBuildPhotometryTable:
         assert len(table) == n_stars
         assert len(table["ra"]) == len(table["x"])
 
-    def test_airmass_comes_from_resolved_metadata(self, monkeypatch):
+    def test_airmass_comes_from_resolved_metadata(self, mocker):
         """The airmass column uses img.metadata, not a raw header re-read (#59)."""
         n_stars = 3
-        monkeypatch.setattr(
+        mocker.patch(
             "bandaid.photometry.measure_photometry",
-            _fake_phot_factory(n_stars),
+            side_effect=_fake_phot_factory(n_stars),
         )
         wcs = _make_tan_wcs()
         centroid_coords = np.array([[245.0, 250.0], [255.0, 260.0], [250.0, 240.0]])
@@ -80,12 +80,12 @@ class TestBuildPhotometryTable:
         # raw-header AIRMASS of 9.9. Only the resolved metadata may win.
         np.testing.assert_allclose(table["airmass"], 1.2)
 
-    def test_falls_back_to_wcs_when_no_photometry_coords(self, monkeypatch):
+    def test_falls_back_to_wcs_when_no_photometry_coords(self, mocker):
         """With no photometry_coords, RA/Dec are derived from the image WCS."""
         n_stars = 3
-        monkeypatch.setattr(
+        mocker.patch(
             "bandaid.photometry.measure_photometry",
-            _fake_phot_factory(n_stars),
+            side_effect=_fake_phot_factory(n_stars),
         )
         wcs = _make_tan_wcs()
         centroid_coords = np.array([[245.0, 250.0], [255.0, 260.0], [250.0, 240.0]])
@@ -154,12 +154,12 @@ class TestBuildPhotometryTable:
         custom_table = build_photometry_table(img, mask=None, config=custom_config)
         assert custom_table.meta["min_snr"] == custom_min_snr
 
-    def test_centroid_drift_column(self, monkeypatch):
+    def test_centroid_drift_column(self, mocker):
         """Output has a bool ``centroid_drift`` column reflecting per-star drift."""
         n_stars = 3
-        monkeypatch.setattr(
+        mocker.patch(
             "bandaid.photometry.measure_photometry",
-            _fake_phot_factory(n_stars),
+            side_effect=_fake_phot_factory(n_stars),
         )
         wcs = _make_tan_wcs()
         # fwhm in _make_image_data is 2.3, so max_allowed = min(1.0 * 2.3, 4.0)
@@ -191,11 +191,11 @@ class TestBuildPhotometryTable:
 
     # --- Regression tests for issue #57: ``time`` is the mid-exposure JD. ---
 
-    def _time_column(self, monkeypatch, metadata):
+    def _time_column(self, mocker, metadata):
         """Build a one-star table overlaying the given metadata; return ``time``."""
-        monkeypatch.setattr(
+        mocker.patch(
             "bandaid.photometry.measure_photometry",
-            _fake_phot_factory(1),
+            side_effect=_fake_phot_factory(1),
         )
         img = _make_image_data(_make_tan_wcs(), np.array([[250.0, 250.0]]), None)
         # Overlay rather than replace, keeping _make_image_data's baseline
@@ -204,7 +204,7 @@ class TestBuildPhotometryTable:
         table = build_photometry_table(img, mask=None)
         return float(table["time"][0])
 
-    def test_time_is_mid_exposure_for_stacked_frames(self, monkeypatch):
+    def test_time_is_mid_exposure_for_stacked_frames(self, mocker):
         """``time`` is the obs_time start plus half the effective stack exposure."""
         # 60 subs of 10 s: mid-exposure is 300 s after the obs_time start
         # ("2020-01-01T00:00:00" in _make_image_data's metadata). Recording the
@@ -214,7 +214,7 @@ class TestBuildPhotometryTable:
         start_jd = Time("2020-01-01T00:00:00").jd
 
         time = self._time_column(
-            monkeypatch,
+            mocker,
             {"egain": 1.0, "exposure": exposure, "stack": stack},
         )
 
@@ -223,24 +223,24 @@ class TestBuildPhotometryTable:
         # And it is distinguishable from the old start-time convention.
         assert time != pytest.approx(start_jd, abs=1.0 / 86400.0)
 
-    def test_time_mid_exposure_defaults_to_single_sub(self, monkeypatch):
+    def test_time_mid_exposure_defaults_to_single_sub(self, mocker):
         """Without a ``stack`` count, ``time`` shifts by half one exposure."""
         exposure = 10.0
         start_jd = Time("2020-01-01T00:00:00").jd
 
-        time = self._time_column(monkeypatch, {"egain": 1.0, "exposure": exposure})
+        time = self._time_column(mocker, {"egain": 1.0, "exposure": exposure})
 
         assert time == pytest.approx(start_jd + exposure / 2.0 / 86400.0, abs=1e-9)
 
-    def test_time_falls_back_to_start_when_exposure_unknown(self, monkeypatch):
+    def test_time_falls_back_to_start_when_exposure_unknown(self, mocker):
         """With no exposure metadata the obs_time start is recorded."""
         start_jd = Time("2020-01-01T00:00:00").jd
 
-        time = self._time_column(monkeypatch, {"egain": 1.0})
+        time = self._time_column(mocker, {"egain": 1.0})
 
         assert time == pytest.approx(start_jd, abs=1e-9)
 
-    def test_time_comes_from_resolved_obs_time(self, monkeypatch):
+    def test_time_comes_from_resolved_obs_time(self, mocker):
         """``time`` uses the header_map-resolved obs_time, not raw DATE-OBS (#59)."""
         # A dialect whose observation time lives under DATE-LOC; the raw header
         # in _make_image_data still carries a (different) DATE-OBS, which must
@@ -253,7 +253,7 @@ class TestBuildPhotometryTable:
         header["DATE-LOC"] = "2021-05-05T05:00:00"
         metadata = metadata_from_header(header, profile=profile)
 
-        time = self._time_column(monkeypatch, metadata)
+        time = self._time_column(mocker, metadata)
 
         assert time == pytest.approx(Time("2021-05-05T05:00:00").jd, abs=1e-9)
 
@@ -471,7 +471,7 @@ class TestCalculateL4Quantities:
         assert np.isnan(final_data["bkgd_count"][0])
         assert np.isnan(final_data["snr"][0])
 
-    def test_recombined_l4_table_carries_no_sky_column(self, monkeypatch):
+    def test_recombined_l4_table_carries_no_sky_column(self, mocker):
         """
         The recombined L4 table has no ``sky`` column at all (#52).
 
@@ -482,9 +482,9 @@ class TestCalculateL4Quantities:
         it must not appear anywhere in the L4 output.
         """
         n_stars = 2
-        monkeypatch.setattr(
+        mocker.patch(
             "bandaid.photometry.measure_photometry",
-            _fake_phot_factory(n_stars),
+            side_effect=_fake_phot_factory(n_stars),
         )
         coords = np.array([[245.0, 250.0], [255.0, 260.0]])
         # The real L4 input: a full-frame (mask=None) photometry table.

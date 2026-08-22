@@ -69,9 +69,7 @@ def _grid_star_image(make_test_image, fwhm, *, jitter=1.0, seed=SEED):
 class TestFwhmFromCoords:
     """The FWHM-from-cutouts helper, with and without CNN re-centroiding."""
 
-    def test_cnn_registration_recovers_injected_fwhm(
-        self, make_test_image, monkeypatch
-    ):
+    def test_cnn_registration_recovers_injected_fwhm(self, make_test_image, mocker):
         """
         A perfect CNN recovers the injected FWHM despite misregistered input.
 
@@ -82,9 +80,9 @@ class TestFwhmFromCoords:
         image, true_coords, jittered = _grid_star_image(make_test_image, inject_fwhm)
 
         # Perfect CNN: ballet_centroid hands back the exact star centers.
-        monkeypatch.setattr(
+        mocker.patch(
             "bandaid.photometry.ballet_centroid",
-            lambda data, coords, cnn: true_coords,
+            return_value=true_coords,
         )
         fwhm_cnn = _fwhm_from_coords(image, jittered, max_adu=50000, cnn=object())
         assert fwhm_cnn == pytest.approx(inject_fwhm, rel=0.05)
@@ -100,9 +98,7 @@ class TestFwhmFromCoords:
         fwhm = _fwhm_from_coords(image, true_coords, max_adu=50000, cnn=None)
         assert fwhm == pytest.approx(inject_fwhm, rel=0.05)
 
-    def test_cap_prevents_faint_junk_from_inflating_fwhm(
-        self, make_test_image, monkeypatch
-    ):
+    def test_cap_prevents_faint_junk_from_inflating_fwhm(self, make_test_image, mocker):
         """
         Capping the fit to the brightest sources recovers the true FWHM.
 
@@ -157,7 +153,7 @@ class TestFwhmFromCoords:
             out[faint] += shift_rng.uniform(-3.0, 3.0, size=(int(faint.sum()), 2))
             return out
 
-        monkeypatch.setattr("bandaid.photometry.ballet_centroid", realistic_cnn)
+        mocker.patch("bandaid.photometry.ballet_centroid", side_effect=realistic_cnn)
         fwhm = _fwhm_from_coords(
             image, all_coords, max_adu=50000, cnn=object(), n_stars=bx.size
         )
@@ -325,23 +321,18 @@ class TestCentroidDriftFlag:
         assert not flag[1]
 
 
-def test_centroid_stars_delegates_to_ballet(monkeypatch):
+def test_centroid_stars_delegates_to_ballet(mocker):
     """
     centroid_stars forwards (data, coords, cnn) to centroid.ballet_centroid.
 
     The wrapper has no logic of its own and the real call loads a Ballet CNN
     from HuggingFace, so ballet_centroid is stubbed and call-through verified.
     """
-    recorded = {}
     result_sentinel = np.array([[1.0, 2.0]])
 
-    def fake_ballet_centroid(data, coords, cnn):
-        recorded["args"] = (data, coords, cnn)
-        return result_sentinel
-
-    monkeypatch.setattr(
+    ballet_centroid = mocker.patch(
         "bandaid.photometry.centroid.ballet_centroid",
-        fake_ballet_centroid,
+        return_value=result_sentinel,
     )
 
     data = np.zeros((10, 10))
@@ -350,6 +341,4 @@ def test_centroid_stars_delegates_to_ballet(monkeypatch):
     out = centroid_stars(data, coords, cnn)
 
     assert out is result_sentinel
-    assert recorded["args"][0] is data
-    assert recorded["args"][1] is coords
-    assert recorded["args"][2] is cnn
+    ballet_centroid.assert_called_once_with(data, coords, cnn)

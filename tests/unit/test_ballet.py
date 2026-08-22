@@ -200,7 +200,7 @@ class TestNumpyBalletOffline:
         ]
 
     @pytest.mark.parametrize("backend", _BACKENDS)
-    def test_chunking_matches_single_pass(self, tmp_path, monkeypatch, backend):
+    def test_chunking_matches_single_pass(self, tmp_path, mocker, backend):
         """Crossing chunk boundaries changes nothing, ragged final chunk included."""
         # Run through the selector so the jax wrapper sees the ragged final
         # chunk too -- which also proves a second compiled shape is harmless.
@@ -208,7 +208,7 @@ class TestNumpyBalletOffline:
         cutouts, _ = _make_synthetic_cutouts()  # 16 cutouts, one chunk today
 
         expected = model.centroid(cutouts)
-        monkeypatch.setattr(ballet, "_CHUNK", 5)  # 16 -> chunks of 5,5,5,1
+        mocker.patch("bandaid.ballet._CHUNK", 5)  # 16 -> chunks of 5,5,5,1
 
         # Round-off tolerance, not exact equality: einsum/BLAS reduction order
         # varies with batch size. A slicing or concatenate-ordering bug would
@@ -222,45 +222,45 @@ class TestNumpyBalletOffline:
                 np.zeros((1, 4, 6, 1), dtype=np.float32)
             )
 
-    def test_default_download_when_no_model_file(self, tmp_path, monkeypatch):
+    def test_default_download_when_no_model_file(self, tmp_path, mocker):
         """With no model_file, the weights come from ``download_weights``."""
         npz = _random_weights_npz(tmp_path)
-        calls = []
-        monkeypatch.setattr(ballet, "download_weights", lambda: calls.append(1) or npz)
+        download_weights_mock = mocker.patch(
+            "bandaid.ballet.download_weights", return_value=npz
+        )
 
         model = NumpyBallet()
 
-        assert calls == [1]
+        download_weights_mock.assert_called_once()
         expected = np.load(npz)
         np.testing.assert_array_equal(
             model.params["Conv_0"]["kernel"], expected["Conv_0_kernel"]
         )
 
-    def test_download_weights_targets_ballet_repo(self, monkeypatch):
+    def test_download_weights_targets_ballet_repo(self, monkeypatch, mocker):
         """``download_weights`` asks the hub for the pinned Ballet npz, xet off."""
-        import huggingface_hub  # noqa: PLC0415
-
+        # monkeypatch is for the env var (see below); mocker for the hub call.
         # setenv first so monkeypatch records a restore even when the var was
         # unset; a bare delenv(raising=False) of a missing var restores nothing
         # and the setdefault inside download_weights would leak past teardown.
+        # monkeypatch (not mocker) because it restores env vars reliably on
+        # teardown; mocker.patch has no equivalent for os.environ.
         monkeypatch.setenv("HF_HUB_DISABLE_XET", "placeholder")
         monkeypatch.delenv("HF_HUB_DISABLE_XET")
-        recorded = {}
 
-        def _fake_download(repo_id, filename, revision):
-            recorded["repo_id"] = repo_id
-            recorded["filename"] = filename
-            recorded["revision"] = revision
-            return "/cached/weights.npz"
-
-        monkeypatch.setattr(huggingface_hub, "hf_hub_download", _fake_download)
+        # download_weights does `from huggingface_hub import hf_hub_download`
+        # inside the function body on every call, so the name is looked up on
+        # the huggingface_hub module itself, not on bandaid.ballet.
+        hf_hub_download = mocker.patch(
+            "huggingface_hub.hf_hub_download", return_value="/cached/weights.npz"
+        )
 
         assert download_weights() == "/cached/weights.npz"
-        assert recorded == {
-            "repo_id": _BALLET_HF_REPO_ID,
-            "filename": _BALLET_WEIGHTS_FILENAME,
-            "revision": _BALLET_WEIGHTS_REVISION,
-        }
+        hf_hub_download.assert_called_once_with(
+            repo_id=_BALLET_HF_REPO_ID,
+            filename=_BALLET_WEIGHTS_FILENAME,
+            revision=_BALLET_WEIGHTS_REVISION,
+        )
         assert os.environ["HF_HUB_DISABLE_XET"] == "1"
 
 
@@ -270,7 +270,8 @@ class TestQuietHfXet:
     def test_sets_disable_xet_when_unset(self, monkeypatch):
         """With no user setting, xet is disabled to avoid its stderr warning."""
         # setenv-then-delenv so teardown restores the unset state (see
-        # test_download_weights_targets_ballet_repo).
+        # test_download_weights_targets_ballet_repo). monkeypatch, not mocker,
+        # because it restores env vars reliably; mocker has no equivalent.
         monkeypatch.setenv("HF_HUB_DISABLE_XET", "placeholder")
         monkeypatch.delenv("HF_HUB_DISABLE_XET")
         _quiet_hf_xet()
@@ -278,6 +279,7 @@ class TestQuietHfXet:
 
     def test_preserves_user_value(self, monkeypatch):
         """A user who set the var (e.g. to keep xet) is never overridden."""
+        # monkeypatch (not mocker) restores env vars reliably on teardown.
         monkeypatch.setenv("HF_HUB_DISABLE_XET", "0")
         _quiet_hf_xet()
         assert os.environ["HF_HUB_DISABLE_XET"] == "0"
@@ -289,6 +291,7 @@ class TestBackendSelection:
     @pytest.fixture(autouse=True)
     def _ignore_developer_env(self, monkeypatch):
         """Ignore a ``BANDAID_BALLET_BACKEND`` set in the developer's shell."""
+        # monkeypatch, not mocker: it restores the env var reliably on teardown.
         monkeypatch.delenv(_BACKEND_ENV, raising=False)
 
     def test_numpy_backend_uses_the_numpy_engine(self, tmp_path):
@@ -309,13 +312,15 @@ class TestBackendSelection:
             ((), "numpy"),
         ],
     )
-    def test_auto_requires_both_jax_and_flax(self, monkeypatch, installed, expected):
+    def test_auto_requires_both_jax_and_flax(self, mocker, installed, expected):
         """Auto picks jax only when both jax and flax import-resolve."""
         real_find_spec = importlib.util.find_spec
-        monkeypatch.setattr(
-            importlib.util,
-            "find_spec",
-            lambda name: (
+        # bandaid.ballet calls importlib.util.find_spec via its own `import
+        # importlib.util`, so the name is looked up on the shared stdlib
+        # module, not on bandaid.ballet.
+        mocker.patch(
+            "importlib.util.find_spec",
+            side_effect=lambda name: (
                 (name in installed) or None
                 if name in ("jax", "flax")
                 else real_find_spec(name)
@@ -325,9 +330,9 @@ class TestBackendSelection:
         assert _jax_available() is (expected == "jax")
         assert _resolve_backend("auto")[0] == expected
 
-    def test_explicit_jax_without_jax_raises(self, monkeypatch, tmp_path):
+    def test_explicit_jax_without_jax_raises(self, mocker, tmp_path):
         """``backend="jax"`` is strict: it never degrades to numpy silently."""
-        monkeypatch.setattr(ballet, "_jax_available", lambda: False)
+        mocker.patch("bandaid.ballet._jax_available", return_value=False)
 
         with pytest.raises(ImportError, match=r"bandaid\[jax\]"):
             _resolve_backend("jax")
@@ -335,9 +340,10 @@ class TestBackendSelection:
         with pytest.raises(ImportError, match=r"bandaid\[jax\]"):
             Ballet(model_file=_random_weights_npz(tmp_path), backend="jax")
 
-    def test_env_var_is_honoured_under_auto(self, monkeypatch):
+    def test_env_var_is_honoured_under_auto(self, monkeypatch, mocker):
         """The env override wins over "auto", and says so in the reason."""
-        monkeypatch.setattr(ballet, "_jax_available", lambda: True)
+        mocker.patch("bandaid.ballet._jax_available", return_value=True)
+        # monkeypatch: env var, restored reliably on teardown.
         monkeypatch.setenv(_BACKEND_ENV, "numpy")
 
         backend, reason = _resolve_backend("auto")
@@ -345,16 +351,18 @@ class TestBackendSelection:
         assert backend == "numpy"
         assert _BACKEND_ENV in reason
 
-    def test_explicit_backend_beats_env_var(self, monkeypatch):
+    def test_explicit_backend_beats_env_var(self, monkeypatch, mocker):
         """An explicit ``backend=`` argument outranks the env override."""
-        monkeypatch.setattr(ballet, "_jax_available", lambda: True)
+        mocker.patch("bandaid.ballet._jax_available", return_value=True)
+        # monkeypatch: env var, restored reliably on teardown.
         monkeypatch.setenv(_BACKEND_ENV, "jax")
 
         assert _resolve_backend("numpy")[0] == "numpy"
 
-    def test_env_var_jax_without_jax_raises(self, monkeypatch):
+    def test_env_var_jax_without_jax_raises(self, monkeypatch, mocker):
         """Asking for jax via the env var is as strict as asking in code."""
-        monkeypatch.setattr(ballet, "_jax_available", lambda: False)
+        mocker.patch("bandaid.ballet._jax_available", return_value=False)
+        # monkeypatch: env var, restored reliably on teardown.
         monkeypatch.setenv(_BACKEND_ENV, "jax")
 
         with pytest.raises(ImportError, match=r"bandaid\[jax\]"):
@@ -368,13 +376,15 @@ class TestBackendSelection:
 
     def test_unknown_env_value_raises_value_error(self, monkeypatch):
         """A typo in the env override is reported, naming the env var."""
+        # monkeypatch: env var, restored reliably on teardown.
         monkeypatch.setenv(_BACKEND_ENV, "torch")
         with pytest.raises(ValueError, match=f"unknown Ballet backend.*{_BACKEND_ENV}"):
             _resolve_backend("auto")
 
-    def test_empty_env_value_is_treated_as_unset(self, monkeypatch):
+    def test_empty_env_value_is_treated_as_unset(self, monkeypatch, mocker):
         """``BANDAID_BALLET_BACKEND=`` is how a shell clears the override."""
-        monkeypatch.setattr(ballet, "_jax_available", lambda: False)
+        mocker.patch("bandaid.ballet._jax_available", return_value=False)
+        # monkeypatch: env var, restored reliably on teardown.
         monkeypatch.setenv(_BACKEND_ENV, "")
 
         assert _resolve_backend("auto") == ("numpy", "jax/flax not installed")
@@ -392,15 +402,16 @@ class TestBackendSelection:
         assert len(messages) == 1
         assert "numpy" in messages[0]
 
-    def test_default_weights_come_from_our_pinned_download(self, tmp_path, monkeypatch):
+    def test_default_weights_come_from_our_pinned_download(self, tmp_path, mocker):
         """With no ``model_file``, the selector uses bandaid's pinned download."""
         npz = _random_weights_npz(tmp_path)
-        calls = []
-        monkeypatch.setattr(ballet, "download_weights", lambda: calls.append(1) or npz)
+        download_weights_mock = mocker.patch(
+            "bandaid.ballet.download_weights", return_value=npz
+        )
 
         model = Ballet(backend="numpy")
 
-        assert calls == [1]
+        download_weights_mock.assert_called_once()
         expected = np.load(npz)
         np.testing.assert_array_equal(
             model._engine.params["Conv_0"]["kernel"],  # noqa: SLF001
@@ -430,20 +441,23 @@ class TestJaxBackend:
 
     def test_auto_selects_jax_when_installed(self, tmp_path, monkeypatch):
         """In an environment with jax and flax, "auto" really picks jax."""
+        # monkeypatch: env var, restored reliably on teardown.
         monkeypatch.delenv(_BACKEND_ENV, raising=False)
         model = Ballet(model_file=_random_weights_npz(tmp_path))
         assert model.backend == "jax"
 
-    def test_eloy_never_downloads_its_own_weights(self, tmp_path, monkeypatch):
+    def test_eloy_never_downloads_its_own_weights(self, tmp_path, mocker):
         """Eloy's unpinned ``download_weights`` must never be reached."""
         import eloy.ballet.model  # noqa: PLC0415
 
         npz = _random_weights_npz(tmp_path)
-        monkeypatch.setattr(ballet, "download_weights", lambda: npz)
-        monkeypatch.setattr(
-            eloy.ballet.model,
-            "download_weights",
-            lambda: pytest.fail("eloy's unpinned download_weights was used"),
+        mocker.patch("bandaid.ballet.download_weights", return_value=npz)
+
+        def _fail_if_called():
+            pytest.fail("eloy's unpinned download_weights was used")
+
+        mocker.patch.object(
+            eloy.ballet.model, "download_weights", side_effect=_fail_if_called
         )
 
         assert Ballet(backend="jax").backend == "jax"

@@ -118,7 +118,7 @@ class TestExpandFramePaths:
 class TestPhotometerFrames:
     """Unit tests for the high-level ``photometer_frames`` convenience entry point."""
 
-    def test_expands_builds_cnn_and_wires_both_steps(self, monkeypatch, tmp_path):
+    def test_expands_builds_cnn_and_wires_both_steps(self, mocker, tmp_path):
         """It expands the args, builds the CNN from weights, and threads both steps."""
         night = tmp_path / "night"
         night.mkdir()
@@ -127,48 +127,26 @@ class TestPhotometerFrames:
         weights = tmp_path / "w.npz"
         weights.write_bytes(b"npz")
 
-        calls = {}
         cnn_sentinel = object()
         prep_sentinel = object()
         frame_sentinel = object()
-        loads = []
 
-        def fake_load_frame(file):
-            loads.append(file)
-            return frame_sentinel
-
-        def fake_ballet(model_file=None):
-            calls["ballet"] = model_file
-            return cnn_sentinel
-
-        def fake_prepare(
-            first_file,
-            *,
-            cnn,
-            config=None,
-            append_l4=False,
-            forced_targets=None,
-            frame=None,
-        ):
-            calls["prepare"] = {
-                "first_file": first_file,
-                "cnn": cnn,
-                "config": config,
-                "append_l4": append_l4,
-                "forced_targets": forced_targets,
-                "frame": frame,
-            }
-            return prep_sentinel
-
-        def fake_process(files, prep, **kwargs: object):
-            files = list(files)
-            calls["process"] = {"files": files, "prep": prep, "kwargs": kwargs}
+        def fake_process(files, _prep, **_kwargs: object):
+            # `files` is already the plain list expand_frame_paths built
+            # (scripts.py:1114,1124), so a mock reading it straight from
+            # .call_args is fine -- no generator to materialize here.
             return {f: f + ".star" for f in files}
 
-        monkeypatch.setattr(scripts, "_load_frame", fake_load_frame)
-        monkeypatch.setattr(scripts, "Ballet", fake_ballet)
-        monkeypatch.setattr(scripts, "prepare_batch", fake_prepare)
-        monkeypatch.setattr(scripts, "process_batch", fake_process)
+        load_frame = mocker.patch(
+            "bandaid.scripts._load_frame", return_value=frame_sentinel
+        )
+        ballet = mocker.patch("bandaid.scripts.Ballet", return_value=cnn_sentinel)
+        prepare_batch = mocker.patch(
+            "bandaid.scripts.prepare_batch", return_value=prep_sentinel
+        )
+        process_batch = mocker.patch(
+            "bandaid.scripts.process_batch", side_effect=fake_process
+        )
 
         config = PhotometryConfig()
         frames, results = scripts.photometer_frames(
@@ -185,18 +163,21 @@ class TestPhotometerFrames:
 
         expected = sorted(str(p.resolve()) for p in night.glob("*.fit"))
         assert frames == expected
-        assert calls["ballet"] == str(weights)
-        assert calls["prepare"]["first_file"] == expected[0]
-        assert calls["prepare"]["cnn"] is cnn_sentinel
-        assert calls["prepare"]["config"] is config
-        assert calls["prepare"]["append_l4"] is True
-        assert calls["process"]["prep"] is prep_sentinel
-        assert calls["process"]["files"] == expected
+        ballet.assert_called_once_with(model_file=str(weights))
+        prepare_batch.assert_called_once_with(
+            expected[0],
+            cnn=cnn_sentinel,
+            config=config,
+            append_l4=True,
+            forced_targets=None,
+            frame=frame_sentinel,
+        )
+        process_call = process_batch.call_args
+        assert process_call.args == (expected, prep_sentinel)
         # The first frame is opened once and the same load handed to both
         # stages, so the whole run opens each frame exactly once (#44).
-        assert loads == [expected[0]]
-        assert calls["prepare"]["frame"] is frame_sentinel
-        kwargs = calls["process"]["kwargs"]
+        load_frame.assert_called_once_with(expected[0])
+        kwargs = process_call.kwargs
         assert kwargs["first_frame"] is frame_sentinel
         assert kwargs["user_specific_metadata"] == {"observer": "MWC"}
         assert kwargs["output_dir"] == str(tmp_path / "out")
@@ -212,77 +193,51 @@ class TestPhotometerFrames:
         with pytest.raises(ValueError, match="no FITS"):
             scripts.photometer_frames([str(empty)])
 
-    def test_defaults_download_weights_and_append_l4(self, monkeypatch, tmp_path):
+    def test_defaults_download_weights_and_append_l4(self, mocker, tmp_path):
         """Omitting options downloads weights, appends L4, and uses robust defaults."""
         frame = tmp_path / "a.fit"
         frame.write_bytes(b"")
 
-        calls = {}
-        _stub_load_frame(monkeypatch)
-        monkeypatch.setattr(
-            scripts,
-            "Ballet",
-            lambda model_file=None: calls.update(ballet=model_file),
+        _stub_load_frame(mocker)
+        ballet = mocker.patch("bandaid.scripts.Ballet", return_value=object())
+        prepare_batch = mocker.patch(
+            "bandaid.scripts.prepare_batch", return_value=object()
         )
-
-        def fake_prepare(
-            first_file,
-            *,
-            cnn,
-            config=None,
-            append_l4=False,
-            forced_targets=None,
-            **_kwargs: object,
-        ):
-            calls["prepare"] = (first_file, cnn)
-            calls["append_l4"] = append_l4
-            calls["config"] = config
-            calls["forced_targets"] = forced_targets
-            return object()
-
-        monkeypatch.setattr(scripts, "prepare_batch", fake_prepare)
-        monkeypatch.setattr(
-            scripts,
-            "process_batch",
-            lambda files, prep, **kwargs: calls.update(kwargs=kwargs) or {},
-        )
+        process_batch = mocker.patch("bandaid.scripts.process_batch", return_value={})
 
         scripts.photometer_frames([str(frame)])
 
-        assert calls["ballet"] is None
-        assert calls["append_l4"] is True
-        assert isinstance(calls["config"], PhotometryConfig)
-        kwargs = calls["kwargs"]
+        ballet.assert_called_once_with(model_file=None)
+        prepare_kwargs = prepare_batch.call_args.kwargs
+        assert prepare_kwargs["append_l4"] is True
+        assert isinstance(prepare_kwargs["config"], PhotometryConfig)
+        kwargs = process_batch.call_args.kwargs
         assert kwargs["user_specific_metadata"] == {}
         assert kwargs["fail_fast"] is False
         assert kwargs["write_qa_manifest"] is True
         assert kwargs["output_dir"] == "."
         assert kwargs["output_suffix"] == ".star"
 
-    def test_forced_targets_forwarded_to_prepare_batch(self, monkeypatch, tmp_path):
+    def test_forced_targets_forwarded_to_prepare_batch(self, mocker, tmp_path):
         """The ``forced_targets`` SkyCoord reaches ``prepare_batch`` unchanged."""
         frame = tmp_path / "a.fit"
         frame.write_bytes(b"")
 
-        calls = {}
-        _stub_load_frame(monkeypatch)
-        monkeypatch.setattr(scripts, "Ballet", lambda model_file=None: object())
-
-        def fake_prepare(_first_file, *, forced_targets=None, **_kwargs: object):
-            calls["forced_targets"] = forced_targets
-            return object()
-
-        monkeypatch.setattr(scripts, "prepare_batch", fake_prepare)
-        monkeypatch.setattr(scripts, "process_batch", lambda files, prep, **kwargs: {})
+        _stub_load_frame(mocker)
+        mocker.patch("bandaid.scripts.Ballet", return_value=object())
+        prepare_batch = mocker.patch(
+            "bandaid.scripts.prepare_batch", return_value=object()
+        )
+        mocker.patch("bandaid.scripts.process_batch", return_value={})
 
         forced = SkyCoord([10.0], [5.0], unit="deg")
         scripts.photometer_frames([str(frame)], forced_targets=forced)
 
-        assert calls["forced_targets"] is forced
+        assert prepare_batch.call_args.kwargs["forced_targets"] is forced
 
     @pytest.mark.usefixtures("_consistent_headers")
     def test_identical_names_write_distinct_starlists(
-        self, monkeypatch, tmp_path, by_filter
+        self, mocker, tmp_path, by_filter
     ):
         """End-to-end: two same-named frames in different dirs give distinct outputs."""
         n1 = tmp_path / "n1"
@@ -294,10 +249,13 @@ class TestPhotometerFrames:
         out = tmp_path / "out"
         inputs = [str(n1), str(n2)]
 
-        monkeypatch.setattr(scripts, "Ballet", lambda model_file=None: object())
-
-        monkeypatch.setattr(scripts, "prepare_batch", lambda *a, **k: _dummy_prep())
-        monkeypatch.setattr(scripts, "process_one_image", lambda *a, **k: by_filter())
+        mocker.patch("bandaid.scripts.Ballet", return_value=object())
+        mocker.patch("bandaid.scripts.prepare_batch", return_value=_dummy_prep())
+        # A fresh table per call, matching the two-frame batch: process_one_image
+        # is called once per frame and each frame gets its own table instance.
+        mocker.patch(
+            "bandaid.scripts.process_one_image", side_effect=lambda *a, **k: by_filter()
+        )
 
         frames, results = scripts.photometer_frames(inputs, output_dir=str(out))
 

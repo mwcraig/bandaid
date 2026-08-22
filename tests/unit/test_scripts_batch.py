@@ -46,62 +46,57 @@ def _raise_on(trigger, exc, otherwise):
     return _stub
 
 
-def _count_load_frame_calls(monkeypatch):
+def _stub_load_frame_calls(mocker):
     """
-    Replace ``scripts._load_frame`` with a counting stub; return its call list.
+    Stub ``scripts._load_frame`` with a counting mock; return the mock.
 
     The stub's frame carries a header matching ``_dummy_prep`` so every frame
-    passes ``check_frame_consistency``; the returned list records the file
-    arguments in call order, for the open-each-frame-once assertions (#44).
+    passes ``check_frame_consistency``; the mock's ``.call_args_list`` records
+    the file arguments in call order, for the open-each-frame-once assertions
+    (#44).
+
+    Parameters
+    ----------
+    mocker : pytest_mock.MockerFixture
+        The pytest-mock fixture used to install the stub.
+
+    Returns
+    -------
+    unittest.mock.MagicMock
+        The mock installed in place of ``scripts._load_frame``.
     """
-    calls = []
-
-    def counting_load_frame(file):
-        calls.append(file)
-        return scripts.LoadedFrame(np.zeros((2, 2)), dict(_CONSISTENT_HEADER))
-
-    monkeypatch.setattr(scripts, "_load_frame", counting_load_frame)
-    return calls
+    return mocker.patch(
+        "bandaid.scripts._load_frame",
+        return_value=scripts.LoadedFrame(np.zeros((2, 2)), dict(_CONSISTENT_HEADER)),
+    )
 
 
 @pytest.mark.usefixtures("_consistent_headers")
 class TestProcessBatch:
     """Unit tests for ``process_batch``."""
 
-    def test_one_result_per_frame_with_shared_prep(self, monkeypatch):
+    def test_one_result_per_frame_with_shared_prep(self, mocker):
         """Each frame is processed once with the same shared prep objects."""
         prep = _dummy_prep()
         user_meta = {"observer": "abc"}
-        calls = []
-
-        def fake_process_one_image(
-            file,
-            meta,
-            radecs,
-            cnn,
-            masks,
-            *,
-            input_photometry_coords,
-            **_kwargs: object,
-        ):
-            calls.append((file, meta, radecs, cnn, masks, input_photometry_coords))
-            return {"TR": Table({"tot_count": [1.0]})}
-
-        monkeypatch.setattr(scripts, "process_one_image", fake_process_one_image)
+        process_one_image = mocker.patch(
+            "bandaid.scripts.process_one_image",
+            return_value={"TR": Table({"tot_count": [1.0]})},
+        )
 
         files = ["a.fits", "b.fits"]
         results = scripts.process_batch(files, prep, user_specific_metadata=user_meta)
 
         assert list(results) == files
-        assert len(calls) == len(files)
-        for file, call in zip(files, calls, strict=True):
-            cfile, meta, radecs, cnn, masks, phot_coords = call
+        assert process_one_image.call_count == len(files)
+        for file, call in zip(files, process_one_image.call_args_list, strict=True):
+            cfile, meta, radecs, cnn, masks = call.args
             assert cfile == file
             assert meta is user_meta
             assert radecs is prep.radecs
             assert cnn is prep.cnn
             assert masks is prep.bayer_masks
-            assert phot_coords is prep.photometry_coords
+            assert call.kwargs["input_photometry_coords"] is prep.photometry_coords
 
     def test_emits_progress_log_per_frame(self, patched_process_one_image, caplog):
         """Each frame logs a ``processing i/N: name`` line at INFO for --verbose."""
@@ -125,13 +120,12 @@ class TestProcessBatch:
             "processing 3/3: night2/b.fits",
         ]
 
-    def test_failed_frames_are_skipped(self, monkeypatch):
+    def test_failed_frames_are_skipped(self, mocker):
         """A frame whose ``process_one_image`` raises a FrameError is omitted."""
         prep = _dummy_prep()
-        monkeypatch.setattr(
-            scripts,
-            "process_one_image",
-            _raise_on(
+        mocker.patch(
+            "bandaid.scripts.process_one_image",
+            side_effect=_raise_on(
                 "bad.fits",
                 TooFewStarsError("too few stars", file="bad.fits"),
                 lambda: {"TR": Table({"tot_count": [1.0]})},
@@ -146,14 +140,14 @@ class TestProcessBatch:
 
         assert list(results) == ["good.fits"]
 
-    def test_unexpected_error_propagates_when_fail_fast(self, monkeypatch):
+    def test_unexpected_error_propagates_when_fail_fast(self, mocker):
         """A non-FrameError bug aborts the batch by default (fail_fast=True)."""
 
         def _boom(*_args: object, **_kwargs: object):
             msg = "a real bug"
             raise RuntimeError(msg)
 
-        monkeypatch.setattr(scripts, "process_one_image", _boom)
+        mocker.patch("bandaid.scripts.process_one_image", side_effect=_boom)
 
         with pytest.raises(RuntimeError, match="a real bug"):
             scripts.process_batch(
@@ -162,12 +156,11 @@ class TestProcessBatch:
                 user_specific_metadata={},
             )
 
-    def test_unexpected_error_skipped_when_not_fail_fast(self, monkeypatch):
+    def test_unexpected_error_skipped_when_not_fail_fast(self, mocker):
         """With fail_fast=False, an unexpected bug is logged and skipped."""
-        monkeypatch.setattr(
-            scripts,
-            "process_one_image",
-            _raise_on(
+        mocker.patch(
+            "bandaid.scripts.process_one_image",
+            side_effect=_raise_on(
                 "bad.fits",
                 RuntimeError("a real bug"),
                 lambda: {"TR": Table({"tot_count": [1.0]})},
@@ -183,20 +176,18 @@ class TestProcessBatch:
 
         assert list(results) == ["good.fits"]
 
-    def test_loads_each_frame_exactly_once(
-        self, patched_process_one_image, monkeypatch
-    ):
+    def test_loads_each_frame_exactly_once(self, patched_process_one_image, mocker):
         """process_batch loads each frame exactly once via the shared loader (#44)."""
         patched_process_one_image({"TR": Table({"tot_count": [1.0]})})
-        calls = _count_load_frame_calls(monkeypatch)
+        load_frame = _stub_load_frame_calls(mocker)
 
         files = ["a.fits", "b.fits"]
         scripts.process_batch(files, _dummy_prep(), user_specific_metadata={})
 
-        assert calls == files
+        assert [call.args[0] for call in load_frame.call_args_list] == files
 
     def test_provided_first_frame_is_not_reloaded(
-        self, patched_process_one_image, monkeypatch
+        self, patched_process_one_image, mocker
     ):
         """
         process_batch reuses a caller-provided first-frame load (#44).
@@ -207,7 +198,7 @@ class TestProcessBatch:
         reopen it, while still loading every other frame normally.
         """
         patched_process_one_image({"TR": Table({"tot_count": [1.0]})})
-        calls = _count_load_frame_calls(monkeypatch)
+        load_frame = _stub_load_frame_calls(mocker)
         first = scripts.LoadedFrame(np.zeros((2, 2)), dict(_CONSISTENT_HEADER))
 
         scripts.process_batch(
@@ -218,7 +209,7 @@ class TestProcessBatch:
         )
 
         # Only the second frame reaches the loader; the first came in preloaded.
-        assert calls == ["second.fits"]
+        assert [call.args[0] for call in load_frame.call_args_list] == ["second.fits"]
 
 
 @pytest.mark.usefixtures("_consistent_headers")
@@ -313,6 +304,9 @@ class TestProcessBatchToDisk:
         # Both inputs live in the same directory (the cwd), so the layout stays
         # flat; their shared stem "img" is disambiguated with a numeric suffix
         # rather than a leading-underscore or directory prefix.
+        # monkeypatch.chdir is the right tool here (not mocker): it restores the
+        # original cwd after the test even on failure, which mocker has no
+        # equivalent for.
         monkeypatch.chdir(tmp_path)
 
         inputs = ["img.fit", "img.fits"]
@@ -381,12 +375,11 @@ class TestProcessBatchToDisk:
             "b.fits": tmp_path / "b.star",
         }
 
-    def test_failed_frames_write_no_file(self, monkeypatch, tmp_path, by_filter):
+    def test_failed_frames_write_no_file(self, mocker, tmp_path, by_filter):
         """A frame whose ``process_one_image`` raises a FrameError writes nothing."""
-        monkeypatch.setattr(
-            scripts,
-            "process_one_image",
-            _raise_on(
+        mocker.patch(
+            "bandaid.scripts.process_one_image",
+            side_effect=_raise_on(
                 "bad.fits",
                 WCSSolveError("twirl found no match", file="bad.fits"),
                 by_filter,
@@ -403,12 +396,11 @@ class TestProcessBatchToDisk:
         assert _starlist_names(tmp_path) == ["good.star"]
         assert results == {"good.fits": tmp_path / "good.star"}
 
-    def test_writes_qa_manifest(self, monkeypatch, tmp_path, by_filter):
+    def test_writes_qa_manifest(self, mocker, tmp_path, by_filter):
         """A per-frame QA manifest records ok and skipped frames (#31)."""
-        monkeypatch.setattr(
-            scripts,
-            "process_one_image",
-            _raise_on(
+        mocker.patch(
+            "bandaid.scripts.process_one_image",
+            side_effect=_raise_on(
                 "bad.fits",
                 WCSSolveError("twirl found no match", file="bad.fits"),
                 by_filter,
@@ -758,7 +750,7 @@ class TestProcessBatchToDisk:
         StarListSet.model_validate_json((tmp_path / "frame1.star").read_text())
 
     def test_writer_frame_error_skips_frame_not_batch(
-        self, monkeypatch, tmp_path, by_filter
+        self, mocker, tmp_path, by_filter
     ):
         """A no-usable-stars frame at write time is skipped, not batch-fatal (#78)."""
 
@@ -771,7 +763,7 @@ class TestProcessBatchToDisk:
                     table["tot_count"] = [-1.0, 0.0]
             return result
 
-        monkeypatch.setattr(scripts, "process_one_image", _maybe)
+        mocker.patch("bandaid.scripts.process_one_image", side_effect=_maybe)
 
         inputs = ["starless.fits", "good.fits"]
         results = scripts.process_batch(

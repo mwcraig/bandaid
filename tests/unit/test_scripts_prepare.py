@@ -128,9 +128,9 @@ class TestResolveFieldCenter:
 class TestPrepareBatch:
     """Unit tests for ``prepare_batch``."""
 
-    def test_returns_batchprep_with_expected_fields(self, monkeypatch):
+    def test_returns_batchprep_with_expected_fields(self, mocker):
         """The bundle carries the Gaia list, the cnn, and the three CFA masks."""
-        _, _, radecs, _, _ = _patch_prep(monkeypatch)
+        prep_data = _patch_prep(mocker)
         cnn = object()
 
         # append_l4 defaults to True (issue #61); pin it False here so this
@@ -138,36 +138,30 @@ class TestPrepareBatch:
         prep = scripts.prepare_batch("frame1.fits", cnn=cnn, append_l4=False)
 
         assert isinstance(prep, scripts.BatchPrep)
-        np.testing.assert_array_equal(prep.radecs, radecs)
+        np.testing.assert_array_equal(prep.radecs, prep_data.radecs)
         assert prep.cnn is cnn
         assert set(prep.bayer_masks) == {"TR", "TB", "TG"}
 
-    def test_append_l4_true_by_default(self, monkeypatch):
+    def test_append_l4_true_by_default(self, mocker):
         """Omitting ``append_l4`` adds the L4 channel (issue #61)."""
-        _patch_prep(monkeypatch)
+        _patch_prep(mocker)
 
         prep = scripts.prepare_batch("frame1.fits", cnn=object())
 
         assert set(prep.bayer_masks) == {"TR", "TB", "TG", "L4"}
         assert prep.bayer_masks["L4"] is None
 
-    def test_loads_first_frame_exactly_once(self, monkeypatch):
+    def test_loads_first_frame_exactly_once(self, mocker):
         """Without a caller-provided frame, the first frame is loaded once (#44)."""
-        _patch_prep(monkeypatch)
+        _patch_prep(mocker)
         frame = scripts.LoadedFrame(np.zeros((4, 4)), {})
-        calls = []
-
-        def counting_load_frame(file):
-            calls.append(file)
-            return frame
-
-        monkeypatch.setattr(scripts, "_load_frame", counting_load_frame)
+        load_frame = mocker.patch("bandaid.scripts._load_frame", return_value=frame)
 
         scripts.prepare_batch("frame1.fits", cnn=object())
 
-        assert calls == ["frame1.fits"]
+        load_frame.assert_called_once_with("frame1.fits")
 
-    def test_provided_frame_is_used_without_loading(self, monkeypatch):
+    def test_provided_frame_is_used_without_loading(self, mocker):
         """
         A caller-provided ``frame=`` skips the load entirely (#44).
 
@@ -175,20 +169,20 @@ class TestPrepareBatch:
         both ``prepare_batch`` and ``process_batch``, so a provided frame must
         reach the calibration step without ``_load_frame`` being called.
         """
-        calls, *_ = _patch_prep(monkeypatch)
+        prep_data = _patch_prep(mocker)
         frame = scripts.LoadedFrame(np.zeros((4, 4)), {})
 
         def fail_load_frame(file):
             msg = f"unexpected _load_frame({file!r}) with frame= provided"
             raise AssertionError(msg)
 
-        monkeypatch.setattr(scripts, "_load_frame", fail_load_frame)
+        mocker.patch("bandaid.scripts._load_frame", side_effect=fail_load_frame)
 
         scripts.prepare_batch("frame1.fits", cnn=object(), frame=frame)
 
-        assert calls["calibration_frame"] is frame
+        assert prep_data.calibration_sequence.call_args.kwargs["frame"] is frame
 
-    def test_first_frame_resolved_with_config_instrument_profile(self, monkeypatch):
+    def test_first_frame_resolved_with_config_instrument_profile(self, mocker):
         """
         The config's instrument is threaded into the first-frame calibration.
 
@@ -196,16 +190,16 @@ class TestPrepareBatch:
         with the bundled-Seestar50 fallback rather than ``config.instrument`` --
         wrong for any other telescope.
         """
-        calls, *_ = _patch_prep(monkeypatch)
+        prep_data = _patch_prep(mocker)
         instrument = InstrumentProfile(name="MyScope")
         scripts.prepare_batch(
             "frame1.fits",
             cnn=object(),
             config=PhotometryConfig(instrument=instrument),
         )
-        assert calls["calibration_profile"] is instrument
+        assert prep_data.calibration_sequence.call_args.kwargs["profile"] is instrument
 
-    def test_first_frame_fwhm_uses_the_per_frame_detection_settings(self, monkeypatch):
+    def test_first_frame_fwhm_uses_the_per_frame_detection_settings(self, mocker):
         """
         The batch-gating FWHM is measured with the per-frame detection settings.
 
@@ -216,16 +210,16 @@ class TestPrepareBatch:
         detection regime than the photometry it protects. Fixes
         https://github.com/mwcraig/bandaid/issues/55.
         """
-        captured = {}
         fwhm_n_stars = 7
 
-        def fake_calibration_sequence(_file, **kwargs: object):
-            captured.update(kwargs)
+        def _stop_after_capturing(_file, **_kwargs: object):
             msg = "stop after capturing the call"
             raise TooFewStarsError(msg)
 
-        monkeypatch.setattr(scripts, "calibration_sequence", fake_calibration_sequence)
-        _stub_load_frame(monkeypatch)
+        calibration_sequence = mocker.patch(
+            "bandaid.scripts.calibration_sequence", side_effect=_stop_after_capturing
+        )
+        _stub_load_frame(mocker)
 
         config = PhotometryConfig(
             instrument=InstrumentProfile(name="Seestar50", fwhm_n_stars=fwhm_n_stars)
@@ -233,10 +227,11 @@ class TestPrepareBatch:
         with pytest.raises(BatchPrepError):
             scripts.prepare_batch("first.fits", cnn=object(), config=config)
 
+        captured = calibration_sequence.call_args.kwargs
         assert captured.get("detect_on_bayer_balanced") is True
         assert captured.get("fwhm_n_stars") == fwhm_n_stars
 
-    def test_gaia_queried_at_resolved_center_over_unwidened_field(self, monkeypatch):
+    def test_gaia_queried_at_resolved_center_over_unwidened_field(self, mocker):
         """
         Gaia is queried at the resolved field center over the (unwidened) field.
 
@@ -246,35 +241,40 @@ class TestPrepareBatch:
         found widening reshuffles the plate-solver asterisms and loses frames
         (issue #83).
         """
-        calls, metadata, _, _, _ = _patch_prep(monkeypatch)
+        prep_data = _patch_prep(mocker)
         scripts.prepare_batch("frame1.fits", cnn=object())
 
         instrument = InstrumentProfile()
-        expected_center = scripts.estimate_center_from_header(metadata, instrument)
-        assert calls["center"] == pytest.approx(expected_center)
+        expected_center = scripts.estimate_center_from_header(
+            prep_data.metadata, instrument
+        )
+        center, fov = prep_data.cached_gaia_radecs.call_args.args
+        assert center == pytest.approx(expected_center)
         # fov_rad is a field *radius*; with the default 0.0 margin the query takes
         # exactly the full field (2 * radius), with no widening.
         assert instrument.cone_radius_margin == 0.0
-        assert calls["fov"] == pytest.approx(
-            2 * (metadata["fov_rad"] + instrument.cone_radius_margin)
+        assert fov == pytest.approx(
+            2 * (prep_data.metadata["fov_rad"] + instrument.cone_radius_margin)
         )
 
-    def test_batchprep_center_is_resolved_field_center(self, monkeypatch):
+    def test_batchprep_center_is_resolved_field_center(self, mocker):
         """``BatchPrep.center`` stores the resolved true center, not the header."""
-        _, metadata, *_ = _patch_prep(monkeypatch)
+        prep_data = _patch_prep(mocker)
 
         prep = scripts.prepare_batch("frame1.fits", cnn=object())
 
-        expected = scripts.estimate_center_from_header(metadata, InstrumentProfile())
+        expected = scripts.estimate_center_from_header(
+            prep_data.metadata, InstrumentProfile()
+        )
         assert prep.center == pytest.approx(expected)
 
-    def test_falls_back_to_from_name_without_framing_constants(self, monkeypatch):
+    def test_falls_back_to_from_name_without_framing_constants(self, mocker):
         """A profile with no framing offset resolves the center by object name."""
         metadata = _batch_metadata()
         metadata["object"] = "SS Leo"
-        calls, *_ = _patch_prep(monkeypatch, metadata=metadata)
+        prep_data = _patch_prep(mocker, metadata=metadata)
         resolved = SkyCoord(168.0, 11.0, unit="deg")
-        monkeypatch.setattr(scripts.SkyCoord, "from_name", lambda name: resolved)
+        mocker.patch.object(scripts.SkyCoord, "from_name", return_value=resolved)
         instrument = InstrumentProfile(name="NoFraming", header_center_offset=None)
 
         scripts.prepare_batch(
@@ -283,19 +283,20 @@ class TestPrepareBatch:
             config=PhotometryConfig(instrument=instrument),
         )
 
-        assert calls["center"] == pytest.approx((168.0, 11.0))
+        center, _fov = prep_data.cached_gaia_radecs.call_args.args
+        assert center == pytest.approx((168.0, 11.0))
 
-    def test_from_name_failure_falls_back_to_raw_header(self, monkeypatch):
+    def test_from_name_failure_falls_back_to_raw_header(self, mocker):
         """When object resolution fails the center degrades to the raw header."""
         metadata = _batch_metadata()
         metadata["object"] = "Unresolvable"
-        calls, *_ = _patch_prep(monkeypatch, metadata=metadata)
+        prep_data = _patch_prep(mocker, metadata=metadata)
 
         def _boom(_name):
             msg = "name not resolved"
             raise ValueError(msg)
 
-        monkeypatch.setattr(scripts.SkyCoord, "from_name", _boom)
+        mocker.patch.object(scripts.SkyCoord, "from_name", side_effect=_boom)
         instrument = InstrumentProfile(name="NoFraming", header_center_offset=None)
 
         scripts.prepare_batch(
@@ -304,12 +305,13 @@ class TestPrepareBatch:
             config=PhotometryConfig(instrument=instrument),
         )
 
-        assert calls["center"] == pytest.approx((metadata["ra"], metadata["dec"]))
+        center, _fov = prep_data.cached_gaia_radecs.call_args.args
+        assert center == pytest.approx((metadata["ra"], metadata["dec"]))
 
-    def test_absent_object_falls_back_to_raw_header(self, monkeypatch):
+    def test_absent_object_falls_back_to_raw_header(self, mocker):
         """No ``object`` metadata and no framing constants uses the raw header."""
         # _batch_metadata() carries no "object", so from_name is never attempted.
-        calls, metadata, *_ = _patch_prep(monkeypatch)
+        prep_data = _patch_prep(mocker)
         instrument = InstrumentProfile(name="NoFraming", header_center_offset=None)
 
         scripts.prepare_batch(
@@ -318,9 +320,12 @@ class TestPrepareBatch:
             config=PhotometryConfig(instrument=instrument),
         )
 
-        assert calls["center"] == pytest.approx((metadata["ra"], metadata["dec"]))
+        center, _fov = prep_data.cached_gaia_radecs.call_args.args
+        assert center == pytest.approx(
+            (prep_data.metadata["ra"], prep_data.metadata["dec"])
+        )
 
-    def test_obs_epoch_forwarded_to_gaia_query(self, monkeypatch):
+    def test_obs_epoch_forwarded_to_gaia_query(self, mocker):
         """
         The first frame's ``obs_time`` is forwarded to Gaia as ``obs_epoch``.
 
@@ -329,13 +334,14 @@ class TestPrepareBatch:
         mis-placed in the forced-photometry target list. Fixes
         https://github.com/mwcraig/bandaid/issues/56.
         """
-        calls, metadata, *_ = _patch_prep(monkeypatch)
+        prep_data = _patch_prep(mocker)
 
         scripts.prepare_batch("frame1.fits", cnn=object())
 
-        assert calls["obs_epoch"] == Time(parser.parse(metadata["obs_time"]))
+        obs_epoch = prep_data.cached_gaia_radecs.call_args.kwargs["obs_epoch"]
+        assert obs_epoch == Time(parser.parse(prep_data.metadata["obs_time"]))
 
-    def test_non_iso_obs_time_parsed_with_dateutil(self, monkeypatch):
+    def test_non_iso_obs_time_parsed_with_dateutil(self, mocker):
         """
         A dateutil-parseable but non-ISO ``obs_time`` still yields the epoch.
 
@@ -345,11 +351,12 @@ class TestPrepareBatch:
         """
         metadata = _batch_metadata()
         metadata["obs_time"] = "2026/04/28 03:03:43"
-        calls, *_ = _patch_prep(monkeypatch, metadata=metadata)
+        prep_data = _patch_prep(mocker, metadata=metadata)
 
         scripts.prepare_batch("frame1.fits", cnn=object())
 
-        assert calls["obs_epoch"] == Time("2026-04-28T03:03:43")
+        obs_epoch = prep_data.cached_gaia_radecs.call_args.kwargs["obs_epoch"]
+        assert obs_epoch == Time("2026-04-28T03:03:43")
 
     @pytest.mark.parametrize(
         "bad_obs_time",
@@ -369,17 +376,17 @@ class TestPrepareBatch:
         ids=["missing-None", "not-a-date", "overflowing-digits"],
     )
     def test_unparsable_obs_time_raises_clear_metadata_error(
-        self, monkeypatch, bad_obs_time
+        self, mocker, bad_obs_time
     ):
         """A missing/unparsable ``obs_time`` fails as a metadata error, not Gaia."""
         metadata = _batch_metadata()
         metadata["obs_time"] = bad_obs_time
-        _patch_prep(monkeypatch, metadata=metadata)
+        _patch_prep(mocker, metadata=metadata)
 
         with pytest.raises(FrameMetadataError, match="obs_time"):
             scripts.prepare_batch("frame1.fits", cnn=object())
 
-    def test_bad_pointing_labeled_with_first_file(self, monkeypatch):
+    def test_bad_pointing_labeled_with_first_file(self, mocker):
         """
         A bad first-frame pointing fails as a metadata error naming the frame.
 
@@ -390,14 +397,14 @@ class TestPrepareBatch:
         """
         metadata = _batch_metadata()
         metadata["ra"] = "not-a-number"
-        _patch_prep(monkeypatch, metadata=metadata)
+        _patch_prep(mocker, metadata=metadata)
 
         with pytest.raises(FrameMetadataError, match="pointing") as excinfo:
             scripts.prepare_batch("frame1.fits", cnn=object())
         assert excinfo.value.file == "frame1.fits"
 
     def test_high_pm_star_propagated_to_obs_epoch(
-        self, monkeypatch, gaia_table, fake_vizier
+        self, mocker, gaia_table, fake_vizier
     ):
         """
         End to end, a high-PM star lands at its observation-epoch position.
@@ -427,11 +434,10 @@ class TestPrepareBatch:
         metadata = _batch_metadata()
         # Point the fake frame at the fixture stars.
         metadata["ra"], metadata["dec"] = 239.9, 25.9
-        monkeypatch.setattr(scripts, "N_GAIA_STARS_ALIGN_RETRY", 1)
-        monkeypatch.setattr(
-            scripts,
-            "calibration_sequence",
-            lambda file, **_kwargs: (
+        mocker.patch("bandaid.scripts.N_GAIA_STARS_ALIGN_RETRY", 1)
+        mocker.patch(
+            "bandaid.scripts.calibration_sequence",
+            return_value=(
                 np.zeros((4, 4)),
                 metadata,
                 np.zeros((3, 2)),
@@ -439,7 +445,7 @@ class TestPrepareBatch:
                 object(),
             ),
         )
-        _stub_load_frame(monkeypatch)
+        _stub_load_frame(mocker)
 
         prep = scripts.prepare_batch("frame1.fits", cnn=object())
 
@@ -472,24 +478,24 @@ class TestPrepareBatch:
             atol=1e-9,
         )
 
-    def test_contaminated_stars_dropped_from_photometry_coords(self, monkeypatch):
+    def test_contaminated_stars_dropped_from_photometry_coords(self, mocker):
         """The contaminated pair is removed from ``photometry_coords``."""
-        _, metadata, radecs, mags, fwhm_pix = _patch_prep(monkeypatch)
+        prep_data = _patch_prep(mocker)
 
         prep = scripts.prepare_batch("frame1.fits", cnn=object())
 
-        fwhm_arcsec = fwhm_pix * metadata["pixscale"]
-        flagged = neighbor_contamination_flag_sky(radecs, mags, fwhm_arcsec)
-        expected = SkyCoord(radecs[~flagged], unit="deg")
+        fwhm_arcsec = prep_data.fwhm_pix * prep_data.metadata["pixscale"]
+        flagged = neighbor_contamination_flag_sky(
+            prep_data.radecs, prep_data.mags, fwhm_arcsec
+        )
+        expected = SkyCoord(prep_data.radecs[~flagged], unit="deg")
 
         # The tight equal-mag pair is dropped; the two isolated stars remain.
         assert flagged.tolist() == [True, True, False, False]
         np.testing.assert_allclose(prep.photometry_coords.ra.deg, expected.ra.deg)
         np.testing.assert_allclose(prep.photometry_coords.dec.deg, expected.dec.deg)
 
-    def test_configured_aperture_radius_reaches_contamination_flagging(
-        self, monkeypatch
-    ):
+    def test_configured_aperture_radius_reaches_contamination_flagging(self, mocker):
         """
         The contamination flag is evaluated at ``max(config.apertures.radii)``.
 
@@ -508,7 +514,7 @@ class TestPrepareBatch:
         sep_arcsec = 0.5 * (sep_r1 + sep_r2)
         radecs = np.array([[10.0, 0.0], [10.0 + sep_arcsec / 3600.0, 0.0], [10.2, 0.0]])
         mags = np.array([12.0, 12.0, 10.0])
-        _patch_prep(monkeypatch, radecs_mags=(radecs, mags), fwhm_pix=fwhm_pix)
+        _patch_prep(mocker, radecs_mags=(radecs, mags), fwhm_pix=fwhm_pix)
         no_margin = InstrumentProfile(contamination_seeing_margin=1.0)
 
         kept = scripts.prepare_batch(
@@ -527,7 +533,7 @@ class TestPrepareBatch:
         )
         np.testing.assert_allclose(dropped.photometry_coords.ra.deg, radecs[[2], 0])
 
-    def test_contamination_seeing_margin_flags_pessimistically(self, monkeypatch):
+    def test_contamination_seeing_margin_flags_pessimistically(self, mocker):
         """
         The batch flag is evaluated at ``first_frame_fwhm * seeing margin``.
 
@@ -543,7 +549,7 @@ class TestPrepareBatch:
         sep_arcsec = 1.15 * float(min_separation_fwhm(0.0)) * fwhm_arcsec
         radecs = np.array([[10.0, 0.0], [10.0 + sep_arcsec / 3600.0, 0.0], [10.2, 0.0]])
         mags = np.array([12.0, 12.0, 10.0])
-        _patch_prep(monkeypatch, radecs_mags=(radecs, mags), fwhm_pix=fwhm_pix)
+        _patch_prep(mocker, radecs_mags=(radecs, mags), fwhm_pix=fwhm_pix)
 
         kept = scripts.prepare_batch(
             "frame1.fits",
@@ -573,13 +579,11 @@ class TestPrepareBatch:
         ],
         ids=["default-limit-15", "custom-limit-12"],
     )
-    def test_gaia_mag_limit_drops_faint_stars(
-        self, monkeypatch, gaia_mag_limit, n_kept
-    ):
+    def test_gaia_mag_limit_drops_faint_stars(self, mocker, gaia_mag_limit, n_kept):
         """Stars fainter than the (default or explicit) Gaia mag limit are cut."""
         radecs = np.array([[10.0, 0.0], [10.1, 0.0], [10.2, 0.0], [10.3, 0.0]])
         mags = np.array([12.0, 15.0, 15.1, 16.0])
-        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+        _patch_prep(mocker, radecs_mags=(radecs, mags))
 
         config_kwargs = (
             {}
@@ -598,7 +602,7 @@ class TestPrepareBatch:
         # The kept stars are degrees apart, so none are contamination-flagged.
         np.testing.assert_allclose(prep.photometry_coords.ra.deg, radecs[:n_kept, 0])
 
-    def test_faint_real_star_contaminates_brighter_target(self, monkeypatch):
+    def test_faint_real_star_contaminates_brighter_target(self, mocker):
         """
         A real star fainter than the photometry limit still flags a brighter target.
 
@@ -614,7 +618,7 @@ class TestPrepareBatch:
         """
         radecs = np.array([[10.0, 0.0], [10.0 + 1.0 / 3600.0, 0.0], [10.2, 0.0]])
         mags = np.array([14.0, 16.0, 10.0])
-        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+        _patch_prep(mocker, radecs_mags=(radecs, mags))
 
         prep = scripts.prepare_batch("frame1.fits", cnn=object())
 
@@ -624,7 +628,7 @@ class TestPrepareBatch:
         # only the far mag-10 star.
         np.testing.assert_allclose(prep.photometry_coords.ra.deg, radecs[[2], 0])
 
-    def test_contaminant_mag_offset_bounds_the_flagging_catalog(self, monkeypatch):
+    def test_contaminant_mag_offset_bounds_the_flagging_catalog(self, mocker):
         """
         ``contaminant_mag_offset`` caps which faint stars can flag a target.
 
@@ -636,7 +640,7 @@ class TestPrepareBatch:
         """
         radecs = np.array([[10.0, 0.0], [10.0 + 1.0 / 3600.0, 0.0], [10.2, 0.0]])
         mags = np.array([14.0, 16.0, 10.0])
-        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+        _patch_prep(mocker, radecs_mags=(radecs, mags))
 
         prep = scripts.prepare_batch(
             "frame1.fits",
@@ -649,50 +653,49 @@ class TestPrepareBatch:
         np.testing.assert_array_equal(prep.radecs, radecs[[0, 2]])
         np.testing.assert_allclose(prep.photometry_coords.ra.deg, radecs[[0, 2], 0])
 
-    def test_nan_magnitude_dropped_by_mag_limit(self, monkeypatch):
+    def test_nan_magnitude_dropped_by_mag_limit(self, mocker):
         """A star with no Gaia magnitude fails the cut and is dropped entirely."""
         radecs = np.array([[10.0, 0.0], [10.1, 0.0], [10.2, 0.0]])
         mags = np.array([12.0, np.nan, 10.0])
-        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+        _patch_prep(mocker, radecs_mags=(radecs, mags))
 
         prep = scripts.prepare_batch("frame1.fits", cnn=object())
 
         np.testing.assert_array_equal(prep.radecs, radecs[[0, 2]])
 
-    def test_raises_when_too_few_stars_detected(self, monkeypatch):
+    def test_raises_when_too_few_stars_detected(self, mocker):
         """A first-frame TooFewStarsError becomes a fatal BatchPrepError."""
 
         def _too_few(file, **_kwargs: object):
             msg = "only 1 stars detected"
             raise TooFewStarsError(msg, file=file)
 
-        monkeypatch.setattr(scripts, "calibration_sequence", _too_few)
-        _stub_load_frame(monkeypatch)
+        mocker.patch("bandaid.scripts.calibration_sequence", side_effect=_too_few)
+        _stub_load_frame(mocker)
         with pytest.raises(BatchPrepError, match="too few stars"):
             scripts.prepare_batch("frame1.fits", cnn=object())
 
-    def test_empty_gaia_field_raises_batchpreperror(self, monkeypatch):
+    def test_empty_gaia_field_raises_batchpreperror(self, mocker):
         """An empty Gaia cone is fatal -- no reference stars to solve any WCS."""
-        _patch_prep(monkeypatch, radecs_mags=(np.empty((0, 2)), np.empty(0)))
+        _patch_prep(mocker, radecs_mags=(np.empty((0, 2)), np.empty(0)))
         # Use the real floor, not _patch_prep's relaxed one, for the guard.
-        monkeypatch.setattr(scripts, "N_GAIA_STARS_ALIGN_RETRY", 20)
+        mocker.patch("bandaid.scripts.N_GAIA_STARS_ALIGN_RETRY", 20)
         with pytest.raises(BatchPrepError, match="Gaia returned only 0"):
             scripts.prepare_batch("frame1.fits", cnn=object())
 
-    def test_sparse_gaia_field_raises_batchpreperror(self, monkeypatch):
+    def test_sparse_gaia_field_raises_batchpreperror(self, mocker):
         """Fewer than N_GAIA_STARS_ALIGN_RETRY references is fatal for the batch."""
         radecs = np.column_stack([np.linspace(9.0, 11.0, 5), np.zeros(5)])
-        _patch_prep(monkeypatch, radecs_mags=(radecs, np.full(5, 12.0)))
-        monkeypatch.setattr(scripts, "N_GAIA_STARS_ALIGN_RETRY", 20)
+        _patch_prep(mocker, radecs_mags=(radecs, np.full(5, 12.0)))
+        mocker.patch("bandaid.scripts.N_GAIA_STARS_ALIGN_RETRY", 20)
         with pytest.raises(BatchPrepError, match="Gaia returned only 5"):
             scripts.prepare_batch("frame1.fits", cnn=object())
 
-    def test_gaia_network_error_raises_batchpreperror(self, monkeypatch):
+    def test_gaia_network_error_raises_batchpreperror(self, mocker):
         """A Gaia query failure is surfaced as a fatal BatchPrepError."""
-        monkeypatch.setattr(
-            scripts,
-            "calibration_sequence",
-            lambda file, *, cnn=None, **_kwargs: (
+        mocker.patch(
+            "bandaid.scripts.calibration_sequence",
+            return_value=(
                 np.zeros((4, 4)),
                 _batch_metadata(),
                 None,
@@ -700,20 +703,20 @@ class TestPrepareBatch:
                 object(),
             ),
         )
-        _stub_load_frame(monkeypatch)
+        _stub_load_frame(mocker)
 
         def _boom(*_args: object, **_kwargs: object):
             msg = "no network"
             raise ConnectionError(msg)
 
-        monkeypatch.setattr(scripts, "cached_gaia_radecs", _boom)
+        mocker.patch("bandaid.scripts.cached_gaia_radecs", side_effect=_boom)
         with pytest.raises(BatchPrepError, match="could not query Gaia"):
             scripts.prepare_batch("frame1.fits", cnn=object())
 
-    def test_forced_targets_appended_to_photometry_coords_only(self, monkeypatch):
+    def test_forced_targets_appended_to_photometry_coords_only(self, mocker):
         """A forced target lands in ``photometry_coords`` but not ``radecs``."""
         radecs, mags = _batch_radecs_mags()
-        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+        _patch_prep(mocker, radecs_mags=(radecs, mags))
         forced = SkyCoord([20.0] * u.deg, [5.0] * u.deg)
 
         prep = scripts.prepare_batch("frame1.fits", cnn=object(), forced_targets=forced)
@@ -728,7 +731,7 @@ class TestPrepareBatch:
         np.testing.assert_allclose(prep.photometry_coords.ra.deg, expected_ra)
         np.testing.assert_allclose(prep.photometry_coords.dec.deg, expected_dec)
 
-    def test_forced_targets_bypass_contamination_flagging(self, monkeypatch):
+    def test_forced_targets_bypass_contamination_flagging(self, mocker):
         """A forced target near a bright star still reaches ``photometry_coords``."""
         # A mag-8 star and a forced target ~1 arcsec away -- well inside the
         # contamination model's separation for a bright star -- but the forced
@@ -736,7 +739,7 @@ class TestPrepareBatch:
         # never evaluated for contamination and always survives.
         radecs = np.array([[10.0, 0.0], [10.2, 0.0]])
         mags = np.array([8.0, 10.0])
-        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+        _patch_prep(mocker, radecs_mags=(radecs, mags))
         forced = SkyCoord(
             [10.0 + 1.0 / 3600.0] * u.deg,
             [0.0] * u.deg,
@@ -747,12 +750,12 @@ class TestPrepareBatch:
         assert forced.ra.deg[0] in prep.photometry_coords.ra.deg
         assert forced.dec.deg[0] in prep.photometry_coords.dec.deg
 
-    def test_forced_targets_scalar_skycoord_appended_as_one_target(self, monkeypatch):
+    def test_forced_targets_scalar_skycoord_appended_as_one_target(self, mocker):
         """A scalar ``forced_targets`` SkyCoord (e.g. ``from_name``) is accepted."""
         # A scalar SkyCoord (no list/array) has no len(); prepare_batch must
         # reshape it to a 1-element array before concatenating, not crash.
         radecs, mags = _batch_radecs_mags()
-        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+        _patch_prep(mocker, radecs_mags=(radecs, mags))
         forced = SkyCoord(20.0 * u.deg, 5.0 * u.deg)
         assert forced.isscalar
 
@@ -763,13 +766,13 @@ class TestPrepareBatch:
         np.testing.assert_allclose(prep.photometry_coords.ra.deg, expected_ra)
         np.testing.assert_allclose(prep.photometry_coords.dec.deg, expected_dec)
 
-    def test_forced_targets_non_icrs_frame_lands_as_icrs(self, monkeypatch):
+    def test_forced_targets_non_icrs_frame_lands_as_icrs(self, mocker):
         """An FK5 ``forced_targets`` is transformed to ICRS before concatenating."""
         # photometry_coords is built as plain ICRS; concatenating a differently
         # framed SkyCoord without transforming first raises a confusing
         # TypeError, so prepare_batch must convert to ICRS itself.
         radecs, mags = _batch_radecs_mags()
-        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+        _patch_prep(mocker, radecs_mags=(radecs, mags))
         forced_icrs = SkyCoord([20.0] * u.deg, [5.0] * u.deg)
         forced_fk5 = forced_icrs.transform_to("fk5")
 
@@ -784,10 +787,10 @@ class TestPrepareBatch:
         appended = prep.photometry_coords[-1]
         assert appended.separation(forced_icrs).arcsec[0] < max_separation_arcsec
 
-    def test_forced_targets_stored_on_batchprep(self, monkeypatch):
+    def test_forced_targets_stored_on_batchprep(self, mocker):
         """``BatchPrep.forced_targets`` carries the (reshaped, ICRS) forced targets."""
         radecs, mags = _batch_radecs_mags()
-        _patch_prep(monkeypatch, radecs_mags=(radecs, mags))
+        _patch_prep(mocker, radecs_mags=(radecs, mags))
         forced = SkyCoord([20.0] * u.deg, [5.0] * u.deg)
 
         prep = scripts.prepare_batch("frame1.fits", cnn=object(), forced_targets=forced)
@@ -796,9 +799,9 @@ class TestPrepareBatch:
         np.testing.assert_allclose(prep.forced_targets.ra.deg, [20.0])
         np.testing.assert_allclose(prep.forced_targets.dec.deg, [5.0])
 
-    def test_forced_targets_none_by_default_on_batchprep(self, monkeypatch):
+    def test_forced_targets_none_by_default_on_batchprep(self, mocker):
         """``BatchPrep.forced_targets`` is None when no forced targets are given."""
-        _patch_prep(monkeypatch)
+        _patch_prep(mocker)
 
         prep = scripts.prepare_batch("frame1.fits", cnn=object())
 
@@ -917,7 +920,7 @@ class TestCheckFrameConsistency:
         with pytest.raises(FrameError, match="pointing"):
             scripts.check_frame_consistency("bad.fits", header, prep)
 
-    def test_inconsistent_frame_is_skipped_by_batch(self, monkeypatch):
+    def test_inconsistent_frame_is_skipped_by_batch(self, mocker):
         """process_batch skips an off-field frame and keeps the good one."""
         prep = self._prep()
 
@@ -925,11 +928,10 @@ class TestCheckFrameConsistency:
             ra = 10.0 if file == "good.fits" else 50.0
             return scripts.LoadedFrame(np.zeros((2, 2)), _consistency_header(RA=ra))
 
-        monkeypatch.setattr(scripts, "_load_frame", _fake_load_frame)
-        monkeypatch.setattr(
-            scripts,
-            "process_one_image",
-            lambda *a, **k: {"TR": Table({"tot_count": [1.0]})},
+        mocker.patch("bandaid.scripts._load_frame", side_effect=_fake_load_frame)
+        mocker.patch(
+            "bandaid.scripts.process_one_image",
+            return_value={"TR": Table({"tot_count": [1.0]})},
         )
         results = scripts.process_batch(
             ["good.fits", "bad.fits"],

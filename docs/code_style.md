@@ -48,3 +48,14 @@ uvx pydoclint --config=pyproject.toml src/ tests/
     scripts, plus `eval_realistic_weights.py` and `image2sl_qt.py`) carry targeted
     per-file-ignores for conventions that are normal there: progress `print`s, lazy
     imports, and commented-out reference code.
+
+## Test style
+
+Tests patch with [`pytest-mock`](https://pytest-mock.readthedocs.io/)'s `mocker`
+fixture, not `monkeypatch`. Patch the name where it is *looked up* —
+`mocker.patch("bandaid.scripts.prepare_batch")` — because `bandaid.scripts` imports
+its collaborators into its own namespace. Prefer a mock's `.call_args` /
+`assert_called_once_with` over a hand-rolled `calls = {}` recorder.
+
+`monkeypatch` is still correct for environment variables (`setenv`/`delenv`) and the
+working directory (`chdir`), which is what it is for.
