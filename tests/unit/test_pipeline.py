@@ -18,10 +18,12 @@ from bandaid.config import InstrumentProfile, PhotometryConfig
 from bandaid.exceptions import (
     DegenerateBayerChannelError,
     FrameMetadataError,
+    NoUsableStarsError,
     TooFewStarsError,
 )
 from bandaid.image2sl_qt import generate_bayer_masks
 from bandaid.photometry import (
+    CENTROID_PAD_PIX,
     DETECTION_OPENING,
     MIN_DETECTED_STARS,
     N_GAIA_STARS_ALIGN,
@@ -256,6 +258,134 @@ class TestPrepareImage:
         prepare_image("unused.fits", np.zeros((5, 2)), None)
 
         assert externals.align.call_args.kwargs["expected_center"] is None
+
+    def test_off_frame_catalog_stars_dropped_before_centroiding(
+        self, stub_prepare_image_externals
+    ):
+        """Off-frame catalog stars never reach centroiding, aligned or input."""
+        externals = stub_prepare_image_externals()
+        aligned = np.array(
+            [[5.0, 5.0], [-50.0, 5.0], [9.0, 9.0], [200.0, 5.0]],
+        )
+        externals.align.side_effect = lambda *_args, **_kwargs: (
+            aligned,
+            _make_tan_wcs(),
+        )
+        photometry_coords = SkyCoord(
+            ra=[1.0, 2.0, 3.0, 4.0], dec=[0.0, 0.0, 0.0, 0.0], unit="deg"
+        )
+
+        img = prepare_image(
+            "unused.fits",
+            np.zeros((5, 2)),
+            None,
+            photometry_coords=photometry_coords,
+        )
+
+        kept = [0, 2]
+        assert np.array_equal(externals.centroid_stars.call_args[0][1], aligned[kept])
+        assert len(img.input_photometry_coords) == len(kept)
+        assert len(img.aligned_coords) == len(kept)
+        assert np.array_equal(
+            img.input_photometry_coords.ra.deg, photometry_coords.ra.deg[kept]
+        )
+        assert np.array_equal(
+            img.input_photometry_coords.dec.deg, photometry_coords.dec.deg[kept]
+        )
+
+    def test_in_frame_cut_uses_width_and_height_separately(
+        self, stub_prepare_image_externals
+    ):
+        """The in-frame cut checks x against width and y against height, not swapped."""
+        externals = stub_prepare_image_externals(calibrated=np.zeros((10, 40)))
+        aligned = np.array([[30.0, 5.0], [5.0, 30.0]])
+        externals.align.side_effect = lambda *_args, **_kwargs: (
+            aligned,
+            _make_tan_wcs(),
+        )
+        photometry_coords = SkyCoord(ra=[1.0, 2.0], dec=[0.0, 0.0], unit="deg")
+
+        prepare_image(
+            "unused.fits",
+            np.zeros((5, 2)),
+            None,
+            photometry_coords=photometry_coords,
+        )
+
+        assert np.array_equal(externals.centroid_stars.call_args[0][1], aligned[[0]])
+
+    def test_in_frame_cut_pads_by_centroid_cutout(self, stub_prepare_image_externals):
+        """A star just inside the 8 px pad is kept; one just past it is dropped."""
+        externals = stub_prepare_image_externals()
+        lower_kept = -CENTROID_PAD_PIX + 0.1
+        lower_dropped = -CENTROID_PAD_PIX - 0.1
+        upper_kept = 10 - 0.5 + CENTROID_PAD_PIX - 0.1
+        upper_dropped = 10 - 0.5 + CENTROID_PAD_PIX + 0.1
+        aligned = np.array(
+            [
+                [lower_kept, 5.0],
+                [lower_dropped, 5.0],
+                [upper_kept, 5.0],
+                [upper_dropped, 5.0],
+                [5.0, lower_kept],
+                [5.0, lower_dropped],
+                [5.0, upper_kept],
+                [5.0, upper_dropped],
+            ],
+        )
+        externals.align.side_effect = lambda *_args, **_kwargs: (
+            aligned,
+            _make_tan_wcs(),
+        )
+        photometry_coords = SkyCoord(
+            ra=np.arange(8, dtype=float), dec=np.zeros(8), unit="deg"
+        )
+
+        prepare_image(
+            "unused.fits",
+            np.zeros((5, 2)),
+            None,
+            photometry_coords=photometry_coords,
+        )
+
+        kept = [0, 2, 4, 6]
+        assert np.array_equal(externals.centroid_stars.call_args[0][1], aligned[kept])
+
+    def test_no_catalog_leaves_aligned_coords_untouched(
+        self, stub_prepare_image_externals
+    ):
+        """With no catalog, the in-frame cut is skipped; aligned coords pass whole."""
+        externals = stub_prepare_image_externals()
+        aligned = np.array([[5.0, 5.0], [-50.0, 5.0]])
+        externals.align.side_effect = lambda *_args, **_kwargs: (
+            aligned,
+            _make_tan_wcs(),
+        )
+
+        img = prepare_image(
+            "unused.fits", np.zeros((5, 2)), None, photometry_coords=None
+        )
+
+        assert np.array_equal(img.aligned_coords, aligned)
+        assert np.array_equal(externals.centroid_stars.call_args[0][1], aligned)
+
+    def test_no_catalog_star_in_frame_raises(self, stub_prepare_image_externals):
+        """When every catalog star is off-frame, NoUsableStarsError names the file."""
+        externals = stub_prepare_image_externals()
+        aligned = np.array([[-50.0, 5.0], [200.0, 5.0]])
+        externals.align.side_effect = lambda *_args, **_kwargs: (
+            aligned,
+            _make_tan_wcs(),
+        )
+        photometry_coords = SkyCoord(ra=[1.0, 2.0], dec=[0.0, 0.0], unit="deg")
+        path = "unused.fits"
+
+        with pytest.raises(NoUsableStarsError) as exc_info:
+            prepare_image(
+                path, np.zeros((5, 2)), None, photometry_coords=photometry_coords
+            )
+
+        assert exc_info.value.file == path
 
 
 # --- Synthetic-FITS helpers for the detect/align/centroid pipeline tests ---
