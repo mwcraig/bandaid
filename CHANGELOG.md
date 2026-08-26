@@ -98,6 +98,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     overrides the default. The chosen backend is logged at INFO and exposed
     as `.backend`; the base install stays numpy-only (it keeps bandaid
     running under Pyodide), and `pip install bandaid[jax]` opts in.
+- Off-frame catalog stars are now dropped on every frame right after the
+    WCS projection, before centroiding and aperture photometry. The Gaia cone
+    has radius equal to the frame half-diagonal (so it covers every corner
+    under field rotation), which is ~1.8x the frame's area: roughly half the
+    catalog is off-frame on every frame, and used to be centroided and
+    photometered in all filters only to be discarded at the end by
+    `good_star_mask`'s bounds cut. Cutting right after projection is ~14-19%
+    faster per frame; `.star` output is unchanged, since the cut is padded by
+    8 px so it keeps a superset of what `good_star_mask` keeps (verified
+    byte-identical on real Seestar frames, QA manifest included). The one
+    visible side effect is that in-memory result tables have fewer rows --
+    only ones `good_star_mask` would have dropped anyway (#115).
 
 ### Changed (breaking)
 
