@@ -778,7 +778,9 @@ class TestCalibrationSequence:
         image = _detectable_image(make_test_image, n_sources=5)
         path = _write_seestar_fits(tmp_path / "open.fits", image)
 
-        stars_detection_mock = mocker.patch("bandaid._detect_stars", return_value=[])
+        stars_detection_mock = mocker.patch(
+            "bandaid.photometry._detect_stars", return_value=[]
+        )
 
         # Default: the pipeline's DETECTION_OPENING reaches the detector.
         with pytest.raises(TooFewStarsError):
@@ -823,7 +825,7 @@ class TestCalibrationSequence:
             return real_detection(data, threshold=threshold, opening=opening)
 
         mocker.patch(
-            "bandaid._detect_stars",
+            "bandaid.photometry._detect_stars",
             side_effect=capturing_detection,
         )
 

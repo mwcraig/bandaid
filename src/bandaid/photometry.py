@@ -24,11 +24,13 @@ from astropy.table import Table
 from astropy.time import Time
 from astropy.wcs.utils import proj_plane_pixel_scales
 from dateutil import parser
-from eloy import centroid, detection, photometry, psf, utils
+from eloy import centroid, photometry, psf, utils
 from eloy.centroid import ballet_centroid
 from photutils.aperture import ApertureStats, CircularAnnulus, CircularAperture
 from pydantic import ValidationError
+from scipy import ndimage
 from scipy.ndimage import shift as ndshift
+from skimage.measure import label, regionprops
 from twirl import compute_wcs
 
 from .config import (
@@ -111,9 +113,9 @@ _DEFAULT_INSTRUMENT = InstrumentProfile()
 _DEFAULT_SOURCE_SELECTION = SourceSelectionConfig()
 
 # Source-detection threshold (in units of the background sigma) passed to
-# `detection.stars_detection`.
+# `_detect_stars`.
 THRESH = _DEFAULT_INSTRUMENT.thresh
-# Size of the morphological-opening kernel passed to `detection.stars_detection`.
+# Size of the morphological-opening kernel passed to `_detect_stars`.
 # A source must hold a solid opening x opening above-threshold core to survive, so
 # this -- not THRESH -- is what gates faint-star detection. bandaid once lowered
 # eloy's default (5 -> 3) because opening=5 starved real fields (~10 of ~23 stars),
@@ -719,6 +721,126 @@ def _load_frame(file):
         return LoadedFrame(data=hdul[0].data, header=hdul[0].header)
 
 
+def _box_opening(mask, size):
+    """
+    Binary opening of ``mask`` by a ``size x size`` kernel of ones.
+
+    Bit-identical to ``skimage.morphology.binary_opening(mask, np.ones((size,
+    size)))`` -- including at the image border, where skimage pads the erosion
+    with True and the dilation with False -- but built from two separable box
+    filters instead of two full 2-D morphology passes, which is ~4x faster on a
+    2 Mpx frame. ``scipy.ndimage.binary_opening`` is *not* a drop-in: its border
+    rule differs from skimage's.
+
+    Parameters
+    ----------
+    mask : numpy.ndarray of bool
+        2-D boolean image to open.
+    size : int
+        Kernel edge length. Even sizes follow skimage's centering convention.
+
+    Returns
+    -------
+    numpy.ndarray of bool
+        The opened mask, same shape as ``mask``.
+    """
+    # Erosion: a pixel survives when every pixel in its window is True, i.e. the
+    # window mean is 1. Out-of-image pixels count as True (cval=1). Dilation: a
+    # pixel is set when any pixel in its window is True, i.e. the window mean is
+    # > 0; out-of-image pixels count as False (cval=0). A window of at most
+    # size**2 ones sums exactly in float32 for any plausible kernel, and the
+    # 0.999 / 1e-6 margins keep the comparisons robust to rounding regardless.
+    # skimage dilates with the *reflected* footprint; for an even kernel that
+    # shifts the dilation window one pixel up/left relative to the erosion
+    # window, which the dilation's origin reproduces (odd kernels are symmetric).
+    all_true = 0.999  # window mean of 1 means every pixel is True
+    any_true = 1e-6  # window mean above 0 means at least one pixel is True
+    dilation_origin = -1 if size % 2 == 0 else 0
+    eroded = (
+        ndimage.uniform_filter(
+            mask.astype(np.float32), size, mode="constant", cval=1.0, origin=0
+        )
+        > all_true
+    )
+    return (
+        ndimage.uniform_filter(
+            eroded.astype(np.float32),
+            size,
+            mode="constant",
+            cval=0.0,
+            origin=dilation_origin,
+        )
+        > any_true
+    )
+
+
+def _detection_threshold(image, threshold):
+    """
+    Global detection threshold: ``threshold * std(core) + median(image)``.
+
+    ``core`` is the set of pixels within one standard deviation of the median,
+    so bright sources do not inflate the sky sigma. Same estimator as eloy's
+    ``stars_detection``; ``image`` must be NaN-free.
+
+    Parameters
+    ----------
+    image : numpy.ndarray
+        2-D image with no NaNs.
+    threshold : float
+        Detection threshold in units of the core standard deviation.
+
+    Returns
+    -------
+    float
+        The threshold in image units.
+    """
+    flat = image.ravel()  # a view; eloy's flatten() copied 2 Mpx per frame
+    median = np.median(flat)
+    core = flat[np.abs(flat - median) < np.std(flat)]
+    # A constant image has an empty core (nothing is within 0 of the median);
+    # treat its sigma as 0 so the threshold is the median and nothing detects,
+    # rather than letting np.std warn and return NaN.
+    core_std = np.std(core) if core.size else 0.0
+    return threshold * core_std + median
+
+
+def _detect_stars(image, threshold=THRESH, opening=DETECTION_OPENING):
+    """
+    Detect stars by thresholding, binary opening, and labelling.
+
+    A bandaid-side replacement for ``eloy.detection.stars_detection`` with the
+    same algorithm and identical output (regions, centroids, and order) at about
+    half the cost; the opening dominated eloy's runtime and is the win.
+
+    Parameters
+    ----------
+    image : numpy.ndarray
+        2-D image. NaN pixels are treated as sky (replaced by the frame's
+        nanmedian before thresholding).
+    threshold : float, optional
+        Detection threshold in units of the sky sigma above the median. By
+        default ``THRESH``.
+    opening : int, optional
+        Edge length of the square opening kernel; a source must hold a solid
+        ``opening x opening`` above-threshold core to survive. By default
+        ``DETECTION_OPENING``.
+
+    Returns
+    -------
+    list of skimage.measure._regionprops.RegionProperties
+        Detected regions sorted by ``intensity_max``, brightest first. Empty for
+        an all-NaN or constant image.
+    """
+    bad = np.isnan(image)
+    if bad.any():
+        if bad.all():
+            return []
+        image = np.where(bad, np.nanmedian(image), image)
+    mask = _box_opening(image > _detection_threshold(image, threshold), opening)
+    regions = regionprops(label(mask), image)
+    return sorted(regions, key=lambda r: r.intensity_max, reverse=True)
+
+
 def calibration_sequence(
     file,
     threshold=1,
@@ -741,9 +863,8 @@ def calibration_sequence(
     threshold : float, optional
         Detection threshold for star finding, by default 1
     opening : int, optional
-        Size of the morphological-opening kernel passed to
-        `detection.stars_detection`; gates faint-star detection. By default
-        ``DETECTION_OPENING``.
+        Size of the morphological-opening kernel passed to `_detect_stars`;
+        gates faint-star detection. By default ``DETECTION_OPENING``.
     detect_on_bayer_balanced : bool, optional
         When True, run source detection and the FWHM fit on a Bayer-balanced
         *copy* of the data. The returned ``calibrated_data`` is always the
@@ -821,9 +942,7 @@ def calibration_sequence(
     else:
         detection_image = calibrated_data
 
-    regions = detection.stars_detection(
-        detection_image, threshold=threshold, opening=opening
-    )
+    regions = _detect_stars(detection_image, threshold=threshold, opening=opening)
 
     # in case we detect fewer than the minimum number of stars
     if len(regions) < MIN_DETECTED_STARS:
