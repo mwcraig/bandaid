@@ -117,14 +117,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (same regions, centroids, and order; verified bit-for-bit against eloy on
     ~400 real frames across five fields and byte-identical `.star`
     output), but the opening is built from two separable box filters that
-    reproduce skimage's `binary_opening` exactly at about a quarter of the
-    cost, and the threshold no longer copies the frame. Detection drops from
-    ~116 ms to ~57 ms on a Seestar frame, ~13% of the per-frame budget. NaN
-    pixels are now filled with the frame median before thresholding (an
-    unguarded median would otherwise silently yield zero detections), and an
-    all-NaN or constant frame gives no regions without a `RuntimeWarning`.
-    `scikit-image` and `scipy` are declared as direct dependencies; both were
-    already installed transitively.
+    reproduce skimage's `binary_opening` at about a quarter of the cost, and
+    the threshold no longer copies the frame -- together dropping detection
+    from ~116 ms to ~57 ms per Seestar frame (~12% of the 0.49 s per-frame
+    cost). NaN pixels are now filled with the frame median before thresholding
+    (an unguarded median would otherwise silently yield zero detections), and
+    an all-NaN or constant frame gives no regions without a `RuntimeWarning`.
+    `scikit-image` and `scipy` move from transitive to direct dependencies.
 
 ### Changed (breaking)
 

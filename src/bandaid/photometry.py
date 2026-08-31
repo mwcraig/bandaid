@@ -774,36 +774,6 @@ def _box_opening(mask, size):
     )
 
 
-def _detection_threshold(image, threshold):
-    """
-    Global detection threshold: ``threshold * std(core) + median(image)``.
-
-    ``core`` is the set of pixels within one standard deviation of the median,
-    so bright sources do not inflate the sky sigma. Same estimator as eloy's
-    ``stars_detection``; ``image`` must be NaN-free.
-
-    Parameters
-    ----------
-    image : numpy.ndarray
-        2-D image with no NaNs.
-    threshold : float
-        Detection threshold in units of the core standard deviation.
-
-    Returns
-    -------
-    float
-        The threshold in image units.
-    """
-    flat = image.ravel()  # a view; eloy's flatten() copied 2 Mpx per frame
-    median = np.median(flat)
-    core = flat[np.abs(flat - median) < np.std(flat)]
-    # A constant image has an empty core (nothing is within 0 of the median);
-    # treat its sigma as 0 so the threshold is the median and nothing detects,
-    # rather than letting np.std warn and return NaN.
-    core_std = np.std(core) if core.size else 0.0
-    return threshold * core_std + median
-
-
 def _detect_stars(image, threshold=THRESH, opening=DETECTION_OPENING):
     """
     Detect stars by thresholding, binary opening, and labelling.
@@ -836,7 +806,17 @@ def _detect_stars(image, threshold=THRESH, opening=DETECTION_OPENING):
         if bad.all():
             return []
         image = np.where(bad, np.nanmedian(image), image)
-    mask = _box_opening(image > _detection_threshold(image, threshold), opening)
+    # Threshold at threshold * std(core) + median, where core is the pixels
+    # within one std of the median so bright sources do not inflate the sky
+    # sigma -- the same estimator as eloy's stars_detection.
+    flat = image.ravel()  # a view; eloy's flatten() copied 2 Mpx per frame
+    median = np.median(flat)
+    core = flat[np.abs(flat - median) < np.std(flat)]
+    # A constant image has an empty core (nothing is within 0 of the median);
+    # treat its sigma as 0 so the threshold is the median and nothing detects,
+    # rather than letting np.std warn and return NaN.
+    core_std = np.std(core) if core.size else 0.0
+    mask = _box_opening(image > threshold * core_std + median, opening)
     regions = regionprops(label(mask), image)
     return sorted(regions, key=lambda r: r.intensity_max, reverse=True)
 

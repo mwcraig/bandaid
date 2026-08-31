@@ -396,18 +396,20 @@ def _detectable_image(
     """
     Build a noisy multi-Gaussian frame that eloy's detection can resolve.
 
-    ``amplitude`` far above ``noise_stddev`` keeps detection reliable; an
-    ``amplitude`` above the 50000 ADU saturation cap exercises the saturated
-    path in ``calibration_sequence``. Pass ``include_noise=False`` for the
-    "too few stars" frames so detection returns exactly ``n_sources`` regardless
-    of the threshold/opening (flat Gaussian noise at the low production threshold
+    ``amplitude`` (a scalar shared by all sources, or one value per source)
+    far above ``noise_stddev`` keeps detection reliable; an ``amplitude``
+    above the 50000 ADU saturation cap exercises the saturated path in
+    ``calibration_sequence``. Pass ``include_noise=False`` for the "too few
+    stars" frames so detection returns exactly ``n_sources`` regardless of
+    the threshold/opening (flat Gaussian noise at the low production threshold
     spawns spurious blobs that would otherwise pad the count past the floor).
     """
     sigma = fwhm * gaussian_fwhm_to_sigma
     positions = _SOURCE_POSITIONS[:n_sources]
+    amplitudes = list(amplitude) if np.ndim(amplitude) else [amplitude] * n_sources
     source_properties = Table(
         {
-            "amplitude": [amplitude] * n_sources,
+            "amplitude": amplitudes,
             "x_mean": [x for x, _ in positions],
             "y_mean": [y for _, y in positions],
             "x_stddev": [sigma] * n_sources,
@@ -583,22 +585,7 @@ class TestDetectStars:
         """
         amplitudes = [400.0, 100.0, 300.0, 200.0]
         positions = _SOURCE_POSITIONS[:4]
-        sigma = 4.0 * gaussian_fwhm_to_sigma
-        image = make_test_image(
-            image_size=(480, 480),
-            source_properties=Table(
-                {
-                    "amplitude": amplitudes,
-                    "x_mean": [x for x, _ in positions],
-                    "y_mean": [y for _, y in positions],
-                    "x_stddev": [sigma] * 4,
-                    "y_stddev": [sigma] * 4,
-                }
-            ),
-            noise_mean=100.0,
-            noise_stddev=2.0,
-            seed=SEED,
-        )
+        image = _detectable_image(make_test_image, n_sources=4, amplitude=amplitudes)
 
         regions = _detect_stars(image, threshold=5, opening=3)
 
