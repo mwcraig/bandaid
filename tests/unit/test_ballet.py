@@ -21,6 +21,7 @@ from bandaid.ballet import (
     _resolve_backend,
     download_weights,
 )
+from bandaid.photometry import CENTROID_PAD_PIX, centroid_stars
 
 # Both are needed for the jax backend: eloy's model imports flax lazily and
 # only fails at call time, so flax alone or jax alone is not enough.
@@ -198,6 +199,40 @@ class TestNumpyBalletOffline:
         assert not any(issubclass(w.category, RuntimeWarning) for w in caught), [
             str(w.message) for w in caught
         ]
+
+    def test_off_frame_coords_come_back_unchanged(self, tmp_path):
+        """
+        Coordinates at or past the CENTROID_PAD_PIX bounds centroid to themselves.
+
+        `_drop_off_frame_catalog_stars` relies on this: a position it drops
+        has no overlap with its 15x15 cutout, so eloy substitutes an all-zero
+        stand-in, the model's per-cutout normalization turns it into NaN, and
+        `ballet_centroid` falls back to the input coordinate -- still
+        off-frame. The mechanism is weight-independent (random-init weights
+        here), but it does depend on the cutout size: this fails if the
+        cutout ever grows past the 8 px pad.
+        """
+        model = NumpyBallet(model_file=_random_weights_npz(tmp_path))
+        height, width = 20, 30
+        rng = np.random.default_rng(1)
+        data = rng.normal(loc=100.0, scale=10.0, size=(height, width))
+        pad = CENTROID_PAD_PIX
+        coords = np.array(
+            [
+                [-pad, 10.0],
+                [-pad - 12.0, 10.0],
+                [width - 0.5 + pad, 10.0],
+                [width + 20.0, 10.0],
+                [10.0, -pad],
+                [10.0, -pad - 12.0],
+                [10.0, height - 0.5 + pad],
+                [10.0, height + 20.0],
+            ]
+        )
+
+        out = centroid_stars(data, coords, model)
+
+        np.testing.assert_array_equal(out, coords)
 
     @pytest.mark.parametrize("backend", _BACKENDS)
     def test_chunking_matches_single_pass(self, tmp_path, mocker, backend):

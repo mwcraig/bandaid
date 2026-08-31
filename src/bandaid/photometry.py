@@ -1090,6 +1090,54 @@ def eloy_to_starlist(eloy_table, metadata, *, min_snr=None):
         raise StarListValidationError(msg) from exc
 
 
+# Ballet centroids inside a 15x15 cutout (eloy.centroid.ballet_centroid). A
+# position more than ~7.5 px off-frame has no overlap with its cutout, so eloy
+# substitutes an all-zero stand-in whose per-cutout normalization is NaN and
+# ballet_centroid falls back to the input coordinate -- still off-frame, so
+# good_star_mask drops it. Pad the pre-centroid in-frame cut by 8 px so every
+# star it removes would have come back off-frame anyway.
+CENTROID_PAD_PIX = 8.0
+
+
+def _within_frame(x, y, width, height, pad=0.0):
+    """
+    Boolean mask of pixel-center coordinates inside the frame, expanded by `pad`.
+
+    At ``pad=0.0`` this is exactly the in-bounds test `good_star_mask` applies:
+    the upper bound is ``width - 0.5`` (pixel 0 spans ``[-0.5, 0.5)``, so the last
+    column ends at ``width - 0.5``) and the lower bound is ``0.0`` rather than the
+    geometrically-matching ``-0.5`` because the AAVSO starlist schema declares
+    ``StarItem.x``/``.y`` as ``ge=0`` (see the comment on `good_star_mask`'s bounds
+    cut). A positive `pad` widens both bounds symmetrically, e.g. to admit stars
+    that a subsequent centroiding step could still pull into bounds.
+
+    Parameters
+    ----------
+    x : numpy.ndarray or astropy.table.Column
+        Pixel-center x coordinates.
+    y : numpy.ndarray or astropy.table.Column
+        Pixel-center y coordinates.
+    width : float
+        Frame width in pixels.
+    height : float
+        Frame height in pixels.
+    pad : float, optional
+        Amount (in pixels) to expand the bounds by on every side. By default
+        0.0 (the bare `good_star_mask` bounds).
+
+    Returns
+    -------
+    numpy.ndarray
+        Boolean array, ``True`` where the coordinate falls within the padded
+        frame bounds.
+    """
+    x = np.asarray(x)
+    y = np.asarray(y)
+    return (
+        (x >= -pad) & (x < width - 0.5 + pad) & (y >= -pad) & (y < height - 0.5 + pad)
+    )
+
+
 def good_star_mask(eloy_table, metadata, *, min_snr=None):
     """
     Boolean mask of rows that survive photometry filtering.
@@ -1138,12 +1186,9 @@ def good_star_mask(eloy_table, metadata, *, min_snr=None):
     # represented in the output at all. Passing it through here raises a
     # pydantic ValidationError in `eloy_to_starlist`, which loses the *entire
     # frame* instead of the one star. The cost is a half-pixel-wide strip on
-    # two edges; the alternative is losing whole frames.
-    good &= (
-        (eloy_table["x"] >= 0.0)
-        & (eloy_table["x"] < metadata["width"] - 0.5)
-        & (eloy_table["y"] >= 0.0)
-        & (eloy_table["y"] < metadata["height"] - 0.5)
+    # two edges; the alternative is losing whole frames. See `_within_frame`.
+    good &= _within_frame(
+        eloy_table["x"], eloy_table["y"], metadata["width"], metadata["height"]
     )
     # StarItem.peak_count is also ge=0, and the raw (non-background-subtracted)
     # peak box can legitimately produce a negative value for a faint star in a
@@ -1770,6 +1815,77 @@ def measure_photometry(
     }
 
 
+def _drop_off_frame_catalog_stars(aligned_coords, photometry_coords, shape, file):
+    """
+    Drop catalog stars whose aligned projection falls outside the frame.
+
+    Cutting here, right after `align`'s projection and before centroiding,
+    keeps `prepare_image` from CNN-centroiding and photometering stars that
+    `good_star_mask` would discard at the very end anyway; the Gaia cone
+    queried for the catalog is a circle of radius equal to the frame
+    half-diagonal, so roughly half the catalog projects off-frame on any
+    given frame. The bound is padded by `CENTROID_PAD_PIX`: a position
+    dropped here sits far enough off-frame that its 15x15 centroid cutout
+    has no overlap with the image, so centroiding would have returned it
+    unchanged (via the CNN's NaN fallback on the all-zero stand-in cutout)
+    and `good_star_mask` would have dropped it at the very end. The kept
+    set is therefore a superset of what `good_star_mask` keeps.
+
+    When `photometry_coords` is None, `aligned_coords` are the detected
+    coordinates themselves rather than catalog projections, and must stay
+    one-to-one with the image's own `coords`; the cut is skipped and both
+    arguments are returned unchanged.
+
+    Parameters
+    ----------
+    aligned_coords : numpy.ndarray
+        ``(N, 2)`` array of aligned pixel coordinates, same length and order
+        as `photometry_coords`.
+    photometry_coords : astropy.coordinates.SkyCoord or None
+        Catalog sky coordinates aligned one-to-one with `aligned_coords`, or
+        None when centroiding runs on detected coordinates instead.
+    shape : tuple of int
+        ``(height, width)`` of the calibrated frame, i.e. `numpy.ndarray.shape`.
+    file : str or pathlib.Path
+        Source frame, named in the raised error and the debug log.
+
+    Returns
+    -------
+    numpy.ndarray
+        `aligned_coords`, reduced to the in-frame rows (unchanged if
+        `photometry_coords` is None).
+    astropy.coordinates.SkyCoord or None
+        `photometry_coords`, reduced to the same in-frame rows (unchanged if
+        already None).
+
+    Raises
+    ------
+    NoUsableStarsError
+        If every catalog star projects outside the padded frame bounds. The
+        source `file` is attached.
+    """
+    if photometry_coords is None:
+        return aligned_coords, photometry_coords
+    height, width = shape
+    keep = _within_frame(
+        aligned_coords[:, 0], aligned_coords[:, 1], width, height, pad=CENTROID_PAD_PIX
+    )
+    if not keep.any():
+        msg = (
+            f"no catalog star projects onto {file}: all {len(keep)} "
+            "targets fall outside the frame"
+        )
+        raise NoUsableStarsError(msg, file=file)
+    logger.debug(
+        "%s: %d of %d catalog stars in frame (pad %.0f px)",
+        file,
+        keep.sum(),
+        len(keep),
+        CENTROID_PAD_PIX,
+    )
+    return aligned_coords[keep], photometry_coords[keep]
+
+
 def prepare_image(
     file,
     radecs,
@@ -1823,7 +1939,9 @@ def prepare_image(
     WCSSolveError
         If the per-image WCS cannot be solved. The source `file` is attached to
         the error before it propagates. (`calibration_sequence` may also raise
-        `TooFewStarsError`, which propagates unchanged.)
+        `TooFewStarsError`, and `_drop_off_frame_catalog_stars` may raise
+        `NoUsableStarsError` when every catalog star projects outside the
+        frame; both propagate unchanged.)
     FrameMetadataError
         If a WCS must be solved (``wcs`` is None) but the frame metadata has no
         usable numeric ``pixscale`` to scale-check the solve against. The source
@@ -1924,6 +2042,12 @@ def prepare_image(
         # loop can report which frame failed.
         exc.file = file
         raise
+
+    # Drop catalog stars that projected off-frame, before centroiding/photometry.
+    aligned_coords, photometry_coords = _drop_off_frame_catalog_stars(
+        aligned_coords, photometry_coords, calibrated_data.shape, file
+    )
+
     centroid_coords = centroid_stars(working_image, aligned_coords, cnn)
 
     return ImageData(
