@@ -1133,13 +1133,9 @@ def _within_frame(x, y, width, height, pad=0.0):
     """
     x = np.asarray(x)
     y = np.asarray(y)
-    with np.errstate(invalid="ignore"):
-        return (
-            (x >= -pad)
-            & (x < width - 0.5 + pad)
-            & (y >= -pad)
-            & (y < height - 0.5 + pad)
-        )
+    return (
+        (x >= -pad) & (x < width - 0.5 + pad) & (y >= -pad) & (y < height - 0.5 + pad)
+    )
 
 
 def good_star_mask(eloy_table, metadata, *, min_snr=None):
@@ -2047,9 +2043,7 @@ def prepare_image(
         exc.file = file
         raise
 
-    # About half the catalog projects off-frame on any given frame (the Gaia
-    # cone radius is the frame half-diagonal). Drop those rows now, before
-    # centroiding and photometry, instead of at good_star_mask's bounds cut.
+    # Drop catalog stars that projected off-frame, before centroiding/photometry.
     aligned_coords, photometry_coords = _drop_off_frame_catalog_stars(
         aligned_coords, photometry_coords, calibrated_data.shape, file
     )

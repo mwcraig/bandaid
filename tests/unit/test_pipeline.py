@@ -263,14 +263,10 @@ class TestPrepareImage:
         self, stub_prepare_image_externals
     ):
         """Off-frame catalog stars never reach centroiding, aligned or input."""
-        externals = stub_prepare_image_externals()
         aligned = np.array(
             [[5.0, 5.0], [-50.0, 5.0], [9.0, 9.0], [200.0, 5.0]],
         )
-        externals.align.side_effect = lambda *_args, **_kwargs: (
-            aligned,
-            _make_tan_wcs(),
-        )
+        externals = stub_prepare_image_externals(coords=aligned)
         photometry_coords = SkyCoord(
             ra=[1.0, 2.0, 3.0, 4.0], dec=[0.0, 0.0, 0.0, 0.0], unit="deg"
         )
@@ -297,11 +293,9 @@ class TestPrepareImage:
         self, stub_prepare_image_externals
     ):
         """The in-frame cut checks x against width and y against height, not swapped."""
-        externals = stub_prepare_image_externals(calibrated=np.zeros((10, 40)))
         aligned = np.array([[30.0, 5.0], [5.0, 30.0]])
-        externals.align.side_effect = lambda *_args, **_kwargs: (
-            aligned,
-            _make_tan_wcs(),
+        externals = stub_prepare_image_externals(
+            calibrated=np.zeros((10, 40)), coords=aligned
         )
         photometry_coords = SkyCoord(ra=[1.0, 2.0], dec=[0.0, 0.0], unit="deg")
 
@@ -316,7 +310,6 @@ class TestPrepareImage:
 
     def test_in_frame_cut_pads_by_centroid_cutout(self, stub_prepare_image_externals):
         """A star just inside the 8 px pad is kept; one just past it is dropped."""
-        externals = stub_prepare_image_externals()
         lower_kept = -CENTROID_PAD_PIX + 0.1
         lower_dropped = -CENTROID_PAD_PIX - 0.1
         upper_kept = 10 - 0.5 + CENTROID_PAD_PIX - 0.1
@@ -333,10 +326,7 @@ class TestPrepareImage:
                 [5.0, upper_dropped],
             ],
         )
-        externals.align.side_effect = lambda *_args, **_kwargs: (
-            aligned,
-            _make_tan_wcs(),
-        )
+        externals = stub_prepare_image_externals(coords=aligned)
         photometry_coords = SkyCoord(
             ra=np.arange(8, dtype=float), dec=np.zeros(8), unit="deg"
         )
@@ -355,12 +345,8 @@ class TestPrepareImage:
         self, stub_prepare_image_externals
     ):
         """With no catalog, the in-frame cut is skipped; aligned coords pass whole."""
-        externals = stub_prepare_image_externals()
         aligned = np.array([[5.0, 5.0], [-50.0, 5.0]])
-        externals.align.side_effect = lambda *_args, **_kwargs: (
-            aligned,
-            _make_tan_wcs(),
-        )
+        externals = stub_prepare_image_externals(coords=aligned)
 
         img = prepare_image(
             "unused.fits", np.zeros((5, 2)), None, photometry_coords=None
@@ -371,12 +357,8 @@ class TestPrepareImage:
 
     def test_no_catalog_star_in_frame_raises(self, stub_prepare_image_externals):
         """When every catalog star is off-frame, NoUsableStarsError names the file."""
-        externals = stub_prepare_image_externals()
         aligned = np.array([[-50.0, 5.0], [200.0, 5.0]])
-        externals.align.side_effect = lambda *_args, **_kwargs: (
-            aligned,
-            _make_tan_wcs(),
-        )
+        stub_prepare_image_externals(coords=aligned)
         photometry_coords = SkyCoord(ra=[1.0, 2.0], dec=[0.0, 0.0], unit="deg")
         path = "unused.fits"
 
