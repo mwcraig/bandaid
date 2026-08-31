@@ -747,14 +747,16 @@ def _box_opening(mask, size):
     # Erosion: a pixel survives when every pixel in its window is True, i.e. the
     # window mean is 1. Out-of-image pixels count as True (cval=1). Dilation: a
     # pixel is set when any pixel in its window is True, i.e. the window mean is
-    # > 0; out-of-image pixels count as False (cval=0). A window of at most
-    # size**2 ones sums exactly in float32 for any plausible kernel, and the
-    # 0.999 / 1e-6 margins keep the comparisons robust to rounding regardless.
+    # > 0; out-of-image pixels count as False (cval=0). Window means are
+    # quantized at 1/size**2, so thresholds at the midpoints between adjacent
+    # representable means separate all-True from one-False (and one-True from
+    # all-False) at every size, with a margin far above float32 rounding; a
+    # fixed 0.999 would misread a one-False window as all-True once size >= 32.
     # skimage dilates with the *reflected* footprint; for an even kernel that
     # shifts the dilation window one pixel up/left relative to the erosion
     # window, which the dilation's origin reproduces (odd kernels are symmetric).
-    all_true = 0.999  # window mean of 1 means every pixel is True
-    any_true = 1e-6  # window mean above 0 means at least one pixel is True
+    all_true = 1.0 - 0.5 / (size * size)  # midpoint of means (n-1)/n and 1
+    any_true = 0.5 / (size * size)  # midpoint of means 0 and 1/n
     dilation_origin = -1 if size % 2 == 0 else 0
     eroded = (
         ndimage.uniform_filter(

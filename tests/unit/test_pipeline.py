@@ -396,13 +396,36 @@ def _detectable_image(
     """
     Build a noisy multi-Gaussian frame that eloy's detection can resolve.
 
-    ``amplitude`` (a scalar shared by all sources, or one value per source)
-    far above ``noise_stddev`` keeps detection reliable; an ``amplitude``
-    above the 50000 ADU saturation cap exercises the saturated path in
-    ``calibration_sequence``. Pass ``include_noise=False`` for the "too few
-    stars" frames so detection returns exactly ``n_sources`` regardless of
-    the threshold/opening (flat Gaussian noise at the low production threshold
-    spawns spurious blobs that would otherwise pad the count past the floor).
+    Parameters
+    ----------
+    make_test_image : callable
+        The ``make_test_image`` factory fixture.
+    n_sources : int, optional
+        Number of sources; positions are ``_SOURCE_POSITIONS[:n_sources]``. By
+        default 5.
+    fwhm : float, optional
+        FWHM of every source in pixels. By default 4.0.
+    amplitude : float or sequence of float, optional
+        Peak amplitude shared by all sources, or one value per source. Keep it
+        far above ``noise_stddev`` so detection is reliable; a value above the
+        50000 ADU saturation cap exercises the saturated path in
+        ``calibration_sequence``. By default 600.0.
+    image_size : tuple of int, optional
+        Frame shape ``(ny, nx)``. By default ``(480, 480)``.
+    noise_mean : float, optional
+        Mean of the Gaussian sky noise. By default 100.0.
+    noise_stddev : float, optional
+        Standard deviation of the Gaussian sky noise. By default 2.0.
+    include_noise : bool, optional
+        Pass False for the "too few stars" frames so detection returns exactly
+        ``n_sources`` regardless of the threshold/opening (flat Gaussian noise
+        at the low production threshold spawns spurious blobs that would
+        otherwise pad the count past the floor). By default True.
+
+    Returns
+    -------
+    numpy.ndarray
+        The synthesized frame.
     """
     sigma = fwhm * gaussian_fwhm_to_sigma
     positions = _SOURCE_POSITIONS[:n_sources]
@@ -546,7 +569,7 @@ class TestDetectStars:
     stay bit-identical to what the plate solve and FWHM fit were tuned on.
     """
 
-    @pytest.mark.parametrize("size", [1, 2, 3, 4, 5, 7])
+    @pytest.mark.parametrize("size", [1, 2, 3, 4, 5, 7, 32, 33])
     def test_box_opening_matches_skimage(self, size):
         """
         The box-filter opening reproduces skimage's binary_opening exactly.
@@ -554,10 +577,17 @@ class TestDetectStars:
         Border handling is the subtle part (skimage pads True for the erosion
         and False for the dilation), so alongside random masks the sample holds
         blobs that touch every edge and every corner. Even kernel sizes are
-        included because ``detection_opening`` only requires ``>= 1``.
+        included because ``detection_opening`` only requires ``>= 1``, and so
+        are sizes >= 32, where a fixed erosion threshold of 0.999 would let a
+        window holding a single False pixel pass as all-True (1 - 1/32**2 >
+        0.999); the solid mask with one hole is what catches that.
         """
         rng = np.random.default_rng(0)
         masks = [rng.random((40, 41)) < p for p in (0.3, 0.6)]
+
+        one_hole = np.ones((40, 41), dtype=bool)
+        one_hole[20, 20] = False
+        masks.append(one_hole)
 
         blobs = np.zeros((40, 41), dtype=bool)
         blobs[0:6, 0:6] = True  # each corner
