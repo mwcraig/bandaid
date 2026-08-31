@@ -1090,10 +1090,12 @@ def eloy_to_starlist(eloy_table, metadata, *, min_snr=None):
         raise StarListValidationError(msg) from exc
 
 
-# Ballet centroids inside a 15x15 cutout (eloy.centroid.ballet_centroid), so a
-# centroid can move at most ~7 px from its aligned position. Pad the pre-centroid
-# in-frame cut by 8 px so it can only ever keep a superset of what good_star_mask
-# keeps after centroiding.
+# Ballet centroids inside a 15x15 cutout (eloy.centroid.ballet_centroid). A
+# position more than ~7.5 px off-frame has no overlap with its cutout, so eloy
+# substitutes an all-zero stand-in whose per-cutout normalization is NaN and
+# ballet_centroid falls back to the input coordinate -- still off-frame, so
+# good_star_mask drops it. Pad the pre-centroid in-frame cut by 8 px so every
+# star it removes would have come back off-frame anyway.
 CENTROID_PAD_PIX = 8.0
 
 
@@ -1826,8 +1828,12 @@ def _drop_off_frame_catalog_stars(aligned_coords, photometry_coords, shape, file
     `good_star_mask` would discard at the very end anyway; the Gaia cone
     queried for the catalog is a circle of radius equal to the frame
     half-diagonal, so roughly half the catalog projects off-frame on any
-    given frame. The bound is padded by `CENTROID_PAD_PIX` so the kept set
-    is a provable superset of what `good_star_mask` keeps after centroiding.
+    given frame. The bound is padded by `CENTROID_PAD_PIX`: a position
+    dropped here sits far enough off-frame that its 15x15 centroid cutout
+    has no overlap with the image, so centroiding would have returned it
+    unchanged (via the CNN's NaN fallback on the all-zero stand-in cutout)
+    and `good_star_mask` would have dropped it at the very end. The kept
+    set is therefore a superset of what `good_star_mask` keeps.
 
     When `photometry_coords` is None, `aligned_coords` are the detected
     coordinates themselves rather than catalog projections, and must stay
