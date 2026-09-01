@@ -18,6 +18,7 @@ from bandaid import measure_photometry
 from bandaid.photometry import (
     ANNULUS,
     RELATIVE_RADII,
+    _aperture_annulus_geometry,
     _peak_box_cutouts,
 )
 
@@ -467,3 +468,51 @@ def test_precomputed_peak_cutouts_match_internal_computation_with_channel_mask(
         np.testing.assert_array_equal(
             without["peak_count"], with_precomputed["peak_count"]
         )
+
+
+def test_precomputed_geometry_matches_internal_computation(make_test_image):
+    """
+    A precomputed ``geometry`` tuple matches the internal computation.
+
+    The fwhm-scaled aperture radii and background annulus radii depend only on
+    fwhm/radii/annulus, never the mask, so they are bit-identical across Bayer
+    channels for a given frame. A caller can precompute them once via
+    `_aperture_annulus_geometry` and pass them back in (Change B).
+    """
+    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    egain = 0.3
+
+    without = measure_photometry(image, coords, fwhm, egain, mask)
+
+    geometry = _aperture_annulus_geometry(fwhm, RELATIVE_RADII, ANNULUS)
+    with_precomputed = measure_photometry(
+        image, coords, fwhm, egain, mask, geometry=geometry
+    )
+
+    np.testing.assert_array_equal(without["tot_count"], with_precomputed["tot_count"])
+    np.testing.assert_array_equal(without["count_err"], with_precomputed["count_err"])
+    assert without["aperture_radii"] == with_precomputed["aperture_radii"]
+    assert without["annulus_radii"] == with_precomputed["annulus_radii"]
+
+
+def test_geometry_kwarg_ignores_radii_and_annulus_overrides(make_test_image):
+    """When ``geometry`` is given, ``radii``/``annulus`` are ignored."""
+    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    egain = 0.3
+
+    geometry = _aperture_annulus_geometry(fwhm, RELATIVE_RADII, ANNULUS)
+    # Deliberately wrong radii/annulus that would raise if actually used
+    # (aperture larger than the annulus); geometry must win.
+    photom = measure_photometry(
+        image,
+        coords,
+        fwhm,
+        egain,
+        mask,
+        radii=[20.0],
+        annulus=(5, 8),
+        geometry=geometry,
+    )
+
+    assert photom["aperture_radii"] == pytest.approx(geometry[0][0])
+    assert photom["annulus_radii"] == pytest.approx(geometry[1])
