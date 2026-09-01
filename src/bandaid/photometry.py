@@ -1727,6 +1727,45 @@ def annulus_sigma_clip_stats(data, coords, r_in, r_out, input_mask=None, sigma=3
     return aperstats.median, aperstats.std
 
 
+def _peak_box_cutouts(calibrated_data, centroid_coords, fwhm):
+    """
+    Extract the raw (unmasked) peak-count box cutouts, shared across channels.
+
+    The box `measure_photometry` samples for ``peak_count`` is cut from the
+    full ``calibrated_data`` at the measured centroids; only the subsequent
+    per-channel mask application and ``nanmax`` differ between TR/TG/TB
+    (Change B), so the cutout extraction itself can be computed once per frame
+    and reused instead of every channel call re-extracting the same cutout.
+
+    Parameters
+    ----------
+    calibrated_data : numpy.ndarray
+        Calibrated image data.
+    centroid_coords : numpy.ndarray
+        Centroided star coordinates.
+    fwhm : float
+        FWHM of the PSF in pixels, sizing the box (~2*FWHM per side, floored
+        at 2 px -- the same rule `measure_photometry` uses internally).
+
+    Returns
+    -------
+    numpy.ndarray or None
+        The extracted box cutouts for the finite-centroid rows, shaped
+        ``(n_finite, box_side, box_side)``. None if no row has a finite
+        centroid (nothing to cut).
+    """
+    centroid_xy = np.atleast_2d(np.asarray(centroid_coords, dtype=float))
+    finite_centroid = np.all(np.isfinite(centroid_xy), axis=1)
+    if not np.any(finite_centroid):
+        return None
+    box_side = max(int(np.ceil(2 * fwhm)), 2)
+    return utils.cutout(
+        calibrated_data,
+        centroid_xy[finite_centroid],
+        (box_side, box_side),
+    )
+
+
 def measure_photometry(
     calibrated_data,
     centroid_coords,
@@ -1736,6 +1775,7 @@ def measure_photometry(
     *,
     radii=RELATIVE_RADII,
     annulus=ANNULUS,
+    peak_cutouts=None,
 ):
     """
     Perform aperture photometry, background subtraction, and error calculation.
@@ -1760,6 +1800,13 @@ def measure_photometry(
     annulus : tuple of float, optional
         Background annulus ``(inner, outer)`` radii in units of FWHM, with
         ``outer > inner``. Defaults to the module-level `ANNULUS`.
+    peak_cutouts : numpy.ndarray or None, optional
+        Precomputed raw (unmasked) peak-count box cutouts for the
+        finite-centroid rows, e.g. from `_peak_box_cutouts`. When given, skips
+        recomputing the cutout extraction -- it is channel-independent, only
+        the subsequent per-channel mask application and ``nanmax`` differ -- so
+        a caller measuring multiple Bayer channels for one frame can compute it
+        once and reuse it (Change B). Default None recomputes it internally.
 
     Returns
     -------
@@ -1893,11 +1940,12 @@ def measure_photometry(
     peaks = np.full(centroid_xy.shape[0], np.nan)
     if np.any(finite_centroid):
         box = (box_side, box_side)
-        peak_cutouts = utils.cutout(
-            calibrated_data,
-            centroid_xy[finite_centroid],
-            box,
-        )
+        if peak_cutouts is None:
+            peak_cutouts = utils.cutout(
+                calibrated_data,
+                centroid_xy[finite_centroid],
+                box,
+            )
         if mask is not None:
             # Apply the channel mask at cutout scale rather than NaN-ing a
             # full-frame copy of the image. The mask is cut as float because a
@@ -2208,6 +2256,7 @@ def build_photometry_table(
     annulus=None,
     drift_tolerance=None,
     drift_cap=None,
+    peak_cutouts=None,
 ):
     """
     Run photometry with a given mask and build an output table.
@@ -2238,6 +2287,11 @@ def build_photometry_table(
         Absolute pixel cap on the allowed centroid drift, passed to
         `centroid_drift_flag`. If None (default), taken from
         ``config.drift.drift_cap_pix``.
+    peak_cutouts : numpy.ndarray or None, optional
+        Precomputed raw peak-count box cutouts, passed through to
+        `measure_photometry` (e.g. from `_peak_box_cutouts`, computed once by
+        `process_one_image` and reused across Bayer channels; Change B). If
+        None (default), `measure_photometry` computes it internally.
 
     Returns
     -------
@@ -2272,6 +2326,7 @@ def build_photometry_table(
         mask,
         radii=radii,
         annulus=annulus,
+        peak_cutouts=peak_cutouts,
     )
     if img.input_photometry_coords is not None:
         # The caller supplied known sky coordinates; use them directly rather
@@ -2416,6 +2471,12 @@ def process_one_image(
         frame=frame,
     )
 
+    # The peak-count box cutout is channel-independent (only the subsequent
+    # per-channel mask application and nanmax differ), so compute it once per
+    # frame here and reuse it across the RGB channel calls below instead of
+    # every call re-extracting the same cutout from calibrated_data (Change B).
+    peak_cutouts = _peak_box_cutouts(img.calibrated_data, img.centroid_coords, img.fwhm)
+
     by_filter_data = {}
     for filter_name, mask in bayer_masks.items():
         if filter_name == "L4":
@@ -2430,7 +2491,9 @@ def process_one_image(
             _require_rgb_channels(by_filter_data)
             data = _l4_skeleton_table(by_filter_data["TR"])
         else:
-            data = build_photometry_table(img, mask, config=config)
+            data = build_photometry_table(
+                img, mask, config=config, peak_cutouts=peak_cutouts
+            )
         data.meta["filter"] = filter_name
         data.meta["full_image_meta"] = img.metadata
         if filter_name == "L4":
