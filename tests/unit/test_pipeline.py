@@ -1,6 +1,7 @@
 """Unit tests for the detect/align/centroid pipeline (prepare_image, process)."""
 
 import gzip
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +13,8 @@ from astropy.nddata import CCDData
 from astropy.stats import gaussian_fwhm_to_sigma
 from astropy.table import Table
 from eloy import detection
+from skimage.measure import label, regionprops
+from skimage.morphology import binary_opening
 
 from bandaid.ballet import NumpyBallet
 from bandaid.config import InstrumentProfile, PhotometryConfig
@@ -21,14 +24,16 @@ from bandaid.exceptions import (
     NoUsableStarsError,
     TooFewStarsError,
 )
-from bandaid.image2sl_qt import generate_bayer_masks
+from bandaid.image2sl_qt import bayer_balance_image, generate_bayer_masks
 from bandaid.photometry import (
     CENTROID_PAD_PIX,
     DETECTION_OPENING,
     MIN_DETECTED_STARS,
     N_GAIA_STARS_ALIGN,
     THRESH,
+    _box_opening,
     _brightest_unsaturated,
+    _detect_stars,
     _fwhm_from_coords,
     calibration_sequence,
     metadata_from_header,
@@ -388,22 +393,52 @@ def _detectable_image(
     noise_mean=100.0,
     noise_stddev=2.0,
     include_noise=True,
+    positions=None,
 ):
     """
     Build a noisy multi-Gaussian frame that eloy's detection can resolve.
 
-    ``amplitude`` far above ``noise_stddev`` keeps detection reliable; an
-    ``amplitude`` above the 50000 ADU saturation cap exercises the saturated
-    path in ``calibration_sequence``. Pass ``include_noise=False`` for the
-    "too few stars" frames so detection returns exactly ``n_sources`` regardless
-    of the threshold/opening (flat Gaussian noise at the low production threshold
-    spawns spurious blobs that would otherwise pad the count past the floor).
+    Parameters
+    ----------
+    make_test_image : callable
+        The ``make_test_image`` factory fixture.
+    n_sources : int, optional
+        Number of sources; positions default to ``_SOURCE_POSITIONS[:n_sources]``.
+        By default 5.
+    fwhm : float, optional
+        FWHM of every source in pixels. By default 4.0.
+    amplitude : float or sequence of float, optional
+        Peak amplitude shared by all sources, or one value per source. Keep it
+        far above ``noise_stddev`` so detection is reliable; a value above the
+        50000 ADU saturation cap exercises the saturated path in
+        ``calibration_sequence``. By default 600.0.
+    image_size : tuple of int, optional
+        Frame shape ``(ny, nx)``. By default ``(480, 480)``.
+    noise_mean : float, optional
+        Mean of the Gaussian sky noise. By default 100.0.
+    noise_stddev : float, optional
+        Standard deviation of the Gaussian sky noise. By default 2.0.
+    include_noise : bool, optional
+        Pass False for the "too few stars" frames so detection returns exactly
+        ``n_sources`` regardless of the threshold/opening (flat Gaussian noise
+        at the low production threshold spawns spurious blobs that would
+        otherwise pad the count past the floor). By default True.
+    positions : sequence of tuple of float, optional
+        ``(x, y)`` source positions, overriding ``_SOURCE_POSITIONS[:n_sources]``;
+        length must equal ``n_sources``. A position can sit outside
+        ``image_size`` to exercise an edge-clipped source. By default None.
+
+    Returns
+    -------
+    numpy.ndarray
+        The synthesized frame.
     """
     sigma = fwhm * gaussian_fwhm_to_sigma
-    positions = _SOURCE_POSITIONS[:n_sources]
+    positions = _SOURCE_POSITIONS[:n_sources] if positions is None else positions
+    amplitudes = list(amplitude) if np.ndim(amplitude) else [amplitude] * n_sources
     source_properties = Table(
         {
-            "amplitude": [amplitude] * n_sources,
+            "amplitude": amplitudes,
             "x_mean": [x for x, _ in positions],
             "y_mean": [y for _, y in positions],
             "x_stddev": [sigma] * n_sources,
@@ -531,6 +566,329 @@ def fromfile_spy(mocker):
     return lambda: mocker.spy(fits.HDUList, "fromfile")
 
 
+class TestDetectStars:
+    """
+    `_detect_stars` is a drop-in for eloy's `stars_detection`, only faster.
+
+    The algorithm (global threshold, square-kernel binary opening, labelling,
+    brightest-first ordering) is unchanged; these tests pin the pieces that must
+    stay bit-identical to what the plate solve and FWHM fit were tuned on.
+    """
+
+    @pytest.mark.parametrize("size", [1, 2, 3, 4, 5, 7, 32, 33])
+    def test_box_opening_matches_skimage(self, size):
+        """
+        The box-filter opening reproduces skimage's binary_opening exactly.
+
+        Border handling is the subtle part (skimage pads True for the erosion
+        and False for the dilation), so alongside random masks the sample holds
+        blobs that touch every edge and every corner. Even kernel sizes are
+        included because ``detection_opening`` only requires ``>= 1``, and so
+        are sizes >= 32, where a fixed erosion threshold of 0.999 would let a
+        window holding a single False pixel pass as all-True (1 - 1/32**2 >
+        0.999); the solid mask with one hole is what catches that.
+        """
+        rng = np.random.default_rng(0)
+        masks = [rng.random((40, 41)) < p for p in (0.3, 0.6)]
+
+        one_hole = np.ones((40, 41), dtype=bool)
+        one_hole[20, 20] = False
+        masks.append(one_hole)
+
+        blobs = np.zeros((40, 41), dtype=bool)
+        blobs[0:6, 0:6] = True  # each corner
+        blobs[0:6, -6:] = True
+        blobs[-6:, 0:6] = True
+        blobs[-6:, -6:] = True
+        blobs[0:3, 15:25] = True  # thin strips along each edge
+        blobs[-3:, 15:25] = True
+        blobs[15:25, 0:3] = True
+        blobs[15:25, -3:] = True
+        blobs[18:24, 18:26] = True  # interior block
+        masks.append(blobs)
+
+        for mask in masks:
+            expected = binary_opening(mask, np.ones((size, size)))
+            np.testing.assert_array_equal(_box_opening(mask, size), expected)
+
+    def test_regions_are_ordered_brightest_first(self, make_test_image):
+        """
+        Regions come back sorted by peak intensity, descending.
+
+        ``align`` slices the brightest detections by list position, so the
+        order is load-bearing: four sources of distinct amplitude must come
+        back in amplitude order regardless of where they sit on the frame.
+
+        The fixture is built to catch three wrong implementations that a
+        simpler brightest-first test lets through: sorting by ``area`` instead
+        of ``intensity_max`` (edge-clipping the dimmest source knocks its area
+        out of amplitude order, since area and peak both grow with amplitude
+        for an unclipped Gaussian); passing a transposed intensity image to
+        ``regionprops`` (only visible on a non-square frame, where the
+        mismatched shape raises); and substituting
+        ``scipy.ndimage.binary_opening`` for ``_box_opening`` (its border rule
+        drops the edge-clipped source outright at ``opening=5``, where
+        ``_box_opening``/skimage keeps it). All four sources -- including the
+        edge-clipped one -- are detected at ``opening=5``.
+        """
+        fwhm = 4.0
+        sigma = fwhm * gaussian_fwhm_to_sigma
+        noise_mean = 100.0
+        amplitudes = [700.0, 300.0, 500.0, 400.0]
+        # Off-diagonal, non-square-frame positions; the last source sits 1 px
+        # past the left edge, so only a thin crescent of its above-threshold
+        # core is on-frame -- thinner than the opening=5 kernel.
+        positions = [(100, 300), (300, 100), (400, 380), (-1, 240)]
+        image = _detectable_image(
+            make_test_image,
+            n_sources=4,
+            fwhm=fwhm,
+            amplitude=amplitudes,
+            positions=positions,
+            image_size=(480, 500),
+            noise_mean=noise_mean,
+        )
+
+        regions = _detect_stars(image, threshold=5, opening=5)
+
+        assert len(regions) == len(amplitudes)
+        peaks = [r.intensity_max for r in regions]
+        assert peaks == sorted(peaks, reverse=True)
+
+        # The on-frame sources peak at their nominal amplitude plus the noise
+        # floor; the clipped source's on-frame peak is attenuated by its 1 px
+        # offset past the edge.
+        clip_offset = 1.0
+        attenuation = np.exp(-(clip_offset**2) / (2 * sigma**2))
+        expected_peaks = [
+            amplitude + noise_mean if x >= 0 else amplitude * attenuation + noise_mean
+            for amplitude, (x, _y) in zip(amplitudes, positions, strict=True)
+        ]
+        expected_order = np.argsort(expected_peaks)[::-1]
+        for region, source_index in zip(regions, expected_order, strict=True):
+            np.testing.assert_allclose(
+                region.intensity_max, expected_peaks[source_index], atol=30
+            )
+
+        # Centroids pin identity for the three on-frame sources directly; the
+        # edge-clipped source's centroid sits near the frame boundary, not at
+        # its (off-frame) nominal position.
+        edge_hug_px = 3  # well inside the opening=5 kernel width
+        for region, source_index in zip(regions, expected_order, strict=True):
+            x_expected, y_expected = positions[source_index]
+            if x_expected < 0:
+                assert region.centroid[1] < edge_hug_px
+                continue
+            np.testing.assert_allclose(
+                region.centroid, (y_expected, x_expected), atol=0.5
+            )
+
+    def test_nan_in_background_does_not_change_detections(self, make_test_image):
+        """
+        A NaN pixel in empty sky leaves the region count and centroids unchanged.
+
+        NaNs reach detection only via calibration/masking, but an unguarded
+        median would turn a single NaN into a NaN threshold and, silently, zero
+        detections.
+        """
+        image = _detectable_image(make_test_image, n_sources=5)
+        clean = _detect_stars(image, threshold=5, opening=3)
+
+        with_nan = image.copy()
+        with_nan[5, 5] = np.nan
+        regions = _detect_stars(with_nan, threshold=5, opening=3)
+
+        assert len(regions) == len(clean)
+        np.testing.assert_array_equal(
+            [r.centroid for r in regions], [r.centroid for r in clean]
+        )
+
+    def test_nan_inside_star_is_filled_with_the_median(self, make_test_image):
+        """
+        A NaN on a star's peak is treated as sky, and the star still detects.
+
+        Pins the fill rule: NaN pixels are replaced by the median of the
+        finite pixels before thresholding. A single NaN barely moves the
+        threshold estimator (also computed over finite pixels only), so the
+        result equals detection on the explicitly filled image here even
+        though the two are computed from different intermediate arrays. With
+        a 3 px opening the ring around the hole survives erosion and the
+        dilation closes the hole, so the region is still found.
+        """
+        image = _detectable_image(make_test_image, n_sources=5)
+        n_clean = len(_detect_stars(image, threshold=5, opening=3))
+
+        with_nan = image.copy()
+        x_peak, y_peak = _SOURCE_POSITIONS[0]
+        with_nan[y_peak, x_peak] = np.nan
+        filled = np.where(np.isnan(with_nan), np.nanmedian(with_nan), with_nan)
+
+        regions = _detect_stars(with_nan, threshold=5, opening=3)
+        expected = _detect_stars(filled, threshold=5, opening=3)
+
+        assert len(regions) == n_clean
+        np.testing.assert_array_equal(
+            [r.centroid for r in regions], [r.centroid for r in expected]
+        )
+        assert any(
+            np.hypot(r.centroid[0] - y_peak, r.centroid[1] - x_peak) < 1.0
+            for r in regions
+        )
+
+    def test_estimator_matches_eloy_on_a_large_nan_block(self, make_test_image):
+        """
+        A large NaN block reproduces eloy's finite-pixels-only estimator.
+
+        Eloy's ``stars_detection`` computes its median/sigma with
+        ``nanmedian``/``nanstd``, which exclude NaN. Filling NaN with the
+        median *before* computing the estimator (rather than after) shrinks
+        the apparent sky sigma once the NaN block is large enough, shifting
+        which pixels clear threshold. The reference below reimplements
+        eloy's finite-pixels-only estimator directly and applies it to the
+        median-filled image (matching the intensity image regionprops sees),
+        pinning that ``_detect_stars`` reproduces it exactly.
+        """
+        image = _detectable_image(make_test_image, n_sources=1)
+        with_nan = image.copy()
+        # ~34% of the frame, well clear of the source at (60, 60).
+        with_nan[200:480, 200:480] = np.nan
+
+        regions = _detect_stars(with_nan, threshold=5, opening=3)
+
+        finite = with_nan[np.isfinite(with_nan)]
+        median = np.median(finite)
+        core = finite[np.abs(finite - median) < np.std(finite)]
+        core_std = np.std(core)
+        filled = np.where(np.isnan(with_nan), median, with_nan)
+        mask = _box_opening(filled > 5 * core_std + median, 3)
+        expected = sorted(
+            regionprops(label(mask), filled),
+            key=lambda r: r.intensity_max,
+            reverse=True,
+        )
+
+        assert len(regions) == len(expected) > 0
+        np.testing.assert_array_equal(
+            [r.centroid for r in regions], [r.centroid for r in expected]
+        )
+
+    @pytest.mark.parametrize("fill", [np.inf, -np.inf], ids=["+inf", "-inf"])
+    def test_non_finite_block_in_background_is_treated_as_sky(
+        self, make_test_image, fill
+    ):
+        """
+        A block of +/-inf pixels in empty sky is filled and detected like NaN.
+
+        ``np.isnan`` alone lets an inf pixel through: ``np.std`` on a flat
+        containing it returns NaN, the core selection comes back empty, and
+        the empty-core guard silently sets ``core_std = 0``, returning a
+        normal-looking (but poisoned) detection list instead of raising or
+        excluding the pixel. The guard must catch non-finite pixels
+        generally, and the fill median must be computed over the finite
+        pixels only -- ``np.nanmedian`` passes +/-inf straight through.
+        """
+        image = _detectable_image(make_test_image, n_sources=5)
+        block = image.copy()
+        block[5:15, 5:15] = fill
+        finite = block[np.isfinite(block)]
+        filled = np.where(np.isfinite(block), block, np.median(finite))
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            regions = _detect_stars(block, threshold=5, opening=3)
+        expected = _detect_stars(filled, threshold=5, opening=3)
+
+        assert len(regions) == len(expected)
+        np.testing.assert_array_equal(
+            [r.centroid for r in regions], [r.centroid for r in expected]
+        )
+
+    @pytest.mark.parametrize(
+        "image",
+        [np.full((50, 60), np.nan), np.full((50, 60), 100.0)],
+        ids=["all-nan", "constant"],
+    )
+    def test_degenerate_images_yield_no_regions_quietly(self, image):
+        """An all-NaN or constant frame gives no regions and no RuntimeWarning."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            regions = _detect_stars(image, threshold=THRESH, opening=3)
+
+        assert regions == []
+
+    def test_threshold_gates_faint_sources(self):
+        """
+        ``threshold`` is in units of the background sigma above the median.
+
+        A broad source peaking ~6 sigma above the sky is found at the production
+        0.5 sigma threshold and lost at a 10 sigma one.
+        """
+        rng = np.random.default_rng(SEED)
+        noise_stddev = 2.0
+        image = rng.normal(100.0, noise_stddev, (200, 200))
+        yy, xx = np.mgrid[0:200, 0:200]
+        x_peak, y_peak = 120.0, 80.0
+        sigma = 8.0 * gaussian_fwhm_to_sigma
+        image += (
+            6
+            * noise_stddev
+            * np.exp(-((xx - x_peak) ** 2 + (yy - y_peak) ** 2) / (2 * sigma**2))
+        )
+
+        match_radius = 2.0
+
+        def found(threshold):
+            regions = _detect_stars(image, threshold=threshold, opening=5)
+            return any(
+                np.hypot(r.centroid[0] - y_peak, r.centroid[1] - x_peak) < match_radius
+                for r in regions
+            )
+
+        assert found(0.5)
+        assert not found(10)
+
+    def test_opening_gates_small_blobs(self):
+        """
+        ``opening`` is the kernel size: a 3 px blob survives 3 and not 5.
+
+        A source must hold a solid ``opening x opening`` core above threshold, so
+        this -- not the threshold -- is what gates faint-star detection.
+        """
+        rng = np.random.default_rng(SEED)
+        image = rng.normal(100.0, 2.0, (200, 200))
+        image[50:53, 50:53] += 200.0
+
+        assert len(_detect_stars(image, threshold=5, opening=3)) == 1
+        assert _detect_stars(image, threshold=5, opening=5) == []
+
+    def test_core_sigma_clip_finds_a_faint_source_beside_a_bright_one(
+        self, make_test_image
+    ):
+        """
+        The sigma-clipped core, not the raw sky std, sets the threshold.
+
+        A bright source inflates ``np.std`` of the whole frame far above the
+        true sky sigma; clipping the estimator to pixels within one (raw) std
+        of the median excludes the bright source's wings before measuring
+        sigma, so a much fainter second source still clears threshold. Without
+        the clip, the raw std (~376 here, against a clipped ~2.6) pushes the
+        threshold well above the faint source's peak and it is lost.
+        """
+        amplitudes = [60000.0, 30.0]
+        image = _detectable_image(
+            make_test_image, n_sources=len(amplitudes), amplitude=amplitudes
+        )
+
+        regions = _detect_stars(image, threshold=5, opening=3)
+
+        assert len(regions) == len(amplitudes)
+        x_faint, y_faint = _SOURCE_POSITIONS[1]
+        assert any(
+            np.hypot(r.centroid[0] - y_faint, r.centroid[1] - x_faint) < 1.0
+            for r in regions
+        )
+
+
 class TestCalibrationSequence:
     """Unit tests for detection + FWHM estimation in ``calibration_sequence``."""
 
@@ -581,7 +939,7 @@ class TestCalibrationSequence:
         calibration_sequence passes the opening kernel size through to detection.
 
         The morphological opening (not the threshold) is what gates faint-star
-        detection, so the pipeline default must reach eloy's stars_detection. The
+        detection, so the pipeline default must reach ``_detect_stars``. The
         detector is stubbed to return no regions; the resulting TooFewStarsError
         is incidental -- the assertion is the forwarded opening, read back off
         the mock's ``call_args``.
@@ -590,7 +948,7 @@ class TestCalibrationSequence:
         path = _write_seestar_fits(tmp_path / "open.fits", image)
 
         stars_detection_mock = mocker.patch(
-            "bandaid.photometry.detection.stars_detection", return_value=[]
+            "bandaid.photometry._detect_stars", return_value=[]
         )
 
         # Default: the pipeline's DETECTION_OPENING reaches the detector.
@@ -626,7 +984,7 @@ class TestCalibrationSequence:
         mocker.patch("bandaid.photometry.bayer_balance_image", side_effect=fake_balance)
 
         seen = {}
-        real_detection = detection.stars_detection
+        real_detection = _detect_stars
 
         def capturing_detection(data, threshold=5, opening=5):
             # Copy defensively: the array is reused (and, further downstream,
@@ -636,7 +994,7 @@ class TestCalibrationSequence:
             return real_detection(data, threshold=threshold, opening=opening)
 
         mocker.patch(
-            "bandaid.photometry.detection.stars_detection",
+            "bandaid.photometry._detect_stars",
             side_effect=capturing_detection,
         )
 
@@ -909,6 +1267,28 @@ class TestSmokeRealFrame:
         assert metadata["largest_usable_adu_value"] == expected_max_adu
         assert metadata["width"] == calibrated.shape[1]
         assert metadata["height"] == calibrated.shape[0]
+
+    def test_detect_stars_matches_eloy_on_real_frame(self):
+        """
+        `_detect_stars` reproduces eloy's detection on genuine pixels, exactly.
+
+        Balance the frame the way ``calibration_sequence`` does, run both
+        detectors at the production threshold/opening, and require the same
+        regions in the same order. This is the in-repo real-data identity guard
+        for the bandaid-side detector.
+        """
+        data = 1.0 * fits.getdata(str(_REAL_FRAME))
+        bayer_balance_image(data)
+
+        expected = detection.stars_detection(
+            data, threshold=THRESH, opening=DETECTION_OPENING
+        )
+        regions = _detect_stars(data, threshold=THRESH, opening=DETECTION_OPENING)
+
+        assert len(regions) == len(expected)
+        np.testing.assert_array_equal(
+            [r.centroid for r in regions], [r.centroid for r in expected]
+        )
 
     def test_process_one_image_builds_per_filter_tables(self, mocker):
         """Every Bayer filter gets a non-empty table and L4 sums the RGB counts."""

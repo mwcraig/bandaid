@@ -110,6 +110,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     byte-identical on real Seestar frames, QA manifest included). The one
     visible side effect is that in-memory result tables have fewer rows --
     only ones `good_star_mask` would have dropped anyway (#115).
+- Star detection now lives in bandaid (`photometry._detect_stars`) instead of
+    `eloy.detection.stars_detection`: same algorithm, identical output
+    (verified bit-for-bit against eloy on ~400 real frames across five fields,
+    plus byte-identical `.star` output). A separable box-filter opening and a
+    copy-free threshold drop detection from ~116 ms to ~57 ms per Seestar
+    frame (~12% of the 0.49 s per-frame cost). Non-finite pixels are treated
+    as sky (the threshold estimator uses only the finite pixels, as eloy's
+    does for NaN), and an all-non-finite or constant frame gives no regions
+    without a `RuntimeWarning`. `scikit-image` and `scipy` become
+    direct dependencies.
 
 ### Changed (breaking)
 

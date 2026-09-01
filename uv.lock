@@ -213,6 +213,8 @@ dependencies = [
     { name = "photutils" },
     { name = "pydantic" },
     { name = "python-dateutil" },
+    { name = "scikit-image" },
+    { name = "scipy" },
     { name = "twirl" },
 ]
 
@@ -293,6 +295,8 @@ requires-dist = [
     { name = "photutils" },
     { name = "pydantic", specifier = ">=2" },
     { name = "python-dateutil" },
+    { name = "scikit-image" },
+    { name = "scipy" },
     { name = "tqdm", marker = "extra == 'train'" },
     { name = "twirl" },
 ]

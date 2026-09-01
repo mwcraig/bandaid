@@ -43,6 +43,8 @@ dependencies = [
     "huggingface_hub>=1.0",
     "photutils",
     "pydantic>=2",
+    "scikit-image",
+    "scipy",
     "twirl",
     "aavso-starlist-schema @ git+https://github.com/mwcraig/aavso-starlist-schema.git"
 ]

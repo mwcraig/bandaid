@@ -210,7 +210,7 @@ class TestCalibrationSequenceCnn:
     def test_cnn_is_passed_to_fwhm_helper(self, tmp_path, mocker):
         """The ``cnn`` given to ``calibration_sequence`` reaches the FWHM helper."""
         mocker.patch(
-            "bandaid.photometry.detection.stars_detection",
+            "bandaid.photometry._detect_stars",
             five_diagonal_regions,
         )
         stub_fwhm = 2.5
@@ -231,7 +231,7 @@ class TestCalibrationSequenceCnn:
     def test_fwhm_n_stars_is_passed_to_fwhm_helper(self, tmp_path, mocker):
         """``fwhm_n_stars`` reaches the FWHM helper as its ``n_stars`` cap."""
         mocker.patch(
-            "bandaid.photometry.detection.stars_detection",
+            "bandaid.photometry._detect_stars",
             five_diagonal_regions,
         )
         fwhm_helper = mocker.patch(
