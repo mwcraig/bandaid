@@ -73,7 +73,12 @@ per-device serial number (e.g. `S50_0e597e9b`), which differs from unit to
 unit, while `INSTRUME` is the stable model string every Seestar S50 reports.
 Matching on `TELESCOP` would mean writing (or maintaining) one rule per
 physical device; `INSTRUME` identifies the *model*, which is what a profile's
-tuning actually depends on.
+tuning actually depends on. Two further points from surveying real headers:
+earlier Seestar firmware (through at least 4.27) reported `TELESCOP == "Seestar S50"` and only later switched to the serial-embedded form, so
+`TELESCOP` has not even been stable across firmware generations, while
+`INSTRUME` has; and overloading `TELESCOP` with the serial is a Seestar
+quirk, not an industry pattern — Unistellar, for example, keeps its device
+serial in a dedicated `SERIALNB` keyword.
 
 **A bare `InstrumentProfile()` carries no `header_match` rules, even though
 its tuning defaults match the Seestar50.** Device identity must be opt-in: a
