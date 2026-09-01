@@ -848,6 +848,7 @@ def calibration_sequence(
     fwhm_n_stars=_FWHM_N_STARS,
     profile=None,
     frame=None,
+    balanced_detection_out=None,
 ) -> tuple:
     """
     Find sources and compute FWHM for an image.
@@ -887,6 +888,15 @@ def calibration_sequence(
         profile.
     frame : LoadedFrame or None, optional
         Pre-loaded frame; when None the file is opened once via the loader.
+    balanced_detection_out : dict or None, optional
+        When given, a dict that receives the detection-time array under the
+        key ``"detection_image"`` -- the literal same array object used for
+        detection and the FWHM fit (already Bayer-balanced when
+        ``detect_on_bayer_balanced`` is True, otherwise the unbalanced
+        ``calibrated_data``). Lets a caller that also needs a Bayer-balanced
+        copy for centroiding (`prepare_image`) reuse this one instead of
+        paying for a second `bayer_balance_image` call on a fresh copy.
+        Default None does not populate anything.
 
     Returns
     -------
@@ -937,6 +947,13 @@ def calibration_sequence(
             raise
     else:
         detection_image = calibrated_data
+
+    if balanced_detection_out is not None:
+        # Neither _detect_stars/_fwhm_from_coords below, nor eloy's cutout, ever
+        # mutate detection_image, so handing out this reference is safe: a
+        # caller reusing it (prepare_image, for centroiding) sees exactly what
+        # detection saw.
+        balanced_detection_out["detection_image"] = detection_image
 
     regions = _detect_stars(detection_image, threshold=threshold, opening=opening)
 
@@ -2054,17 +2071,16 @@ def prepare_image(
     WCSSolveError
         If the per-image WCS cannot be solved. The source `file` is attached to
         the error before it propagates. (`calibration_sequence` may also raise
-        `TooFewStarsError`, and `_drop_off_frame_catalog_stars` may raise
-        `NoUsableStarsError` when every catalog star projects outside the
-        frame; both propagate unchanged.)
+        `TooFewStarsError` or, when ``detect_on_bayer_balanced`` is True and a
+        CFA sub-grid sample is empty or has zero variance,
+        `DegenerateBayerChannelError` -- both with `file` already attached by
+        `calibration_sequence` itself, and `_drop_off_frame_catalog_stars` may
+        raise `NoUsableStarsError` when every catalog star projects outside the
+        frame; all three propagate unchanged.)
     FrameMetadataError
         If a WCS must be solved (``wcs`` is None) but the frame metadata has no
         usable numeric ``pixscale`` to scale-check the solve against. The source
         `file` is attached before it propagates.
-    DegenerateBayerChannelError
-        If ``detect_on_bayer_balanced`` is True and a CFA sub-grid sample is
-        empty or has zero variance (propagated from `bayer_balance_image`,
-        with the source `file` attached).
     """
     # "calibrate" the data and get initial detections for WCS alignment and
     # FWHM estimation. calibration_sequence raises TooFewStarsError (a
@@ -2075,6 +2091,10 @@ def prepare_image(
         frame = _load_frame(file)
     config = config or PhotometryConfig()
     instrument = config.instrument
+    # Captures calibration_sequence's own detection-time Bayer-balanced array
+    # (Change A) so it can be reused below as the centroiding working_image
+    # instead of paying for a second bayer_balance_image call on a fresh copy.
+    balanced_detection_out = {}
     calibrated_data, metadata, coords, fwhm, _ = calibration_sequence(
         file,
         threshold=instrument.thresh,
@@ -2085,19 +2105,20 @@ def prepare_image(
         fwhm_n_stars=instrument.fwhm_n_stars,
         profile=instrument,
         frame=frame,
+        balanced_detection_out=balanced_detection_out,
     )
 
     if user_specific_metadata is not None:
         metadata.update(user_specific_metadata)
 
     if detect_on_bayer_balanced:
-        working_image = calibrated_data.copy()
-        try:
-            bayer_balance_image(working_image)
-        except DegenerateBayerChannelError as exc:
-            # bayer_balance_image has only the array, not the path; label it.
-            exc.file = file
-            raise
+        # calibration_sequence already balanced a detection-time copy; reuse
+        # the literal same array object for centroiding rather than balancing
+        # a second fresh copy (Change A). A degenerate-channel failure during
+        # that balance pass already propagates from calibration_sequence
+        # itself, file attached, so there is no second call site left to guard
+        # here (issue #61's contract is now served entirely there).
+        working_image = balanced_detection_out["detection_image"]
     else:
         working_image = calibrated_data
 

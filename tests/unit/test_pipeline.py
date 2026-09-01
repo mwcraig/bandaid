@@ -1106,6 +1106,11 @@ class TestPrepareImageBranches:
         _, centroid_stars_mock = _stub_wcs_and_centroid(mocker)
         image = _detectable_image(make_test_image)
         path = _write_seestar_fits(tmp_path / "bayer.fits", image)
+        # Spy (not replace) the real balancer: the identity check below needs the
+        # genuine in-place-balanced array, not a stand-in.
+        balance_spy = mocker.patch(
+            "bandaid.photometry.bayer_balance_image", wraps=bayer_balance_image
+        )
 
         img = prepare_image(
             path,
@@ -1122,35 +1127,72 @@ class TestPrepareImageBranches:
         centroid_data = centroid_stars_mock.call_args.args[0]
         assert not np.allclose(centroid_data, img.calibrated_data)
 
-    def test_attaches_file_when_centroiding_bayer_balance_is_degenerate(
+        # Change A: a single balance call now covers both detection and
+        # centroiding -- the array centroid_stars receives is the literal same
+        # object calibration_sequence balanced for detection, not a second
+        # fresh copy balanced again.
+        balance_spy.assert_called_once()
+        assert centroid_data is balance_spy.call_args.args[0]
+
+    def test_bayer_balance_runs_exactly_once_when_detecting_on_balanced_data(
         self, make_test_image, tmp_path, mocker
     ):
         """
-        A degenerate-channel error from the centroiding balance pass gets the file.
+        Only one ``bayer_balance_image`` call happens end-to-end (Change A).
 
-        ``prepare_image`` calls ``bayer_balance_image`` a second time (for
-        centroiding) after ``calibration_sequence``'s own detection-time call.
-        The fake lets the first (detection) call succeed and only the second
-        (centroiding) call raise, isolating that call site's own file-attaching
-        ``try``/``except`` (issue #61).
+        Before Change A, ``detect_on_bayer_balanced=True`` cost two balance
+        calls: one inside ``calibration_sequence`` for detection, and a second
+        fresh one inside ``prepare_image`` for centroiding. ``prepare_image`` now
+        reuses ``calibration_sequence``'s own balanced detection array (captured
+        via ``balanced_detection_out``) instead of balancing a second copy.
+        """
+        _stub_wcs_and_centroid(mocker)
+        image = _detectable_image(make_test_image)
+        path = _write_seestar_fits(tmp_path / "bayer_once.fits", image)
+
+        marker = 1000.0
+
+        def fake_balance(arr):
+            # Stand in for the real channel balancing with an obvious in-place
+            # transform so a balanced array is trivially distinguishable.
+            arr += marker
+
+        bayer_balance_mock = mocker.patch(
+            "bandaid.photometry.bayer_balance_image", side_effect=fake_balance
+        )
+
+        prepare_image(
+            path,
+            _REF_RADECS,
+            None,
+            detect_on_bayer_balanced=True,
+        )
+
+        assert bayer_balance_mock.call_count == 1
+
+    def test_degenerate_bayer_balance_still_attaches_file_with_one_call(
+        self, make_test_image, tmp_path, mocker
+    ):
+        """
+        A degenerate-channel failure still gets ``exc.file`` attached.
+
+        The failure comes from the (now sole) balance call; ``prepare_image``
+        makes no further
+        balancing attempt of its own (issue #61's contract, now served entirely
+        by ``calibration_sequence``'s own try/except since Change A removed the
+        second call site it used to protect).
         """
         _stub_wcs_and_centroid(mocker)
         image = _detectable_image(make_test_image)
         path = _write_seestar_fits(tmp_path / "degenerate2.fits", image)
 
-        call_count = {"n": 0}
-
-        def flaky_balance(_arr):
-            call_count["n"] += 1
-            if call_count["n"] == 1:
-                return
+        def raising_balance(_arr):
             msg = "zero variance"
             raise DegenerateBayerChannelError(msg)
 
         bayer_balance_mock = mocker.patch(
-            "bandaid.photometry.bayer_balance_image", side_effect=flaky_balance
+            "bandaid.photometry.bayer_balance_image", side_effect=raising_balance
         )
-        expected_call_count = 2  # detection (succeeds), then centroiding (raises)
 
         with pytest.raises(DegenerateBayerChannelError) as exc_info:
             prepare_image(
@@ -1160,7 +1202,7 @@ class TestPrepareImageBranches:
                 detect_on_bayer_balanced=True,
             )
         assert exc_info.value.file == path
-        assert bayer_balance_mock.call_count == expected_call_count
+        assert bayer_balance_mock.call_count == 1
 
 
 class TestProcessOneImage:
