@@ -788,11 +788,12 @@ def _detect_stars(image, threshold=THRESH, opening=DETECTION_OPENING):
     Parameters
     ----------
     image : numpy.ndarray
-        2-D image. Non-finite pixels are treated as sky: filled with the
-        median of the finite pixels before thresholding, with the threshold
-        estimator itself (median and core sigma) computed over the finite
-        pixels only -- matching eloy's ``nanmedian``/``nanstd`` behavior on a
-        frame that contains NaN.
+        2-D image. NaN pixels are treated as sky: filled with the median of
+        the finite pixels before thresholding, with the threshold estimator
+        itself (median and core sigma) computed over the finite pixels only
+        -- matching eloy's ``nanmedian``/``nanstd`` behavior on a frame that
+        contains NaN. A frame containing +/-inf yields no regions, matching
+        eloy's fail-closed rejection of a corrupt frame.
     threshold : float, optional
         Detection threshold in units of the sky sigma above the median. By
         default ``THRESH``.
@@ -805,19 +806,15 @@ def _detect_stars(image, threshold=THRESH, opening=DETECTION_OPENING):
     -------
     list of skimage.measure._regionprops.RegionProperties
         Detected regions sorted by ``intensity_max``, brightest first. Empty
-        for an all-NaN, all-non-finite, or constant image.
-
-    Notes
-    -----
-    One deliberate divergence from eloy: a frame containing +/-inf is
-    detected here on its finite pixels, whereas eloy's ``nanstd``/``nanmedian``
-    estimator does not exclude inf, so its threshold goes NaN and it returns
-    zero regions -- a fail-closed rejection downstream, versus a real
-    detection list here.
+        for an all-NaN, constant, or inf-containing image.
     """
     bad = ~np.isfinite(image)
     if bad.any():
-        if bad.all():
+        # An inf pixel poisons eloy's nanmedian/nanstd threshold to NaN and
+        # yields zero regions -- a fail-closed rejection of a corrupt frame
+        # via the downstream minimum-star check. Keep that, rather than
+        # detecting on the remaining pixels.
+        if bad.all() or np.isinf(image[bad]).any():
             return []
         flat = image[~bad]  # a copy, but only taken on the rare non-finite path
         image = np.where(bad, np.median(flat), image)

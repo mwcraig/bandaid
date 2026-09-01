@@ -115,10 +115,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     (verified bit-for-bit against eloy on ~400 real frames across five fields,
     plus byte-identical `.star` output). A separable box-filter opening and a
     copy-free threshold drop detection from ~116 ms to ~57 ms per Seestar
-    frame (~12% of the 0.49 s per-frame cost). NaN pixels are filled with the
-    frame median before thresholding, and an all-NaN or constant frame gives
-    no regions without a `RuntimeWarning`. `scikit-image` and `scipy` become
-    direct dependencies.
+    frame (~12% of the 0.49 s per-frame cost). NaN pixels are treated as sky
+    (the threshold estimator uses only finite pixels, as eloy's does), while
+    an inf-containing, all-NaN, or constant frame gives no regions without a
+    `RuntimeWarning`. `scikit-image` and `scipy` become direct dependencies.
 
 ### Changed (breaking)
 

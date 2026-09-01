@@ -773,35 +773,27 @@ class TestDetectStars:
         )
 
     @pytest.mark.parametrize("fill", [np.inf, -np.inf], ids=["+inf", "-inf"])
-    def test_non_finite_block_in_background_is_treated_as_sky(
-        self, make_test_image, fill
-    ):
+    def test_inf_pixels_reject_the_frame(self, make_test_image, fill):
         """
-        A block of +/-inf pixels in empty sky is filled and detected like NaN.
+        A frame containing +/-inf pixels yields no regions, like eloy.
 
-        ``np.isnan`` alone lets an inf pixel through: ``np.std`` on a flat
-        containing it returns NaN, the core selection comes back empty, and
-        the empty-core guard silently sets ``core_std = 0``, returning a
-        normal-looking (but poisoned) detection list instead of raising or
-        excluding the pixel. The guard must catch non-finite pixels
-        generally, and the fill median must be computed over the finite
-        pixels only -- ``np.nanmedian`` passes +/-inf straight through.
+        In eloy an inf pixel poisons the nanmedian/nanstd threshold to NaN,
+        every comparison goes False, and zero regions trip the downstream
+        minimum-star check -- a fail-closed rejection of a corrupt frame.
+        ``np.isnan`` alone would instead let inf through to ``np.std``, empty
+        the core selection, and ride the empty-core guard to a normal-looking
+        (but poisoned) detection list. The rejection must also stay quiet: no
+        RuntimeWarning from computing statistics on inf.
         """
         image = _detectable_image(make_test_image, n_sources=5)
         block = image.copy()
         block[5:15, 5:15] = fill
-        finite = block[np.isfinite(block)]
-        filled = np.where(np.isfinite(block), block, np.median(finite))
 
         with warnings.catch_warnings():
             warnings.simplefilter("error", RuntimeWarning)
             regions = _detect_stars(block, threshold=5, opening=3)
-        expected = _detect_stars(filled, threshold=5, opening=3)
 
-        assert len(regions) == len(expected)
-        np.testing.assert_array_equal(
-            [r.centroid for r in regions], [r.centroid for r in expected]
-        )
+        assert regions == []
 
     @pytest.mark.parametrize(
         "image",
