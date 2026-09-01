@@ -11,8 +11,13 @@ config = PhotometryConfig(apertures=ApertureConfig(gap=5, annulus_width=4))
 prep = prepare_batch(first_file, cnn=cnn, config=config)
 ```
 
-If you pass no `config`, a default `PhotometryConfig()` is used — every field
-takes the documented default.
+If you pass no `config`, a default `PhotometryConfig()` is used. Every field
+takes the documented default *except* `instrument`, which defaults to `None`
+— "resolve it from the frame header" — rather than a hard-coded telescope; see
+[Auto-detection from the FITS header](instrument_profiles.md#auto-detection-from-the-fits-header).
+The table below documents a *resolved* `InstrumentProfile`'s own field
+defaults (which a bare `InstrumentProfile()` still reproduces), not
+`PhotometryConfig.instrument` itself.
 
 The config is **frozen** (you cannot mutate it after construction) and
 **validated** at construction, so values that would silently break the pipeline
@@ -69,6 +74,14 @@ only when pointing a **different** telescope at the sky.
 | `instrument` | `contamination_seeing_margin` | `1.25`        | Seeing-pessimism factor for the once-per-batch flag                          |
 | `instrument` | `wcs_scale_tolerance`         | `0.05`        | Max fractional plate-scale deviation before a WCS is rejected as wrong-scale |
 | `instrument` | `header_map`                  | Seestar50     | FITS-header dialect resolved by `metadata_from_header`                       |
+| `instrument` | `header_match`                | `()`          | FITS-header rules used by `detect_instrument` to auto-select this profile    |
+
+Unlike every other row, `header_match`'s default is **not** what the bundled
+Seestar50 profile carries: the bare-class default is `()` (no rules, so a
+bare `InstrumentProfile()` is never auto-detected), while `load_instrument("Seestar50")`
+returns a profile with one rule (`INSTRUME == "Seestar S50"`). This is
+deliberate — see
+[Auto-detection from the FITS header](instrument_profiles.md#auto-detection-from-the-fits-header).
 
 The bright-neighbour contamination flag is computed once per batch, from the
 *first* frame's FWHM, and applied to every frame of the night. Because seeing
