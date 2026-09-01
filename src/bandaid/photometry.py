@@ -735,7 +735,8 @@ def _box_opening(mask, size):
     Parameters
     ----------
     mask : numpy.ndarray of bool
-        2-D boolean image to open.
+        2-D boolean image to open. A non-boolean mask (e.g. uint8 0/255) is
+        not validated and produces silently wrong results rather than raising.
     size : int
         Kernel edge length. Even sizes follow skimage's centering convention.
 
@@ -787,8 +788,11 @@ def _detect_stars(image, threshold=THRESH, opening=DETECTION_OPENING):
     Parameters
     ----------
     image : numpy.ndarray
-        2-D image. NaN pixels are treated as sky (replaced by the frame's
-        nanmedian before thresholding).
+        2-D image. Non-finite pixels are treated as sky: filled with the
+        median of the finite pixels before thresholding, with the threshold
+        estimator itself (median and core sigma) computed over the finite
+        pixels only -- matching eloy's ``nanmedian``/``nanstd`` behavior on a
+        frame that contains NaN.
     threshold : float, optional
         Detection threshold in units of the sky sigma above the median. By
         default ``THRESH``.
@@ -800,18 +804,28 @@ def _detect_stars(image, threshold=THRESH, opening=DETECTION_OPENING):
     Returns
     -------
     list of skimage.measure._regionprops.RegionProperties
-        Detected regions sorted by ``intensity_max``, brightest first. Empty for
-        an all-NaN or constant image.
+        Detected regions sorted by ``intensity_max``, brightest first. Empty
+        for an all-NaN, all-non-finite, or constant image.
+
+    Notes
+    -----
+    One deliberate divergence from eloy: a frame containing +/-inf is
+    detected here on its finite pixels, whereas eloy's ``nanstd``/``nanmedian``
+    estimator does not exclude inf, so its threshold goes NaN and it returns
+    zero regions -- a fail-closed rejection downstream, versus a real
+    detection list here.
     """
-    bad = np.isnan(image)
+    bad = ~np.isfinite(image)
     if bad.any():
         if bad.all():
             return []
-        image = np.where(bad, np.nanmedian(image), image)
+        flat = image[~bad]  # a copy, but only taken on the rare non-finite path
+        image = np.where(bad, np.median(flat), image)
+    else:
+        flat = image.ravel()  # a view; eloy's flatten() copied 2 Mpx per frame
     # Threshold at threshold * std(core) + median, where core is the pixels
     # within one std of the median so bright sources do not inflate the sky
     # sigma -- the same estimator as eloy's stars_detection.
-    flat = image.ravel()  # a view; eloy's flatten() copied 2 Mpx per frame
     median = np.median(flat)
     core = flat[np.abs(flat - median) < np.std(flat)]
     # A constant image has an empty core (nothing is within 0 of the median);
