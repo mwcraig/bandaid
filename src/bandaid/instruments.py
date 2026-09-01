@@ -17,10 +17,14 @@ here.
 """
 
 import json
+import logging
 from functools import cache
 from importlib.resources import files as package_files
 
 from .config import InstrumentProfile
+from .exceptions import InstrumentDetectionError
+
+logger = logging.getLogger(__name__)
 
 _META_DIR = "meta_json_files"
 _PROFILE_FILENAME = "profile.json"
@@ -166,3 +170,89 @@ def available_instruments():
         Sorted union of the bundled and registered profile names.
     """
     return sorted(set(_bundled_names()) | set(_REGISTERED))
+
+
+def detect_instrument(header):
+    """
+    Resolve a frame header to exactly one instrument profile.
+
+    Every bundled/registered profile whose ``header_match`` is non-empty is a
+    candidate; it matches the header if *any* of its rules match (OR). A
+    profile with an empty ``header_match`` (the bare-class default) is never a
+    candidate -- device identity must be opt-in. Used to resolve
+    `~bandaid.config.PhotometryConfig.instrument` when it is left as ``None``
+    (auto-detect) -- see `~bandaid.scripts.prepare_batch` and
+    `~bandaid.photometry.prepare_image`.
+
+    Parameters
+    ----------
+    header : astropy.io.fits.Header or collections.abc.Mapping
+        The frame header (or header-like mapping) to match against.
+
+    Returns
+    -------
+    InstrumentProfile
+        The single matching profile.
+
+    Raises
+    ------
+    InstrumentDetectionError
+        If zero or more than one profile matches, naming the header values the
+        candidate rules reference and the available/ambiguous profile names.
+    """
+    profiles = [load_instrument(name) for name in available_instruments()]
+    rules = [(profile, rule) for profile in profiles for rule in profile.header_match]
+    matched = sorted({profile.name for profile, rule in rules if rule.matches(header)})
+
+    if len(matched) == 1:
+        return load_instrument(matched[0])
+
+    seen = {rule.keyword: header.get(rule.keyword) for _, rule in rules}
+    available = ", ".join(available_instruments())
+    if not matched:
+        msg = (
+            f"no bundled/registered instrument profile's header_match matched "
+            f"this frame's header (checked {seen}); available instruments: "
+            f"{available}"
+        )
+    else:
+        msg = (
+            f"ambiguous instrument: {', '.join(matched)} all matched this "
+            f"frame's header (checked {seen}); available instruments: {available}"
+        )
+    raise InstrumentDetectionError(msg)
+
+
+def resolve_config_instrument(config, header):
+    """
+    Return ``config`` unchanged, or a copy with ``instrument`` auto-detected.
+
+    The single "``None`` means resolve from the header" step shared by the two
+    places a header is in hand early enough to do it:
+    `~bandaid.scripts.prepare_batch` (the batch path) and
+    `~bandaid.photometry.prepare_image` (the direct/per-frame path).
+
+    Parameters
+    ----------
+    config : PhotometryConfig
+        The config whose ``instrument`` may need resolving.
+    header : astropy.io.fits.Header or collections.abc.Mapping
+        The frame header to detect from; only consulted when
+        ``config.instrument`` is None.
+
+    Returns
+    -------
+    PhotometryConfig
+        ``config`` unchanged if ``instrument`` was already set, otherwise a
+        copy with the detected profile. When ``instrument`` needs resolving,
+        `~bandaid.instruments.detect_instrument` may raise
+        `~bandaid.exceptions.InstrumentDetectionError` (zero or more than one
+        profile matched the header); that propagates unchanged.
+    """
+    if config.instrument is not None:
+        return config
+    detected = detect_instrument(header)
+    logger.info(
+        "auto-detected instrument profile %r from the frame header", detected.name
+    )
+    return config.model_copy(update={"instrument": detected})

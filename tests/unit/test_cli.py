@@ -21,6 +21,7 @@ from click.testing import CliRunner
 
 from bandaid import cli
 from bandaid.config import InstrumentProfile, PhotometryConfig, SourceSelectionConfig
+from bandaid.exceptions import BatchPrepError
 from bandaid.instruments import _REGISTERED, register_instrument
 from bandaid.writers import write_starlist_set
 
@@ -128,15 +129,51 @@ def test_process_forwards_every_flag(runner, patched_photometer, tmp_path):
     assert call_kwargs["write_frame"] is write_starlist_set
     assert call_kwargs["output_suffix"] == ".starlist"
     assert call_kwargs["write_qa_manifest"] is False
-    # The config carries the default (Seestar50) instrument.
+    # No --instrument/--profile/--config flag: the config carries instrument=None,
+    # meaning "resolve from the frame header" (auto-detect), not a hard default.
     config = call_kwargs["config"]
     assert isinstance(config, PhotometryConfig)
-    assert config.instrument.name == "Seestar50"
+    assert config.instrument is None
     # The summary reflects the returned (results, frames) counts.
     assert "Processed 1 of 2 frames" in result.output
     forced_targets = call_kwargs["forced_targets"]
     np.testing.assert_allclose(forced_targets.ra.deg, [123.456])
     np.testing.assert_allclose(forced_targets.dec.deg, [-10.0])
+
+
+def test_process_config_file_null_instrument_defers_to_auto_detect(
+    runner, patched_photometer, tmp_path
+):
+    """A ``--config`` file with ``"instrument": null`` passes through as None."""
+    config_file = tmp_path / "config.json"
+    config_file.write_text('{"instrument": null}')
+
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+
+    result = runner.invoke(
+        cli.main, ["process", str(frame), "--config", str(config_file)]
+    )
+
+    assert result.exit_code == 0, result.output
+    config = patched_photometer.call_args.kwargs["config"]
+    assert config.instrument is None
+
+
+def test_process_batch_prep_error_is_a_clean_cli_message(runner, mocker, tmp_path):
+    """A fatal ``BatchPrepError`` from ``photometer_frames`` reads as a clean error."""
+    mocker.patch(
+        "bandaid.cli.photometer_frames",
+        side_effect=BatchPrepError("no bundled/registered instrument matched"),
+    )
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+
+    result = runner.invoke(cli.main, ["process", str(frame)])
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "no bundled/registered instrument matched" in result.output
 
 
 @pytest.mark.usefixtures("fully_failed_photometer")
@@ -758,7 +795,8 @@ def test_config_init_stdout(runner):
 
     assert result.exit_code == 0, result.output
     config = PhotometryConfig.model_validate_json(result.output)
-    assert config.instrument.name == "Seestar50"
+    # The default config's instrument is None (auto-detect), not a hard Seestar50.
+    assert config.instrument is None
 
 
 def test_config_init_file(runner, tmp_path):
@@ -768,7 +806,7 @@ def test_config_init_file(runner, tmp_path):
 
     assert result.exit_code == 0, result.output
     config = PhotometryConfig.model_validate_json(out.read_text())
-    assert config.instrument.name == "Seestar50"
+    assert config.instrument is None
 
 
 def test_config_init_unwritable_is_clean_error(runner, tmp_path):

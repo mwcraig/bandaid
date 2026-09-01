@@ -19,6 +19,7 @@ __all__ = [
     "DegenerateBayerChannelError",
     "FrameError",
     "FrameMetadataError",
+    "InstrumentDetectionError",
     "NoUsableStarsError",
     "StarListValidationError",
     "TooFewStarsError",
@@ -133,4 +134,20 @@ class BatchPrepError(BandaidError):
 
     Raised by `prepare_batch` -- not a `FrameError`, so it is not caught by the
     per-frame loop and instead aborts the whole batch.
+    """
+
+
+class InstrumentDetectionError(BatchPrepError):
+    """
+    A frame header did not resolve to exactly one registered instrument profile.
+
+    Raised by `~bandaid.instruments.detect_instrument` when a
+    `~bandaid.config.PhotometryConfig` carries no explicit ``instrument`` (the
+    default): zero profiles matched the frame's header (no bundled/registered
+    instrument claims it) or more than one did (an ambiguous registration).
+    Fatal like its parent `BatchPrepError` -- an unresolvable instrument means
+    the whole batch has no detection/PSF settings to run with, not just one bad
+    frame. The message names the header values seen and the candidate profile
+    names so the fix (register the right profile, or pass ``--instrument``
+    explicitly) is obvious from the error alone.
     """
