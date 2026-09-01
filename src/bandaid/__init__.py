@@ -39,6 +39,7 @@ from .catalog import cached_gaia_radecs
 from .config import (
     ApertureConfig,
     DriftConfig,
+    HeaderMatchRule,
     InstrumentProfile,
     PhotometryConfig,
     SourceSelectionConfig,
@@ -48,6 +49,7 @@ from .exceptions import (
     BatchPrepError,
     FrameError,
     FrameMetadataError,
+    InstrumentDetectionError,
     NoUsableStarsError,
     TooFewStarsError,
     WCSSolveError,
@@ -55,6 +57,7 @@ from .exceptions import (
 from .image2sl_qt import bayer_balance_image, generate_bayer_masks
 from .instruments import (
     available_instruments,
+    detect_instrument,
     load_instrument,
     register_instrument,
 )
