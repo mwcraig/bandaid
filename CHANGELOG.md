@@ -83,8 +83,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `S50_0e597e9b`). `prepare_batch` and `prepare_image` both resolve a
     `None` `config.instrument` this way, from the first header they have in
     hand; `check_frame_consistency` also rejects a later frame in the batch
-    whose header does not match the batch instrument's rules, when
-    `header_match` is non-empty. See `docs/instrument_profiles.md`.
+    whose header does not match the batch instrument's rules, but only when
+    that instrument was itself auto-detected (not an explicit
+    `--instrument`/`--profile`/`--config`) and `header_match` is non-empty --
+    an explicit choice is trusted unconditionally. See
+    `docs/instrument_profiles.md`.
 
 ### Changed
 
