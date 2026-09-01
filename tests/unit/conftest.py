@@ -36,9 +36,11 @@ def stub_prepare_image_externals(mocker):
     function, stores ``calibrated`` in any ``detection_image_out`` dict it is
     handed), ``align`` (returns
     ``(coords, wcs)``), ``centroid_stars`` (identity) and ``_load_frame``
-    (returns a ``LoadedFrame`` with header ``{"creator": "spy"}``). Returns the
-    four mocks so callers can assert on their ``.call_args``; override
-    ``.return_value`` / ``.side_effect`` to tune a single external per test.
+    (returns a ``LoadedFrame`` with header ``{"creator": "spy", "INSTRUME":
+    "Seestar S50"}`` -- the ``INSTRUME`` lets a default (``instrument=None``)
+    ``PhotometryConfig`` auto-detect Seestar50). Returns the four mocks so
+    callers can assert on their ``.call_args``; override ``.return_value`` /
+    ``.side_effect`` to tune a single external per test.
 
     Parameters
     ----------
@@ -83,7 +85,7 @@ def stub_prepare_image_externals(mocker):
         load_frame = mocker.patch(
             "bandaid.photometry._load_frame",
             side_effect=lambda _file: LoadedFrame(
-                np.zeros((10, 10)), {"creator": "spy"}
+                np.zeros((10, 10)), {"creator": "spy", "INSTRUME": "Seestar S50"}
             ),
         )
         return SimpleNamespace(

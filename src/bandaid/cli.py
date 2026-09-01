@@ -36,6 +36,7 @@ from pydantic import ValidationError
 
 from .ballet import download_weights
 from .config import InstrumentProfile, PhotometryConfig, SourceSelectionConfig
+from .exceptions import BatchPrepError
 from .instruments import available_instruments, load_instrument
 from .logging_setup import configure_logging
 from .scripts import QA_MANIFEST_FILENAME, photometer_frames
@@ -102,7 +103,11 @@ def _build_config(
     ``--gaia-mag-limit``/``--min-snr`` then override only those fields of the
     resulting ``source_selection``, carrying its other fields (e.g. a
     ``--config`` file's ``contaminant_mag_offset``) forward unchanged. With no
-    options a default `PhotometryConfig` (Seestar50) is returned.
+    options a default `PhotometryConfig` is returned, whose ``instrument`` is
+    None -- meaning "resolve from the first frame's header" -- since a bare
+    `PhotometryConfig()` no longer hard-defaults to Seestar50. Any explicit
+    ``--instrument``/``--profile``/``--config`` (with a non-null
+    ``instrument``) disables that auto-detection.
 
     Parameters
     ----------
@@ -566,8 +571,10 @@ def process(
     click.ClickException
         If the arguments expand to no FITS frames, a path argument is missing or
         not a FITS frame, a config/profile/metadata/forced-targets file or a
-        ``--gaia-mag-limit``/``--min-snr`` override fails validation, or every
-        frame in the batch fails.
+        ``--gaia-mag-limit``/``--min-snr`` override fails validation, every
+        frame in the batch fails, or the once-per-batch preparation cannot be
+        built (e.g. no ``--instrument``/``--profile``/``--config`` given and the
+        first frame's header does not auto-detect to exactly one instrument).
     """
     # Always route bandaid's records to stderr so per-frame skip/error warnings
     # are never silently lost: WARNING+ (skips, unexpected errors) shows even
@@ -598,7 +605,9 @@ def process(
 
     # The file expansion + prepare/process flow lives in
     # scripts.photometer_frames; surface its argument errors (no frames, bad
-    # path) as clean CLI errors.
+    # path) and a fatal batch-prep failure (e.g. no usable Gaia catalog, or --
+    # with no --instrument/--profile/--config -- an undetectable instrument)
+    # as clean CLI errors.
     try:
         frames, results = photometer_frames(
             files,
@@ -613,7 +622,7 @@ def process(
             write_qa_manifest=qa_manifest,
             forced_targets=forced_targets,
         )
-    except (ValueError, FileNotFoundError) as exc:
+    except (ValueError, FileNotFoundError, BatchPrepError) as exc:
         raise click.ClickException(str(exc)) from exc
 
     click.echo(f"Processed {len(results)} of {len(frames)} frames into {output_dir}")

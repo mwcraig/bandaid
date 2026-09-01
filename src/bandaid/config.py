@@ -200,6 +200,49 @@ class DriftConfig(BaseModel, frozen=True):
     drift_cap_pix: Annotated[float, Field(gt=0)] = 4.0
 
 
+class HeaderMatchRule(BaseModel, frozen=True):
+    """
+    One FITS-header keyword/value rule used to auto-detect an instrument.
+
+    A rule matches a header when ``keyword`` is present and its value, after
+    stripping surrounding whitespace and casefolding, equals ``pattern``
+    treated the same way. No glob or regex support is needed: the values
+    involved (e.g. ``INSTRUME``) are short, stable device-identity strings.
+
+    Attributes
+    ----------
+    keyword : str
+        The FITS header keyword to look up (e.g. ``"INSTRUME"``).
+    pattern : str
+        The expected value for that keyword, compared case-insensitively
+        after stripping whitespace from both sides.
+    """
+
+    keyword: str
+    pattern: str
+
+    def matches(self, header) -> bool:
+        """
+        Check whether ``header`` satisfies this rule.
+
+        Parameters
+        ----------
+        header : astropy.io.fits.Header or collections.abc.Mapping
+            The FITS header (or header-like mapping) to check.
+
+        Returns
+        -------
+        bool
+            True if ``keyword`` is present in ``header`` and its stripped,
+            casefolded value equals the rule's stripped, casefolded
+            ``pattern``; False if the keyword is absent or the value differs.
+        """
+        value = header.get(self.keyword)
+        if value is None:
+            return False
+        return str(value).strip().casefold() == self.pattern.strip().casefold()
+
+
 class InstrumentProfile(BaseModel, frozen=True):
     """
     A named telescope: detection/FWHM/PSF settings plus its FITS-header dialect.
@@ -282,6 +325,16 @@ class InstrumentProfile(BaseModel, frozen=True):
         lookups, ``!`` function calls, ``#key`` fallbacks, and plain literals).
         Stored as a read-only mapping so a shared/cached profile cannot be
         mutated in place; serialises back to a plain ``dict``.
+    header_match : tuple of HeaderMatchRule
+        FITS-header rules identifying frames from this telescope, used by
+        :func:`~bandaid.instruments.detect_instrument` to auto-select a
+        profile when none is given explicitly. A profile matches a frame if
+        *any* rule matches (OR). Empty by default -- **including on the bare
+        class default** -- because device identity must be opt-in: a user's
+        custom profile that happens to share the Seestar tuning defaults must
+        not accidentally claim to *be* a Seestar. Only the bundled Seestar50
+        profile (``meta_json_files/Seestar50/profile.json``) carries a rule
+        (``INSTRUME == "Seestar S50"``).
     """
 
     name: str = "Seestar50"
@@ -306,6 +359,7 @@ class InstrumentProfile(BaseModel, frozen=True):
     header_map: Mapping = Field(
         default_factory=_default_seestar_header_map, validate_default=True
     )
+    header_match: tuple[HeaderMatchRule, ...] = ()
 
     @field_validator("header_map", mode="after")
     @classmethod
@@ -393,9 +447,14 @@ class PhotometryConfig(BaseModel, frozen=True):
         Gaia magnitude limits selecting the measured and flagged stars.
     drift : DriftConfig
         Centroid-drift cuts.
-    instrument : InstrumentProfile
+    instrument : InstrumentProfile or None
         The named telescope: detection, FWHM, PSF, and contamination settings
-        plus the per-frame FITS-header dialect.
+        plus the per-frame FITS-header dialect. ``None`` (the default) means
+        "resolve from the frame header": the first place a header is in hand
+        (`~bandaid.scripts.prepare_batch` or `~bandaid.photometry.prepare_image`)
+        calls `~bandaid.instruments.detect_instrument` and carries the resolved
+        profile forward. Pass an explicit `InstrumentProfile` (e.g. via
+        `~bandaid.instruments.load_instrument`) to bypass auto-detection.
     """
 
     apertures: ApertureConfig = Field(default_factory=ApertureConfig)
@@ -403,4 +462,4 @@ class PhotometryConfig(BaseModel, frozen=True):
         default_factory=SourceSelectionConfig
     )
     drift: DriftConfig = Field(default_factory=DriftConfig)
-    instrument: InstrumentProfile = Field(default_factory=InstrumentProfile)
+    instrument: InstrumentProfile | None = None

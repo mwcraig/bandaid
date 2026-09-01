@@ -51,7 +51,7 @@ from .exceptions import (
     WCSSolveError,
 )
 from .image2sl_qt import bayer_balance_image
-from .instruments import load_instrument
+from .instruments import detect_instrument, resolve_config_instrument
 
 logger = logging.getLogger(__name__)
 
@@ -894,8 +894,8 @@ def calibration_sequence(
         ``_FWHM_N_STARS``.
     profile : InstrumentProfile or None, optional
         The instrument whose ``header_map`` resolves the frame metadata, passed
-        through to `metadata_from_header`. Defaults to the bundled Seestar50
-        profile.
+        through to `metadata_from_header`. None (the default) means "resolve
+        from the header" -- `metadata_from_header` detects it.
     frame : LoadedFrame or None, optional
         Pre-loaded frame; when None the file is opened once via the loader.
     detection_image_out : dict or None, optional
@@ -917,7 +917,11 @@ def calibration_sequence(
         source is saturated, so no usable PSF can be fit.
     FrameMetadataError
         If the header is missing a required keyword (propagated from
-        `metadata_from_header`, with the source file attached).
+        `metadata_from_header`, with the source file attached). If ``profile``
+        is None and the header matches zero or more than one
+        bundled/registered instrument profile, the unrelated
+        `~bandaid.exceptions.InstrumentDetectionError` propagates instead
+        (also from `metadata_from_header`).
     DegenerateBayerChannelError
         If ``detect_on_bayer_balanced`` is True and a CFA sub-grid sample is
         empty or has zero variance (propagated from `bayer_balance_image`,
@@ -1130,9 +1134,10 @@ def metadata_from_header(header, *, profile=None):
     header : astropy.io.fits.Header or dict
         FITS header to look up values in.
     profile : InstrumentProfile or None, optional
-        The instrument whose ``header_map`` resolves the header. Defaults to the
-        bundled Seestar50 profile, preserving the historical behaviour for
-        callers that do not pass one.
+        The instrument whose ``header_map`` resolves the header. None (the
+        default) means "resolve from the header": `detect_instrument` is
+        called on ``header`` itself, the same "auto-detect" semantics as
+        `~bandaid.config.PhotometryConfig.instrument`.
 
     Returns
     -------
@@ -1143,10 +1148,14 @@ def metadata_from_header(header, *, profile=None):
     ------
     FrameMetadataError
         If a required header keyword is missing or cannot be parsed, or if the
-        system gain (``egain``) is absent with no template default.
+        system gain (``egain``) is absent with no template default. If
+        ``profile`` is None and ``header`` matches zero or more than one
+        bundled/registered instrument profile, the unrelated
+        `~bandaid.exceptions.InstrumentDetectionError` propagates instead
+        (from `~bandaid.instruments.detect_instrument`).
     """
     if profile is None:
-        profile = load_instrument("Seestar50")
+        profile = detect_instrument(header)
     template = profile.header_map
 
     # Collect fallback values from "#key" entries
@@ -2398,9 +2407,13 @@ def prepare_image(
         `TooFewStarsError` or, when ``detect_on_bayer_balanced`` is True and a
         CFA sub-grid sample is empty or has zero variance,
         `DegenerateBayerChannelError` -- both with `file` already attached by
-        `calibration_sequence` itself, and `_drop_off_frame_catalog_stars` may
-        raise `NoUsableStarsError` when every catalog star projects outside the
-        frame; all three propagate unchanged.)
+        `calibration_sequence` itself. When ``config.instrument`` is None and
+        the frame's header matches zero or more than one bundled/registered
+        instrument profile, `~bandaid.exceptions.InstrumentDetectionError`
+        propagates from `~bandaid.instruments.resolve_config_instrument`, and
+        `_drop_off_frame_catalog_stars` may raise `NoUsableStarsError` when
+        every catalog star projects outside the frame; all propagate
+        unchanged.)
     FrameMetadataError
         If a WCS must be solved (``wcs`` is None) but the frame metadata has no
         usable numeric ``pixscale`` to scale-check the solve against. The source
@@ -2414,6 +2427,10 @@ def prepare_image(
     if frame is None:
         frame = _load_frame(file)
     config = config or PhotometryConfig()
+    # This is the other resolution point (besides prepare_batch, for the batch
+    # path) -- a direct caller (or process_one_image with a default config)
+    # gets the same auto-detection.
+    config = resolve_config_instrument(config, frame.header)
     instrument = config.instrument
     # Receives calibration_sequence's own detection-time array (see its
     # docstring) so centroiding reuses it instead of balancing a second copy.
