@@ -1727,81 +1727,80 @@ def annulus_sigma_clip_stats(data, coords, r_in, r_out, input_mask=None, sigma=3
     return aperstats.median, aperstats.std
 
 
-def measure_photometry(
-    calibrated_data,
-    centroid_coords,
-    fwhm,
-    egain,
-    mask,
-    *,
-    radii=RELATIVE_RADII,
-    annulus=ANNULUS,
-):
+def _peak_box_cutouts(calibrated_data, centroid_coords, fwhm):
     """
-    Perform aperture photometry, background subtraction, and error calculation.
+    Extract the raw (unmasked) peak-count box cutouts, shared across channels.
+
+    The box `measure_photometry` samples for ``peak_count`` is cut from the
+    full ``calibrated_data`` at the measured centroids; only the subsequent
+    per-channel mask application and ``nanmax`` differ between TR/TG/TB
+    (Change B), so the cutout extraction itself can be computed once per frame
+    and reused instead of every channel call re-extracting the same cutout.
 
     Parameters
     ----------
     calibrated_data : numpy.ndarray
         Calibrated image data.
     centroid_coords : numpy.ndarray
-        Centroided star coordinates. Every measurement, including the
-        ``peak_count`` box, is anchored here.
+        Centroided star coordinates.
     fwhm : float
-        FWHM of the PSF in pixels.
-    egain : float
-        System gain in e-/adu.
-    mask : numpy.ndarray or None
-        Bayer mask to apply to the image data.
-    radii : array-like or float, optional
-        Aperture radii in units of FWHM; multiplied by `fwhm` to get the actual
-        aperture sizes. A scalar is treated as a single radius. Defaults to the
-        module-level `RELATIVE_RADII`.
-    annulus : tuple of float, optional
-        Background annulus ``(inner, outer)`` radii in units of FWHM, with
-        ``outer > inner``. Defaults to the module-level `ANNULUS`.
+        FWHM of the PSF in pixels, sizing the box (~2*FWHM per side, floored
+        at 2 px -- the same rule `measure_photometry` uses internally).
 
     Returns
     -------
-    dict
-        Keys: tot_count, count_err, bkgd_count, peak_count, snr,
-        total_bkg, fluxes, aperture_radii, annulus_radii.
+    numpy.ndarray or None
+        The extracted box cutouts for the finite-centroid rows, shaped
+        ``(n_finite, box_side, box_side)``. None if no row has a finite
+        centroid (nothing to cut).
+    """
+    centroid_xy = np.atleast_2d(np.asarray(centroid_coords, dtype=float))
+    finite_centroid = np.all(np.isfinite(centroid_xy), axis=1)
+    if not np.any(finite_centroid):
+        return None
+    box_side = max(int(np.ceil(2 * fwhm)), 2)
+    return utils.cutout(
+        calibrated_data,
+        centroid_xy[finite_centroid],
+        (box_side, box_side),
+    )
+
+
+def _aperture_annulus_geometry(fwhm, radii, annulus):
+    """
+    Compute the fwhm-scaled aperture radii and background annulus radii.
+
+    Depends only on ``fwhm``/``radii``/``annulus``, never the mask, so it is
+    bit-identical across Bayer channels for a given frame. `measure_photometry`
+    calls this internally by default; a caller measuring multiple channels for
+    one frame can instead precompute it once and reuse it via the ``geometry``
+    kwarg (Change B).
+
+    Parameters
+    ----------
+    fwhm : float
+        FWHM of the PSF in pixels.
+    radii : array-like or float
+        Aperture radii in units of FWHM; multiplied by `fwhm` to get the
+        actual aperture sizes. A scalar is treated as a single radius.
+    annulus : tuple of float
+        Background annulus ``(inner, outer)`` radii in units of FWHM, with
+        ``outer > inner``.
+
+    Returns
+    -------
+    apertures_radii : numpy.ndarray
+        The fwhm-scaled aperture radii, at least 1D.
+    annulus_radii : tuple of float
+        The ``(r_in, r_out)`` background annulus radii in pixels, with
+        ``r_in`` pushed out to at least the largest aperture radius.
 
     Raises
     ------
     ValueError
-        If `annulus` is not a 2-element sequence with the outer radius larger
-        than the inner radius.
-
-    Notes
-    -----
-    The noise model behind ``count_err``/``snr`` sums, in quadrature, the
-    source Poisson noise and the per-pixel background scatter (the annulus
-    ``bkgd_std``) accumulated over the aperture area. It deliberately omits
-    the uncertainty of the background *estimate* itself (roughly
-    ``bkgd_std / sqrt(n_annulus_pixels)`` times the aperture area), a
-    standard, internally consistent simplification that slightly
-    underestimates the error when the annulus holds few pixels relative to
-    the aperture. The recombined L4 noise model in `calculate_l4_quantities`
-    makes the same simplification (issue #57).
-
-    Per-star ``snr`` (and the noise terms feeding it) may be ``NaN`` for faint
-    stars whose annulus background over-subtracts (negative ``net_count``) or for
-    stars near the frame edge whose annulus statistics are undefined. These
-    ``NaN``s are an accepted part of the contract: they are filtered out
-    downstream by `eloy_to_starlist` (which keeps only rows with ``tot_count > 0``,
-    finite ``count_err``, and in-bounds ``x``/``y``). The associated
-    ``invalid``/``divide`` RuntimeWarnings are deliberately suppressed.
-
-    A row whose centroid is non-finite (a failed centroid) follows the same
-    contract: every per-star quantity for that row, including ``peak_count``,
-    comes back ``NaN`` instead of raising, and the row is dropped downstream.
-
-    ``peak_count`` is the maximum pixel value in a box of ~2*FWHM per side
-    centered on the measured centroid, with the channel ``mask`` applied
-    (issue #54): each of the TR/TG/TB peaks samples only its own channel's
-    pixels, so a saturated pixel is attributed to the channel it lives in and
-    a bright neighbor outside the box cannot masquerade as the target's peak.
+        If `annulus` is not a 2-element (inner, outer) sequence with the outer
+        radius larger than the inner, or if the resulting annulus is not
+        larger than the largest aperture.
     """
     msg = (
         "annulus must be a 2-element (inner, outer) sequence with "
@@ -1831,7 +1830,106 @@ def measure_photometry(
             "aperture. Use a larger annulus or smaller radii."
         )
         raise ValueError(radius_msg)
-    annulus_radii = (r_in, r_out)
+    return apertures_radii, (r_in, r_out)
+
+
+def measure_photometry(
+    calibrated_data,
+    centroid_coords,
+    fwhm,
+    egain,
+    mask,
+    *,
+    radii=RELATIVE_RADII,
+    annulus=ANNULUS,
+    peak_cutouts=None,
+    geometry=None,
+):
+    """
+    Perform aperture photometry, background subtraction, and error calculation.
+
+    Parameters
+    ----------
+    calibrated_data : numpy.ndarray
+        Calibrated image data.
+    centroid_coords : numpy.ndarray
+        Centroided star coordinates. Every measurement, including the
+        ``peak_count`` box, is anchored here.
+    fwhm : float
+        FWHM of the PSF in pixels.
+    egain : float
+        System gain in e-/adu.
+    mask : numpy.ndarray or None
+        Bayer mask to apply to the image data.
+    radii : array-like or float, optional
+        Aperture radii in units of FWHM; multiplied by `fwhm` to get the actual
+        aperture sizes. A scalar is treated as a single radius. Defaults to the
+        module-level `RELATIVE_RADII`.
+    annulus : tuple of float, optional
+        Background annulus ``(inner, outer)`` radii in units of FWHM, with
+        ``outer > inner``. Defaults to the module-level `ANNULUS`.
+    peak_cutouts : numpy.ndarray or None, optional
+        Precomputed raw (unmasked) peak-count box cutouts for the
+        finite-centroid rows, e.g. from `_peak_box_cutouts`. When given, skips
+        recomputing the cutout extraction -- it is channel-independent, only
+        the subsequent per-channel mask application and ``nanmax`` differ -- so
+        a caller measuring multiple Bayer channels for one frame can compute it
+        once and reuse it (Change B). Default None recomputes it internally.
+    geometry : tuple or None, optional
+        Precomputed ``(apertures_radii, annulus_radii)`` from
+        `_aperture_annulus_geometry`. It depends only on fwhm/radii/annulus,
+        never the mask, so it is bit-identical across Bayer channels for a
+        given frame; a caller measuring multiple channels for one frame can
+        compute it once and reuse it (Change B). When given, `radii` and
+        `annulus` are ignored. Default None computes it from `radii`/
+        `annulus`/`fwhm`.
+
+    Returns
+    -------
+    dict
+        Keys: tot_count, count_err, bkgd_count, peak_count, snr,
+        total_bkg, fluxes, aperture_radii, annulus_radii.
+
+    Notes
+    -----
+    When ``geometry`` is None (the default), `_aperture_annulus_geometry`
+    validates `annulus` and raises ``ValueError`` (propagated unchanged) if it
+    is not a 2-element sequence with the outer radius larger than the inner.
+
+    The noise model behind ``count_err``/``snr`` sums, in quadrature, the
+    source Poisson noise and the per-pixel background scatter (the annulus
+    ``bkgd_std``) accumulated over the aperture area. It deliberately omits
+    the uncertainty of the background *estimate* itself (roughly
+    ``bkgd_std / sqrt(n_annulus_pixels)`` times the aperture area), a
+    standard, internally consistent simplification that slightly
+    underestimates the error when the annulus holds few pixels relative to
+    the aperture. The recombined L4 noise model in `calculate_l4_quantities`
+    makes the same simplification (issue #57).
+
+    Per-star ``snr`` (and the noise terms feeding it) may be ``NaN`` for faint
+    stars whose annulus background over-subtracts (negative ``net_count``) or for
+    stars near the frame edge whose annulus statistics are undefined. These
+    ``NaN``s are an accepted part of the contract: they are filtered out
+    downstream by `eloy_to_starlist` (which keeps only rows with ``tot_count > 0``,
+    finite ``count_err``, and in-bounds ``x``/``y``). The associated
+    ``invalid``/``divide`` RuntimeWarnings are deliberately suppressed.
+
+    A row whose centroid is non-finite (a failed centroid) follows the same
+    contract: every per-star quantity for that row, including ``peak_count``,
+    comes back ``NaN`` instead of raising, and the row is dropped downstream.
+
+    ``peak_count`` is the maximum pixel value in a box of ~2*FWHM per side
+    centered on the measured centroid, with the channel ``mask`` applied
+    (issue #54): each of the TR/TG/TB peaks samples only its own channel's
+    pixels, so a saturated pixel is attributed to the channel it lives in and
+    a bright neighbor outside the box cannot masquerade as the target's peak.
+    """
+    if geometry is None:
+        apertures_radii, annulus_radii = _aperture_annulus_geometry(
+            fwhm, radii, annulus
+        )
+    else:
+        apertures_radii, annulus_radii = geometry
 
     # photutils apertures reject non-finite positions outright, but a failed
     # centroid can legitimately be NaN. Give those rows a harmless in-frame
@@ -1893,11 +1991,12 @@ def measure_photometry(
     peaks = np.full(centroid_xy.shape[0], np.nan)
     if np.any(finite_centroid):
         box = (box_side, box_side)
-        peak_cutouts = utils.cutout(
-            calibrated_data,
-            centroid_xy[finite_centroid],
-            box,
-        )
+        if peak_cutouts is None:
+            peak_cutouts = utils.cutout(
+                calibrated_data,
+                centroid_xy[finite_centroid],
+                box,
+            )
         if mask is not None:
             # Apply the channel mask at cutout scale rather than NaN-ing a
             # full-frame copy of the image. The mask is cut as float because a
@@ -2208,6 +2307,8 @@ def build_photometry_table(
     annulus=None,
     drift_tolerance=None,
     drift_cap=None,
+    peak_cutouts=None,
+    geometry=None,
 ):
     """
     Run photometry with a given mask and build an output table.
@@ -2238,6 +2339,17 @@ def build_photometry_table(
         Absolute pixel cap on the allowed centroid drift, passed to
         `centroid_drift_flag`. If None (default), taken from
         ``config.drift.drift_cap_pix``.
+    peak_cutouts : numpy.ndarray or None, optional
+        Precomputed raw peak-count box cutouts, passed through to
+        `measure_photometry` (e.g. from `_peak_box_cutouts`, computed once by
+        `process_one_image` and reused across Bayer channels; Change B). If
+        None (default), `measure_photometry` computes it internally.
+    geometry : tuple or None, optional
+        Precomputed ``(apertures_radii, annulus_radii)``, passed through to
+        `measure_photometry` (e.g. from `_aperture_annulus_geometry`, computed
+        once by `process_one_image` and reused across Bayer channels; Change
+        B). When given, `radii`/`annulus` are ignored. If None (default),
+        `measure_photometry` computes it from `radii`/`annulus`.
 
     Returns
     -------
@@ -2272,6 +2384,8 @@ def build_photometry_table(
         mask,
         radii=radii,
         annulus=annulus,
+        peak_cutouts=peak_cutouts,
+        geometry=geometry,
     )
     if img.input_photometry_coords is not None:
         # The caller supplied known sky coordinates; use them directly rather
@@ -2416,6 +2530,18 @@ def process_one_image(
         frame=frame,
     )
 
+    # The peak-count box cutout is channel-independent (only the subsequent
+    # per-channel mask application and nanmax differ), so compute it once per
+    # frame here and reuse it across the RGB channel calls below instead of
+    # every call re-extracting the same cutout from calibrated_data (Change B).
+    peak_cutouts = _peak_box_cutouts(img.calibrated_data, img.centroid_coords, img.fwhm)
+    # The fwhm-scaled aperture/annulus geometry likewise depends only on
+    # fwhm/radii/annulus, never the mask, so it too is bit-identical across
+    # the RGB channels for this frame; compute it once and reuse it (Change B).
+    geometry = _aperture_annulus_geometry(
+        img.fwhm, config.apertures.radii, config.apertures.annulus
+    )
+
     by_filter_data = {}
     for filter_name, mask in bayer_masks.items():
         if filter_name == "L4":
@@ -2430,7 +2556,13 @@ def process_one_image(
             _require_rgb_channels(by_filter_data)
             data = _l4_skeleton_table(by_filter_data["TR"])
         else:
-            data = build_photometry_table(img, mask, config=config)
+            data = build_photometry_table(
+                img,
+                mask,
+                config=config,
+                peak_cutouts=peak_cutouts,
+                geometry=geometry,
+            )
         data.meta["filter"] = filter_name
         data.meta["full_image_meta"] = img.metadata
         if filter_name == "L4":

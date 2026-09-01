@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from _helpers import (
     SEED,
+    _PEAK_SCENE_FWHM,
     _bright_neighbor_scene,
     _peak_scene_photometry,
     _single_source_photometry_inputs,
@@ -17,6 +18,8 @@ from bandaid import measure_photometry
 from bandaid.photometry import (
     ANNULUS,
     RELATIVE_RADII,
+    _aperture_annulus_geometry,
+    _peak_box_cutouts,
 )
 
 
@@ -418,3 +421,98 @@ def test_peak_count_nan_for_non_finite_centroid(make_test_image):
     # for the rest of the per-star outputs.
     for key in ("peak_count", "tot_count", "count_err", "bkgd_count", "snr"):
         assert photom[key][1] == baseline[key][1]
+
+
+# --- Change B: hoisted peak-cutout extraction and aperture/annulus geometry ---
+
+
+def test_precomputed_peak_cutouts_match_internal_computation(make_test_image):
+    """
+    A precomputed ``peak_cutouts`` array matches the internal computation.
+
+    The raw (unmasked) peak-count box cutout is channel-independent -- only
+    the subsequent per-channel mask application and ``nanmax`` differ -- so a
+    caller measuring multiple Bayer channels for one frame can compute it once
+    via `_peak_box_cutouts` and pass it back in, instead of every channel call
+    re-extracting the same cutout from ``calibrated_data`` (Change B).
+    """
+    image, coords = _bright_neighbor_scene(make_test_image)
+
+    without = _peak_scene_photometry(image, coords, None)
+
+    cutouts = _peak_box_cutouts(image, coords, _PEAK_SCENE_FWHM)
+    with_precomputed = _peak_scene_photometry(image, coords, None, peak_cutouts=cutouts)
+
+    np.testing.assert_array_equal(without["peak_count"], with_precomputed["peak_count"])
+
+
+def test_precomputed_peak_cutouts_match_internal_computation_with_channel_mask(
+    make_test_image, bayer_masks_rggb
+):
+    """
+    A precomputed ``peak_cutouts`` still matches internal computation per channel.
+
+    The precomputed cutout is the raw (unmasked) box; each channel's own mask
+    is still applied on top of it, so this must match the fully-internal
+    per-channel computation exactly, not just the unmasked case above.
+    """
+    image, coords = _bright_neighbor_scene(make_test_image)
+    masks = bayer_masks_rggb(image.shape)
+    cutouts = _peak_box_cutouts(image, coords, _PEAK_SCENE_FWHM)
+
+    for mask in masks.values():
+        without = _peak_scene_photometry(image, coords, mask)
+        with_precomputed = _peak_scene_photometry(
+            image, coords, mask, peak_cutouts=cutouts
+        )
+        np.testing.assert_array_equal(
+            without["peak_count"], with_precomputed["peak_count"]
+        )
+
+
+def test_precomputed_geometry_matches_internal_computation(make_test_image):
+    """
+    A precomputed ``geometry`` tuple matches the internal computation.
+
+    The fwhm-scaled aperture radii and background annulus radii depend only on
+    fwhm/radii/annulus, never the mask, so they are bit-identical across Bayer
+    channels for a given frame. A caller can precompute them once via
+    `_aperture_annulus_geometry` and pass them back in (Change B).
+    """
+    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    egain = 0.3
+
+    without = measure_photometry(image, coords, fwhm, egain, mask)
+
+    geometry = _aperture_annulus_geometry(fwhm, RELATIVE_RADII, ANNULUS)
+    with_precomputed = measure_photometry(
+        image, coords, fwhm, egain, mask, geometry=geometry
+    )
+
+    np.testing.assert_array_equal(without["tot_count"], with_precomputed["tot_count"])
+    np.testing.assert_array_equal(without["count_err"], with_precomputed["count_err"])
+    assert without["aperture_radii"] == with_precomputed["aperture_radii"]
+    assert without["annulus_radii"] == with_precomputed["annulus_radii"]
+
+
+def test_geometry_kwarg_ignores_radii_and_annulus_overrides(make_test_image):
+    """When ``geometry`` is given, ``radii``/``annulus`` are ignored."""
+    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    egain = 0.3
+
+    geometry = _aperture_annulus_geometry(fwhm, RELATIVE_RADII, ANNULUS)
+    # Deliberately wrong radii/annulus that would raise if actually used
+    # (aperture larger than the annulus); geometry must win.
+    photom = measure_photometry(
+        image,
+        coords,
+        fwhm,
+        egain,
+        mask,
+        radii=[20.0],
+        annulus=(5, 8),
+        geometry=geometry,
+    )
+
+    assert photom["aperture_radii"] == pytest.approx(geometry[0][0])
+    assert photom["annulus_radii"] == pytest.approx(geometry[1])
