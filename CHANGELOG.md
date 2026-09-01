@@ -69,6 +69,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     table with `ra`/`dec` in ICRS degrees. Forced targets skip the
     Gaia-magnitude contamination model; all other quality cuts still apply
     (see the docs for details).
+- Instrument auto-detection from the FITS header. A new `HeaderMatchRule`
+    model and `InstrumentProfile.header_match` field (a tuple of
+    keyword/pattern rules; empty by default -- including on a bare
+    `InstrumentProfile()` -- so device identity is opt-in) drive a new
+    `detect_instrument(header)` in `bandaid.instruments`: it matches the
+    header against every bundled/registered profile's rules and returns the
+    single match, or raises the new `InstrumentDetectionError` (a
+    `BatchPrepError` subclass) naming the header values it checked and the
+    available/ambiguous profile names. The bundled Seestar50 profile now
+    carries the rule `INSTRUME == "Seestar S50"` (deliberately not
+    `TELESCOP`, which embeds a per-device serial on real hardware, e.g.
+    `S50_0e597e9b`). `prepare_batch` and `prepare_image` both resolve a
+    `None` `config.instrument` this way, from the first header they have in
+    hand; `check_frame_consistency` also rejects a later frame in the batch
+    whose header does not match the batch instrument's rules, when
+    `header_match` is non-empty. See `docs/instrument_profiles.md`.
 
 ### Changed
 
@@ -146,6 +162,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `append_l4` defaults to `True` throughout the API (`generate_bayer_masks`,
     `prepare_batch`), matching `photometer_frames` and the CLI, so composing
     the pipeline by hand yields the same channels as the CLI (#61).
+- `PhotometryConfig.instrument` now defaults to `None` ("resolve from the
+    frame header") instead of hard-defaulting to an `InstrumentProfile()`
+    (the Seestar50 tuning). A bare `PhotometryConfig()` -- from the CLI with
+    no `--instrument`/`--profile`/`--config`, or from Python -- now
+    auto-detects the instrument from the first frame's header instead of
+    silently assuming a Seestar50; an unmatched or headerless frame now
+    raises `InstrumentDetectionError` instead of proceeding with the wrong
+    (or a guessed) instrument. This is invisible to Seestar users, whose
+    headers auto-detect; pass `--instrument Seestar50` (or any explicit
+    profile) to opt back out of auto-detection. `metadata_from_header`'s own
+    `profile=None` default changed the same way, from a silent Seestar50
+    fallback to `detect_instrument(header)`.
 
 ### Fixed
 
