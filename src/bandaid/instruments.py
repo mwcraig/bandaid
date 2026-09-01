@@ -225,12 +225,15 @@ def detect_instrument(header):
 
 def resolve_config_instrument(config, header):
     """
-    Return ``config`` unchanged, or a copy with ``instrument`` auto-detected.
+    Return ``config`` (unchanged or with ``instrument`` auto-detected) and how.
 
     The single "``None`` means resolve from the header" step shared by the two
     places a header is in hand early enough to do it:
     `~bandaid.scripts.prepare_batch` (the batch path) and
-    `~bandaid.photometry.prepare_image` (the direct/per-frame path).
+    `~bandaid.photometry.prepare_image` (the direct/per-frame path). The
+    second return value tells `~bandaid.scripts.prepare_batch` whether to mark
+    its `~bandaid.scripts.BatchPrep.instrument_auto_detected`, which gates
+    `~bandaid.scripts.check_frame_consistency`'s batch-mixing guard.
 
     Parameters
     ----------
@@ -242,17 +245,21 @@ def resolve_config_instrument(config, header):
 
     Returns
     -------
-    PhotometryConfig
+    config : PhotometryConfig
         ``config`` unchanged if ``instrument`` was already set, otherwise a
         copy with the detected profile. When ``instrument`` needs resolving,
         `~bandaid.instruments.detect_instrument` may raise
         `~bandaid.exceptions.InstrumentDetectionError` (zero or more than one
         profile matched the header); that propagates unchanged.
+    auto_detected : bool
+        True if ``instrument`` was resolved by detection (the incoming
+        ``config.instrument`` was None); False if it was already set
+        explicitly.
     """
     if config.instrument is not None:
-        return config
+        return config, False
     detected = detect_instrument(header)
     logger.info(
         "auto-detected instrument profile %r from the frame header", detected.name
     )
-    return config.model_copy(update={"instrument": detected})
+    return config.model_copy(update={"instrument": detected}), True

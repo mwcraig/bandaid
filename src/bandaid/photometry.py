@@ -2429,8 +2429,9 @@ def prepare_image(
     config = config or PhotometryConfig()
     # This is the other resolution point (besides prepare_batch, for the batch
     # path) -- a direct caller (or process_one_image with a default config)
-    # gets the same auto-detection.
-    config = resolve_config_instrument(config, frame.header)
+    # gets the same auto-detection. prepare_image has no batch-mixing guard to
+    # feed, so the "was it detected" flag is not needed here.
+    config, _ = resolve_config_instrument(config, frame.header)
     instrument = config.instrument
     # Receives calibration_sequence's own detection-time array (see its
     # docstring) so centroiding reuses it instead of balancing a second copy.
