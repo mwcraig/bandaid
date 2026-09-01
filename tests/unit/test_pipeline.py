@@ -21,6 +21,7 @@ from bandaid.config import InstrumentProfile, PhotometryConfig
 from bandaid.exceptions import (
     DegenerateBayerChannelError,
     FrameMetadataError,
+    InstrumentDetectionError,
     NoUsableStarsError,
     TooFewStarsError,
 )
@@ -31,6 +32,7 @@ from bandaid.photometry import (
     MIN_DETECTED_STARS,
     N_GAIA_STARS_ALIGN,
     THRESH,
+    LoadedFrame,
     _box_opening,
     _brightest_unsaturated,
     _detect_stars,
@@ -91,6 +93,9 @@ class TestPrepareImage:
             None,
             photometry_coords=None,
             wcs=wcs,
+            # This test only exercises the alignment fallback, not instrument
+            # detection, and the written header carries no INSTRUME/TELESCOP.
+            config=PhotometryConfig(instrument=InstrumentProfile()),
         )
 
         assert np.array_equal(img.coords, img.aligned_coords)
@@ -127,6 +132,42 @@ class TestPrepareImage:
         assert kwargs["threshold"] == expected_thresh
         assert kwargs["opening"] == expected_opening
         assert kwargs["fwhm_n_stars"] == expected_fwhm_n_stars
+
+    def test_auto_detects_instrument_from_frame_header(
+        self, stub_prepare_image_externals
+    ):
+        """
+        A default (``instrument=None``) config resolves by detecting the header.
+
+        ``prepare_image`` is the other resolution point (besides
+        ``prepare_batch``): a direct caller with a default config must get the
+        same auto-detection, so ``calibration_sequence`` still sees a
+        concrete profile.
+        """
+        externals = stub_prepare_image_externals()
+        mocker_load_frame = externals.load_frame
+        mocker_load_frame.side_effect = lambda _file: LoadedFrame(
+            np.zeros((10, 10)), {"INSTRUME": "Seestar S50"}
+        )
+
+        prepare_image("unused.fits", np.zeros((5, 2)), None, config=PhotometryConfig())
+
+        resolved = externals.calibration_sequence.call_args.kwargs["profile"]
+        assert resolved.name == "Seestar50"
+
+    def test_unmatched_header_raises_instrument_detection_error(
+        self, stub_prepare_image_externals
+    ):
+        """A frame whose header matches no profile raises, not an AttributeError."""
+        externals = stub_prepare_image_externals()
+        externals.load_frame.side_effect = lambda _file: LoadedFrame(
+            np.zeros((10, 10)), {}
+        )
+
+        with pytest.raises(InstrumentDetectionError):
+            prepare_image(
+                "unused.fits", np.zeros((5, 2)), None, config=PhotometryConfig()
+            )
 
     def test_instrument_wcs_scale_tolerance_reaches_alignment(
         self, stub_prepare_image_externals
@@ -459,8 +500,10 @@ def _write_seestar_fits(path, image):
     """Write ``image`` to ``path`` with the header keys the pipeline reads."""
     ccd = CCDData(image, unit="adu")
     # metadata_from_header indexes CREATOR directly ("!CREATOR index 0"), so it
-    # must be present; the others feed "@KEY" lookups used downstream.
+    # must be present; the others feed "@KEY" lookups used downstream. INSTRUME
+    # is what a default (instrument=None) PhotometryConfig auto-detects on.
     ccd.header["CREATOR"] = "ZWO Seestar S50"
+    ccd.header["INSTRUME"] = "Seestar S50"
     ccd.header["DATE-OBS"] = "2024-01-01T00:00:00"
     ccd.header["BAYERPAT"] = "RGGB"
     # Real Seestar frames carry pointing and site so airmass derives (issue #29);

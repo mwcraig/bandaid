@@ -37,9 +37,11 @@ The immutable, validated configuration objects. See
 
 ::: bandaid.InstrumentProfile
 
+::: bandaid.HeaderMatchRule
+
 ## Instrument registry
 
-Resolve, register, and list instrument profiles. See
+Resolve, register, list, and auto-detect instrument profiles. See
 [Instrument profiles](instrument_profiles.md).
 
 ::: bandaid.load_instrument
@@ -47,6 +49,8 @@ Resolve, register, and list instrument profiles. See
 ::: bandaid.register_instrument
 
 ::: bandaid.available_instruments
+
+::: bandaid.detect_instrument
 
 ## Exceptions
 
@@ -69,3 +73,5 @@ stop. See [Troubleshooting](troubleshooting.md) for what triggers each.
 ::: bandaid.NoUsableStarsError
 
 ::: bandaid.BatchPrepError
+
+::: bandaid.InstrumentDetectionError

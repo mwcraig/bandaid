@@ -37,6 +37,7 @@ from .exceptions import (
     WCSSolveError,
 )
 from .image2sl_qt import generate_bayer_masks
+from .instruments import resolve_config_instrument
 from .photometry import (
     N_GAIA_STARS_ALIGN_RETRY,
     LoadedFrame,
@@ -218,6 +219,18 @@ class BatchPrep:
         The ICRS forced-target sky positions appended to
         ``photometry_coords`` by `prepare_batch`. None when the batch was
         prepared without any.
+    instrument_auto_detected : bool
+        Whether ``config.instrument`` was resolved by
+        `~bandaid.instruments.detect_instrument` (the incoming config's
+        ``instrument`` was None) rather than given explicitly
+        (``--instrument``/``--profile``/``--config`` with a concrete
+        instrument, or ``config=PhotometryConfig(instrument=...)``).
+        `check_frame_consistency`'s batch-mixing guard is enforced only when
+        this is True: an explicit selection is trusted even on a frame whose
+        header does not match ``config.instrument.header_match`` -- the guard
+        exists to catch a different telescope's frames riding along on an
+        *auto-detected* profile, not to second-guess a user's explicit
+        choice. Default False.
     """
 
     radecs: np.ndarray
@@ -229,6 +242,7 @@ class BatchPrep:
     shape: tuple
     config: PhotometryConfig = field(default_factory=PhotometryConfig)
     forced_targets: SkyCoord | None = None
+    instrument_auto_detected: bool = False
 
 
 def estimate_center_from_header(metadata, profile):
@@ -419,7 +433,11 @@ def prepare_batch(
     ------
     BatchPrepError
         If too few stars are detected in ``first_file`` to measure an FWHM, so
-        the batch preparation cannot be built.
+        the batch preparation cannot be built. (If ``config.instrument`` is
+        None and the first frame's header matches zero or more than one
+        bundled/registered instrument profile, the subclass
+        `~bandaid.exceptions.InstrumentDetectionError` propagates from
+        `~bandaid.instruments.resolve_config_instrument`.)
     FrameMetadataError
         If the first frame's metadata has no parseable observation time
         (``obs_time``, usually mapped from ``DATE-OBS``), which is needed to
@@ -432,6 +450,14 @@ def prepare_batch(
     # (no FWHM/pointing to prepare from), so translate the recoverable
     # per-frame TooFewStarsError into a fatal BatchPrepError.
     config = config or PhotometryConfig()
+    # This is the first place a header is in hand, so resolve here and carry
+    # the instrument forward on the config stored on the returned BatchPrep --
+    # one resolution covers every frame in the batch (see also prepare_image,
+    # the other resolution point, for direct prepare_image/calibration_sequence
+    # callers). instrument_auto_detected gates check_frame_consistency's
+    # batch-mixing guard, which fires only when the instrument was actually
+    # detected, not explicitly chosen.
+    config, instrument_auto_detected = resolve_config_instrument(config, frame.header)
     instrument = config.instrument
     try:
         # Pass the CNN so the FWHM (which sizes the photometry aperture) is measured
@@ -606,12 +632,13 @@ def prepare_batch(
         shape=(metadata["height"], metadata["width"]),
         config=config,
         forced_targets=forced_targets,
+        instrument_auto_detected=instrument_auto_detected,
     )
 
 
 def check_frame_consistency(file, header, prep):
     """
-    Reject a frame whose pointing or shape disagrees with the batch prep.
+    Reject a frame whose pointing, shape, or instrument disagrees with the batch prep.
 
     `prepare_batch` derives the field pointing, FOV, and image shape from the
     first frame and queries Gaia once for that field. A later frame that drifted
@@ -625,7 +652,15 @@ def check_frame_consistency(file, header, prep):
     lives under different keywords than the Seestar's is compared consistently
     (issue #59). The frame's header pointing is walked to its field center with
     :func:`estimate_center_from_header` before the comparison, so it is measured
-    center-to-center against ``prep.center`` (issue #83).
+    center-to-center against ``prep.center`` (issue #83). A frame whose header
+    matches none of the batch instrument's ``header_match`` rules is also
+    rejected -- a batch-mixing guard against a night with a different
+    telescope's frames accidentally interleaved. This guard is enforced only
+    when ``prep.instrument_auto_detected`` is True *and* ``header_match`` is
+    non-empty: an explicitly chosen instrument (``--instrument``/``--profile``/
+    ``--config``, or ``config=PhotometryConfig(instrument=...)``) is trusted
+    unconditionally, and a bare/custom profile with no rules carries no
+    device-identity claim to check in the first place.
 
     Parameters
     ----------
@@ -635,13 +670,16 @@ def check_frame_consistency(file, header, prep):
         The frame's FITS header.
     prep : BatchPrep
         The batch prep whose ``center``, ``fov_rad``, and ``shape`` the frame is
-        checked against, and whose ``config.instrument`` supplies the
-        ``header_map`` dialect used to read the header.
+        checked against; whose ``config.instrument`` supplies the
+        ``header_map`` dialect used to read the header and the
+        ``header_match`` rules used for the batch-mixing guard; and whose
+        ``instrument_auto_detected`` gates whether that guard is enforced.
 
     Raises
     ------
     FrameError
-        If the frame's shape or pointing is inconsistent with the prep.
+        If the frame's shape, pointing, or instrument is inconsistent with
+        the prep.
     FrameMetadataError
         If the header cannot be resolved into the metadata needed to perform
         the checks.
@@ -656,6 +694,34 @@ def check_frame_consistency(file, header, prep):
     if shape != tuple(prep.shape):
         msg = f"frame shape {shape} does not match batch shape {tuple(prep.shape)}"
         raise FrameError(msg, file=file)
+
+    # Batch-mixing guard: reject a later frame whose header identifies a
+    # different instrument than the one prepare_batch resolved (e.g. an
+    # accidentally interleaved night from a different telescope). Only
+    # enforced when the batch instrument was itself AUTO-DETECTED (not an
+    # explicit --instrument/--profile/--config selection, which is trusted
+    # unconditionally -- the guard exists to catch mixing riding along on a
+    # *guessed* profile, not to second-guess a deliberate choice) and its
+    # header_match is non-empty -- a bare/custom profile with no rules carries
+    # no device-identity claim to check against, so every frame is accepted
+    # (the batch behaves as it did before auto-detection existed).
+    batch_instrument = prep.config.instrument
+    if (
+        prep.instrument_auto_detected
+        and batch_instrument is not None
+        and batch_instrument.header_match
+    ):
+        header_matches_batch_instrument = any(
+            rule.matches(header) for rule in batch_instrument.header_match
+        )
+        if not header_matches_batch_instrument:
+            msg = (
+                f"frame header does not match the auto-detected batch "
+                f"instrument {batch_instrument.name!r}'s header_match rules -- "
+                "possibly a frame from a different instrument mixed into this "
+                "batch"
+            )
+            raise FrameError(msg, file=file)
 
     # An "@KEY" directive whose keyword is absent resolves to None rather than
     # raising, so the missing-pointing case must be caught explicitly.

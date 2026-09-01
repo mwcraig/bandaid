@@ -27,8 +27,10 @@ from bandaid.exceptions import (
     BatchPrepError,
     FrameError,
     FrameMetadataError,
+    InstrumentDetectionError,
     TooFewStarsError,
 )
+from bandaid.instruments import load_instrument
 from bandaid.photometry import (
     min_separation_fwhm,
     neighbor_contamination_flag_sky,
@@ -154,7 +156,10 @@ class TestPrepareBatch:
     def test_loads_first_frame_exactly_once(self, mocker):
         """Without a caller-provided frame, the first frame is loaded once (#44)."""
         _patch_prep(mocker)
-        frame = scripts.LoadedFrame(np.zeros((4, 4)), {})
+        # A default config resolves its instrument by detection, so the frame
+        # needs a detectable header (not this test's concern -- it only pins
+        # that _load_frame is called exactly once).
+        frame = scripts.LoadedFrame(np.zeros((4, 4)), {"INSTRUME": "Seestar S50"})
         load_frame = mocker.patch("bandaid.scripts._load_frame", return_value=frame)
 
         scripts.prepare_batch("frame1.fits", cnn=object())
@@ -170,7 +175,10 @@ class TestPrepareBatch:
         reach the calibration step without ``_load_frame`` being called.
         """
         prep_data = _patch_prep(mocker)
-        frame = scripts.LoadedFrame(np.zeros((4, 4)), {})
+        # A default config resolves its instrument by detection, so the frame
+        # needs a detectable header (not this test's concern -- it only pins
+        # that the provided frame skips _load_frame).
+        frame = scripts.LoadedFrame(np.zeros((4, 4)), {"INSTRUME": "Seestar S50"})
 
         def fail_load_frame(file):
             msg = f"unexpected _load_frame({file!r}) with frame= provided"
@@ -181,6 +189,54 @@ class TestPrepareBatch:
         scripts.prepare_batch("frame1.fits", cnn=object(), frame=frame)
 
         assert prep_data.calibration_sequence.call_args.kwargs["frame"] is frame
+
+    def test_auto_detects_instrument_from_first_frame_header(self, mocker):
+        """
+        A default (``instrument=None``) config resolves by detecting the header.
+
+        ``prepare_batch`` is the first place a header is in hand, so it must
+        call ``detect_instrument`` and carry the resolved profile forward on
+        the config it hands to ``calibration_sequence`` and stores on the
+        returned ``BatchPrep``. ``instrument_auto_detected`` records that the
+        resolution came from detection, not an explicit choice --
+        ``check_frame_consistency``'s batch-mixing guard reads this flag.
+        """
+        prep_data = _patch_prep(mocker)
+        frame = scripts.LoadedFrame(np.zeros((4, 4)), {"INSTRUME": "Seestar S50"})
+
+        prep = scripts.prepare_batch(
+            "frame1.fits", cnn=object(), config=PhotometryConfig(), frame=frame
+        )
+
+        resolved = prep_data.calibration_sequence.call_args.kwargs["profile"]
+        assert resolved.name == "Seestar50"
+        assert prep.config.instrument.name == "Seestar50"
+        assert prep.instrument_auto_detected is True
+
+    def test_explicit_instrument_is_not_marked_auto_detected(self, mocker):
+        """An explicit instrument records ``instrument_auto_detected=False``."""
+        _patch_prep(mocker)
+        instrument = InstrumentProfile(name="MyScope")
+
+        prep = scripts.prepare_batch(
+            "frame1.fits",
+            cnn=object(),
+            config=PhotometryConfig(instrument=instrument),
+        )
+
+        assert prep.instrument_auto_detected is False
+
+    def test_unmatched_first_frame_header_raises_instrument_detection_error(
+        self, mocker
+    ):
+        """A first frame whose header matches no profile fails the whole batch."""
+        _patch_prep(mocker)
+        frame = scripts.LoadedFrame(np.zeros((4, 4)), {})
+
+        with pytest.raises(InstrumentDetectionError):
+            scripts.prepare_batch(
+                "frame1.fits", cnn=object(), config=PhotometryConfig(), frame=frame
+            )
 
     def test_first_frame_resolved_with_config_instrument_profile(self, mocker):
         """
@@ -823,6 +879,12 @@ class TestCheckFrameConsistency:
             "center": TestCheckFrameConsistency.STABLE_CENTER,
             "fov_rad": 0.74,
             "shape": (1920, 1080),
+            # A resolved (non-None) instrument, matching what prepare_batch
+            # would have already resolved by the time check_frame_consistency
+            # runs; a bare InstrumentProfile() carries no header_match, so the
+            # batch-mixing guard (only enforced when header_match is
+            # non-empty) is a no-op here unless a test overrides this.
+            "config": PhotometryConfig(instrument=InstrumentProfile()),
         }
         fields.update(overrides)
         return scripts.BatchPrep(
@@ -919,6 +981,55 @@ class TestCheckFrameConsistency:
         header["OBJCTRA"] = 50.0
         with pytest.raises(FrameError, match="pointing"):
             scripts.check_frame_consistency("bad.fits", header, prep)
+
+    def test_different_instrument_header_rejected_when_auto_detected(self):
+        """
+        An AUTO-DETECTED frame whose header matches none of the rules is rejected.
+
+        The bundled Seestar50 profile (unlike the bare-class default) carries a
+        non-empty ``header_match``, so a batch prepared against it *by
+        auto-detection* must reject a later frame whose header identifies a
+        different instrument -- a batch-mixing guard against e.g. an
+        accidentally interleaved night from a different telescope riding along
+        on the auto-detected profile.
+        """
+        prep = self._prep(
+            config=PhotometryConfig(instrument=load_instrument("Seestar50")),
+            instrument_auto_detected=True,
+        )
+        header = _consistency_header(INSTRUME="Some Other Scope")
+
+        with pytest.raises(FrameError, match="instrument"):
+            scripts.check_frame_consistency("bad.fits", header, prep)
+
+    def test_matching_instrument_header_passes(self):
+        """A frame whose header matches the batch instrument's rule is accepted."""
+        prep = self._prep(
+            config=PhotometryConfig(instrument=load_instrument("Seestar50")),
+            instrument_auto_detected=True,
+        )
+        header = _consistency_header(INSTRUME="Seestar S50")
+
+        scripts.check_frame_consistency("ok.fits", header, prep)
+
+    def test_explicitly_chosen_instrument_header_mismatch_not_rejected(self):
+        """
+        An EXPLICITLY-chosen instrument's ``header_match`` is not policed.
+
+        ``--instrument``/``--profile``/``--config`` (or
+        ``config=PhotometryConfig(instrument=...)``) is an explicit,
+        deliberate choice, so a mismatched or headerless frame is trusted and
+        photometered rather than rejected -- the batch-mixing guard exists
+        only to catch a night that rode along on an *auto-detected* profile
+        (``instrument_auto_detected=False`` is the ``_prep()`` default, as it
+        would be for an explicit selection reaching `prepare_batch`).
+        """
+        prep = self._prep(
+            config=PhotometryConfig(instrument=load_instrument("Seestar50"))
+        )
+        header = _consistency_header(INSTRUME="Some Other Scope")
+
+        scripts.check_frame_consistency("ok.fits", header, prep)
 
     def test_inconsistent_frame_is_skipped_by_batch(self, mocker):
         """process_batch skips an off-field frame and keeps the good one."""

@@ -42,6 +42,71 @@ config = PhotometryConfig(instrument=load_instrument("Seestar50"))
 prep = prepare_batch(first_file, cnn=cnn, config=config)
 ```
 
+## Auto-detection from the FITS header
+
+`PhotometryConfig.instrument` defaults to `None`, which means "figure it out
+from the frame header" rather than a hard-coded telescope. The first place a
+header is in hand — `prepare_batch` for a normal run, or `prepare_image` for a
+direct/single-frame call — calls `detect_instrument` on it and carries the
+resolved profile forward for the rest of the batch:
+
+```python
+from bandaid import PhotometryConfig, prepare_batch
+
+config = PhotometryConfig()  # instrument=None -> auto-detect
+prep = prepare_batch(first_file, cnn=cnn, config=config)
+prep.config.instrument.name  # -> 'Seestar50', resolved from the header
+```
+
+Detection works from `InstrumentProfile.header_match`: a tuple of
+`(keyword, pattern)` rules. A profile is a candidate if **any** rule matches
+(header value present, stripped and compared case-insensitively); exactly one
+matching profile wins. Zero or more than one match raises
+`InstrumentDetectionError`, naming the header values it checked and the
+available/ambiguous profile names — a fatal error for the whole batch, not a
+per-frame skip, since without a resolved instrument there is no detection/PSF
+tuning to run with.
+
+The bundled Seestar50 profile matches on `INSTRUME == "Seestar S50"` —
+deliberately **not** `TELESCOP`. On real hardware `TELESCOP` embeds a
+per-device serial number (e.g. `S50_0e597e9b`), which differs from unit to
+unit, while `INSTRUME` is the stable model string every Seestar S50 reports.
+Matching on `TELESCOP` would mean writing (or maintaining) one rule per
+physical device; `INSTRUME` identifies the *model*, which is what a profile's
+tuning actually depends on. Two further points from surveying real headers:
+earlier Seestar firmware (through at least 4.27) reported `TELESCOP == "Seestar S50"` and only later switched to the serial-embedded form, so
+`TELESCOP` has not even been stable across firmware generations, while
+`INSTRUME` has; and overloading `TELESCOP` with the serial is a Seestar
+quirk, not an industry pattern — Unistellar, for example, keeps its device
+serial in a dedicated `SERIALNB` keyword.
+
+**A bare `InstrumentProfile()` carries no `header_match` rules, even though
+its tuning defaults match the Seestar50.** Device identity must be opt-in: a
+user's custom profile that happens to reuse the Seestar tuning must not
+accidentally claim to *be* a Seestar for auto-detection purposes. Only the
+*bundled* Seestar50 profile (loaded from its `profile.json`) carries the
+rule. If you want your own bundled or registered profile to be auto-detected,
+give it an explicit `header_match` — see
+[Adding a telescope](#adding-a-telescope) below.
+
+### Precedence
+
+From most to least specific, the first one supplied wins and disables
+auto-detection for the rest:
+
+1. CLI `--instrument NAME` or `--profile FILE`.
+1. A `--config FILE` whose `instrument` field is a concrete profile (not
+    `null`).
+1. Header auto-detection (`detect_instrument`) — used when none of the above
+    is given, i.e. `PhotometryConfig.instrument` is `None`. This is also what
+    a `--config` file with an explicit `"instrument": null` defers to.
+1. An `InstrumentDetectionError` if the header does not resolve to exactly
+    one profile.
+
+`--instrument Seestar50` (or any bundled/registered name) is always available
+as an explicit escape hatch when a frame's header is missing, malformed, or
+otherwise undetectable.
+
 ## The `header_map` directive language
 
 A profile's `header_map` is a JSON object mapping each **metadata key** the
@@ -115,7 +180,11 @@ From quickest to most permanent:
     `bandaid process --instrument MyScope` invocation is a new process with an
     empty registry, so it won't see it. For the CLI, use the ad-hoc
     `--profile my_scope.json` shown above, or bundle the profile (below) to
-    resolve it by name everywhere.
+    resolve it by name everywhere. Registering a profile makes it resolvable
+    *by name*; it does **not** make it auto-detectable from a bare
+    `PhotometryConfig()` — for that, the profile also needs its own
+    `header_match` (see [Auto-detection](#auto-detection-from-the-fits-header)
+    above).
 
 1. **Bundle it (contributor path)** — drop
     `src/bandaid/meta_json_files/<Name>/profile.json` into the source tree and
@@ -136,6 +205,7 @@ A `my_scope.json` looks like:
     "moffat_beta": 3.0,
     "contamination_seeing_margin": 1.25,
     "wcs_scale_tolerance": 0.05,
+    "header_match": [{"keyword": "INSTRUME", "pattern": "MyScope Model 1"}],
     "header_map": {
         "obs_time": "@DATE-OBS",
         "exposure": "@EXPTIME",
@@ -154,6 +224,14 @@ A `my_scope.json` looks like:
     }
 }
 ```
+
+`header_match` is optional — omit it (or leave it `[]`) and the profile is
+still fully usable via `--instrument`/`--profile`/`--config`, just never
+auto-selected from a bare `PhotometryConfig()`. Add it (as above) if you want
+`bandaid process` with no instrument flag to pick your telescope up
+automatically, by whatever keyword/value uniquely identifies its *model* in
+your headers — not a per-device serial (see
+[Auto-detection](#auto-detection-from-the-fits-header) above).
 
 **We'd love to bundle your telescope.** If you've tuned a profile for a scope
 that isn't built in yet, a pull request adding it ships it with bandaid so it

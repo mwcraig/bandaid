@@ -94,14 +94,26 @@ class TestDefaultsMatchLegacyConstants:
         assert cfg.header_map["obs_time"] == "@DATE-OBS"
         assert "egain" in cfg.header_map
 
+    def test_instrument_header_match_defaults_to_empty(self):
+        """
+        A bare ``InstrumentProfile()`` carries no header-match rules.
+
+        Device identity must be opt-in: a bare profile shares the Seestar
+        *tuning* defaults, but must not accidentally claim to *be* a Seestar
+        for auto-detection purposes. Only the bundled Seestar50 profile (loaded
+        from ``profile.json``) carries a rule.
+        """
+        cfg = InstrumentProfile()
+        assert cfg.header_match == ()
+
     def test_photometry_config_composes_defaults(self):
-        """PhotometryConfig nests one of each sub-config with default values."""
+        """PhotometryConfig nests one of each sub-config, instrument unresolved."""
         cfg = PhotometryConfig()
         assert isinstance(cfg.apertures, ApertureConfig)
         assert isinstance(cfg.source_selection, SourceSelectionConfig)
         assert isinstance(cfg.drift, DriftConfig)
-        assert isinstance(cfg.instrument, InstrumentProfile)
-        assert cfg.instrument.fwhm_n_stars == EXPECTED_FWHM_N_STARS
+        # None means "resolve from the frame header" -- see detect_instrument.
+        assert cfg.instrument is None
 
 
 class TestImmutability:
@@ -109,7 +121,7 @@ class TestImmutability:
 
     def test_cannot_mutate(self):
         """Assigning to a field on a constructed config raises."""
-        cfg = PhotometryConfig()
+        cfg = PhotometryConfig(instrument=InstrumentProfile())
         with pytest.raises(ValidationError):
             cfg.instrument.detection_opening = 7
 
@@ -240,6 +252,16 @@ class TestValidators:
 
 class TestOverrides:
     """Non-default values round-trip through construction."""
+
+    def test_instrument_defaults_to_none(self):
+        """
+        A bare ``PhotometryConfig()`` carries ``instrument=None``.
+
+        ``None`` means "resolve from the frame header" for both the CLI and
+        the Python API: there is no code outside this repo to preserve, so a
+        bare config no longer hard-defaults to Seestar50.
+        """
+        assert PhotometryConfig().instrument is None
 
     def test_instrument_override(self):
         """A custom detection opening is preserved on the nested config."""

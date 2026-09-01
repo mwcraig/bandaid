@@ -16,6 +16,7 @@ from astropy.table import Table
 from astropy.wcs import WCS
 
 from bandaid import measure_photometry, scripts
+from bandaid.config import InstrumentProfile, PhotometryConfig
 from bandaid.photometry import ANNULUS, RELATIVE_RADII, ImageData, LoadedFrame
 
 # Fixed random seed for reproducible noise in generated test images.
@@ -326,11 +327,15 @@ def _batch_radecs_mags():
 
 def _stub_load_frame(mocker, shape=(4, 4)):
     """
-    Stub ``scripts._load_frame`` with a zero-filled frame and an empty header.
+    Stub ``scripts._load_frame`` with a zero-filled frame and a detectable header.
 
     The single place the ``prepare_batch`` tests neutralize the frame loader,
     so a change to ``LoadedFrame``'s constructor or ``_load_frame``'s signature
-    is one edit here rather than a copy-pasted lambda per test.
+    is one edit here rather than a copy-pasted lambda per test. The header
+    carries just enough (``INSTRUME``) for a default (``instrument=None``)
+    ``PhotometryConfig`` to auto-detect Seestar50, matching what these tests
+    exercised before auto-detection existed -- a test that needs to exercise
+    detection itself builds its own ``LoadedFrame``.
 
     Parameters
     ----------
@@ -341,7 +346,9 @@ def _stub_load_frame(mocker, shape=(4, 4)):
     """
     mocker.patch(
         "bandaid.scripts._load_frame",
-        side_effect=lambda _f: LoadedFrame(np.zeros(shape), {}),
+        side_effect=lambda _f: LoadedFrame(
+            np.zeros(shape), {"INSTRUME": "Seestar S50"}
+        ),
     )
 
 
@@ -423,6 +430,11 @@ def _dummy_prep():
         center=(9.68, 0.15),
         fov_rad=0.74,
         shape=(1920, 1080),
+        # A resolved (non-None) instrument, matching what prepare_batch would
+        # have already resolved by the time this prep reaches process_batch; a
+        # bare InstrumentProfile() carries no header_match, so the
+        # check_frame_consistency batch-mixing guard is a no-op here.
+        config=PhotometryConfig(instrument=InstrumentProfile()),
     )
 
 
