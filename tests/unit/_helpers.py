@@ -111,7 +111,7 @@ def _bright_neighbor_scene(make_test_image, fwhm=_PEAK_SCENE_FWHM, sky=10.0):
     return image, coords
 
 
-def _peak_scene_photometry(image, centroid_coords, mask):
+def _peak_scene_photometry(image, centroid_coords, mask, peak_cutouts=None):
     """
     Run ``measure_photometry`` on the bright-neighbor scene.
 
@@ -123,6 +123,9 @@ def _peak_scene_photometry(image, centroid_coords, mask):
         Measured centroid coordinates.
     mask : numpy.ndarray or None
         Bayer channel mask (True = excluded), or None for the full frame.
+    peak_cutouts : numpy.ndarray or None, optional
+        Precomputed peak-count box cutouts forwarded to
+        ``measure_photometry`` (Change B). By default None.
 
     Returns
     -------
@@ -137,6 +140,7 @@ def _peak_scene_photometry(image, centroid_coords, mask):
         mask,
         radii=(1.0,),
         annulus=(5.0, 8.0),
+        peak_cutouts=peak_cutouts,
     )
 
 
