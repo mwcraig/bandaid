@@ -2396,6 +2396,10 @@ def process_one_image(
     When `bayer_masks` includes "L4", the "TR", "TG", and "TB" channels must be
     present and ordered before it; otherwise `calculate_l4_quantities` raises a
     `ValueError`.
+
+    L4's own full-frame photometry is never measured or returned: its
+    phot-derived columns are entirely the TR/TG/TB recombination
+    `calculate_l4_quantities` computes, by design (issue #21).
     """
     # Calculate everything we need for all filters at once. prepare_image raises
     # a FrameError (TooFewStarsError / WCSSolveError) when the frame is unusable;
@@ -2414,19 +2418,112 @@ def process_one_image(
 
     by_filter_data = {}
     for filter_name, mask in bayer_masks.items():
-        data = build_photometry_table(img, mask, config=config)
+        if filter_name == "L4":
+            # calculate_l4_quantities immediately overwrites every phot-derived
+            # column a full-frame measure_photometry pass would produce and
+            # drops the rest (issue #21), so build a lean skeleton instead of
+            # paying for that pass (Change C). Validate the RGB channels are
+            # present *before* using by_filter_data["TR"] as the skeleton's
+            # reference, so a caller violating the documented TR/TG/TB-before-L4
+            # ordering gets the actionable ValueError rather than a bare
+            # KeyError from that lookup.
+            _require_rgb_channels(by_filter_data)
+            data = _l4_skeleton_table(by_filter_data["TR"])
+        else:
+            data = build_photometry_table(img, mask, config=config)
         data.meta["filter"] = filter_name
         data.meta["full_image_meta"] = img.metadata
         if filter_name == "L4":
-            # L4 is the channel sum of TR/TG/TB, so those must already have been
-            # processed. generate_bayer_masks orders L4 last to guarantee this;
-            # calculate_l4_quantities validates that the RGB channels are present
-            # and raises a clear ValueError if a caller passes a mask dict that
-            # violates the ordering.
             calculate_l4_quantities(data, by_filter_data, img.metadata["egain"])
         by_filter_data[filter_name] = data
 
     return by_filter_data
+
+
+def _require_rgb_channels(by_filter_data):
+    """
+    Confirm the TR/TG/TB channels needed to build/combine L4 are present.
+
+    Shared by `process_one_image` (checked before the lean L4 skeleton is
+    built -- see `_l4_skeleton_table` -- so a caller violating the documented
+    TR/TG/TB-before-L4 ordering gets this actionable error instead of a bare
+    ``KeyError`` from indexing a channel that was never built) and
+    `calculate_l4_quantities` (checked again for callers that invoke it
+    directly).
+
+    Parameters
+    ----------
+    by_filter_data : dict
+        Mapping of filter name to photometry table, as accumulated by
+        `process_one_image`.
+
+    Raises
+    ------
+    ValueError
+        If any of "TR", "TG", or "TB" is missing from `by_filter_data`; the L4
+        channel is built from all three.
+    """
+    missing = {"TR", "TG", "TB"} - by_filter_data.keys()
+    if missing:
+        msg = (
+            f"calculate_l4_quantities requires {sorted(missing)} in by_filter_data "
+            "before the L4 channel can be combined."
+        )
+        raise ValueError(msg)
+
+
+def _l4_skeleton_table(reference):
+    """
+    Build the lean L4 table skeleton from an already-built RGB channel table.
+
+    L4's own full-frame photometry pass (``measure_photometry`` on the
+    channel-summed data) is never returned: `calculate_l4_quantities`
+    immediately overwrites every phot-derived column with the TR/TG/TB
+    recombination and drops the rest (issue #21), so `process_one_image` skips
+    that pass entirely and builds this skeleton in its place instead (Change
+    C). The phot-derived columns (tot_count/bkgd_count/count_err/snr/
+    peak_count/aperture_area) get NaN placeholders here -- `calculate_l4_
+    quantities` overwrites every one of them in place, at the same column
+    position, immediately after this returns. The remaining columns and meta
+    are mask-independent: they derive only from the shared `ImageData`/config,
+    never from the mask, so they are copied straight from `reference` rather
+    than recomputed (verified bit-identical to a real full-frame
+    `build_photometry_table` call on a real frame).
+
+    Parameters
+    ----------
+    reference : astropy.table.Table
+        An already-built photometry table for one of the RGB channels (TR by
+        convention), supplying the mask-independent columns and meta.
+
+    Returns
+    -------
+    astropy.table.Table
+        A table with the same row count and column order a full-frame
+        `build_photometry_table` + `calculate_l4_quantities` pass would have
+        produced, ready for `calculate_l4_quantities` to fill in place.
+    """
+    n_rows = len(reference)
+    data = Table()
+    data["tot_count"] = np.full(n_rows, np.nan)
+    data["bkgd_count"] = np.full(n_rows, np.nan)
+    data["count_err"] = np.full(n_rows, np.nan)
+    data["snr"] = np.full(n_rows, np.nan)
+    data["time"] = reference["time"]
+    data["airmass"] = reference["airmass"]
+    data["peak_count"] = np.full(n_rows, np.nan)
+    data["stars_in_exp"] = reference["stars_in_exp"]
+    data["ra"] = reference["ra"]
+    data["dec"] = reference["dec"]
+    data["x"] = reference["x"]
+    data["y"] = reference["y"]
+    data["centroid_drift"] = reference["centroid_drift"]
+    data["aperture_area"] = np.full(n_rows, np.nan)
+    data.meta["fwhm"] = reference.meta["fwhm"]
+    data.meta["aperture_radii"] = reference.meta["aperture_radii"]
+    data.meta["annulus_radii"] = reference.meta["annulus_radii"]
+    data.meta["min_snr"] = reference.meta["min_snr"]
+    return data
 
 
 def calculate_l4_quantities(final_data, by_filter_data, egain):
@@ -2444,22 +2541,15 @@ def calculate_l4_quantities(final_data, by_filter_data, egain):
     egain : float
         The gain of the image.
 
-    Raises
-    ------
-    ValueError
-        If any of the "TR", "TG", or "TB" channels are missing from
-        ``by_filter_data``; the L4 channel is built from all three.
+    Notes
+    -----
+    `_require_rgb_channels` validates up front that "TR", "TG", and "TB" are
+    all present in ``by_filter_data`` -- the L4 channel is built from all
+    three -- and raises ``ValueError`` (propagated unchanged) if any are
+    missing, with an actionable message rather than a bare ``KeyError`` raised
+    deep inside the combination below.
     """
-    # L4 is the channel sum of TR/TG/TB, so each must already be present. Fail
-    # loudly with an actionable message rather than a bare KeyError raised deep
-    # inside the combination below.
-    missing = {"TR", "TG", "TB"} - by_filter_data.keys()
-    if missing:
-        msg = (
-            f"calculate_l4_quantities requires {sorted(missing)} in by_filter_data "
-            "before the L4 channel can be combined."
-        )
-        raise ValueError(msg)
+    _require_rgb_channels(by_filter_data)
 
     # L4 total count is sum of the individual filter total counts
     final_data["tot_count"] = (
