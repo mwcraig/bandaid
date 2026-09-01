@@ -24,6 +24,7 @@ from bandaid.photometry import (
     ANNULUS,
     RELATIVE_RADII,
     ImageData,
+    _aperture_annulus_geometry,
     _peak_box_cutouts,
     build_photometry_table,
     calculate_l4_quantities,
@@ -336,6 +337,32 @@ class TestBuildPhotometryTable:
 
         cutouts = _peak_box_cutouts(image, coords, fwhm)
         with_precomputed = build_photometry_table(img, mask=mask, peak_cutouts=cutouts)
+
+        assert without.colnames == with_precomputed.colnames
+        for col in without.colnames:
+            np.testing.assert_array_equal(
+                np.asarray(without[col]), np.asarray(with_precomputed[col])
+            )
+
+    # --- Change B: hoisted aperture/annulus geometry ---
+
+    def test_table_identical_with_and_without_precomputed_geometry(
+        self, make_test_image
+    ):
+        """
+        ``build_photometry_table`` is identical with/without ``geometry``.
+
+        Runs real (non-mocked) ``measure_photometry`` end-to-end so the actual
+        hoist is exercised, not a stub.
+        """
+        image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+        img = _make_image_data(_make_tan_wcs(image.shape), coords, None)
+        img.calibrated_data = image
+
+        without = build_photometry_table(img, mask=mask)
+
+        geometry = _aperture_annulus_geometry(fwhm, RELATIVE_RADII, ANNULUS)
+        with_precomputed = build_photometry_table(img, mask=mask, geometry=geometry)
 
         assert without.colnames == with_precomputed.colnames
         for col in without.colnames:
