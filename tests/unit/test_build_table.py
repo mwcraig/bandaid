@@ -23,6 +23,9 @@ from bandaid.config import InstrumentProfile, PhotometryConfig, SourceSelectionC
 from bandaid.photometry import (
     ANNULUS,
     RELATIVE_RADII,
+    _L4_RECOMBINED_COLUMNS,
+    _L4_STALE_COLUMNS,
+    _MASK_INDEPENDENT_COLUMNS,
     ImageData,
     build_photometry_table,
     calculate_l4_quantities,
@@ -315,6 +318,30 @@ class TestBuildPhotometryTable:
         bkgd = np.asarray(table["bkgd_count"])
         assert bkgd[0] != bkgd[1]
         np.testing.assert_allclose(bkgd, [true_sky, 4 * true_sky], rtol=0.05)
+
+    def test_l4_schema_tuples_partition_the_columns(self, mocker):
+        """
+        Every column built here is claimed by exactly one L4 schema tuple.
+
+        ``_l4_skeleton_table`` copies ``_MASK_INDEPENDENT_COLUMNS`` from TR,
+        ``calculate_l4_quantities`` fills ``_L4_RECOMBINED_COLUMNS`` and drops
+        ``_L4_STALE_COLUMNS``. A column added here without being sorted into one
+        of those would silently be missing from L4, so pin the partition.
+        """
+        n_stars = 2
+        mocker.patch(
+            "bandaid.photometry.measure_photometry",
+            side_effect=_fake_phot_factory(n_stars),
+        )
+        coords = np.array([[245.0, 250.0], [255.0, 260.0]])
+        table = build_photometry_table(
+            _make_image_data(_make_tan_wcs(), coords, None), mask=None
+        )
+
+        groups = (_MASK_INDEPENDENT_COLUMNS, _L4_RECOMBINED_COLUMNS, _L4_STALE_COLUMNS)
+        claimed = [col for group in groups for col in group]
+        assert len(claimed) == len(set(claimed)), "a column is in two tuples"
+        assert set(claimed) == set(table.colnames)
 
 
 class TestCalculateL4Quantities:

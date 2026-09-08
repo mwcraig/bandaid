@@ -16,6 +16,7 @@ from eloy import detection
 from skimage.measure import label, regionprops
 from skimage.morphology import binary_opening
 
+import bandaid.photometry as bp_module
 from bandaid.ballet import NumpyBallet
 from bandaid.config import InstrumentProfile, PhotometryConfig
 from bandaid.exceptions import (
@@ -1238,7 +1239,7 @@ class TestProcessOneImage:
         self, make_test_image, tmp_path, mocker, bayer_masks_rggb
     ):
         """
-        L4's own full-frame ``measure_photometry`` pass is skipped (Change C).
+        L4's own full-frame ``measure_photometry`` pass is skipped (PR #120).
 
         ``calculate_l4_quantities`` overwrites every phot-derived column a
         full-frame pass would produce (tot_count/aperture_area/bkgd_count/
@@ -1259,34 +1260,56 @@ class TestProcessOneImage:
         n_rgb_channels = 3  # TR, TG, TB -- L4 must not reach measure_photometry.
         assert mp_spy.call_count == n_rgb_channels
 
+    def test_l4_with_a_real_mask_raises(
+        self, make_test_image, tmp_path, mocker, bayer_masks_rggb
+    ):
+        """
+        A non-None L4 mask is rejected rather than silently ignored.
+
+        L4 is built from the TR/TG/TB tables and never photometers the frame
+        itself, so a caller-supplied L4 mask would have no effect; before
+        PR #120 a malformed one at least failed inside ``aperture_photometry``.
+        Keep that fail-loud contract.
+        """
+        _stub_wcs_and_centroid(mocker)
+        image = _detectable_image(make_test_image)
+        path = _write_seestar_fits(tmp_path / "l4_mask.fits", image)
+        masks = bayer_masks_rggb(image.shape, append_l4=True)
+        masks["L4"] = np.ones(image.shape, dtype=bool)
+
+        with pytest.raises(ValueError, match="L4"):
+            process_one_image(path, {}, _REF_RADECS, None, masks)
+
     def test_l4_lean_build_matches_old_full_frame_build(
         self, make_test_image, tmp_path, mocker, bayer_masks_rggb
     ):
         """
         The lean L4 skeleton matches the old full-frame build, column for column.
 
-        Rebuilds the reference the old way -- a genuine full-frame
-        ``build_photometry_table(img, None)`` pass combined by
-        ``calculate_l4_quantities`` the same way it always has -- and checks
-        the ``process_one_image`` result is column- and meta-identical.
+        Builds the reference the old way -- a genuine full-frame
+        ``build_photometry_table(img, None)`` pass on the same ``ImageData``,
+        combined by ``calculate_l4_quantities`` the same way it always has --
+        and checks the ``process_one_image`` result is column- and
+        meta-identical.
         """
         _stub_wcs_and_centroid(mocker)
         image = _detectable_image(make_test_image)
         path = _write_seestar_fits(tmp_path / "l4_exact.fits", image)
         masks = bayer_masks_rggb(image.shape, append_l4=True)
+        # Spy (not wraps-patch) so spy_return hands back the very ImageData
+        # process_one_image built; the result's RGB tables are then the exact
+        # by_filter_data it combined.
+        prepare_spy = mocker.spy(bp_module, "prepare_image")
 
         result = process_one_image(path, {}, _REF_RADECS, None, masks)
 
-        # prepare_image is deterministic given the same file and stubs (no RNG
-        # left in the stubbed WCS/centroid path), so a second, independent
-        # call reproduces the exact img the first process_one_image call used.
-        img = prepare_image(path, _REF_RADECS, None, detect_on_bayer_balanced=True)
-        by_filter_data = {
-            name: build_photometry_table(img, masks[name])
-            for name in ("TR", "TG", "TB")
-        }
+        img = prepare_spy.spy_return
         reference = build_photometry_table(img, None)
-        calculate_l4_quantities(reference, by_filter_data, img.metadata["egain"])
+        calculate_l4_quantities(
+            reference,
+            {name: result[name] for name in ("TR", "TG", "TB")},
+            img.metadata["egain"],
+        )
 
         l4 = result["L4"]
         assert set(l4.colnames) == set(reference.colnames)
@@ -1297,30 +1320,12 @@ class TestProcessOneImage:
         for key in ("fwhm", "aperture_radii", "annulus_radii", "min_snr"):
             assert l4.meta[key] == reference.meta[key]
 
+    @pytest.mark.parametrize("missing", ["TB", "TR"])
     def test_l4_missing_rgb_channel_raises_before_lean_build(
-        self, make_test_image, tmp_path, mocker, bayer_masks_rggb
+        self, make_test_image, tmp_path, mocker, bayer_masks_rggb, missing
     ):
         """
         A mask dict missing an RGB channel raises the documented ValueError.
-
-        Mirrors ``TestCalculateL4Quantities.test_missing_channel_raises``'s
-        message exactly (a single missing channel, TB) through the
-        ``process_one_image`` entry point.
-        """
-        _stub_wcs_and_centroid(mocker)
-        image = _detectable_image(make_test_image)
-        path = _write_seestar_fits(tmp_path / "l4_missing_tb.fits", image)
-        masks = bayer_masks_rggb(image.shape, append_l4=True)
-        del masks["TB"]
-
-        with pytest.raises(ValueError, match=r"\['TB'\]"):
-            process_one_image(path, {}, _REF_RADECS, None, masks)
-
-    def test_l4_missing_tr_reference_raises_valueerror_not_keyerror(
-        self, make_test_image, tmp_path, mocker, bayer_masks_rggb
-    ):
-        """
-        A mask dict missing TR raises ValueError, not a KeyError.
 
         TR is the lean L4 skeleton's own reference table
         (``by_filter_data["TR"]``); the RGB-channel check must run before that
@@ -1329,11 +1334,11 @@ class TestProcessOneImage:
         """
         _stub_wcs_and_centroid(mocker)
         image = _detectable_image(make_test_image)
-        path = _write_seestar_fits(tmp_path / "l4_missing_tr.fits", image)
+        path = _write_seestar_fits(tmp_path / f"l4_missing_{missing}.fits", image)
         masks = bayer_masks_rggb(image.shape, append_l4=True)
-        del masks["TR"]
+        del masks[missing]
 
-        with pytest.raises(ValueError, match=r"\['TR'\]"):
+        with pytest.raises(ValueError, match=rf"\['{missing}'\]"):
             process_one_image(path, {}, _REF_RADECS, None, masks)
 
     def test_opens_the_file_exactly_once(
