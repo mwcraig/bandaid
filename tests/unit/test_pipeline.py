@@ -128,6 +128,31 @@ class TestPrepareImage:
         assert kwargs["opening"] == expected_opening
         assert kwargs["fwhm_n_stars"] == expected_fwhm_n_stars
 
+    def test_stubbed_calibration_sequence_feeds_centroiding_when_balanced(
+        self, stub_prepare_image_externals
+    ):
+        """
+        The shared stub honours ``detection_image_out`` like the real function.
+
+        ``prepare_image`` reads the centroiding image back out of the dict it
+        hands ``calibration_sequence`` (PR #119), so a stub that ignored the
+        kwarg would raise ``KeyError`` for every ``detect_on_bayer_balanced=True``
+        caller of this fixture. Assert the stub's calibrated array reaches
+        ``centroid_stars`` instead.
+        """
+        calibrated = np.full((10, 10), 7.0)
+        externals = stub_prepare_image_externals(calibrated=calibrated)
+
+        prepare_image(
+            "unused.fits",
+            np.zeros((5, 2)),
+            None,
+            detect_on_bayer_balanced=True,
+        )
+
+        externals.centroid_stars.assert_called_once()
+        assert externals.centroid_stars.call_args.args[0] is calibrated
+
     def test_instrument_wcs_scale_tolerance_reaches_alignment(
         self, stub_prepare_image_externals
     ):
@@ -1127,48 +1152,12 @@ class TestPrepareImageBranches:
         centroid_data = centroid_stars_mock.call_args.args[0]
         assert not np.allclose(centroid_data, img.calibrated_data)
 
-        # Change A: a single balance call now covers both detection and
+        # PR #119: a single balance call now covers both detection and
         # centroiding -- the array centroid_stars receives is the literal same
         # object calibration_sequence balanced for detection, not a second
         # fresh copy balanced again.
         balance_spy.assert_called_once()
         assert centroid_data is balance_spy.call_args.args[0]
-
-    def test_bayer_balance_runs_exactly_once_when_detecting_on_balanced_data(
-        self, make_test_image, tmp_path, mocker
-    ):
-        """
-        Only one ``bayer_balance_image`` call happens end-to-end (Change A).
-
-        Before Change A, ``detect_on_bayer_balanced=True`` cost two balance
-        calls: one inside ``calibration_sequence`` for detection, and a second
-        fresh one inside ``prepare_image`` for centroiding. ``prepare_image`` now
-        reuses ``calibration_sequence``'s own balanced detection array (captured
-        via ``balanced_detection_out``) instead of balancing a second copy.
-        """
-        _stub_wcs_and_centroid(mocker)
-        image = _detectable_image(make_test_image)
-        path = _write_seestar_fits(tmp_path / "bayer_once.fits", image)
-
-        marker = 1000.0
-
-        def fake_balance(arr):
-            # Stand in for the real channel balancing with an obvious in-place
-            # transform so a balanced array is trivially distinguishable.
-            arr += marker
-
-        bayer_balance_mock = mocker.patch(
-            "bandaid.photometry.bayer_balance_image", side_effect=fake_balance
-        )
-
-        prepare_image(
-            path,
-            _REF_RADECS,
-            None,
-            detect_on_bayer_balanced=True,
-        )
-
-        assert bayer_balance_mock.call_count == 1
 
     def test_degenerate_bayer_balance_still_attaches_file_with_one_call(
         self, make_test_image, tmp_path, mocker
@@ -1177,10 +1166,9 @@ class TestPrepareImageBranches:
         A degenerate-channel failure still gets ``exc.file`` attached.
 
         The failure comes from the (now sole) balance call; ``prepare_image``
-        makes no further
-        balancing attempt of its own (issue #61's contract, now served entirely
-        by ``calibration_sequence``'s own try/except since Change A removed the
-        second call site it used to protect).
+        makes no balancing attempt of its own (issue #61's contract, now served
+        entirely by ``calibration_sequence``'s own try/except since PR #119
+        removed the second call site it used to protect).
         """
         _stub_wcs_and_centroid(mocker)
         image = _detectable_image(make_test_image)

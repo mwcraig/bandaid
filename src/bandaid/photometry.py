@@ -848,10 +848,20 @@ def calibration_sequence(
     fwhm_n_stars=_FWHM_N_STARS,
     profile=None,
     frame=None,
-    balanced_detection_out=None,
+    detection_image_out=None,
 ) -> tuple:
     """
     Find sources and compute FWHM for an image.
+
+    When ``detect_on_bayer_balanced`` is True the detection-time array is a
+    Bayer-balanced *copy* of ``calibrated_data`` (which stays unbalanced for
+    photometry). `prepare_image` needs that same balanced array for centroiding,
+    so rather than paying for a second `bayer_balance_image` call on a fresh
+    copy it takes this one back through ``detection_image_out`` (PR #119).
+    Nothing downstream of detection mutates the array, so sharing the reference
+    is safe. A `DegenerateBayerChannelError` raised by that single balance call
+    is labelled with ``file`` here, which is the whole of issue #61's contract
+    now that no second call site exists.
 
     Parameters
     ----------
@@ -888,15 +898,11 @@ def calibration_sequence(
         profile.
     frame : LoadedFrame or None, optional
         Pre-loaded frame; when None the file is opened once via the loader.
-    balanced_detection_out : dict or None, optional
-        When given, a dict that receives the detection-time array under the
-        key ``"detection_image"`` -- the literal same array object used for
-        detection and the FWHM fit (already Bayer-balanced when
-        ``detect_on_bayer_balanced`` is True, otherwise the unbalanced
-        ``calibrated_data``). Lets a caller that also needs a Bayer-balanced
-        copy for centroiding (`prepare_image`) reuse this one instead of
-        paying for a second `bayer_balance_image` call on a fresh copy.
-        Default None does not populate anything.
+    detection_image_out : dict or None, optional
+        When given, receives the array detection actually used, under the key
+        ``"detection_image"`` -- balanced when ``detect_on_bayer_balanced`` is
+        True, the unbalanced ``calibrated_data`` otherwise. Default None does
+        not populate anything.
 
     Returns
     -------
@@ -948,12 +954,8 @@ def calibration_sequence(
     else:
         detection_image = calibrated_data
 
-    if balanced_detection_out is not None:
-        # Neither _detect_stars/_fwhm_from_coords below, nor eloy's cutout, ever
-        # mutate detection_image, so handing out this reference is safe: a
-        # caller reusing it (prepare_image, for centroiding) sees exactly what
-        # detection saw.
-        balanced_detection_out["detection_image"] = detection_image
+    if detection_image_out is not None:
+        detection_image_out["detection_image"] = detection_image
 
     regions = _detect_stars(detection_image, threshold=threshold, opening=opening)
 
@@ -2091,10 +2093,9 @@ def prepare_image(
         frame = _load_frame(file)
     config = config or PhotometryConfig()
     instrument = config.instrument
-    # Captures calibration_sequence's own detection-time Bayer-balanced array
-    # (Change A) so it can be reused below as the centroiding working_image
-    # instead of paying for a second bayer_balance_image call on a fresh copy.
-    balanced_detection_out = {}
+    # Receives calibration_sequence's own detection-time array (see its
+    # docstring) so centroiding reuses it instead of balancing a second copy.
+    detection_image_out = {}
     calibrated_data, metadata, coords, fwhm, _ = calibration_sequence(
         file,
         threshold=instrument.thresh,
@@ -2105,22 +2106,15 @@ def prepare_image(
         fwhm_n_stars=instrument.fwhm_n_stars,
         profile=instrument,
         frame=frame,
-        balanced_detection_out=balanced_detection_out,
+        detection_image_out=detection_image_out,
     )
 
     if user_specific_metadata is not None:
         metadata.update(user_specific_metadata)
 
-    if detect_on_bayer_balanced:
-        # calibration_sequence already balanced a detection-time copy; reuse
-        # the literal same array object for centroiding rather than balancing
-        # a second fresh copy (Change A). A degenerate-channel failure during
-        # that balance pass already propagates from calibration_sequence
-        # itself, file attached, so there is no second call site left to guard
-        # here (issue #61's contract is now served entirely there).
-        working_image = balanced_detection_out["detection_image"]
-    else:
-        working_image = calibrated_data
+    # Balanced or not per detect_on_bayer_balanced; calibration_sequence
+    # always populates the key when handed a dict.
+    working_image = detection_image_out["detection_image"]
 
     # pixscale drives align's wrong-scale WCS rejection and is populated for
     # every frame by metadata_from_header from the instrument profile, so a

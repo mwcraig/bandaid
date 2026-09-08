@@ -32,7 +32,9 @@ def stub_prepare_image_externals(mocker):
     Factory patching the four externals ``prepare_image`` reaches, via ``mocker``.
 
     Patches ``calibration_sequence`` (returns a configurable
-    ``(calibrated, metadata, coords, fwhm, None)`` 5-tuple), ``align`` (returns
+    ``(calibrated, metadata, coords, fwhm, None)`` 5-tuple and, like the real
+    function, stores ``calibrated`` in any ``detection_image_out`` dict it is
+    handed), ``align`` (returns
     ``(coords, wcs)``), ``centroid_stars`` (identity) and ``_load_frame``
     (returns a ``LoadedFrame`` with header ``{"creator": "spy"}``). Returns the
     four mocks so callers can assert on their ``.call_args``; override
@@ -58,9 +60,17 @@ def stub_prepare_image_externals(mocker):
             coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
         if calibrated is None:
             calibrated = np.zeros((10, 10))
+
+        def _calibration_sequence(
+            *_args: object, detection_image_out: dict | None = None, **_kwargs: object
+        ):
+            if detection_image_out is not None:
+                detection_image_out["detection_image"] = calibrated
+            return (calibrated, metadata, coords, fwhm, None)
+
         calibration_sequence = mocker.patch(
             "bandaid.photometry.calibration_sequence",
-            return_value=(calibrated, metadata, coords, fwhm, None),
+            side_effect=_calibration_sequence,
         )
         align = mocker.patch(
             "bandaid.photometry.align",
