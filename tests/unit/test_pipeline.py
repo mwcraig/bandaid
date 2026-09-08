@@ -32,12 +32,14 @@ from bandaid.photometry import (
     MIN_DETECTED_STARS,
     N_GAIA_STARS_ALIGN,
     THRESH,
+    _L4_META_KEYS,
+    _L4_RECOMBINED_COLUMNS,
+    _MASK_INDEPENDENT_COLUMNS,
     _box_opening,
     _brightest_unsaturated,
     _detect_stars,
     _fwhm_from_coords,
     build_photometry_table,
-    calculate_l4_quantities,
     calibration_sequence,
     measure_photometry,
     metadata_from_header,
@@ -1235,17 +1237,37 @@ class TestProcessOneImage:
         )
         np.testing.assert_allclose(result["L4"]["tot_count"], rgb_sum)
 
+    def test_l4_may_appear_anywhere_in_the_mask_dict(
+        self, make_test_image, tmp_path, mocker, bayer_masks_rggb
+    ):
+        """
+        L4 is built after the RGB loop, so its position in the dict is free.
+
+        The pre-PR #120 contract required "L4" to be ordered after TR/TG/TB;
+        building it once the loop is done removes that requirement entirely.
+        """
+        _stub_wcs_and_centroid(mocker)
+        image = _detectable_image(make_test_image)
+        path = _write_seestar_fits(tmp_path / "l4_first.fits", image)
+        rgb = bayer_masks_rggb(image.shape, append_l4=False)
+        masks = {"L4": None, **rgb}
+
+        result = process_one_image(path, {}, _REF_RADECS, None, masks)
+
+        assert set(result) == {"TR", "TG", "TB", "L4"}
+        rgb_sum = sum(result[name]["tot_count"] for name in ("TR", "TG", "TB"))
+        np.testing.assert_allclose(result["L4"]["tot_count"], rgb_sum)
+
     def test_l4_channel_skips_the_full_frame_photometry_pass(
         self, make_test_image, tmp_path, mocker, bayer_masks_rggb
     ):
         """
         L4's own full-frame ``measure_photometry`` pass is skipped (PR #120).
 
-        ``calculate_l4_quantities`` overwrites every phot-derived column a
-        full-frame pass would produce (tot_count/aperture_area/bkgd_count/
-        peak_count/count_err/snr) and drops the rest (fluxes/total_bkg/
-        bkgd_std) -- issue #21 -- so that pass is pure waste. Only the 3 RGB
-        channels (TR/TG/TB) should reach ``measure_photometry``.
+        Every phot-derived L4 column is the TR/TG/TB recombination
+        ``calculate_l4_quantities`` computes (issue #21), so a full-frame pass
+        would be pure waste. Only the 3 RGB channels (TR/TG/TB) should reach
+        ``measure_photometry``.
         """
         _stub_wcs_and_centroid(mocker)
         image = _detectable_image(make_test_image)
@@ -1280,57 +1302,50 @@ class TestProcessOneImage:
         with pytest.raises(ValueError, match="L4"):
             process_one_image(path, {}, _REF_RADECS, None, masks)
 
-    def test_l4_lean_build_matches_old_full_frame_build(
+    def test_l4_copied_columns_match_a_full_frame_build(
         self, make_test_image, tmp_path, mocker, bayer_masks_rggb
     ):
         """
-        The lean L4 skeleton matches the old full-frame build, column for column.
+        The columns L4 copies from TR equal a genuine full-frame build's.
 
-        Builds the reference the old way -- a genuine full-frame
-        ``build_photometry_table(img, None)`` pass on the same ``ImageData``,
-        combined by ``calculate_l4_quantities`` the same way it always has --
-        and checks the ``process_one_image`` result is column- and
-        meta-identical.
+        Runs ``build_photometry_table(img, None)`` on the very ``ImageData``
+        ``process_one_image`` used and checks the mask-independent columns and
+        meta the L4 table took from TR are bit-identical to it, and that the
+        L4 column set is exactly the documented one.
         """
         _stub_wcs_and_centroid(mocker)
         image = _detectable_image(make_test_image)
         path = _write_seestar_fits(tmp_path / "l4_exact.fits", image)
         masks = bayer_masks_rggb(image.shape, append_l4=True)
         # Spy (not wraps-patch) so spy_return hands back the very ImageData
-        # process_one_image built; the result's RGB tables are then the exact
-        # by_filter_data it combined.
+        # process_one_image built.
         prepare_spy = mocker.spy(bp_module, "prepare_image")
 
         result = process_one_image(path, {}, _REF_RADECS, None, masks)
 
-        img = prepare_spy.spy_return
-        reference = build_photometry_table(img, None)
-        calculate_l4_quantities(
-            reference,
-            {name: result[name] for name in ("TR", "TG", "TB")},
-            img.metadata["egain"],
-        )
+        reference = build_photometry_table(prepare_spy.spy_return, None)
 
         l4 = result["L4"]
-        assert set(l4.colnames) == set(reference.colnames)
-        for col in reference.colnames:
+        assert set(l4.colnames) == set(_MASK_INDEPENDENT_COLUMNS) | set(
+            _L4_RECOMBINED_COLUMNS
+        )
+        for col in _MASK_INDEPENDENT_COLUMNS:
             np.testing.assert_array_equal(
                 np.asarray(l4[col]), np.asarray(reference[col])
             )
-        for key in ("fwhm", "aperture_radii", "annulus_radii", "min_snr"):
+        for key in _L4_META_KEYS:
             assert l4.meta[key] == reference.meta[key]
 
     @pytest.mark.parametrize("missing", ["TB", "TR"])
-    def test_l4_missing_rgb_channel_raises_before_lean_build(
+    def test_l4_missing_rgb_channel_raises(
         self, make_test_image, tmp_path, mocker, bayer_masks_rggb, missing
     ):
         """
         A mask dict missing an RGB channel raises the documented ValueError.
 
-        TR is the lean L4 skeleton's own reference table
-        (``by_filter_data["TR"]``); the RGB-channel check must run before that
-        lookup, or a caller missing TR gets a bare ``KeyError`` instead of the
-        documented ``ValueError``.
+        TR doubles as the source of L4's copied columns, so the check must run
+        before any channel lookup or a caller missing TR gets a bare
+        ``KeyError`` instead of the documented ``ValueError``.
         """
         _stub_wcs_and_centroid(mocker)
         image = _detectable_image(make_test_image)

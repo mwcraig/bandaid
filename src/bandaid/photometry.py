@@ -2194,11 +2194,11 @@ def prepare_image(
 
 
 # How the columns `build_photometry_table` produces map onto the L4 channel.
-# `_l4_skeleton_table` copies the mask-independent ones from TR verbatim;
-# `calculate_l4_quantities` fills the recombined ones from TR/TG/TB and drops
-# the stale ones, which have no L4-consistent meaning (issue #21). A column
-# added to `build_photometry_table` must be sorted into exactly one tuple, or
-# TR/TG/TB get a column L4 lacks (pinned by a test in test_build_table.py).
+# `calculate_l4_quantities` copies the mask-independent ones from TR verbatim,
+# computes the recombined ones from TR/TG/TB, and omits the rest, which have
+# no L4-consistent meaning (issue #21). A column added to
+# `build_photometry_table` must be sorted into exactly one tuple, or TR/TG/TB
+# get a column L4 lacks (pinned by a test in test_build_table.py).
 _MASK_INDEPENDENT_COLUMNS = (
     "time",
     "airmass",
@@ -2217,7 +2217,7 @@ _L4_RECOMBINED_COLUMNS = (
     "count_err",
     "snr",
 )
-_L4_STALE_COLUMNS = ("fluxes", "total_bkg", "bkgd_std")
+_L4_OMITTED_COLUMNS = ("fluxes", "total_bkg", "bkgd_std")
 _L4_META_KEYS = ("fwhm", "aperture_radii", "annulus_radii", "min_snr")
 
 
@@ -2389,8 +2389,8 @@ def process_one_image(
         image. The filter name is stamped into each returned table's metadata so
         the results can be grouped by filter. Each Bayer mask should have the same
         shape as the image data. To include the synthetic full-frame "L4"
-        luminance channel, map "L4" to None; it must be ordered after the RGB
-        channels (TR/TG/TB) it is built from.
+        luminance channel, map "L4" to None; it is built from the RGB channels
+        (TR/TG/TB) after they are photometered, wherever it sits in the dict.
     config : PhotometryConfig or None, optional
         Photometry configuration threaded through to `prepare_image` and
         `build_photometry_table`. If None (default), a default
@@ -2422,12 +2422,11 @@ def process_one_image(
     Notes
     -----
     When `bayer_masks` includes "L4", the "TR", "TG", and "TB" channels must be
-    present and ordered before it, and "L4" must map to None; otherwise a
-    `ValueError` is raised.
+    present and "L4" must map to None; otherwise a `ValueError` is raised.
 
-    L4's own full-frame photometry is never measured or returned: its
-    phot-derived columns are entirely the TR/TG/TB recombination
-    `calculate_l4_quantities` computes, by design (issue #21).
+    L4's own full-frame photometry is never measured: the L4 table is entirely
+    the TR/TG/TB recombination `calculate_l4_quantities` computes, by design
+    (issue #21).
     """
     # Calculate everything we need for all filters at once. prepare_image raises
     # a FrameError (TooFewStarsError / WCSSolveError) when the frame is unusable;
@@ -2447,20 +2446,23 @@ def process_one_image(
     by_filter_data = {}
     for filter_name, mask in bayer_masks.items():
         if filter_name == "L4":
-            if mask is not None:
-                msg = (
-                    "L4 does not take a mask; map it to None "
-                    "(see generate_bayer_masks)."
-                )
-                raise ValueError(msg)
-            data = _l4_skeleton_table(by_filter_data)
-        else:
-            data = build_photometry_table(img, mask, config=config)
+            continue
+        data = build_photometry_table(img, mask, config=config)
         data.meta["filter"] = filter_name
         data.meta["full_image_meta"] = img.metadata
-        if filter_name == "L4":
-            calculate_l4_quantities(data, by_filter_data, img.metadata["egain"])
         by_filter_data[filter_name] = data
+
+    # L4 is a recombination of the RGB tables, so it is built once they all
+    # exist; the caller's dict is read, never mutated (it is shared across the
+    # batch loop).
+    if "L4" in bayer_masks:
+        if bayer_masks["L4"] is not None:
+            msg = "L4 does not take a mask; map it to None (see generate_bayer_masks)."
+            raise ValueError(msg)
+        l4 = calculate_l4_quantities(by_filter_data, img.metadata["egain"])
+        l4.meta["filter"] = "L4"
+        l4.meta["full_image_meta"] = img.metadata
+        by_filter_data["L4"] = l4
 
     return by_filter_data
 
@@ -2469,9 +2471,8 @@ def _require_rgb_channels(by_filter_data):
     """
     Confirm the TR/TG/TB channels needed to build/combine L4 are present.
 
-    Called by `_l4_skeleton_table` and `calculate_l4_quantities` before either
-    indexes a channel, so a missing one gives this actionable error instead of
-    a bare ``KeyError``.
+    Called by `calculate_l4_quantities` before it indexes any channel, so a
+    missing one gives this actionable error instead of a bare ``KeyError``.
 
     Parameters
     ----------
@@ -2494,69 +2495,42 @@ def _require_rgb_channels(by_filter_data):
         raise ValueError(msg)
 
 
-def _l4_skeleton_table(by_filter_data):
+def calculate_l4_quantities(by_filter_data, egain):
     """
-    Build the lean L4 table skeleton from the already-built RGB channel tables.
+    Build the "L4" photometry table from RGB photometry on a Bayer array.
 
     Parameters
     ----------
     by_filter_data : dict
-        Mapping of filter name to photometry table, as accumulated by
-        `process_one_image`; must already hold "TR", "TG" and "TB". TR
-        supplies the mask-independent columns and meta.
+        Mapping of filter name to photometry table; must hold "TR", "TG" and
+        "TB" as built by `build_photometry_table`.
+    egain : float
+        The gain of the image.
 
     Returns
     -------
     astropy.table.Table
-        The mask-independent columns and meta copied straight from TR, ready
-        for `calculate_l4_quantities` to add the recombined columns in place.
+        The L4 table: `_MASK_INDEPENDENT_COLUMNS` and `_L4_META_KEYS` copied
+        from TR, `_L4_RECOMBINED_COLUMNS` computed from TR/TG/TB.
 
     Notes
     -----
     `_require_rgb_channels` raises ``ValueError`` if any of "TR", "TG", or
     "TB" is missing from `by_filter_data`.
 
-    L4 has no full-frame photometry pass of its own: `calculate_l4_quantities`
-    fills every phot-derived column from the TR/TG/TB recombination and the
-    rest have no L4 meaning (issue #21), so building a full-frame table first
-    would be pure waste. The columns copied here (`_MASK_INDEPENDENT_COLUMNS`)
-    and meta derive only from the shared `ImageData`/config, never from the
-    mask, so copying them from TR is exact, not approximate.
+    L4 has no full-frame photometry pass of its own: every phot-derived column
+    is the TR/TG/TB recombination below, and the columns that cannot be
+    recombined (`_L4_OMITTED_COLUMNS`) are simply not present (issue #21). The
+    copied columns and meta derive only from the shared `ImageData`/config,
+    never from the mask, so taking them from TR is exact, not approximate.
     """
     _require_rgb_channels(by_filter_data)
     reference = by_filter_data["TR"]
-    data = Table()
+    final_data = Table()
     for col in _MASK_INDEPENDENT_COLUMNS:
-        data[col] = reference[col]
+        final_data[col] = reference[col]
     for key in _L4_META_KEYS:
-        data.meta[key] = reference.meta[key]
-    return data
-
-
-def calculate_l4_quantities(final_data, by_filter_data, egain):
-    """
-    Calculate the "L4" photometry given RGB photometry on a Bayer array.
-
-    Note that ``final_data`` is modified in place.
-
-    Parameters
-    ----------
-    final_data : astropy.table.Table
-        The final photometry table for the L4 filter, modified in place.
-    by_filter_data : dict
-        A dictionary containing the photometry data for each individual filter.
-    egain : float
-        The gain of the image.
-
-    Notes
-    -----
-    `_require_rgb_channels` validates up front that "TR", "TG", and "TB" are
-    all present in ``by_filter_data`` -- the L4 channel is built from all
-    three -- and raises ``ValueError`` (propagated unchanged) if any are
-    missing, with an actionable message rather than a bare ``KeyError`` raised
-    deep inside the combination below.
-    """
-    _require_rgb_channels(by_filter_data)
+        final_data.meta[key] = reference.meta[key]
 
     # L4 total count is sum of the individual filter total counts
     final_data["tot_count"] = (
@@ -2614,10 +2588,4 @@ def calculate_l4_quantities(final_data, by_filter_data, egain):
         # SNR from the recombined L4 count and error.
         final_data["snr"] = final_data["tot_count"] / final_data["count_err"]
 
-    # fluxes/total_bkg/bkgd_std are not recombined across TR/TG/TB and have no
-    # L4-consistent meaning, so drop them rather than leave the stale full-frame
-    # values from the incoming table (issue #21). remove_columns is given only
-    # the columns actually present so it is safe if the table is built without
-    # them.
-    stale_columns = [col for col in _L4_STALE_COLUMNS if col in final_data.colnames]
-    final_data.remove_columns(stale_columns)
+    return final_data
