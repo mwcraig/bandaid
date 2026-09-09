@@ -247,13 +247,32 @@ def align_coords(n):
 
 
 def filter_table(tot, area, bkgd, bkgd_std, peak):
-    """Build a per-channel photometry table for ``calculate_l4_quantities`` tests."""
+    """
+    Build a per-channel photometry table for ``calculate_l4_quantities`` tests.
+
+    Carries the phot columns L4 recombines plus stand-ins for the
+    mask-independent columns and meta ``calculate_l4_quantities`` copies from
+    TR, so the table satisfies its input contract.
+    """
     t = Table()
     t["tot_count"] = np.array(tot, dtype=float)
     t["aperture_area"] = np.array(area, dtype=float)
     t["bkgd_count"] = np.array(bkgd, dtype=float)
     t["bkgd_std"] = np.array(bkgd_std, dtype=float)
     t["peak_count"] = np.array(peak, dtype=float)
+    n = len(t)
+    for col in ("time", "airmass", "ra", "dec", "x", "y"):
+        t[col] = np.arange(n, dtype=float)
+    t["stars_in_exp"] = n
+    t["centroid_drift"] = np.zeros(n, dtype=bool)
+    t.meta.update(
+        {
+            "fwhm": 3.0,
+            "aperture_radii": [3.0],
+            "annulus_radii": [6.0, 9.0],
+            "min_snr": 5.0,
+        }
+    )
     return t
 
 

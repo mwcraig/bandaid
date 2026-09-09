@@ -1354,9 +1354,9 @@ class ImageData:
     input_photometry_coords: object = None
     metadata: dict = None
     # Populated lazily by the first `resolve_time_airmass` call for this frame
-    # and reused by the later calls (one per Bayer channel) that share this
-    # same `ImageData`, so the obs_time parse and airmass derivation run once
-    # per frame rather than once per channel (issue #61).
+    # and reused by the later calls (one per RGB channel) that share this same
+    # `ImageData`, so the obs_time parse and airmass derivation run once per
+    # frame rather than once per channel (issue #61).
     _time_airmass_cache: tuple | None = field(
         default=None, repr=False, init=False, compare=False
     )
@@ -1366,7 +1366,7 @@ class ImageData:
         Resolve and cache this frame's ``(start_jd, airmass)`` from `metadata`.
 
         Parsed once per frame and reused by every `build_photometry_table` call
-        for this image (one per Bayer channel), instead of re-parsing
+        for this image (one per RGB channel), instead of re-parsing
         ``metadata["obs_time"]`` and re-deriving the airmass on every call
         (issue #61).
 
@@ -2193,6 +2193,43 @@ def prepare_image(
     )
 
 
+# How the columns `build_photometry_table` produces map onto the L4 channel
+# (see `calculate_l4_quantities`): copied from TR, recombined from TR/TG/TB, or
+# omitted. A column added to `build_photometry_table` must be sorted into
+# exactly one tuple, or TR/TG/TB get a column L4 lacks (pinned by a test in
+# test_build_table.py).
+_MASK_INDEPENDENT_COLUMNS = (
+    "time",
+    "airmass",
+    "stars_in_exp",
+    "ra",
+    "dec",
+    "x",
+    "y",
+    "centroid_drift",
+)
+_L4_RECOMBINED_COLUMNS = (
+    "tot_count",
+    "aperture_area",
+    "bkgd_count",
+    "peak_count",
+    "count_err",
+    "snr",
+)
+_L4_OMITTED_COLUMNS = ("fluxes", "total_bkg", "bkgd_std")
+
+
+def _missing_rgb_channels(channels):
+    """Return the error message for TR/TG/TB missing from `channels`, else None."""
+    missing = {"TR", "TG", "TB"} - set(channels)
+    if not missing:
+        return None
+    return (
+        f"the L4 channel requires {sorted(missing)} alongside it; "
+        f"got channels {sorted(channels)}."
+    )
+
+
 def build_photometry_table(
     img,
     mask,
@@ -2293,10 +2330,11 @@ def build_photometry_table(
     # time and airmass inputs are dialect-aware (issue #59); the raw header is
     # not consulted again here. obs_time is usually mapped from DATE-OBS.
     #
-    # `img` is shared across one `build_photometry_table` call per Bayer
-    # channel (TR/TG/TB/L4); resolve_time_airmass resolves the obs_time parse
-    # and airmass derivation once per frame and caches on `img` for the later
-    # channels, instead of re-parsing/re-deriving on every call (issue #61).
+    # `img` is shared across one `build_photometry_table` call per RGB channel
+    # (TR/TG/TB; L4 is recombined from those tables and never built here);
+    # resolve_time_airmass resolves the obs_time parse and airmass derivation
+    # once per frame and caches on `img` for the later channels, instead of
+    # re-parsing/re-deriving on every call (issue #61).
     metadata = img.metadata or {}
     start_jd, airmass = img.resolve_time_airmass()
     # obs_time is the exposure *start*. Record mid-exposure instead: for a
@@ -2361,8 +2399,8 @@ def process_one_image(
         image. The filter name is stamped into each returned table's metadata so
         the results can be grouped by filter. Each Bayer mask should have the same
         shape as the image data. To include the synthetic full-frame "L4"
-        luminance channel, map "L4" to None; it must be ordered after the RGB
-        channels (TR/TG/TB) it is built from.
+        luminance channel, map "L4" to None; it is built from the RGB channels
+        (TR/TG/TB) after they are photometered, wherever it sits in the dict.
     config : PhotometryConfig or None, optional
         Photometry configuration threaded through to `prepare_image` and
         `build_photometry_table`. If None (default), a default
@@ -2385,11 +2423,16 @@ def process_one_image(
         `prepare_image` (too few stars, unsolvable WCS, ...) propagates
         unchanged; `process_batch` catches it, logs it, and skips the frame.
 
+    Raises
+    ------
+    ValueError
+        If "L4" maps to anything but None, or the TR/TG/TB channels it is
+        built from are missing.
+
     Notes
     -----
-    When `bayer_masks` includes "L4", the "TR", "TG", and "TB" channels must be
-    present and ordered before it; otherwise `calculate_l4_quantities` raises a
-    `ValueError`.
+    L4 is never photometered itself; `calculate_l4_quantities` builds it from
+    the TR/TG/TB tables (see its Notes).
     """
     # Calculate everything we need for all filters at once. prepare_image raises
     # a FrameError (TooFewStarsError / WCSSolveError) when the frame is unusable;
@@ -2406,54 +2449,79 @@ def process_one_image(
         frame=frame,
     )
 
+    # Reject a malformed mask dict before any photometry: the dict is shared
+    # across the batch loop, so a bad one would otherwise cost every frame a
+    # full RGB pass before failing.
+    build_l4 = "L4" in bayer_masks
+    if build_l4:
+        if bayer_masks["L4"] is not None:
+            msg = "L4 does not take a mask; map it to None (see generate_bayer_masks)."
+            raise ValueError(msg)
+        if msg := _missing_rgb_channels(bayer_masks):
+            raise ValueError(msg)
+
     by_filter_data = {}
     for filter_name, mask in bayer_masks.items():
+        if filter_name == "L4":
+            continue
         data = build_photometry_table(img, mask, config=config)
         data.meta["filter"] = filter_name
         data.meta["full_image_meta"] = img.metadata
-        if filter_name == "L4":
-            # L4 is the channel sum of TR/TG/TB, so those must already have been
-            # processed. generate_bayer_masks orders L4 last to guarantee this;
-            # calculate_l4_quantities validates that the RGB channels are present
-            # and raises a clear ValueError if a caller passes a mask dict that
-            # violates the ordering.
-            calculate_l4_quantities(data, by_filter_data, img.metadata["egain"])
         by_filter_data[filter_name] = data
+
+    # L4 is a recombination of the RGB tables, so it is built once they all
+    # exist; the caller's dict is read, never mutated.
+    if build_l4:
+        l4 = calculate_l4_quantities(by_filter_data, img.metadata["egain"])
+        l4.meta["filter"] = "L4"
+        l4.meta["full_image_meta"] = img.metadata
+        by_filter_data["L4"] = l4
 
     return by_filter_data
 
 
-def calculate_l4_quantities(final_data, by_filter_data, egain):
+def calculate_l4_quantities(by_filter_data, egain):
     """
-    Calculate the "L4" photometry given RGB photometry on a Bayer array.
-
-    Note that ``final_data`` is modified in place.
+    Build the "L4" photometry table from RGB photometry on a Bayer array.
 
     Parameters
     ----------
-    final_data : astropy.table.Table
-        The final photometry table for the L4 filter, modified in place.
     by_filter_data : dict
-        A dictionary containing the photometry data for each individual filter.
+        Mapping of filter name to photometry table; must hold "TR", "TG" and
+        "TB" as built by `build_photometry_table`.
     egain : float
         The gain of the image.
+
+    Returns
+    -------
+    astropy.table.Table
+        The L4 table: `_MASK_INDEPENDENT_COLUMNS` and the whole ``meta`` copied
+        from TR, `_L4_RECOMBINED_COLUMNS` computed from TR/TG/TB.
 
     Raises
     ------
     ValueError
-        If any of the "TR", "TG", or "TB" channels are missing from
-        ``by_filter_data``; the L4 channel is built from all three.
+        If any of "TR", "TG", or "TB" is missing from `by_filter_data`; the L4
+        channel is built from all three.
+
+    Notes
+    -----
+    L4 has no full-frame photometry pass of its own: every phot-derived column
+    is the TR/TG/TB recombination below, and the columns that cannot be
+    recombined (`_L4_OMITTED_COLUMNS`) are simply not present (issue #21). The
+    copied columns and meta derive only from the shared `ImageData`/config,
+    never from the mask, so taking them from TR is exact, not approximate.
+    Copying the meta wholesale also means a key stamped on TR by a caller
+    (`process_one_image`'s "filter", say) comes across and is the caller's to
+    overwrite.
     """
-    # L4 is the channel sum of TR/TG/TB, so each must already be present. Fail
-    # loudly with an actionable message rather than a bare KeyError raised deep
-    # inside the combination below.
-    missing = {"TR", "TG", "TB"} - by_filter_data.keys()
-    if missing:
-        msg = (
-            f"calculate_l4_quantities requires {sorted(missing)} in by_filter_data "
-            "before the L4 channel can be combined."
-        )
+    # Check before indexing any channel so a missing one gives this actionable
+    # error instead of a bare KeyError.
+    if msg := _missing_rgb_channels(by_filter_data):
         raise ValueError(msg)
+
+    # Column-list selection returns a new table (data and meta copied).
+    final_data = by_filter_data["TR"][list(_MASK_INDEPENDENT_COLUMNS)]
 
     # L4 total count is sum of the individual filter total counts
     final_data["tot_count"] = (
@@ -2482,9 +2550,12 @@ def calculate_l4_quantities(final_data, by_filter_data, egain):
             + by_filter_data["TB"]["bkgd_count"] * by_filter_data["TB"]["aperture_area"]
         ) / final_data["aperture_area"]
 
-        # For peak count, create a numpy array of the individual filter peak
-        # counts and take the max along the filter axis
-        final_data["peak_count"] = np.max(
+        # Peak count is the max over the channel peaks. fmax ignores a NaN
+        # channel (an edge-clipped peak box with no unmasked pixel, see
+        # `measure_photometry`) whose tot_count is still finite, so one such
+        # channel does not turn the L4 peak NaN and lose the star to
+        # `good_star_mask`; a star NaN in all three stays NaN, without warning.
+        final_data["peak_count"] = np.fmax.reduce(
             [
                 by_filter_data["TR"]["peak_count"],
                 by_filter_data["TG"]["peak_count"],
@@ -2508,17 +2579,7 @@ def calculate_l4_quantities(final_data, by_filter_data, egain):
             + final_data["tot_count"] / egain  # Poisson error from total count
         )
 
-        # Recompute SNR from the recombined L4 count and error. The table arrives
-        # here from a full-frame photometry pass, so its snr column otherwise
-        # still reflects the discarded full-frame measurement, not the channel sum.
+        # SNR from the recombined L4 count and error.
         final_data["snr"] = final_data["tot_count"] / final_data["count_err"]
 
-    # fluxes/total_bkg/bkgd_std are not recombined across TR/TG/TB and have no
-    # L4-consistent meaning, so drop them rather than leave the stale full-frame
-    # values from the incoming table (issue #21). remove_columns is given only
-    # the columns actually present so it is safe if the table is built without
-    # them.
-    stale_columns = [
-        col for col in ("fluxes", "total_bkg", "bkgd_std") if col in final_data.colnames
-    ]
-    final_data.remove_columns(stale_columns)
+    return final_data

@@ -23,6 +23,9 @@ from bandaid.config import InstrumentProfile, PhotometryConfig, SourceSelectionC
 from bandaid.photometry import (
     ANNULUS,
     RELATIVE_RADII,
+    _L4_OMITTED_COLUMNS,
+    _L4_RECOMBINED_COLUMNS,
+    _MASK_INDEPENDENT_COLUMNS,
     ImageData,
     build_photometry_table,
     calculate_l4_quantities,
@@ -316,6 +319,28 @@ class TestBuildPhotometryTable:
         assert bkgd[0] != bkgd[1]
         np.testing.assert_allclose(bkgd, [true_sky, 4 * true_sky], rtol=0.05)
 
+    def test_l4_schema_tuples_partition_the_columns(self):
+        """
+        Every column built here is claimed by exactly one L4 schema tuple.
+
+        ``calculate_l4_quantities`` copies ``_MASK_INDEPENDENT_COLUMNS`` from
+        TR, computes ``_L4_RECOMBINED_COLUMNS`` and leaves out
+        ``_L4_OMITTED_COLUMNS``. A column added here without being sorted into
+        one of those would silently be missing from L4, so pin the partition.
+        """
+        coords = np.array([[40.0, 40.0], [90.0, 80.0]])
+        table = build_photometry_table(
+            self._uniform_frame_image(np.full((128, 128), 10.0), coords), mask=None
+        )
+
+        claimed = [
+            *_MASK_INDEPENDENT_COLUMNS,
+            *_L4_RECOMBINED_COLUMNS,
+            *_L4_OMITTED_COLUMNS,
+        ]
+        assert len(claimed) == len(set(claimed)), "a column is in two tuples"
+        assert set(claimed) == set(table.colnames)
+
 
 class TestCalculateL4Quantities:
     """Unit tests for the RGB->L4 combination ``calculate_l4_quantities``."""
@@ -324,7 +349,7 @@ class TestCalculateL4Quantities:
         """A missing TR/TG/TB channel raises an actionable ValueError."""
         by_filter = {"TR": Table(), "TG": Table()}
         with pytest.raises(ValueError, match=r"\['TB'\]"):
-            calculate_l4_quantities(Table(), by_filter, 0.5)
+            calculate_l4_quantities(by_filter, 0.5)
 
     def test_combines_rgb_filters(self):
         """L4 columns are the documented combinations of the TR/TG/TB tables."""
@@ -335,9 +360,7 @@ class TestCalculateL4Quantities:
             "TG": filter_table([110, 210], [11, 13], [4, 7], [1, 2], [70, 80]),
             "TB": filter_table([120, 220], [9, 14], [6, 5], [3, 1], [60, 95]),
         }
-        final_data = Table()
-
-        calculate_l4_quantities(final_data, by_filter, egain)
+        final_data = calculate_l4_quantities(by_filter, egain)
 
         tr, tg, tb = by_filter["TR"], by_filter["TG"], by_filter["TB"]
         expected_tot = tr["tot_count"] + tg["tot_count"] + tb["tot_count"]
@@ -386,19 +409,15 @@ class TestCalculateL4Quantities:
         by_filter = {}
         for name, mask in masks.items():
             phot = _peak_scene_photometry(image, coords, mask)
-            t = Table()
-            for col in (
-                "tot_count",
-                "aperture_area",
-                "bkgd_count",
-                "bkgd_std",
-                "peak_count",
-            ):
-                t[col] = phot[col]
-            by_filter[name] = t
+            by_filter[name] = filter_table(
+                phot["tot_count"],
+                phot["aperture_area"],
+                phot["bkgd_count"],
+                phot["bkgd_std"],
+                phot["peak_count"],
+            )
 
-        final_data = Table()
-        calculate_l4_quantities(final_data, by_filter, egain=1.0)
+        final_data = calculate_l4_quantities(by_filter, egain=1.0)
 
         channel_peaks = np.array(
             [by_filter[c]["peak_count"] for c in ("TR", "TG", "TB")],
@@ -411,34 +430,52 @@ class TestCalculateL4Quantities:
             channel_peaks.max(axis=0),
         )
 
-    def test_drops_stale_full_frame_columns(self):
+    def test_peak_count_ignores_a_single_channel_nan(self):
         """
-        fluxes/total_bkg/bkgd_std are not recombined, so they are dropped.
+        One channel's NaN peak does not make the L4 peak NaN.
 
-        ``final_data`` arrives from a full-frame photometry pass carrying these
-        columns at their discarded full-frame values. ``calculate_l4_quantities``
-        overwrites the columns it can recombine (tot_count, count_err, snr, ...)
-        but leaves these three with no L4-consistent meaning, so they must be
-        removed rather than left stale (issue #21).
+        ``measure_photometry`` returns a NaN ``peak_count`` for a channel whose
+        edge-clipped peak box holds no unmasked pixel while that channel's
+        ``tot_count`` stays finite. The L4 peak must be the max of the finite
+        channel peaks, or ``good_star_mask`` drops a star two channels measured
+        fine. Only a star with no finite channel peak at all is NaN, and that
+        without a ``RuntimeWarning``.
         """
-        egain = 0.5
+        by_filter = {
+            "TR": filter_table([100, 200], [10, 12], [5, 6], [2, 3], [50, np.nan]),
+            "TG": filter_table([110, 210], [11, 13], [4, 7], [1, 2], [np.nan, np.nan]),
+            "TB": filter_table([120, 220], [9, 14], [6, 5], [3, 1], [np.nan, np.nan]),
+        }
 
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            final_data = calculate_l4_quantities(by_filter, egain=0.5)
+
+        np.testing.assert_array_equal(final_data["peak_count"], [50.0, np.nan])
+
+    def test_l4_table_has_exactly_the_documented_columns(self):
+        """
+        The L4 table carries the copied and recombined columns and no others.
+
+        fluxes/total_bkg/bkgd_std are not recombined across TR/TG/TB and have
+        no L4-consistent meaning, so they never appear (issue #21), and nor
+        does anything else a full-frame pass used to leave behind, such as the
+        stale ``sky`` column of #52; the mask-independent columns and meta come
+        across from TR.
+        """
         by_filter = {
             "TR": filter_table([100, 200], [10, 12], [5, 6], [2, 3], [50, 90]),
             "TG": filter_table([110, 210], [11, 13], [4, 7], [1, 2], [70, 80]),
             "TB": filter_table([120, 220], [9, 14], [6, 5], [3, 1], [60, 95]),
         }
 
-        # Seed the stale full-frame columns the L4 table really arrives with.
-        final_data = Table()
-        final_data["fluxes"] = np.array([1.0, 2.0])
-        final_data["total_bkg"] = np.array([3.0, 4.0])
-        final_data["bkgd_std"] = np.array([5.0, 6.0])
+        final_data = calculate_l4_quantities(by_filter, egain=0.5)
 
-        calculate_l4_quantities(final_data, by_filter, egain)
-
-        for stale in ("fluxes", "total_bkg", "bkgd_std"):
-            assert stale not in final_data.colnames
+        expected = set(_MASK_INDEPENDENT_COLUMNS) | set(_L4_RECOMBINED_COLUMNS)
+        assert set(final_data.colnames) == expected
+        for col in _MASK_INDEPENDENT_COLUMNS:
+            np.testing.assert_array_equal(final_data[col], by_filter["TR"][col])
+        assert final_data.meta == by_filter["TR"].meta
 
     def test_zero_denominators_do_not_warn(self):
         """
@@ -460,45 +497,11 @@ class TestCalculateL4Quantities:
             "TG": filter_table([0.0], [0.0], [4.0], [0.0], [0.0]),
             "TB": filter_table([0.0], [0.0], [6.0], [0.0], [0.0]),
         }
-        final_data = Table()
-
         with warnings.catch_warnings():
             # Promote RuntimeWarning specifically to an error so the test fails
             # if the function emits it; other warning categories are left untouched.
             warnings.simplefilter("error", RuntimeWarning)
-            calculate_l4_quantities(final_data, by_filter, egain)
+            final_data = calculate_l4_quantities(by_filter, egain)
 
         assert np.isnan(final_data["bkgd_count"][0])
         assert np.isnan(final_data["snr"][0])
-
-    def test_recombined_l4_table_carries_no_sky_column(self, mocker):
-        """
-        The recombined L4 table has no ``sky`` column at all (#52).
-
-        The L4 table starts as a full-frame ``build_photometry_table`` pass, and
-        ``calculate_l4_quantities`` never stripped ``sky`` (unlike the stale
-        fluxes/total_bkg/bkgd_std), so the recombined table used to carry a
-        stale full-frame ``sky`` value. With the column deleted at the source,
-        it must not appear anywhere in the L4 output.
-        """
-        n_stars = 2
-        mocker.patch(
-            "bandaid.photometry.measure_photometry",
-            side_effect=_fake_phot_factory(n_stars),
-        )
-        coords = np.array([[245.0, 250.0], [255.0, 260.0]])
-        # The real L4 input: a full-frame (mask=None) photometry table.
-        final_data = build_photometry_table(
-            _make_image_data(_make_tan_wcs(), coords, None),
-            mask=None,
-        )
-
-        by_filter = {
-            "TR": filter_table([100, 200], [10, 12], [5, 6], [2, 3], [50, 90]),
-            "TG": filter_table([110, 210], [11, 13], [4, 7], [1, 2], [70, 80]),
-            "TB": filter_table([120, 220], [9, 14], [6, 5], [3, 1], [60, 95]),
-        }
-
-        calculate_l4_quantities(final_data, by_filter, egain=0.5)
-
-        assert "sky" not in final_data.colnames
