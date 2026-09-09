@@ -1316,7 +1316,7 @@ class TestProcessOneImage:
         ],
         ids=["missing-TB", "missing-TR", "L4-with-mask"],
     )
-    def test_l4_malformed_mask_dict_raises(self, l4_frame, mutate, match):
+    def test_l4_malformed_mask_dict_raises(self, l4_frame, mocker, mutate, match):
         """
         A mask dict missing an RGB channel or giving L4 a mask raises ValueError.
 
@@ -1326,12 +1326,20 @@ class TestProcessOneImage:
         never photometers the frame itself, so a caller-supplied L4 mask would
         silently have no effect; before PR #120 a malformed one at least failed
         inside ``aperture_photometry``, so keep that fail-loud contract.
+
+        Both checks run before the RGB loop: the mask dict is shared across the
+        batch and the ``ValueError`` is not a ``FrameError``, so with
+        ``fail_fast=False`` a malformed dict would otherwise photometer every
+        frame in full before failing it.
         """
         path, masks = l4_frame
         mutate(masks)
+        build_spy = mocker.spy(photometry, "build_photometry_table")
 
         with pytest.raises(ValueError, match=match):
             process_one_image(path, {}, _REF_RADECS, None, masks)
+
+        assert build_spy.call_count == 0
 
     def test_opens_the_file_exactly_once(self, l4_frame, fromfile_spy):
         """process_one_image opens the file exactly once end-to-end (#44)."""

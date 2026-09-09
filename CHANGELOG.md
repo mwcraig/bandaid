@@ -146,9 +146,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `append_l4` defaults to `True` throughout the API (`generate_bayer_masks`,
     `prepare_batch`), matching `photometer_frames` and the CLI, so composing
     the pipeline by hand yields the same channels as the CLI (#61).
+- `calculate_l4_quantities(by_filter_data, egain)` now returns the L4 table
+    instead of filling a caller-supplied one in place, and the L4 channel
+    skips its own full-frame `measure_photometry` pass: every phot-derived
+    column was overwritten by the TR/TG/TB recombination anyway (#21), so the
+    table is built from the RGB tables alone (~10% faster per frame,
+    `process_one_image` 0.386 -> 0.348 s; `.star` output byte-identical on
+    real Seestar frames). The columns that cannot be recombined (`fluxes`,
+    `total_bkg`, `bkgd_std`) are no longer created for L4 rather than removed
+    afterwards. `process_one_image` rejects a mask dict that gives "L4" a mask
+    or lacks TR/TG/TB with a `ValueError` before photometering anything.
 
 ### Fixed
 
+- The L4 `peak_count` no longer goes NaN when just one of TR/TG/TB has a NaN
+    peak (a star at the frame edge whose peak box holds no unmasked pixel in
+    that channel) while its counts stay finite. The channel peaks are now
+    combined with a NaN-ignoring max, so `good_star_mask` keeps a star two
+    channels measured fine instead of silently dropping it from the L4 table.
 - Each science frame is now opened exactly once per run -- previously up to
     four times, plus a repeat of the first frame across `prepare_batch` and
     `process_batch`. The biggest win is for `.gz` frames, where every reopen

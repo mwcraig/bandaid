@@ -430,6 +430,29 @@ class TestCalculateL4Quantities:
             channel_peaks.max(axis=0),
         )
 
+    def test_peak_count_ignores_a_single_channel_nan(self):
+        """
+        One channel's NaN peak does not make the L4 peak NaN.
+
+        ``measure_photometry`` returns a NaN ``peak_count`` for a channel whose
+        edge-clipped peak box holds no unmasked pixel while that channel's
+        ``tot_count`` stays finite. The L4 peak must be the max of the finite
+        channel peaks, or ``good_star_mask`` drops a star two channels measured
+        fine. Only a star with no finite channel peak at all is NaN, and that
+        without a ``RuntimeWarning``.
+        """
+        by_filter = {
+            "TR": filter_table([100, 200], [10, 12], [5, 6], [2, 3], [50, np.nan]),
+            "TG": filter_table([110, 210], [11, 13], [4, 7], [1, 2], [np.nan, np.nan]),
+            "TB": filter_table([120, 220], [9, 14], [6, 5], [3, 1], [np.nan, np.nan]),
+        }
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            final_data = calculate_l4_quantities(by_filter, egain=0.5)
+
+        np.testing.assert_array_equal(final_data["peak_count"], [50.0, np.nan])
+
     def test_l4_table_has_exactly_the_documented_columns(self):
         """
         The L4 table carries the copied and recombined columns and no others.
