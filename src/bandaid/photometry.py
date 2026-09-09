@@ -2218,7 +2218,6 @@ _L4_RECOMBINED_COLUMNS = (
     "snr",
 )
 _L4_OMITTED_COLUMNS = ("fluxes", "total_bkg", "bkgd_std")
-_L4_META_KEYS = ("fwhm", "aperture_radii", "annulus_radii", "min_snr")
 
 
 def build_photometry_table(
@@ -2467,34 +2466,6 @@ def process_one_image(
     return by_filter_data
 
 
-def _require_rgb_channels(by_filter_data):
-    """
-    Confirm the TR/TG/TB channels needed to build/combine L4 are present.
-
-    Called by `calculate_l4_quantities` before it indexes any channel, so a
-    missing one gives this actionable error instead of a bare ``KeyError``.
-
-    Parameters
-    ----------
-    by_filter_data : dict
-        Mapping of filter name to photometry table, as accumulated by
-        `process_one_image`.
-
-    Raises
-    ------
-    ValueError
-        If any of "TR", "TG", or "TB" is missing from `by_filter_data`; the L4
-        channel is built from all three.
-    """
-    missing = {"TR", "TG", "TB"} - by_filter_data.keys()
-    if missing:
-        msg = (
-            f"the L4 channel requires {sorted(missing)} in by_filter_data "
-            "before it can be built or combined."
-        )
-        raise ValueError(msg)
-
-
 def calculate_l4_quantities(by_filter_data, egain):
     """
     Build the "L4" photometry table from RGB photometry on a Bayer array.
@@ -2510,27 +2481,38 @@ def calculate_l4_quantities(by_filter_data, egain):
     Returns
     -------
     astropy.table.Table
-        The L4 table: `_MASK_INDEPENDENT_COLUMNS` and `_L4_META_KEYS` copied
+        The L4 table: `_MASK_INDEPENDENT_COLUMNS` and the whole ``meta`` copied
         from TR, `_L4_RECOMBINED_COLUMNS` computed from TR/TG/TB.
+
+    Raises
+    ------
+    ValueError
+        If any of "TR", "TG", or "TB" is missing from `by_filter_data`; the L4
+        channel is built from all three.
 
     Notes
     -----
-    `_require_rgb_channels` raises ``ValueError`` if any of "TR", "TG", or
-    "TB" is missing from `by_filter_data`.
-
     L4 has no full-frame photometry pass of its own: every phot-derived column
     is the TR/TG/TB recombination below, and the columns that cannot be
     recombined (`_L4_OMITTED_COLUMNS`) are simply not present (issue #21). The
     copied columns and meta derive only from the shared `ImageData`/config,
     never from the mask, so taking them from TR is exact, not approximate.
+    Copying the meta wholesale also means a key stamped on TR by a caller
+    (`process_one_image`'s "filter", say) comes across and is the caller's to
+    overwrite.
     """
-    _require_rgb_channels(by_filter_data)
-    reference = by_filter_data["TR"]
-    final_data = Table()
-    for col in _MASK_INDEPENDENT_COLUMNS:
-        final_data[col] = reference[col]
-    for key in _L4_META_KEYS:
-        final_data.meta[key] = reference.meta[key]
+    # Check before indexing any channel so a missing one gives this actionable
+    # error instead of a bare KeyError.
+    missing = {"TR", "TG", "TB"} - by_filter_data.keys()
+    if missing:
+        msg = (
+            f"the L4 channel requires {sorted(missing)} in by_filter_data "
+            "before it can be built or combined."
+        )
+        raise ValueError(msg)
+
+    # Column-list selection returns a new table (data and meta copied).
+    final_data = by_filter_data["TR"][list(_MASK_INDEPENDENT_COLUMNS)]
 
     # L4 total count is sum of the individual filter total counts
     final_data["tot_count"] = (

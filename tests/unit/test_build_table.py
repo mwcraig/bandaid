@@ -319,7 +319,7 @@ class TestBuildPhotometryTable:
         assert bkgd[0] != bkgd[1]
         np.testing.assert_allclose(bkgd, [true_sky, 4 * true_sky], rtol=0.05)
 
-    def test_l4_schema_tuples_partition_the_columns(self, mocker):
+    def test_l4_schema_tuples_partition_the_columns(self):
         """
         Every column built here is claimed by exactly one L4 schema tuple.
 
@@ -328,22 +328,16 @@ class TestBuildPhotometryTable:
         ``_L4_OMITTED_COLUMNS``. A column added here without being sorted into
         one of those would silently be missing from L4, so pin the partition.
         """
-        n_stars = 2
-        mocker.patch(
-            "bandaid.photometry.measure_photometry",
-            side_effect=_fake_phot_factory(n_stars),
-        )
-        coords = np.array([[245.0, 250.0], [255.0, 260.0]])
+        coords = np.array([[40.0, 40.0], [90.0, 80.0]])
         table = build_photometry_table(
-            _make_image_data(_make_tan_wcs(), coords, None), mask=None
+            self._uniform_frame_image(np.full((128, 128), 10.0), coords), mask=None
         )
 
-        groups = (
-            _MASK_INDEPENDENT_COLUMNS,
-            _L4_RECOMBINED_COLUMNS,
-            _L4_OMITTED_COLUMNS,
-        )
-        claimed = [col for group in groups for col in group]
+        claimed = [
+            *_MASK_INDEPENDENT_COLUMNS,
+            *_L4_RECOMBINED_COLUMNS,
+            *_L4_OMITTED_COLUMNS,
+        ]
         assert len(claimed) == len(set(claimed)), "a column is in two tuples"
         assert set(claimed) == set(table.colnames)
 
@@ -441,8 +435,10 @@ class TestCalculateL4Quantities:
         The L4 table carries the copied and recombined columns and no others.
 
         fluxes/total_bkg/bkgd_std are not recombined across TR/TG/TB and have
-        no L4-consistent meaning, so they never appear (issue #21); the
-        mask-independent columns and meta come across from TR.
+        no L4-consistent meaning, so they never appear (issue #21), and nor
+        does anything else a full-frame pass used to leave behind, such as the
+        stale ``sky`` column of #52; the mask-independent columns and meta come
+        across from TR.
         """
         by_filter = {
             "TR": filter_table([100, 200], [10, 12], [5, 6], [2, 3], [50, 90]),
@@ -454,7 +450,6 @@ class TestCalculateL4Quantities:
 
         expected = set(_MASK_INDEPENDENT_COLUMNS) | set(_L4_RECOMBINED_COLUMNS)
         assert set(final_data.colnames) == expected
-        assert not set(_L4_OMITTED_COLUMNS) & set(final_data.colnames)
         for col in _MASK_INDEPENDENT_COLUMNS:
             np.testing.assert_array_equal(final_data[col], by_filter["TR"][col])
         assert final_data.meta == by_filter["TR"].meta
@@ -487,21 +482,3 @@ class TestCalculateL4Quantities:
 
         assert np.isnan(final_data["bkgd_count"][0])
         assert np.isnan(final_data["snr"][0])
-
-    def test_recombined_l4_table_carries_no_sky_column(self):
-        """
-        The recombined L4 table has no ``sky`` column (#52).
-
-        The L4 table used to start life as a full-frame photometry pass whose
-        stale ``sky`` value was never stripped; it is now built only from the
-        columns L4 owns, so ``sky`` cannot appear.
-        """
-        by_filter = {
-            "TR": filter_table([100, 200], [10, 12], [5, 6], [2, 3], [50, 90]),
-            "TG": filter_table([110, 210], [11, 13], [4, 7], [1, 2], [70, 80]),
-            "TB": filter_table([120, 220], [9, 14], [6, 5], [3, 1], [60, 95]),
-        }
-
-        final_data = calculate_l4_quantities(by_filter, egain=0.5)
-
-        assert "sky" not in final_data.colnames

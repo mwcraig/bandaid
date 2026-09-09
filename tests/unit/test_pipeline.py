@@ -16,7 +16,7 @@ from eloy import detection
 from skimage.measure import label, regionprops
 from skimage.morphology import binary_opening
 
-import bandaid.photometry as bp_module
+from bandaid import photometry
 from bandaid.ballet import NumpyBallet
 from bandaid.config import InstrumentProfile, PhotometryConfig
 from bandaid.exceptions import (
@@ -32,8 +32,6 @@ from bandaid.photometry import (
     MIN_DETECTED_STARS,
     N_GAIA_STARS_ALIGN,
     THRESH,
-    _L4_META_KEYS,
-    _L4_RECOMBINED_COLUMNS,
     _MASK_INDEPENDENT_COLUMNS,
     _box_opening,
     _brightest_unsaturated,
@@ -1202,6 +1200,32 @@ class TestPrepareImageBranches:
 class TestProcessOneImage:
     """End-to-end (stubbed-externals) coverage for ``process_one_image``."""
 
+    @pytest.fixture
+    def l4_frame(self, make_test_image, tmp_path, mocker, bayer_masks_rggb):
+        """
+        A processable FITS path plus its RGGB+L4 masks, externals stubbed.
+
+        Parameters
+        ----------
+        make_test_image : callable
+            The ``make_test_image`` factory fixture.
+        tmp_path : pathlib.Path
+            pytest's per-test temporary directory.
+        mocker : pytest_mock.MockerFixture
+            Used to stub the WCS solve and CNN centroiding.
+        bayer_masks_rggb : callable
+            The RGGB mask factory fixture.
+
+        Returns
+        -------
+        tuple
+            ``(path, masks)`` ready to hand to ``process_one_image``.
+        """
+        _stub_wcs_and_centroid(mocker)
+        image = _detectable_image(make_test_image)
+        path = _write_seestar_fits(tmp_path / "frame.fits", image)
+        return path, bayer_masks_rggb(image.shape, append_l4=True)
+
     def test_raises_when_image_rejected(
         self, make_test_image, tmp_path, bayer_masks_rggb
     ):
@@ -1218,39 +1242,18 @@ class TestProcessOneImage:
         with pytest.raises(TooFewStarsError, match="stars detected"):
             process_one_image(path, {}, _REF_RADECS, None, masks)
 
-    def test_full_path_builds_per_filter_tables_with_l4(
-        self, make_test_image, tmp_path, mocker, bayer_masks_rggb
-    ):
-        """Every filter gets a table and the L4 channel sums the RGB counts."""
-        _stub_wcs_and_centroid(mocker)
-        image = _detectable_image(make_test_image)
-        path = _write_seestar_fits(tmp_path / "proc.fits", image)
-        masks = bayer_masks_rggb(image.shape, append_l4=True)
-
-        result = process_one_image(path, {}, _REF_RADECS, None, masks)
-
-        assert set(result) == {"TR", "TG", "TB", "L4"}
-        rgb_sum = (
-            result["TR"]["tot_count"]
-            + result["TG"]["tot_count"]
-            + result["TB"]["tot_count"]
-        )
-        np.testing.assert_allclose(result["L4"]["tot_count"], rgb_sum)
-
-    def test_l4_may_appear_anywhere_in_the_mask_dict(
-        self, make_test_image, tmp_path, mocker, bayer_masks_rggb
-    ):
+    @pytest.mark.parametrize("l4_first", [False, True], ids=["l4-last", "l4-first"])
+    def test_full_path_builds_per_filter_tables_with_l4(self, l4_frame, l4_first):
         """
-        L4 is built after the RGB loop, so its position in the dict is free.
+        Every filter gets a table and the L4 channel sums the RGB counts.
 
-        The pre-PR #120 contract required "L4" to be ordered after TR/TG/TB;
-        building it once the loop is done removes that requirement entirely.
+        L4 is built after the RGB loop, so its position in the mask dict is
+        free: the pre-PR #120 contract required "L4" to be ordered after
+        TR/TG/TB, and building it once the loop is done removes that entirely.
         """
-        _stub_wcs_and_centroid(mocker)
-        image = _detectable_image(make_test_image)
-        path = _write_seestar_fits(tmp_path / "l4_first.fits", image)
-        rgb = bayer_masks_rggb(image.shape, append_l4=False)
-        masks = {"L4": None, **rgb}
+        path, masks = l4_frame
+        if l4_first:
+            masks = {"L4": None, **masks}
 
         result = process_one_image(path, {}, _REF_RADECS, None, masks)
 
@@ -1258,9 +1261,7 @@ class TestProcessOneImage:
         rgb_sum = sum(result[name]["tot_count"] for name in ("TR", "TG", "TB"))
         np.testing.assert_allclose(result["L4"]["tot_count"], rgb_sum)
 
-    def test_l4_channel_skips_the_full_frame_photometry_pass(
-        self, make_test_image, tmp_path, mocker, bayer_masks_rggb
-    ):
+    def test_l4_channel_skips_the_full_frame_photometry_pass(self, l4_frame, mocker):
         """
         L4's own full-frame ``measure_photometry`` pass is skipped (PR #120).
 
@@ -1269,10 +1270,7 @@ class TestProcessOneImage:
         would be pure waste. Only the 3 RGB channels (TR/TG/TB) should reach
         ``measure_photometry``.
         """
-        _stub_wcs_and_centroid(mocker)
-        image = _detectable_image(make_test_image)
-        path = _write_seestar_fits(tmp_path / "l4_skip.fits", image)
-        masks = bayer_masks_rggb(image.shape, append_l4=True)
+        path, masks = l4_frame
         mp_spy = mocker.patch(
             "bandaid.photometry.measure_photometry", wraps=measure_photometry
         )
@@ -1282,88 +1280,62 @@ class TestProcessOneImage:
         n_rgb_channels = 3  # TR, TG, TB -- L4 must not reach measure_photometry.
         assert mp_spy.call_count == n_rgb_channels
 
-    def test_l4_with_a_real_mask_raises(
-        self, make_test_image, tmp_path, mocker, bayer_masks_rggb
-    ):
-        """
-        A non-None L4 mask is rejected rather than silently ignored.
-
-        L4 is built from the TR/TG/TB tables and never photometers the frame
-        itself, so a caller-supplied L4 mask would have no effect; before
-        PR #120 a malformed one at least failed inside ``aperture_photometry``.
-        Keep that fail-loud contract.
-        """
-        _stub_wcs_and_centroid(mocker)
-        image = _detectable_image(make_test_image)
-        path = _write_seestar_fits(tmp_path / "l4_mask.fits", image)
-        masks = bayer_masks_rggb(image.shape, append_l4=True)
-        masks["L4"] = np.ones(image.shape, dtype=bool)
-
-        with pytest.raises(ValueError, match="L4"):
-            process_one_image(path, {}, _REF_RADECS, None, masks)
-
-    def test_l4_copied_columns_match_a_full_frame_build(
-        self, make_test_image, tmp_path, mocker, bayer_masks_rggb
-    ):
+    def test_l4_copied_columns_match_a_full_frame_build(self, l4_frame, mocker):
         """
         The columns L4 copies from TR equal a genuine full-frame build's.
 
         Runs ``build_photometry_table(img, None)`` on the very ``ImageData``
         ``process_one_image`` used and checks the mask-independent columns and
-        meta the L4 table took from TR are bit-identical to it, and that the
-        L4 column set is exactly the documented one.
+        meta the L4 table took from TR are bit-identical to it. (The L4 column
+        set itself is pinned in test_build_table.py.)
         """
-        _stub_wcs_and_centroid(mocker)
-        image = _detectable_image(make_test_image)
-        path = _write_seestar_fits(tmp_path / "l4_exact.fits", image)
-        masks = bayer_masks_rggb(image.shape, append_l4=True)
+        path, masks = l4_frame
         # Spy (not wraps-patch) so spy_return hands back the very ImageData
         # process_one_image built.
-        prepare_spy = mocker.spy(bp_module, "prepare_image")
+        prepare_spy = mocker.spy(photometry, "prepare_image")
 
         result = process_one_image(path, {}, _REF_RADECS, None, masks)
 
         reference = build_photometry_table(prepare_spy.spy_return, None)
 
         l4 = result["L4"]
-        assert set(l4.colnames) == set(_MASK_INDEPENDENT_COLUMNS) | set(
-            _L4_RECOMBINED_COLUMNS
-        )
         for col in _MASK_INDEPENDENT_COLUMNS:
             np.testing.assert_array_equal(
                 np.asarray(l4[col]), np.asarray(reference[col])
             )
-        for key in _L4_META_KEYS:
-            assert l4.meta[key] == reference.meta[key]
+        # Only the keys build_photometry_table itself stamps; filter and
+        # full_image_meta are added by process_one_image and differ by design.
+        assert {k: l4.meta[k] for k in reference.meta} == reference.meta
 
-    @pytest.mark.parametrize("missing", ["TB", "TR"])
-    def test_l4_missing_rgb_channel_raises(
-        self, make_test_image, tmp_path, mocker, bayer_masks_rggb, missing
-    ):
+    @pytest.mark.parametrize(
+        ("mutate", "match"),
+        [
+            (lambda m: m.pop("TB"), r"\['TB'\]"),
+            (lambda m: m.pop("TR"), r"\['TR'\]"),
+            (lambda m: m.update(L4=m["TR"]), "L4"),
+        ],
+        ids=["missing-TB", "missing-TR", "L4-with-mask"],
+    )
+    def test_l4_malformed_mask_dict_raises(self, l4_frame, mutate, match):
         """
-        A mask dict missing an RGB channel raises the documented ValueError.
+        A mask dict missing an RGB channel or giving L4 a mask raises ValueError.
 
-        TR doubles as the source of L4's copied columns, so the check must run
-        before any channel lookup or a caller missing TR gets a bare
-        ``KeyError`` instead of the documented ``ValueError``.
+        TR doubles as the source of L4's copied columns, so the missing-channel
+        check must run before any channel lookup or a caller missing TR gets a
+        bare ``KeyError`` instead of the documented ``ValueError``. And L4
+        never photometers the frame itself, so a caller-supplied L4 mask would
+        silently have no effect; before PR #120 a malformed one at least failed
+        inside ``aperture_photometry``, so keep that fail-loud contract.
         """
-        _stub_wcs_and_centroid(mocker)
-        image = _detectable_image(make_test_image)
-        path = _write_seestar_fits(tmp_path / f"l4_missing_{missing}.fits", image)
-        masks = bayer_masks_rggb(image.shape, append_l4=True)
-        del masks[missing]
+        path, masks = l4_frame
+        mutate(masks)
 
-        with pytest.raises(ValueError, match=rf"\['{missing}'\]"):
+        with pytest.raises(ValueError, match=match):
             process_one_image(path, {}, _REF_RADECS, None, masks)
 
-    def test_opens_the_file_exactly_once(
-        self, make_test_image, tmp_path, mocker, bayer_masks_rggb, fromfile_spy
-    ):
+    def test_opens_the_file_exactly_once(self, l4_frame, fromfile_spy):
         """process_one_image opens the file exactly once end-to-end (#44)."""
-        _stub_wcs_and_centroid(mocker)
-        image = _detectable_image(make_test_image)
-        path = _write_seestar_fits(tmp_path / "open_once.fits", image)
-        masks = bayer_masks_rggb(image.shape, append_l4=True)
+        path, masks = l4_frame
         spy = fromfile_spy()
 
         process_one_image(path, {}, _REF_RADECS, None, masks)
