@@ -343,7 +343,7 @@ class TestBuildPhotometryTable:
         assert len(claimed) == len(set(claimed)), "a column is in two tuples"
         assert set(claimed) == set(table.colnames)
 
-    # --- Change B: hoisted peak-cutout extraction ---
+    # --- Hoisted peak-cutout extraction ---
 
     def test_table_identical_with_and_without_precomputed_peak_cutouts(
         self, make_test_image
@@ -369,7 +369,7 @@ class TestBuildPhotometryTable:
                 np.asarray(without[col]), np.asarray(with_precomputed[col])
             )
 
-    # --- Change B: hoisted aperture/annulus geometry ---
+    # --- Hoisted aperture/annulus geometry ---
 
     def test_table_identical_with_and_without_precomputed_geometry(
         self, make_test_image

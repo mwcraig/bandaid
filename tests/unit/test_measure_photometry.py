@@ -20,6 +20,7 @@ from bandaid.photometry import (
     RELATIVE_RADII,
     _aperture_annulus_geometry,
     _peak_box_cutouts,
+    _peak_box_side,
 )
 
 
@@ -423,7 +424,7 @@ def test_peak_count_nan_for_non_finite_centroid(make_test_image):
         assert photom[key][1] == baseline[key][1]
 
 
-# --- Change B: hoisted peak-cutout extraction and aperture/annulus geometry ---
+# --- Hoisted peak-cutout extraction and aperture/annulus geometry ---
 
 
 def test_precomputed_peak_cutouts_match_internal_computation(make_test_image):
@@ -434,7 +435,7 @@ def test_precomputed_peak_cutouts_match_internal_computation(make_test_image):
     the subsequent per-channel mask application and ``nanmax`` differ -- so a
     caller measuring multiple Bayer channels for one frame can compute it once
     via `_peak_box_cutouts` and pass it back in, instead of every channel call
-    re-extracting the same cutout from ``calibrated_data`` (Change B).
+    re-extracting the same cutout from ``calibrated_data``.
     """
     image, coords = _bright_neighbor_scene(make_test_image)
 
@@ -477,7 +478,7 @@ def test_precomputed_geometry_matches_internal_computation(make_test_image):
     The fwhm-scaled aperture radii and background annulus radii depend only on
     fwhm/radii/annulus, never the mask, so they are bit-identical across Bayer
     channels for a given frame. A caller can precompute them once via
-    `_aperture_annulus_geometry` and pass them back in (Change B).
+    `_aperture_annulus_geometry` and pass them back in.
     """
     image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
     egain = 0.3
@@ -514,5 +515,47 @@ def test_geometry_kwarg_ignores_radii_and_annulus_overrides(make_test_image):
         geometry=geometry,
     )
 
-    assert photom["aperture_radii"] == pytest.approx(geometry[0][0])
-    assert photom["annulus_radii"] == pytest.approx(geometry[1])
+    assert photom["aperture_radii"] == geometry[0][0]
+    assert photom["annulus_radii"] == geometry[1]
+
+
+@pytest.mark.parametrize(("fwhm", "expected"), [(0.5, 2), (2.6, 6)])
+def test_peak_box_side(fwhm, expected):
+    """``_peak_box_side`` is ``2*fwhm`` rounded up, floored at 2 px."""
+    assert _peak_box_side(fwhm) == expected
+
+
+def test_measure_photometry_rejects_mismatched_peak_cutouts_shape(make_test_image):
+    """A ``peak_cutouts`` with the wrong leading dimension raises a ValueError."""
+    image, coords = _bright_neighbor_scene(make_test_image)
+
+    # Precompute cutouts for a single coordinate, then call with two -- the
+    # leading dimension of peak_cutouts (1) no longer matches the number of
+    # finite centroids (2).
+    mismatched_cutouts = _peak_box_cutouts(image, coords[:1], _PEAK_SCENE_FWHM)
+
+    with pytest.raises(ValueError, match="peak_cutouts"):
+        _peak_scene_photometry(image, coords, None, peak_cutouts=mismatched_cutouts)
+
+
+@pytest.mark.parametrize(
+    "bad_geometry",
+    [
+        (np.array([1.0]), (5.0, 8.0), 3.0),  # 3-element tuple, not 2
+        np.array([1.0, 5.0, 8.0]),  # bare array, not (radii, annulus)
+    ],
+)
+def test_measure_photometry_rejects_invalid_geometry(make_test_image, bad_geometry):
+    """A malformed ``geometry`` raises a clear ValueError, not an unpack error."""
+    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    egain = 0.3
+
+    with pytest.raises(ValueError, match="geometry"):
+        measure_photometry(
+            image,
+            coords,
+            fwhm,
+            egain,
+            mask,
+            geometry=bad_geometry,
+        )

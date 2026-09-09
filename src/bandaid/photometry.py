@@ -1729,15 +1729,27 @@ def annulus_sigma_clip_stats(data, coords, r_in, r_out, input_mask=None, sigma=3
     return aperstats.median, aperstats.std
 
 
+def _peak_box_side(fwhm):
+    """
+    Compute the peak-count cutout box side, in pixels.
+
+    Parameters
+    ----------
+    fwhm : float
+        FWHM of the PSF in pixels.
+
+    Returns
+    -------
+    int
+        ``~2*fwhm``, rounded up and floored at 2 px so the box keeps at
+        least one pixel of every Bayer channel.
+    """
+    return max(int(np.ceil(2 * fwhm)), 2)
+
+
 def _peak_box_cutouts(calibrated_data, centroid_coords, fwhm):
     """
-    Extract the raw (unmasked) peak-count box cutouts, shared across channels.
-
-    The box `measure_photometry` samples for ``peak_count`` is cut from the
-    full ``calibrated_data`` at the measured centroids; only the subsequent
-    per-channel mask application and ``nanmax`` differ between TR/TG/TB
-    (Change B), so the cutout extraction itself can be computed once per frame
-    and reused instead of every channel call re-extracting the same cutout.
+    Extract the raw (unmasked) peak-count box cutouts.
 
     Parameters
     ----------
@@ -1755,12 +1767,18 @@ def _peak_box_cutouts(calibrated_data, centroid_coords, fwhm):
         The extracted box cutouts for the finite-centroid rows, shaped
         ``(n_finite, box_side, box_side)``. None if no row has a finite
         centroid (nothing to cut).
+
+    Notes
+    -----
+    The box is channel-independent -- only the subsequent per-channel mask
+    application and ``nanmax`` differ -- so it can be computed once per frame
+    and reused instead of every channel call re-extracting the same cutout.
     """
     centroid_xy = np.atleast_2d(np.asarray(centroid_coords, dtype=float))
     finite_centroid = np.all(np.isfinite(centroid_xy), axis=1)
     if not np.any(finite_centroid):
         return None
-    box_side = max(int(np.ceil(2 * fwhm)), 2)
+    box_side = _peak_box_side(fwhm)
     return utils.cutout(
         calibrated_data,
         centroid_xy[finite_centroid],
@@ -1771,12 +1789,6 @@ def _peak_box_cutouts(calibrated_data, centroid_coords, fwhm):
 def _aperture_annulus_geometry(fwhm, radii, annulus):
     """
     Compute the fwhm-scaled aperture radii and background annulus radii.
-
-    Depends only on ``fwhm``/``radii``/``annulus``, never the mask, so it is
-    bit-identical across Bayer channels for a given frame. `measure_photometry`
-    calls this internally by default; a caller measuring multiple channels for
-    one frame can instead precompute it once and reuse it via the ``geometry``
-    kwarg (Change B).
 
     Parameters
     ----------
@@ -1803,6 +1815,11 @@ def _aperture_annulus_geometry(fwhm, radii, annulus):
         If `annulus` is not a 2-element (inner, outer) sequence with the outer
         radius larger than the inner, or if the resulting annulus is not
         larger than the largest aperture.
+
+    Notes
+    -----
+    Depends only on ``fwhm``/``radii``/``annulus``, never the mask, so it is
+    bit-identical across Bayer channels for a given frame.
     """
     msg = (
         "annulus must be a 2-element (inner, outer) sequence with "
@@ -1872,19 +1889,12 @@ def measure_photometry(
         ``outer > inner``. Defaults to the module-level `ANNULUS`.
     peak_cutouts : numpy.ndarray or None, optional
         Precomputed raw (unmasked) peak-count box cutouts for the
-        finite-centroid rows, e.g. from `_peak_box_cutouts`. When given, skips
-        recomputing the cutout extraction -- it is channel-independent, only
-        the subsequent per-channel mask application and ``nanmax`` differ -- so
-        a caller measuring multiple Bayer channels for one frame can compute it
-        once and reuse it (Change B). Default None recomputes it internally.
+        finite-centroid rows, from `_peak_box_cutouts`. If None (default),
+        computed internally.
     geometry : tuple or None, optional
         Precomputed ``(apertures_radii, annulus_radii)`` from
-        `_aperture_annulus_geometry`. It depends only on fwhm/radii/annulus,
-        never the mask, so it is bit-identical across Bayer channels for a
-        given frame; a caller measuring multiple channels for one frame can
-        compute it once and reuse it (Change B). When given, `radii` and
-        `annulus` are ignored. Default None computes it from `radii`/
-        `annulus`/`fwhm`.
+        `_aperture_annulus_geometry`. When given, `radii`/`annulus` are
+        ignored. If None (default), computed from `radii`/`annulus`/`fwhm`.
 
     Returns
     -------
@@ -1892,11 +1902,23 @@ def measure_photometry(
         Keys: tot_count, count_err, bkgd_count, peak_count, snr,
         total_bkg, fluxes, aperture_radii, annulus_radii.
 
+    Raises
+    ------
+    ValueError
+        If `geometry` is not a 2-element ``(apertures_radii, annulus_radii)``
+        sequence; if `geometry` is None and the `annulus` computed from
+        `radii`/`annulus`/`fwhm` is malformed or not usable (see
+        `_aperture_annulus_geometry`); or if a caller-supplied `peak_cutouts`
+        does not have one row per finite-centroid row in `centroid_coords`.
+
     Notes
     -----
     When ``geometry`` is None (the default), `_aperture_annulus_geometry`
-    validates `annulus` and raises ``ValueError`` (propagated unchanged) if it
-    is not a 2-element sequence with the outer radius larger than the inner.
+    computes it from `radii`/`annulus`/`fwhm`, and its ``Raises`` section
+    applies unchanged: a malformed `annulus`, or an annulus that is not
+    usable after expanding to the largest aperture. A caller-supplied
+    ``geometry`` is checked only for shape (a 2-element sequence), not
+    re-validated against those same rules.
 
     The noise model behind ``count_err``/``snr`` sums, in quadrature, the
     source Poisson noise and the per-pixel background scatter (the annulus
@@ -1931,7 +1953,17 @@ def measure_photometry(
             fwhm, radii, annulus
         )
     else:
-        apertures_radii, annulus_radii = geometry
+        # Unpacking turns both non-sequences (TypeError) and wrong-length
+        # sequences (ValueError) into the same actionable ValueError, mirroring
+        # the `annulus` check in `_aperture_annulus_geometry`.
+        msg = (
+            "geometry must be a 2-element (apertures_radii, annulus_radii) "
+            f"sequence; got {geometry!r}."
+        )
+        try:
+            apertures_radii, annulus_radii = geometry
+        except (TypeError, ValueError):
+            raise ValueError(msg) from None
 
     # photutils apertures reject non-finite positions outright, but a failed
     # centroid can legitimately be NaN. Give those rows a harmless in-frame
@@ -1989,16 +2021,20 @@ def measure_photometry(
     # TR/TG/TB peaks bit-identical.
     # ~2*FWHM per side, but never below the 2-pixel Bayer period so any fully
     # in-frame box keeps at least one unmasked pixel from every channel.
-    box_side = max(int(np.ceil(2 * fwhm)), 2)
+    box_side = _peak_box_side(fwhm)
     peaks = np.full(centroid_xy.shape[0], np.nan)
     if np.any(finite_centroid):
         box = (box_side, box_side)
         if peak_cutouts is None:
-            peak_cutouts = utils.cutout(
-                calibrated_data,
-                centroid_xy[finite_centroid],
-                box,
+            peak_cutouts = _peak_box_cutouts(calibrated_data, centroid_coords, fwhm)
+        n_finite = int(np.count_nonzero(finite_centroid))
+        if peak_cutouts.shape[0] != n_finite:
+            msg = (
+                f"peak_cutouts has {peak_cutouts.shape[0]} rows but there are "
+                f"{n_finite} finite-centroid rows; it must be precomputed from "
+                "the same centroid_coords passed to this call."
             )
+            raise ValueError(msg)
         if mask is not None:
             # Apply the channel mask at cutout scale rather than NaN-ing a
             # full-frame copy of the image. The mask is cut as float because a
@@ -2372,14 +2408,12 @@ def build_photometry_table(
         ``config.drift.drift_cap_pix``.
     peak_cutouts : numpy.ndarray or None, optional
         Precomputed raw peak-count box cutouts, passed through to
-        `measure_photometry` (e.g. from `_peak_box_cutouts`, computed once by
-        `process_one_image` and reused across Bayer channels; Change B). If
-        None (default), `measure_photometry` computes it internally.
+        `measure_photometry` (e.g. from `_peak_box_cutouts`). If None
+        (default), `measure_photometry` computes it internally.
     geometry : tuple or None, optional
         Precomputed ``(apertures_radii, annulus_radii)``, passed through to
-        `measure_photometry` (e.g. from `_aperture_annulus_geometry`, computed
-        once by `process_one_image` and reused across Bayer channels; Change
-        B). When given, `radii`/`annulus` are ignored. If None (default),
+        `measure_photometry` (e.g. from `_aperture_annulus_geometry`). When
+        given, `radii`/`annulus` are ignored. If None (default),
         `measure_photometry` computes it from `radii`/`annulus`.
 
     Returns
@@ -2574,14 +2608,11 @@ def process_one_image(
         if msg := _missing_rgb_channels(bayer_masks):
             raise ValueError(msg)
 
-    # The peak-count box cutout is channel-independent (only the subsequent
-    # per-channel mask application and nanmax differ), so compute it once per
-    # frame here and reuse it across the RGB channel calls below instead of
-    # every call re-extracting the same cutout from calibrated_data (Change B).
+    # Computed once per frame and reused across Bayer channels (see
+    # _peak_box_cutouts's Notes).
     peak_cutouts = _peak_box_cutouts(img.calibrated_data, img.centroid_coords, img.fwhm)
-    # The fwhm-scaled aperture/annulus geometry likewise depends only on
-    # fwhm/radii/annulus, never the mask, so it too is bit-identical across
-    # the RGB channels for this frame; compute it once and reuse it (Change B).
+    # Computed once per frame and reused across Bayer channels (see
+    # _aperture_annulus_geometry's Notes).
     geometry = _aperture_annulus_geometry(
         img.fwhm, config.apertures.radii, config.apertures.annulus
     )

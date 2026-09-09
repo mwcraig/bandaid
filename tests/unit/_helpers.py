@@ -125,7 +125,7 @@ def _peak_scene_photometry(image, centroid_coords, mask, peak_cutouts=None):
         Bayer channel mask (True = excluded), or None for the full frame.
     peak_cutouts : numpy.ndarray or None, optional
         Precomputed peak-count box cutouts forwarded to
-        ``measure_photometry`` (Change B). By default None.
+        ``measure_photometry``. By default None.
 
     Returns
     -------
