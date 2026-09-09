@@ -152,10 +152,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     column was overwritten by the TR/TG/TB recombination anyway (#21), so the
     table is built from the RGB tables alone (~10% faster per frame,
     `process_one_image` 0.386 -> 0.348 s; `.star` output byte-identical on
-    real Seestar frames). The columns that cannot be recombined (`fluxes`,
-    `total_bkg`, `bkgd_std`) are no longer created for L4 rather than removed
-    afterwards. `process_one_image` rejects a mask dict that gives "L4" a mask
-    or lacks TR/TG/TB with a `ValueError` before photometering anything.
+    real Seestar frames apart from the edge-star `peak_count` fix below). The
+    columns that cannot be recombined (`fluxes`, `total_bkg`, `bkgd_std`) are
+    no longer created for L4 rather than removed afterwards.
+    `process_one_image` rejects a mask dict that gives "L4" a mask or lacks
+    TR/TG/TB with a `ValueError` before photometering anything.
 
 ### Fixed
 

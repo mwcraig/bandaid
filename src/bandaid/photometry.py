@@ -2225,8 +2225,8 @@ def _missing_rgb_channels(channels):
     if not missing:
         return None
     return (
-        f"the L4 channel requires {sorted(missing)} in by_filter_data "
-        "before it can be built or combined."
+        f"the L4 channel requires {sorted(missing)} alongside it; "
+        f"got channels {sorted(channels)}."
     )
 
 
