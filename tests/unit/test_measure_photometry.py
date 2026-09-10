@@ -588,3 +588,73 @@ def test_measure_photometry_rejects_invalid_geometry(make_test_image, bad_geomet
             mask,
             geometry=bad_geometry,
         )
+
+
+def test_measure_photometry_coerces_scalar_geometry_apertures_radii(make_test_image):
+    """
+    A scalar ``apertures_radii`` in ``geometry`` is coerced like a 1-element array.
+
+    ``geometry=(2.5, (4.0, 8.0))`` is the natural hand-built value for a
+    single aperture radius, but a bare scalar is not iterable; before the
+    coercion fix this reached eloy's ``aperture_photometry`` unchanged and
+    died with ``TypeError: 'float' object is not iterable`` (#121 review).
+    It must now be treated exactly like the equivalent 1-element array.
+    """
+    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    egain = 0.3
+
+    scalar_photom = measure_photometry(
+        image, coords, fwhm, egain, mask, geometry=(2.5, (4.0, 8.0))
+    )
+    array_photom = measure_photometry(
+        image, coords, fwhm, egain, mask, geometry=(np.array([2.5]), (4.0, 8.0))
+    )
+
+    np.testing.assert_array_equal(scalar_photom["tot_count"], array_photom["tot_count"])
+    np.testing.assert_array_equal(scalar_photom["count_err"], array_photom["count_err"])
+    assert scalar_photom["aperture_radii"] == array_photom["aperture_radii"]
+
+
+def test_measure_photometry_rejects_reversed_geometry_annulus(make_test_image):
+    """A reversed ``annulus_radii`` in ``geometry`` raises a clear ValueError (#121)."""
+    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    egain = 0.3
+
+    with pytest.raises(ValueError, match="geometry"):
+        measure_photometry(
+            image,
+            coords,
+            fwhm,
+            egain,
+            mask,
+            geometry=(np.array([1.0]), (8.0, 4.0)),
+        )
+
+
+def test_measure_photometry_rejects_peak_cutouts_with_wrong_box_side(make_test_image):
+    """
+    A ``peak_cutouts`` built from a different ``fwhm`` (box side) raises (#121 review).
+
+    It has the same row count as the finite centroids but a different box
+    side -- that used to pass the old row-count-only guard and silently read
+    the wrong-sized box instead of raising.
+    """
+    image, coords = _bright_neighbor_image(make_test_image)
+
+    wrong_fwhm_cutouts = _peak_box_cutouts(image, coords, 1.0)
+
+    with pytest.raises(ValueError, match="peak_cutouts"):
+        _peak_image_photometry(image, coords, None, peak_cutouts=wrong_fwhm_cutouts)
+
+
+def test_measure_photometry_accepts_peak_cutouts_as_plain_list(make_test_image):
+    """A ``peak_cutouts`` passed as a plain nested list works like an ndarray."""
+    image, coords = _bright_neighbor_image(make_test_image)
+
+    cutouts = _peak_box_cutouts(image, coords, _PEAK_IMAGE_FWHM)
+    list_photom = _peak_image_photometry(
+        image, coords, None, peak_cutouts=cutouts.tolist()
+    )
+    array_photom = _peak_image_photometry(image, coords, None, peak_cutouts=cutouts)
+
+    np.testing.assert_array_equal(list_photom["peak_count"], array_photom["peak_count"])
