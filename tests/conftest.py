@@ -29,9 +29,11 @@ def _no_iers_download():
     the bundled IERS-B table is far below anything airmass precision can
     resolve.
     """
-    with iers_conf.set_temp("auto_download", False):  # noqa: SIM117, FBT003
-        with iers_conf.set_temp("iers_degraded_accuracy", "ignore"):
-            yield
+    with (
+        iers_conf.set_temp("auto_download", value=False),
+        iers_conf.set_temp("iers_degraded_accuracy", value="ignore"),
+    ):
+        yield
 
 
 @pytest.fixture
