@@ -6,11 +6,11 @@ import astropy.units as u
 import numpy as np
 import pytest
 from _helpers import (
-    _bright_neighbor_scene,
+    _bright_neighbor_image,
     _fake_phot_factory,
     _make_image_data,
     _make_tan_wcs,
-    _peak_scene_photometry,
+    _peak_image_photometry,
     _single_source_photometry_inputs,
     filter_table,
 )
@@ -457,12 +457,12 @@ class TestCalculateL4Quantities:
         ``measure_photometry`` per channel, the inputs must now differ for
         every star and the L4 value must be their elementwise maximum.
         """
-        image, coords = _bright_neighbor_scene(make_test_image)
+        image, coords = _bright_neighbor_image(make_test_image)
         masks = bayer_masks_rggb(image.shape)
 
         by_filter = {}
         for name, mask in masks.items():
-            phot = _peak_scene_photometry(image, coords, mask)
+            phot = _peak_image_photometry(image, coords, mask)
             by_filter[name] = filter_table(
                 phot["tot_count"],
                 phot["aperture_area"],

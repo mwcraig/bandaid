@@ -6,9 +6,9 @@ import numpy as np
 import pytest
 from _helpers import (
     SEED,
-    _PEAK_SCENE_FWHM,
-    _bright_neighbor_scene,
-    _peak_scene_photometry,
+    _PEAK_IMAGE_FWHM,
+    _bright_neighbor_image,
+    _peak_image_photometry,
     _single_source_photometry_inputs,
 )
 from astropy.stats import gaussian_fwhm_to_sigma, sigma_clipped_stats
@@ -341,9 +341,9 @@ def test_peak_count_is_the_targets_own_peak(make_test_image):
     the faint target reported peak_count ~5010 instead of its own ~110. The
     ~2*FWHM box anchored at the measured centroid must not reach it.
     """
-    image, coords = _bright_neighbor_scene(make_test_image)
+    image, coords = _bright_neighbor_image(make_test_image)
 
-    photom = _peak_scene_photometry(image, coords, None)
+    photom = _peak_image_photometry(image, coords, None)
 
     peak_target, peak_control = photom["peak_count"]
     # Both stars peak at ~110 (amplitude 100 + sky 10); anything approaching
@@ -362,11 +362,11 @@ def test_peak_count_respects_the_channel_mask(make_test_image, bayer_masks_rggb)
     the channels must come out in that strict order. Before the fix the mask
     was never applied and the TR/TG/TB columns were bit-identical.
     """
-    image, coords = _bright_neighbor_scene(make_test_image)
+    image, coords = _bright_neighbor_image(make_test_image)
     masks = bayer_masks_rggb(image.shape)
 
     peaks = {
-        name: _peak_scene_photometry(image, coords, mask)["peak_count"]
+        name: _peak_image_photometry(image, coords, mask)["peak_count"]
         for name, mask in masks.items()
     }
 
@@ -392,11 +392,11 @@ def test_peak_count_masked_star_at_frame_edge(
     pedestal.
     """
     sky = 10.0
-    image, _ = _bright_neighbor_scene(make_test_image, sky=sky)
+    image, _ = _bright_neighbor_image(make_test_image, sky=sky)
     masks = bayer_masks_rggb(image.shape)
     coords = np.array([[0.0, 0.0]])
 
-    photom = _peak_scene_photometry(image, coords, masks[channel])
+    photom = _peak_image_photometry(image, coords, masks[channel])
 
     assert photom["peak_count"][0] == sky
 
@@ -410,12 +410,12 @@ def test_peak_count_nan_for_non_finite_centroid(make_test_image):
     degrade to NaN (it is dropped downstream by the ``tot_count``/``count_err``
     filters) while every other row keeps its all-finite-run values.
     """
-    image, coords = _bright_neighbor_scene(make_test_image)
-    baseline = _peak_scene_photometry(image, coords, None)
+    image, coords = _bright_neighbor_image(make_test_image)
+    baseline = _peak_image_photometry(image, coords, None)
 
     bad_centroids = coords.copy()
     bad_centroids[0] = np.nan
-    photom = _peak_scene_photometry(image, bad_centroids, None)
+    photom = _peak_image_photometry(image, bad_centroids, None)
 
     assert np.isnan(photom["peak_count"][0])
     # The finite row is bit-identical to the all-finite run, for the peak and
@@ -437,12 +437,12 @@ def test_precomputed_peak_cutouts_match_internal_computation(make_test_image):
     via `_peak_box_cutouts` and pass it back in, instead of every channel call
     re-extracting the same cutout from ``calibrated_data``.
     """
-    image, coords = _bright_neighbor_scene(make_test_image)
+    image, coords = _bright_neighbor_image(make_test_image)
 
-    without = _peak_scene_photometry(image, coords, None)
+    without = _peak_image_photometry(image, coords, None)
 
-    cutouts = _peak_box_cutouts(image, coords, _PEAK_SCENE_FWHM)
-    with_precomputed = _peak_scene_photometry(image, coords, None, peak_cutouts=cutouts)
+    cutouts = _peak_box_cutouts(image, coords, _PEAK_IMAGE_FWHM)
+    with_precomputed = _peak_image_photometry(image, coords, None, peak_cutouts=cutouts)
 
     np.testing.assert_array_equal(without["peak_count"], with_precomputed["peak_count"])
 
@@ -457,13 +457,13 @@ def test_precomputed_peak_cutouts_match_internal_computation_with_channel_mask(
     is still applied on top of it, so this must match the fully-internal
     per-channel computation exactly, not just the unmasked case above.
     """
-    image, coords = _bright_neighbor_scene(make_test_image)
+    image, coords = _bright_neighbor_image(make_test_image)
     masks = bayer_masks_rggb(image.shape)
-    cutouts = _peak_box_cutouts(image, coords, _PEAK_SCENE_FWHM)
+    cutouts = _peak_box_cutouts(image, coords, _PEAK_IMAGE_FWHM)
 
     for mask in masks.values():
-        without = _peak_scene_photometry(image, coords, mask)
-        with_precomputed = _peak_scene_photometry(
+        without = _peak_image_photometry(image, coords, mask)
+        with_precomputed = _peak_image_photometry(
             image, coords, mask, peak_cutouts=cutouts
         )
         np.testing.assert_array_equal(
@@ -527,15 +527,15 @@ def test_peak_box_side(fwhm, expected):
 
 def test_measure_photometry_rejects_mismatched_peak_cutouts_shape(make_test_image):
     """A ``peak_cutouts`` with the wrong leading dimension raises a ValueError."""
-    image, coords = _bright_neighbor_scene(make_test_image)
+    image, coords = _bright_neighbor_image(make_test_image)
 
     # Precompute cutouts for a single coordinate, then call with two -- the
     # leading dimension of peak_cutouts (1) no longer matches the number of
     # finite centroids (2).
-    mismatched_cutouts = _peak_box_cutouts(image, coords[:1], _PEAK_SCENE_FWHM)
+    mismatched_cutouts = _peak_box_cutouts(image, coords[:1], _PEAK_IMAGE_FWHM)
 
     with pytest.raises(ValueError, match="peak_cutouts"):
-        _peak_scene_photometry(image, coords, None, peak_cutouts=mismatched_cutouts)
+        _peak_image_photometry(image, coords, None, peak_cutouts=mismatched_cutouts)
 
 
 @pytest.mark.parametrize(
