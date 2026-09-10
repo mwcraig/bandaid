@@ -19,6 +19,7 @@ from bandaid.photometry import (
     ANNULUS,
     RELATIVE_RADII,
     _aperture_annulus_geometry,
+    _finite_centroids,
     _peak_box_cutouts,
     _peak_box_side,
 )
@@ -422,6 +423,34 @@ def test_peak_count_nan_for_non_finite_centroid(make_test_image):
     # for the rest of the per-star outputs.
     for key in ("peak_count", "tot_count", "count_err", "bkgd_count", "snr"):
         assert photom[key][1] == baseline[key][1]
+
+
+# --- Shared finite-centroid helper ---
+
+
+def test_finite_centroids_flags_non_finite_rows():
+    """
+    ``_finite_centroids`` promotes to 2D and flags rows with a non-finite coordinate.
+
+    ``_peak_box_cutouts`` and ``measure_photometry`` both derive their
+    finite-centroid mask from this one helper (#121 review) instead of each
+    repeating the same two lines; a row is only finite when both of its
+    coordinates are.
+    """
+    coords = np.array([[1.0, 2.0], [np.nan, 3.0], [4.0, np.nan], [5.0, 6.0]])
+
+    centroid_xy, finite_centroid = _finite_centroids(coords)
+
+    np.testing.assert_array_equal(centroid_xy, coords)
+    np.testing.assert_array_equal(finite_centroid, [True, False, False, True])
+
+
+def test_finite_centroids_promotes_1d_input_to_2d():
+    """A single ``(x, y)`` pair is promoted to a 2D, one-row array."""
+    centroid_xy, finite_centroid = _finite_centroids((1.0, 2.0))
+
+    assert centroid_xy.shape == (1, 2)
+    np.testing.assert_array_equal(finite_centroid, [True])
 
 
 # --- Hoisted peak-cutout extraction and aperture/annulus geometry ---

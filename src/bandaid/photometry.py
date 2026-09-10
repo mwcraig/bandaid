@@ -1747,6 +1747,31 @@ def _peak_box_side(fwhm):
     return max(int(np.ceil(2 * fwhm)), 2)
 
 
+def _finite_centroids(centroid_coords):
+    """
+    Promote centroid coordinates to 2D and flag rows with a finite centroid.
+
+    Shared by `_peak_box_cutouts` and `measure_photometry` so the two only
+    ever compute one definition of "finite row" between them.
+
+    Parameters
+    ----------
+    centroid_coords : array-like
+        Centroided star coordinates.
+
+    Returns
+    -------
+    centroid_xy : numpy.ndarray
+        `centroid_coords` as an at-least-2D float array.
+    finite_centroid : numpy.ndarray
+        Boolean mask, one entry per row of `centroid_xy`, True where both of
+        that row's coordinates are finite.
+    """
+    centroid_xy = np.atleast_2d(np.asarray(centroid_coords, dtype=float))
+    finite_centroid = np.all(np.isfinite(centroid_xy), axis=1)
+    return centroid_xy, finite_centroid
+
+
 def _peak_box_cutouts(calibrated_data, centroid_coords, fwhm):
     """
     Extract the raw (unmasked) peak-count box cutouts.
@@ -1774,8 +1799,7 @@ def _peak_box_cutouts(calibrated_data, centroid_coords, fwhm):
     application and ``nanmax`` differ -- so it can be computed once per frame
     and reused instead of every channel call re-extracting the same cutout.
     """
-    centroid_xy = np.atleast_2d(np.asarray(centroid_coords, dtype=float))
-    finite_centroid = np.all(np.isfinite(centroid_xy), axis=1)
+    centroid_xy, finite_centroid = _finite_centroids(centroid_coords)
     if not np.any(finite_centroid):
         return None
     box_side = _peak_box_side(fwhm)
@@ -1969,8 +1993,7 @@ def measure_photometry(
     # centroid can legitimately be NaN. Give those rows a harmless in-frame
     # placeholder for the aperture calls, then NaN out their per-star outputs
     # below so the rows are dropped downstream per the NaN contract.
-    centroid_xy = np.atleast_2d(np.asarray(centroid_coords, dtype=float))
-    finite_centroid = np.all(np.isfinite(centroid_xy), axis=1)
+    centroid_xy, finite_centroid = _finite_centroids(centroid_coords)
     safe_coords = np.where(finite_centroid[:, None], centroid_xy, 0.0)
 
     flux = photometry.aperture_photometry(

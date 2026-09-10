@@ -343,16 +343,29 @@ class TestBuildPhotometryTable:
         assert len(claimed) == len(set(claimed)), "a column is in two tuples"
         assert set(claimed) == set(table.colnames)
 
-    # --- Hoisted peak-cutout extraction ---
+    # --- Hoisted peak-cutout extraction and aperture/annulus geometry ---
 
-    def test_table_identical_with_and_without_precomputed_peak_cutouts(
-        self, make_test_image
+    @pytest.mark.parametrize(
+        ("kwarg", "precompute"),
+        [
+            ("peak_cutouts", _peak_box_cutouts),
+            (
+                "geometry",
+                lambda image, coords, fwhm: _aperture_annulus_geometry(
+                    fwhm, RELATIVE_RADII, ANNULUS
+                ),
+            ),
+        ],
+    )
+    def test_table_identical_with_and_without_precomputed(
+        self, make_test_image, kwarg, precompute
     ):
         """
-        ``build_photometry_table`` is identical with/without ``peak_cutouts``.
+        ``build_photometry_table`` is identical with/without a precomputed hoist kwarg.
 
-        Runs real (non-mocked) ``measure_photometry`` end-to-end so the actual
-        hoist is exercised, not a stub.
+        Covers both hoisted arguments -- ``peak_cutouts`` and ``geometry`` --
+        with the same body. Runs real (non-mocked) ``measure_photometry``
+        end-to-end so the actual hoist is exercised, not a stub.
         """
         image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
         img = _make_image_data(_make_tan_wcs(image.shape), coords, None)
@@ -360,34 +373,9 @@ class TestBuildPhotometryTable:
 
         without = build_photometry_table(img, mask=mask)
 
-        cutouts = _peak_box_cutouts(image, coords, fwhm)
-        with_precomputed = build_photometry_table(img, mask=mask, peak_cutouts=cutouts)
-
-        assert without.colnames == with_precomputed.colnames
-        for col in without.colnames:
-            np.testing.assert_array_equal(
-                np.asarray(without[col]), np.asarray(with_precomputed[col])
-            )
-
-    # --- Hoisted aperture/annulus geometry ---
-
-    def test_table_identical_with_and_without_precomputed_geometry(
-        self, make_test_image
-    ):
-        """
-        ``build_photometry_table`` is identical with/without ``geometry``.
-
-        Runs real (non-mocked) ``measure_photometry`` end-to-end so the actual
-        hoist is exercised, not a stub.
-        """
-        image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
-        img = _make_image_data(_make_tan_wcs(image.shape), coords, None)
-        img.calibrated_data = image
-
-        without = build_photometry_table(img, mask=mask)
-
-        geometry = _aperture_annulus_geometry(fwhm, RELATIVE_RADII, ANNULUS)
-        with_precomputed = build_photometry_table(img, mask=mask, geometry=geometry)
+        with_precomputed = build_photometry_table(
+            img, mask=mask, **{kwarg: precompute(image, coords, fwhm)}
+        )
 
         assert without.colnames == with_precomputed.colnames
         for col in without.colnames:
