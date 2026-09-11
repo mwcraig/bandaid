@@ -18,21 +18,18 @@ def _no_iers_download():
 
     The airmass derivation (``bandaid.photometry``, near its ``EarthLocation``
     construction) runs ``pointing.transform_to(AltAz(obstime=..., ...))``,
-    and astropy auto-downloads the IERS-A table (``finals2000A.all``) the
-    first time an ``obstime`` falls past the bundled IERS-B range. On a
-    fresh CI runner with no astropy cache, that download can time out; with
-    ``filterwarnings = ["error", ...]`` in ``pyproject.toml`` the resulting
-    ``IERSWarning`` is promoted to an error, which is exactly what failed six
-    tests on Python 3.12/3.13 in CI run 34514214156. Pinning
-    ``auto_download`` off for the session avoids the network entirely rather
-    than papering over the warning; the UT1-UTC and polar-motion error from
-    the bundled IERS-B table is far below anything airmass precision can
-    resolve.
+    and ``IERS_Auto.open()`` attempts to download the IERS-A table
+    (``finals2000A.all``) on first use whenever ``auto_download`` is True,
+    regardless of ``obstime``. On a fresh CI runner with no astropy cache,
+    that download can time out; with ``filterwarnings = ["error", ...]`` in
+    ``pyproject.toml`` the resulting ``IERSWarning`` is promoted to an error,
+    which is exactly what failed six tests on Python 3.12/3.13 in CI run
+    34514214156. Pinning ``auto_download`` off for the session avoids the
+    network entirely rather than papering over the warning; the UT1-UTC and
+    polar-motion error from the bundled IERS-B table is far below anything
+    airmass precision can resolve.
     """
-    with (
-        iers_conf.set_temp("auto_download", value=False),
-        iers_conf.set_temp("iers_degraded_accuracy", value="ignore"),
-    ):
+    with iers_conf.set_temp("auto_download", value=False):
         yield
 
 

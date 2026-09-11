@@ -631,6 +631,63 @@ def test_measure_photometry_rejects_reversed_geometry_annulus(make_test_image):
         )
 
 
+def test_measure_photometry_rejects_geometry_annulus_inside_apertures(make_test_image):
+    """
+    A ``geometry`` whose annulus lies inside the largest aperture raises (#121 review).
+
+    ``_aperture_annulus_geometry`` (the computed path) clamps the annulus inner
+    radius out to at least the largest aperture radius and requires the outer
+    radius to still be larger afterward; `_coerce_geometry` (the caller-supplied
+    path) must apply the identical clamp-then-check instead of only ordering
+    ``outer > inner`` on the raw values, or a caller-supplied geometry can run
+    with the annulus inside the aperture.
+    """
+    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    egain = 0.3
+
+    with pytest.raises(ValueError, match="no usable background annulus"):
+        measure_photometry(
+            image,
+            coords,
+            fwhm,
+            egain,
+            mask,
+            geometry=(np.array([10.0]), (4.0, 8.0)),
+        )
+
+
+def test_measure_photometry_clamps_geometry_annulus_inner_radius(make_test_image):
+    """
+    A ``geometry`` annulus is clamped like the computed path clamps it (#121 review).
+
+    An inner annulus radius below the largest aperture radius, but an outer
+    radius still above it, is a usable-but-overlapping annulus: the computed
+    path silently pushes the inner radius out to the largest aperture radius
+    rather than raising, and `_coerce_geometry` must do the same instead of
+    passing the caller's unclamped inner radius through unchanged.
+    """
+    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    egain = 0.3
+
+    apertures_radii = np.array([5.0])
+    annulus_radii = (4.0, 8.0)
+    expected_apertures, expected_annulus = _aperture_annulus_geometry(
+        1.0, apertures_radii, annulus_radii
+    )
+
+    photom = measure_photometry(
+        image,
+        coords,
+        fwhm,
+        egain,
+        mask,
+        geometry=(apertures_radii, annulus_radii),
+    )
+
+    assert photom["aperture_radii"] == expected_apertures[0]
+    assert photom["annulus_radii"] == expected_annulus
+
+
 def test_measure_photometry_rejects_peak_cutouts_with_wrong_box_side(make_test_image):
     """
     A ``peak_cutouts`` built from a different ``fwhm`` (box side) raises (#121 review).
@@ -658,3 +715,54 @@ def test_measure_photometry_accepts_peak_cutouts_as_plain_list(make_test_image):
     array_photom = _peak_image_photometry(image, coords, None, peak_cutouts=cutouts)
 
     np.testing.assert_array_equal(list_photom["peak_count"], array_photom["peak_count"])
+
+
+def test_measure_photometry_peak_cutouts_cast_to_float_not_image_dtype(make_test_image):
+    """
+    A ``peak_cutouts`` is cast to float, not ``calibrated_data``'s dtype (#121 review).
+
+    ``_peak_box_cutouts`` pads out-of-frame pixels with NaN, so a star near the
+    frame edge has NaN entries in its cutout. Casting a caller-supplied
+    ``peak_cutouts`` to an integer-dtype image's dtype would silently turn that
+    NaN padding into 0, which (with ``mask=None``) flows into ``nanmax`` and
+    produces a wrong ``peak_count`` for that star instead of ignoring the
+    padding. This must match the value ``measure_photometry`` gets computing
+    ``peak_count`` internally on the float image (no ``peak_cutouts`` passed).
+    """
+    fwhm = _PEAK_IMAGE_FWHM
+    shape = (60, 60)
+    sigma = fwhm * gaussian_fwhm_to_sigma
+    source_properties = Table(
+        {
+            "amplitude": [500.0],
+            "x_mean": [2.0],
+            "y_mean": [2.0],
+            "x_stddev": [sigma],
+            "y_stddev": [sigma],
+        },
+    )
+    float_image = make_test_image(shape, source_properties, include_noise=False) + 10.0
+    coords = np.array([[2.0, 2.0]])
+
+    cutouts = _peak_box_cutouts(float_image, coords, fwhm)
+    assert np.any(np.isnan(cutouts)), "expected NaN edge padding in the cutout"
+
+    int_image = float_image.astype(np.int32)
+
+    expected = measure_photometry(
+        float_image, coords, fwhm, 1.0, None, radii=(1.0,), annulus=(5.0, 8.0)
+    )
+    from_int_image_with_precomputed = measure_photometry(
+        int_image,
+        coords,
+        fwhm,
+        1.0,
+        None,
+        radii=(1.0,),
+        annulus=(5.0, 8.0),
+        peak_cutouts=cutouts,
+    )
+
+    np.testing.assert_array_equal(
+        expected["peak_count"], from_int_image_with_precomputed["peak_count"]
+    )
