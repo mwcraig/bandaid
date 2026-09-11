@@ -6,8 +6,9 @@ import numpy as np
 import pytest
 from _helpers import (
     SEED,
-    _bright_neighbor_scene,
-    _peak_scene_photometry,
+    _PEAK_IMAGE_FWHM,
+    _bright_neighbor_image,
+    _peak_image_photometry,
     _single_source_photometry_inputs,
 )
 from astropy.stats import gaussian_fwhm_to_sigma, sigma_clipped_stats
@@ -17,6 +18,10 @@ from bandaid import measure_photometry
 from bandaid.photometry import (
     ANNULUS,
     RELATIVE_RADII,
+    _aperture_annulus_geometry,
+    _finite_centroids,
+    _peak_box_cutouts,
+    _peak_box_side,
 )
 
 
@@ -337,9 +342,9 @@ def test_peak_count_is_the_targets_own_peak(make_test_image):
     the faint target reported peak_count ~5010 instead of its own ~110. The
     ~2*FWHM box anchored at the measured centroid must not reach it.
     """
-    image, coords = _bright_neighbor_scene(make_test_image)
+    image, coords = _bright_neighbor_image(make_test_image)
 
-    photom = _peak_scene_photometry(image, coords, None)
+    photom = _peak_image_photometry(image, coords, None)
 
     peak_target, peak_control = photom["peak_count"]
     # Both stars peak at ~110 (amplitude 100 + sky 10); anything approaching
@@ -358,11 +363,11 @@ def test_peak_count_respects_the_channel_mask(make_test_image, bayer_masks_rggb)
     the channels must come out in that strict order. Before the fix the mask
     was never applied and the TR/TG/TB columns were bit-identical.
     """
-    image, coords = _bright_neighbor_scene(make_test_image)
+    image, coords = _bright_neighbor_image(make_test_image)
     masks = bayer_masks_rggb(image.shape)
 
     peaks = {
-        name: _peak_scene_photometry(image, coords, mask)["peak_count"]
+        name: _peak_image_photometry(image, coords, mask)["peak_count"]
         for name, mask in masks.items()
     }
 
@@ -388,11 +393,11 @@ def test_peak_count_masked_star_at_frame_edge(
     pedestal.
     """
     sky = 10.0
-    image, _ = _bright_neighbor_scene(make_test_image, sky=sky)
+    image, _ = _bright_neighbor_image(make_test_image, sky=sky)
     masks = bayer_masks_rggb(image.shape)
     coords = np.array([[0.0, 0.0]])
 
-    photom = _peak_scene_photometry(image, coords, masks[channel])
+    photom = _peak_image_photometry(image, coords, masks[channel])
 
     assert photom["peak_count"][0] == sky
 
@@ -406,15 +411,358 @@ def test_peak_count_nan_for_non_finite_centroid(make_test_image):
     degrade to NaN (it is dropped downstream by the ``tot_count``/``count_err``
     filters) while every other row keeps its all-finite-run values.
     """
-    image, coords = _bright_neighbor_scene(make_test_image)
-    baseline = _peak_scene_photometry(image, coords, None)
+    image, coords = _bright_neighbor_image(make_test_image)
+    baseline = _peak_image_photometry(image, coords, None)
 
     bad_centroids = coords.copy()
     bad_centroids[0] = np.nan
-    photom = _peak_scene_photometry(image, bad_centroids, None)
+    photom = _peak_image_photometry(image, bad_centroids, None)
 
     assert np.isnan(photom["peak_count"][0])
     # The finite row is bit-identical to the all-finite run, for the peak and
     # for the rest of the per-star outputs.
     for key in ("peak_count", "tot_count", "count_err", "bkgd_count", "snr"):
         assert photom[key][1] == baseline[key][1]
+
+
+# --- Shared finite-centroid helper ---
+
+
+def test_finite_centroids_flags_non_finite_rows():
+    """
+    ``_finite_centroids`` promotes to 2D and flags rows with a non-finite coordinate.
+
+    ``_peak_box_cutouts`` and ``measure_photometry`` both derive their
+    finite-centroid mask from this one helper (#121 review) instead of each
+    repeating the same two lines; a row is only finite when both of its
+    coordinates are.
+    """
+    coords = np.array([[1.0, 2.0], [np.nan, 3.0], [4.0, np.nan], [5.0, 6.0]])
+
+    centroid_xy, finite_centroid = _finite_centroids(coords)
+
+    np.testing.assert_array_equal(centroid_xy, coords)
+    np.testing.assert_array_equal(finite_centroid, [True, False, False, True])
+
+
+def test_finite_centroids_promotes_1d_input_to_2d():
+    """A single ``(x, y)`` pair is promoted to a 2D, one-row array."""
+    centroid_xy, finite_centroid = _finite_centroids((1.0, 2.0))
+
+    assert centroid_xy.shape == (1, 2)
+    np.testing.assert_array_equal(finite_centroid, [True])
+
+
+# --- Hoisted peak-cutout extraction and aperture/annulus geometry ---
+
+
+def test_precomputed_peak_cutouts_match_internal_computation(make_test_image):
+    """
+    A precomputed ``peak_cutouts`` array matches the internal computation.
+
+    The raw (unmasked) peak-count box cutout is channel-independent -- only
+    the subsequent per-channel mask application and ``nanmax`` differ -- so a
+    caller measuring multiple Bayer channels for one frame can compute it once
+    via `_peak_box_cutouts` and pass it back in, instead of every channel call
+    re-extracting the same cutout from ``calibrated_data``.
+    """
+    image, coords = _bright_neighbor_image(make_test_image)
+
+    without = _peak_image_photometry(image, coords, None)
+
+    cutouts = _peak_box_cutouts(image, coords, _PEAK_IMAGE_FWHM)
+    with_precomputed = _peak_image_photometry(image, coords, None, peak_cutouts=cutouts)
+
+    np.testing.assert_array_equal(without["peak_count"], with_precomputed["peak_count"])
+
+
+def test_precomputed_peak_cutouts_match_internal_computation_with_channel_mask(
+    make_test_image, bayer_masks_rggb
+):
+    """
+    A precomputed ``peak_cutouts`` still matches internal computation per channel.
+
+    The precomputed cutout is the raw (unmasked) box; each channel's own mask
+    is still applied on top of it, so this must match the fully-internal
+    per-channel computation exactly, not just the unmasked case above.
+    """
+    image, coords = _bright_neighbor_image(make_test_image)
+    masks = bayer_masks_rggb(image.shape)
+    cutouts = _peak_box_cutouts(image, coords, _PEAK_IMAGE_FWHM)
+
+    for mask in masks.values():
+        without = _peak_image_photometry(image, coords, mask)
+        with_precomputed = _peak_image_photometry(
+            image, coords, mask, peak_cutouts=cutouts
+        )
+        np.testing.assert_array_equal(
+            without["peak_count"], with_precomputed["peak_count"]
+        )
+
+
+def test_precomputed_geometry_matches_internal_computation(make_test_image):
+    """
+    A precomputed ``geometry`` tuple matches the internal computation.
+
+    The fwhm-scaled aperture radii and background annulus radii depend only on
+    fwhm/radii/annulus, never the mask, so they are bit-identical across Bayer
+    channels for a given frame. A caller can precompute them once via
+    `_aperture_annulus_geometry` and pass them back in.
+    """
+    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    egain = 0.3
+
+    without = measure_photometry(image, coords, fwhm, egain, mask)
+
+    geometry = _aperture_annulus_geometry(fwhm, RELATIVE_RADII, ANNULUS)
+    with_precomputed = measure_photometry(
+        image, coords, fwhm, egain, mask, geometry=geometry
+    )
+
+    np.testing.assert_array_equal(without["tot_count"], with_precomputed["tot_count"])
+    np.testing.assert_array_equal(without["count_err"], with_precomputed["count_err"])
+    assert without["aperture_radii"] == with_precomputed["aperture_radii"]
+    assert without["annulus_radii"] == with_precomputed["annulus_radii"]
+
+
+def test_geometry_kwarg_ignores_radii_and_annulus_overrides(make_test_image):
+    """When ``geometry`` is given, ``radii``/``annulus`` are ignored."""
+    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    egain = 0.3
+
+    geometry = _aperture_annulus_geometry(fwhm, RELATIVE_RADII, ANNULUS)
+    # Deliberately wrong radii/annulus that would raise if actually used
+    # (aperture larger than the annulus); geometry must win.
+    photom = measure_photometry(
+        image,
+        coords,
+        fwhm,
+        egain,
+        mask,
+        radii=[20.0],
+        annulus=(5, 8),
+        geometry=geometry,
+    )
+
+    assert photom["aperture_radii"] == geometry[0][0]
+    assert photom["annulus_radii"] == geometry[1]
+
+
+@pytest.mark.parametrize(("fwhm", "expected"), [(0.5, 2), (2.6, 6)])
+def test_peak_box_side(fwhm, expected):
+    """``_peak_box_side`` is ``2*fwhm`` rounded up, floored at 2 px."""
+    assert _peak_box_side(fwhm) == expected
+
+
+def test_measure_photometry_rejects_mismatched_peak_cutouts_shape(make_test_image):
+    """A ``peak_cutouts`` with the wrong leading dimension raises a ValueError."""
+    image, coords = _bright_neighbor_image(make_test_image)
+
+    # Precompute cutouts for a single coordinate, then call with two -- the
+    # leading dimension of peak_cutouts (1) no longer matches the number of
+    # finite centroids (2).
+    mismatched_cutouts = _peak_box_cutouts(image, coords[:1], _PEAK_IMAGE_FWHM)
+
+    with pytest.raises(ValueError, match="peak_cutouts"):
+        _peak_image_photometry(image, coords, None, peak_cutouts=mismatched_cutouts)
+
+
+@pytest.mark.parametrize(
+    "bad_geometry",
+    [
+        (np.array([1.0]), (5.0, 8.0), 3.0),  # 3-element tuple, not 2
+        np.array([1.0, 5.0, 8.0]),  # bare array, not (radii, annulus)
+    ],
+)
+def test_measure_photometry_rejects_invalid_geometry(make_test_image, bad_geometry):
+    """A malformed ``geometry`` raises a clear ValueError, not an unpack error."""
+    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    egain = 0.3
+
+    with pytest.raises(ValueError, match="geometry"):
+        measure_photometry(
+            image,
+            coords,
+            fwhm,
+            egain,
+            mask,
+            geometry=bad_geometry,
+        )
+
+
+def test_measure_photometry_coerces_scalar_geometry_apertures_radii(make_test_image):
+    """
+    A scalar ``apertures_radii`` in ``geometry`` is coerced like a 1-element array.
+
+    ``geometry=(2.5, (4.0, 8.0))`` is the natural hand-built value for a
+    single aperture radius, but a bare scalar is not iterable; before the
+    coercion fix this reached eloy's ``aperture_photometry`` unchanged and
+    died with ``TypeError: 'float' object is not iterable`` (#121 review).
+    It must now be treated exactly like the equivalent 1-element array.
+    """
+    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    egain = 0.3
+
+    scalar_photom = measure_photometry(
+        image, coords, fwhm, egain, mask, geometry=(2.5, (4.0, 8.0))
+    )
+    array_photom = measure_photometry(
+        image, coords, fwhm, egain, mask, geometry=(np.array([2.5]), (4.0, 8.0))
+    )
+
+    np.testing.assert_array_equal(scalar_photom["tot_count"], array_photom["tot_count"])
+    np.testing.assert_array_equal(scalar_photom["count_err"], array_photom["count_err"])
+    assert scalar_photom["aperture_radii"] == array_photom["aperture_radii"]
+
+
+def test_measure_photometry_rejects_reversed_geometry_annulus(make_test_image):
+    """A reversed ``annulus_radii`` in ``geometry`` raises a clear ValueError (#121)."""
+    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    egain = 0.3
+
+    with pytest.raises(ValueError, match="geometry"):
+        measure_photometry(
+            image,
+            coords,
+            fwhm,
+            egain,
+            mask,
+            geometry=(np.array([1.0]), (8.0, 4.0)),
+        )
+
+
+def test_measure_photometry_rejects_geometry_annulus_inside_apertures(make_test_image):
+    """
+    A ``geometry`` whose annulus lies inside the largest aperture raises (#121 review).
+
+    ``_aperture_annulus_geometry`` (the computed path) clamps the annulus inner
+    radius out to at least the largest aperture radius and requires the outer
+    radius to still be larger afterward; `_coerce_geometry` (the caller-supplied
+    path) must apply the identical clamp-then-check instead of only ordering
+    ``outer > inner`` on the raw values, or a caller-supplied geometry can run
+    with the annulus inside the aperture.
+    """
+    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    egain = 0.3
+
+    with pytest.raises(ValueError, match="no usable background annulus"):
+        measure_photometry(
+            image,
+            coords,
+            fwhm,
+            egain,
+            mask,
+            geometry=(np.array([10.0]), (4.0, 8.0)),
+        )
+
+
+def test_measure_photometry_clamps_geometry_annulus_inner_radius(make_test_image):
+    """
+    A ``geometry`` annulus is clamped like the computed path clamps it (#121 review).
+
+    An inner annulus radius below the largest aperture radius, but an outer
+    radius still above it, is a usable-but-overlapping annulus: the computed
+    path silently pushes the inner radius out to the largest aperture radius
+    rather than raising, and `_coerce_geometry` must do the same instead of
+    passing the caller's unclamped inner radius through unchanged.
+    """
+    image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    egain = 0.3
+
+    apertures_radii = np.array([5.0])
+    annulus_radii = (4.0, 8.0)
+    expected_apertures, expected_annulus = _aperture_annulus_geometry(
+        1.0, apertures_radii, annulus_radii
+    )
+
+    photom = measure_photometry(
+        image,
+        coords,
+        fwhm,
+        egain,
+        mask,
+        geometry=(apertures_radii, annulus_radii),
+    )
+
+    assert photom["aperture_radii"] == expected_apertures[0]
+    assert photom["annulus_radii"] == expected_annulus
+
+
+def test_measure_photometry_rejects_peak_cutouts_with_wrong_box_side(make_test_image):
+    """
+    A ``peak_cutouts`` built from a different ``fwhm`` (box side) raises (#121 review).
+
+    It has the same row count as the finite centroids but a different box
+    side -- that used to pass the old row-count-only guard and silently read
+    the wrong-sized box instead of raising.
+    """
+    image, coords = _bright_neighbor_image(make_test_image)
+
+    wrong_fwhm_cutouts = _peak_box_cutouts(image, coords, 1.0)
+
+    with pytest.raises(ValueError, match="peak_cutouts"):
+        _peak_image_photometry(image, coords, None, peak_cutouts=wrong_fwhm_cutouts)
+
+
+def test_measure_photometry_accepts_peak_cutouts_as_plain_list(make_test_image):
+    """A ``peak_cutouts`` passed as a plain nested list works like an ndarray."""
+    image, coords = _bright_neighbor_image(make_test_image)
+
+    cutouts = _peak_box_cutouts(image, coords, _PEAK_IMAGE_FWHM)
+    list_photom = _peak_image_photometry(
+        image, coords, None, peak_cutouts=cutouts.tolist()
+    )
+    array_photom = _peak_image_photometry(image, coords, None, peak_cutouts=cutouts)
+
+    np.testing.assert_array_equal(list_photom["peak_count"], array_photom["peak_count"])
+
+
+def test_measure_photometry_peak_cutouts_cast_to_float_not_image_dtype(make_test_image):
+    """
+    A ``peak_cutouts`` is cast to float, not ``calibrated_data``'s dtype (#121 review).
+
+    ``_peak_box_cutouts`` pads out-of-frame pixels with NaN, so a star near the
+    frame edge has NaN entries in its cutout. Casting a caller-supplied
+    ``peak_cutouts`` to an integer-dtype image's dtype would silently turn that
+    NaN padding into 0, which (with ``mask=None``) flows into ``nanmax`` and
+    produces a wrong ``peak_count`` for that star instead of ignoring the
+    padding. This must match the value ``measure_photometry`` gets computing
+    ``peak_count`` internally on the float image (no ``peak_cutouts`` passed).
+    """
+    fwhm = _PEAK_IMAGE_FWHM
+    shape = (60, 60)
+    sigma = fwhm * gaussian_fwhm_to_sigma
+    source_properties = Table(
+        {
+            "amplitude": [500.0],
+            "x_mean": [2.0],
+            "y_mean": [2.0],
+            "x_stddev": [sigma],
+            "y_stddev": [sigma],
+        },
+    )
+    float_image = make_test_image(shape, source_properties, include_noise=False) + 10.0
+    coords = np.array([[2.0, 2.0]])
+
+    cutouts = _peak_box_cutouts(float_image, coords, fwhm)
+    assert np.any(np.isnan(cutouts)), "expected NaN edge padding in the cutout"
+
+    int_image = float_image.astype(np.int32)
+
+    expected = measure_photometry(
+        float_image, coords, fwhm, 1.0, None, radii=(1.0,), annulus=(5.0, 8.0)
+    )
+    from_int_image_with_precomputed = measure_photometry(
+        int_image,
+        coords,
+        fwhm,
+        1.0,
+        None,
+        radii=(1.0,),
+        annulus=(5.0, 8.0),
+        peak_cutouts=cutouts,
+    )
+
+    np.testing.assert_array_equal(
+        expected["peak_count"], from_int_image_with_precomputed["peak_count"]
+    )

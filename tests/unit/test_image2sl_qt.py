@@ -185,7 +185,7 @@ _BAYER_V6_FILES = [
 # a solid single-color block only the CFA pixels of that color are nonzero, so
 # the lit pixels inside each rectangle are the physical ground truth for that
 # color's mask. Margins of >= 2 px keep the rectangles inside the blocks (and
-# clear of the one-pixel scene shift in the offset variants and of the text
+# clear of the one-pixel image shift in the offset variants and of the text
 # rendered lower in each block).
 _BAYER_V6_SOLID_BLOCKS = {
     "TR": (50, 60, 4, 30),

@@ -1729,6 +1729,295 @@ def annulus_sigma_clip_stats(data, coords, r_in, r_out, input_mask=None, sigma=3
     return aperstats.median, aperstats.std
 
 
+def _peak_box_side(fwhm):
+    """
+    Compute the peak-count cutout box side, in pixels.
+
+    Parameters
+    ----------
+    fwhm : float
+        FWHM of the PSF in pixels.
+
+    Returns
+    -------
+    int
+        ``~2*fwhm``, rounded up and floored at 2 px so the box keeps at
+        least one pixel of every Bayer channel.
+    """
+    return max(int(np.ceil(2 * fwhm)), 2)
+
+
+def _finite_centroids(centroid_coords):
+    """
+    Promote centroid coordinates to 2D and flag rows with a finite centroid.
+
+    Shared by `_peak_box_cutouts` and `measure_photometry` so the two only
+    ever compute one definition of "finite row" between them.
+
+    Parameters
+    ----------
+    centroid_coords : array-like
+        Centroided star coordinates.
+
+    Returns
+    -------
+    centroid_xy : numpy.ndarray
+        `centroid_coords` as an at-least-2D float array.
+    finite_centroid : numpy.ndarray
+        Boolean mask, one entry per row of `centroid_xy`, True where both of
+        that row's coordinates are finite.
+    """
+    centroid_xy = np.atleast_2d(np.asarray(centroid_coords, dtype=float))
+    finite_centroid = np.all(np.isfinite(centroid_xy), axis=1)
+    return centroid_xy, finite_centroid
+
+
+def _peak_box_cutouts(calibrated_data, centroid_coords, fwhm):
+    """
+    Extract the raw (unmasked) peak-count box cutouts.
+
+    Parameters
+    ----------
+    calibrated_data : numpy.ndarray
+        Calibrated image data.
+    centroid_coords : numpy.ndarray
+        Centroided star coordinates.
+    fwhm : float
+        FWHM of the PSF in pixels, sizing the box (~2*FWHM per side, floored
+        at 2 px -- the same rule `measure_photometry` uses internally).
+
+    Returns
+    -------
+    numpy.ndarray or None
+        The extracted box cutouts for the finite-centroid rows, shaped
+        ``(n_finite, box_side, box_side)``. None if no row has a finite
+        centroid (nothing to cut).
+
+    Notes
+    -----
+    The box is channel-independent -- only the subsequent per-channel mask
+    application and ``nanmax`` differ -- so it can be computed once per frame
+    and reused instead of every channel call re-extracting the same cutout.
+    """
+    centroid_xy, finite_centroid = _finite_centroids(centroid_coords)
+    if not np.any(finite_centroid):
+        return None
+    box_side = _peak_box_side(fwhm)
+    return utils.cutout(
+        calibrated_data,
+        centroid_xy[finite_centroid],
+        (box_side, box_side),
+    )
+
+
+def _coerce_radii(radii):
+    """
+    Coerce aperture radii to an at-least-1D float array.
+
+    Shared by `_aperture_annulus_geometry` (the `radii` argument, before it is
+    scaled by `fwhm`) and `measure_photometry`'s caller-supplied `geometry`
+    path (its already fwhm-scaled `apertures_radii`), so a bare scalar (e.g.
+    ``1.0``) is treated as a single radius rather than a 0-d array, which is
+    not iterable.
+
+    Parameters
+    ----------
+    radii : array-like or float
+        Aperture radii, or a single radius.
+
+    Returns
+    -------
+    numpy.ndarray
+        `radii` as an at-least-1D float array.
+    """
+    return np.atleast_1d(np.asarray(radii, dtype=float))
+
+
+def _check_ordered_pair(pair, msg):
+    """
+    Unpack a 2-element ``(inner, outer)`` pair, requiring ``outer > inner``.
+
+    Turns both a `pair` that fails to unpack into exactly two values
+    (`TypeError` for a non-sequence, `ValueError` for the wrong length) and an
+    ``outer <= inner`` ordering into the same actionable ``ValueError(msg)``.
+    Shared by `_aperture_annulus_geometry` (its `annulus` argument) and
+    `measure_photometry`'s caller-supplied `geometry` path (its
+    `annulus_radii`) so both apply the identical check.
+
+    Parameters
+    ----------
+    pair : sequence
+        A 2-element ``(inner, outer)`` sequence.
+    msg : str
+        The message to raise as ``ValueError`` if `pair` does not unpack to
+        two elements or ``outer <= inner``.
+
+    Returns
+    -------
+    tuple
+        ``(inner, outer)``, unpacked from `pair`.
+
+    Raises
+    ------
+    ValueError
+        If `pair` is not a 2-element sequence, or its second element is not
+        larger than its first.
+    """
+    try:
+        inner, outer = pair
+    except (TypeError, ValueError):
+        raise ValueError(msg) from None
+    if outer <= inner:
+        raise ValueError(msg)
+    return inner, outer
+
+
+def _clamp_annulus_to_apertures(apertures_radii, annulus_radii):
+    """
+    Push a background annulus's inner radius out to the largest aperture radius.
+
+    Shared by `_aperture_annulus_geometry` (the computed path, called with
+    fwhm-scaled pixel radii) and `_coerce_geometry` (the caller-supplied
+    `geometry` path) so the photometry aperture can never overlap the
+    background annulus regardless of which path produced the geometry -- the
+    two cannot drift apart into applying different overlap guards.
+
+    Parameters
+    ----------
+    apertures_radii : numpy.ndarray
+        Aperture radii in pixels.
+    annulus_radii : tuple of float
+        ``(inner, outer)`` background annulus radii in pixels, with
+        ``outer > inner``.
+
+    Returns
+    -------
+    tuple of float
+        ``(r_in, r_out)`` background annulus radii in pixels, with ``r_in``
+        pushed out to at least the largest aperture radius.
+
+    Raises
+    ------
+    ValueError
+        If, after expanding ``r_in`` to the largest aperture radius, ``r_out``
+        is not larger than ``r_in``.
+    """
+    inner, outer = annulus_radii
+    r_in = np.max([np.max(apertures_radii), inner])
+    r_out = outer
+    if r_out <= r_in:
+        radius_msg = (
+            f"no usable background annulus: outer radius ({r_out}) is not larger "
+            f"than the inner radius ({r_in}) after expanding it to the largest "
+            "aperture. Use a larger annulus or smaller radii."
+        )
+        raise ValueError(radius_msg)
+    return r_in, r_out
+
+
+def _coerce_geometry(geometry):
+    """
+    Unpack, coerce, and validate a caller-supplied ``geometry`` argument.
+
+    Mirrors the coercion `_aperture_annulus_geometry` applies to the computed
+    path: `apertures_radii` is coerced to an at-least-1D float array (see
+    `_coerce_radii`), `annulus_radii` is checked for ``outer > inner`` (see
+    `_check_ordered_pair`), and the annulus is then clamped to the largest
+    aperture radius (see `_clamp_annulus_to_apertures`) -- so a caller-supplied
+    `geometry` is validated and clamped identically to the computed path,
+    rather than only checked for raw ordering, and produces the same
+    actionable ``ValueError`` instead of a downstream photutils/numpy error or
+    a silently overlapping annulus.
+
+    Parameters
+    ----------
+    geometry : tuple
+        A 2-element ``(apertures_radii, annulus_radii)`` sequence, as
+        returned by `_aperture_annulus_geometry` or hand-built by a caller.
+
+    Returns
+    -------
+    apertures_radii : numpy.ndarray
+        `geometry`'s aperture radii, coerced to an at-least-1D float array.
+    annulus_radii : tuple
+        `geometry`'s ``(inner, outer)`` annulus radii, clamped to the largest
+        aperture radius.
+
+    Raises
+    ------
+    ValueError
+        If `geometry` is not a 2-element sequence, if its `annulus_radii` is
+        not a 2-element ``(inner, outer)`` sequence with ``outer > inner``, or
+        if the annulus is not usable after clamping its inner radius to the
+        largest aperture radius (see `_clamp_annulus_to_apertures`).
+    """
+    msg = (
+        "geometry must be a 2-element (apertures_radii, annulus_radii) "
+        f"sequence; got {geometry!r}."
+    )
+    try:
+        apertures_radii, annulus_radii = geometry
+    except (TypeError, ValueError):
+        raise ValueError(msg) from None
+    apertures_radii = _coerce_radii(apertures_radii)
+    annulus_msg = (
+        f"geometry annulus_radii must satisfy outer > inner; got {annulus_radii!r}."
+    )
+    annulus_radii = _check_ordered_pair(annulus_radii, annulus_msg)
+    annulus_radii = _clamp_annulus_to_apertures(apertures_radii, annulus_radii)
+    return apertures_radii, annulus_radii
+
+
+def _aperture_annulus_geometry(fwhm, radii, annulus):
+    """
+    Compute the fwhm-scaled aperture radii and background annulus radii.
+
+    Parameters
+    ----------
+    fwhm : float
+        FWHM of the PSF in pixels.
+    radii : array-like or float
+        Aperture radii in units of FWHM; multiplied by `fwhm` to get the
+        actual aperture sizes. A scalar is treated as a single radius.
+    annulus : tuple of float
+        Background annulus ``(inner, outer)`` radii in units of FWHM, with
+        ``outer > inner``.
+
+    Returns
+    -------
+    apertures_radii : numpy.ndarray
+        The fwhm-scaled aperture radii, at least 1D.
+    annulus_radii : tuple of float
+        The ``(r_in, r_out)`` background annulus radii in pixels, with
+        ``r_in`` pushed out to at least the largest aperture radius.
+
+    Notes
+    -----
+    Depends only on ``fwhm``/``radii``/``annulus``, never the mask, so it is
+    bit-identical across Bayer channels for a given frame.
+
+    Raises a ``ValueError`` if `annulus` is not a 2-element (inner, outer)
+    sequence with the outer radius larger than the inner (see
+    `_check_ordered_pair`), or if the resulting annulus is not larger than
+    the largest aperture after the inner radius is pushed out to it (see
+    `_clamp_annulus_to_apertures`).
+    """
+    msg = (
+        "annulus must be a 2-element (inner, outer) sequence with "
+        f"outer > inner; got {annulus!r}."
+    )
+    inner, outer = _check_ordered_pair(annulus, msg)
+    apertures_radii = _coerce_radii(radii) * fwhm
+
+    # The inner background radius is pushed out to at least the largest aperture
+    # so the annulus never overlaps the photometry aperture. If that leaves the
+    # outer radius at or inside the inner one, there is no usable annulus.
+    annulus_radii = _clamp_annulus_to_apertures(
+        apertures_radii, (inner * fwhm, outer * fwhm)
+    )
+    return apertures_radii, annulus_radii
+
+
 def measure_photometry(
     calibrated_data,
     centroid_coords,
@@ -1738,6 +2027,8 @@ def measure_photometry(
     *,
     radii=RELATIVE_RADII,
     annulus=ANNULUS,
+    peak_cutouts=None,
+    geometry=None,
 ):
     """
     Perform aperture photometry, background subtraction, and error calculation.
@@ -1762,6 +2053,14 @@ def measure_photometry(
     annulus : tuple of float, optional
         Background annulus ``(inner, outer)`` radii in units of FWHM, with
         ``outer > inner``. Defaults to the module-level `ANNULUS`.
+    peak_cutouts : numpy.ndarray or None, optional
+        Precomputed raw (unmasked) peak-count box cutouts for the
+        finite-centroid rows, from `_peak_box_cutouts`. If None (default),
+        computed internally.
+    geometry : tuple or None, optional
+        Precomputed ``(apertures_radii, annulus_radii)`` from
+        `_aperture_annulus_geometry`. When given, `radii`/`annulus` are
+        ignored. If None (default), computed from `radii`/`annulus`/`fwhm`.
 
     Returns
     -------
@@ -1772,11 +2071,31 @@ def measure_photometry(
     Raises
     ------
     ValueError
-        If `annulus` is not a 2-element sequence with the outer radius larger
-        than the inner radius.
+        If `geometry` is not a 2-element ``(apertures_radii, annulus_radii)``
+        sequence, its `annulus_radii` is not a 2-element ``(inner, outer)``
+        sequence with ``outer > inner``, or the annulus is not usable after
+        its inner radius is clamped to the largest aperture radius (see
+        `_coerce_geometry`); if `geometry` is None and the `annulus` computed
+        from `radii`/`annulus`/`fwhm` is malformed or not usable (see
+        `_aperture_annulus_geometry`); or if a caller-supplied `peak_cutouts`
+        does not have shape ``(n_finite, box_side, box_side)`` for this call's
+        `centroid_coords` and `fwhm`.
 
     Notes
     -----
+    When ``geometry`` is None (the default), `_aperture_annulus_geometry`
+    computes it from `radii`/`annulus`/`fwhm`, and its ``Raises`` section
+    applies unchanged: a malformed `annulus`, or an annulus that is not
+    usable after expanding to the largest aperture. A caller-supplied
+    ``geometry`` is coerced and validated identically by `_coerce_geometry`:
+    checked for shape (a 2-element sequence), its `apertures_radii` coerced to
+    an at-least-1D float array (so a bare scalar radius works the same as a
+    1-element array), its `annulus_radii` checked for ``outer > inner``, and
+    then its inner annulus radius clamped out to at least the largest
+    aperture radius -- the same overlap guard `_aperture_annulus_geometry`
+    applies to the computed path, enforced rather than assumed, so the two
+    paths cannot drift into different overlap behaviour.
+
     The noise model behind ``count_err``/``snr`` sums, in quadrature, the
     source Poisson noise and the per-pixel background scatter (the annulus
     ``bkgd_std``) accumulated over the aperture area. It deliberately omits
@@ -1805,42 +2124,20 @@ def measure_photometry(
     pixels, so a saturated pixel is attributed to the channel it lives in and
     a bright neighbor outside the box cannot masquerade as the target's peak.
     """
-    msg = (
-        "annulus must be a 2-element (inner, outer) sequence with "
-        f"outer > inner; got {annulus!r}."
-    )
-    # Unpacking turns both non-sequences (TypeError) and wrong-length sequences
-    # (ValueError) into the same actionable ValueError promised in the docstring.
-    try:
-        inner, outer = annulus
-    except (TypeError, ValueError):
-        raise ValueError(msg) from None
-    if outer <= inner:
-        raise ValueError(msg)
-    # Coerce to at least 1D float so a scalar radii (e.g. 1.0) is treated as a
-    # single radius rather than a 0-d array (which is not iterable).
-    apertures_radii = np.atleast_1d(np.asarray(radii, dtype=float)) * fwhm
-
-    # The inner background radius is pushed out to at least the largest aperture
-    # so the annulus never overlaps the photometry aperture. If that leaves the
-    # outer radius at or inside the inner one, there is no usable annulus.
-    r_in = np.max([np.max(apertures_radii), inner * fwhm])
-    r_out = outer * fwhm
-    if r_out <= r_in:
-        radius_msg = (
-            f"no usable background annulus: outer radius ({r_out}) is not larger "
-            f"than the inner radius ({r_in}) after expanding it to the largest "
-            "aperture. Use a larger annulus or smaller radii."
+    if geometry is None:
+        apertures_radii, annulus_radii = _aperture_annulus_geometry(
+            fwhm, radii, annulus
         )
-        raise ValueError(radius_msg)
-    annulus_radii = (r_in, r_out)
+    else:
+        # `_coerce_geometry` unpacks, coerces, and validates `geometry` the
+        # same way `_aperture_annulus_geometry` does for the computed path.
+        apertures_radii, annulus_radii = _coerce_geometry(geometry)
 
     # photutils apertures reject non-finite positions outright, but a failed
     # centroid can legitimately be NaN. Give those rows a harmless in-frame
     # placeholder for the aperture calls, then NaN out their per-star outputs
     # below so the rows are dropped downstream per the NaN contract.
-    centroid_xy = np.atleast_2d(np.asarray(centroid_coords, dtype=float))
-    finite_centroid = np.all(np.isfinite(centroid_xy), axis=1)
+    centroid_xy, finite_centroid = _finite_centroids(centroid_coords)
     safe_coords = np.where(finite_centroid[:, None], centroid_xy, 0.0)
 
     flux = photometry.aperture_photometry(
@@ -1891,15 +2188,32 @@ def measure_photometry(
     # TR/TG/TB peaks bit-identical.
     # ~2*FWHM per side, but never below the 2-pixel Bayer period so any fully
     # in-frame box keeps at least one unmasked pixel from every channel.
-    box_side = max(int(np.ceil(2 * fwhm)), 2)
+    box_side = _peak_box_side(fwhm)
     peaks = np.full(centroid_xy.shape[0], np.nan)
     if np.any(finite_centroid):
         box = (box_side, box_side)
-        peak_cutouts = utils.cutout(
-            calibrated_data,
-            centroid_xy[finite_centroid],
-            box,
-        )
+        n_finite = int(np.count_nonzero(finite_centroid))
+        if peak_cutouts is None:
+            peak_cutouts = _peak_box_cutouts(calibrated_data, centroid_coords, fwhm)
+        else:
+            # Coerce to float, not `calibrated_data`'s dtype: the out-of-frame
+            # padding `_peak_box_cutouts` (via `eloy.utils.cutout`) fills is
+            # NaN, and casting NaN into an integer `calibrated_data`'s dtype
+            # would silently turn that padding into 0 -- which, with
+            # ``mask=None``, would flow into the `nanmax` below and corrupt
+            # `peak_count` for an edge star instead of being ignored. Every
+            # other array this block combines `peak_cutouts` with (the mask
+            # cutout, the padding) is float for the same reason.
+            peak_cutouts = np.asarray(peak_cutouts, dtype=float)
+            expected_shape = (n_finite, box_side, box_side)
+            if peak_cutouts.shape != expected_shape:
+                msg = (
+                    f"peak_cutouts has shape {peak_cutouts.shape} but "
+                    f"{expected_shape} (n_finite, box_side, box_side) is "
+                    "required; it must be precomputed from the same "
+                    "centroid_coords and fwhm as this call."
+                )
+                raise ValueError(msg)
         if mask is not None:
             # Apply the channel mask at cutout scale rather than NaN-ing a
             # full-frame copy of the image. The mask is cut as float because a
@@ -2239,6 +2553,8 @@ def build_photometry_table(
     annulus=None,
     drift_tolerance=None,
     drift_cap=None,
+    peak_cutouts=None,
+    geometry=None,
 ):
     """
     Run photometry with a given mask and build an output table.
@@ -2269,6 +2585,15 @@ def build_photometry_table(
         Absolute pixel cap on the allowed centroid drift, passed to
         `centroid_drift_flag`. If None (default), taken from
         ``config.drift.drift_cap_pix``.
+    peak_cutouts : numpy.ndarray or None, optional
+        Precomputed raw peak-count box cutouts, passed through to
+        `measure_photometry` (e.g. from `_peak_box_cutouts`). If None
+        (default), `measure_photometry` computes it internally.
+    geometry : tuple or None, optional
+        Precomputed ``(apertures_radii, annulus_radii)``, passed through to
+        `measure_photometry` (e.g. from `_aperture_annulus_geometry`). When
+        given, `radii`/`annulus` are ignored. If None (default),
+        `measure_photometry` computes it from `radii`/`annulus`.
 
     Returns
     -------
@@ -2303,6 +2628,8 @@ def build_photometry_table(
         mask,
         radii=radii,
         annulus=annulus,
+        peak_cutouts=peak_cutouts,
+        geometry=geometry,
     )
     if img.input_photometry_coords is not None:
         # The caller supplied known sky coordinates; use them directly rather
@@ -2460,11 +2787,26 @@ def process_one_image(
         if msg := _missing_rgb_channels(bayer_masks):
             raise ValueError(msg)
 
+    # Computed once per frame and reused across Bayer channels (see
+    # _peak_box_cutouts's Notes).
+    peak_cutouts = _peak_box_cutouts(img.calibrated_data, img.centroid_coords, img.fwhm)
+    # Computed once per frame and reused across Bayer channels (see
+    # _aperture_annulus_geometry's Notes).
+    geometry = _aperture_annulus_geometry(
+        img.fwhm, config.apertures.radii, config.apertures.annulus
+    )
+
     by_filter_data = {}
     for filter_name, mask in bayer_masks.items():
         if filter_name == "L4":
             continue
-        data = build_photometry_table(img, mask, config=config)
+        data = build_photometry_table(
+            img,
+            mask,
+            config=config,
+            peak_cutouts=peak_cutouts,
+            geometry=geometry,
+        )
         data.meta["filter"] = filter_name
         data.meta["full_image_meta"] = img.metadata
         by_filter_data[filter_name] = data
