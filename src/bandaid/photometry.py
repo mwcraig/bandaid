@@ -1814,12 +1814,6 @@ def _coerce_radii(radii):
     """
     Coerce aperture radii to an at-least-1D float array.
 
-    Shared by `_aperture_annulus_geometry` (the `radii` argument, before it is
-    scaled by `fwhm`) and `measure_photometry`'s caller-supplied `geometry`
-    path (its already fwhm-scaled `apertures_radii`), so a bare scalar (e.g.
-    ``1.0``) is treated as a single radius rather than a 0-d array, which is
-    not iterable.
-
     Parameters
     ----------
     radii : array-like or float
@@ -1829,6 +1823,14 @@ def _coerce_radii(radii):
     -------
     numpy.ndarray
         `radii` as an at-least-1D float array.
+
+    Notes
+    -----
+    Shared by `_aperture_annulus_geometry` (the `radii` argument, before it is
+    scaled by `fwhm`) and `measure_photometry`'s caller-supplied `geometry`
+    path (its already fwhm-scaled `apertures_radii`), so a bare scalar (e.g.
+    ``1.0``) is treated as a single radius rather than a 0-d array, which is
+    not iterable.
     """
     return np.atleast_1d(np.asarray(radii, dtype=float))
 
@@ -1836,13 +1838,6 @@ def _coerce_radii(radii):
 def _check_ordered_pair(pair, msg):
     """
     Unpack a 2-element ``(inner, outer)`` pair, requiring ``outer > inner``.
-
-    Turns both a `pair` that fails to unpack into exactly two values
-    (`TypeError` for a non-sequence, `ValueError` for the wrong length) and an
-    ``outer <= inner`` ordering into the same actionable ``ValueError(msg)``.
-    Shared by `_aperture_annulus_geometry` (its `annulus` argument) and
-    `measure_photometry`'s caller-supplied `geometry` path (its
-    `annulus_radii`) so both apply the identical check.
 
     Parameters
     ----------
@@ -1862,6 +1857,15 @@ def _check_ordered_pair(pair, msg):
     ValueError
         If `pair` is not a 2-element sequence, or its second element is not
         larger than its first.
+
+    Notes
+    -----
+    Turns both a `pair` that fails to unpack into exactly two values
+    (`TypeError` for a non-sequence, `ValueError` for the wrong length) and an
+    ``outer <= inner`` ordering into the same actionable ``ValueError(msg)``.
+    Shared by `_aperture_annulus_geometry` (its `annulus` argument) and
+    `measure_photometry`'s caller-supplied `geometry` path (its
+    `annulus_radii`) so both apply the identical check.
     """
     try:
         inner, outer = pair
@@ -1875,12 +1879,6 @@ def _check_ordered_pair(pair, msg):
 def _clamp_annulus_to_apertures(apertures_radii, annulus_radii):
     """
     Push a background annulus's inner radius out to the largest aperture radius.
-
-    Shared by `_aperture_annulus_geometry` (the computed path, called with
-    fwhm-scaled pixel radii) and `_coerce_geometry` (the caller-supplied
-    `geometry` path) so the photometry aperture can never overlap the
-    background annulus regardless of which path produced the geometry -- the
-    two cannot drift apart into applying different overlap guards.
 
     Parameters
     ----------
@@ -1901,6 +1899,14 @@ def _clamp_annulus_to_apertures(apertures_radii, annulus_radii):
     ValueError
         If, after expanding ``r_in`` to the largest aperture radius, ``r_out``
         is not larger than ``r_in``.
+
+    Notes
+    -----
+    Shared by `_aperture_annulus_geometry` (the computed path, called with
+    fwhm-scaled pixel radii) and `_coerce_geometry` (the caller-supplied
+    `geometry` path) so the photometry aperture can never overlap the
+    background annulus regardless of which path produced the geometry -- the
+    two cannot drift apart into applying different overlap guards.
     """
     inner, outer = annulus_radii
     r_in = np.max([np.max(apertures_radii), inner])
@@ -1918,16 +1924,6 @@ def _clamp_annulus_to_apertures(apertures_radii, annulus_radii):
 def _coerce_geometry(geometry):
     """
     Unpack, coerce, and validate a caller-supplied ``geometry`` argument.
-
-    Mirrors the coercion `_aperture_annulus_geometry` applies to the computed
-    path: `apertures_radii` is coerced to an at-least-1D float array (see
-    `_coerce_radii`), `annulus_radii` is checked for ``outer > inner`` (see
-    `_check_ordered_pair`), and the annulus is then clamped to the largest
-    aperture radius (see `_clamp_annulus_to_apertures`) -- so a caller-supplied
-    `geometry` is validated and clamped identically to the computed path,
-    rather than only checked for raw ordering, and produces the same
-    actionable ``ValueError`` instead of a downstream photutils/numpy error or
-    a silently overlapping annulus.
 
     Parameters
     ----------
@@ -1950,6 +1946,18 @@ def _coerce_geometry(geometry):
         not a 2-element ``(inner, outer)`` sequence with ``outer > inner``, or
         if the annulus is not usable after clamping its inner radius to the
         largest aperture radius (see `_clamp_annulus_to_apertures`).
+
+    Notes
+    -----
+    Mirrors the coercion `_aperture_annulus_geometry` applies to the computed
+    path: `apertures_radii` is coerced to an at-least-1D float array (see
+    `_coerce_radii`), `annulus_radii` is checked for ``outer > inner`` (see
+    `_check_ordered_pair`), and the annulus is then clamped to the largest
+    aperture radius (see `_clamp_annulus_to_apertures`) -- so a caller-supplied
+    `geometry` is validated and clamped identically to the computed path,
+    rather than only checked for raw ordering, and produces the same
+    actionable ``ValueError`` instead of a downstream photutils/numpy error or
+    a silently overlapping annulus.
     """
     msg = (
         "geometry must be a 2-element (apertures_radii, annulus_radii) "
