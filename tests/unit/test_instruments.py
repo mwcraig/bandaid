@@ -135,6 +135,78 @@ class TestRegister:
         assert loaded.thresh == custom_thresh
         assert "MyScope" in available_instruments()
 
+    def test_registering_existing_bundled_name_raises(self):
+        """Registering over a bundled name without ``replace=True`` raises."""
+        with pytest.raises(ValueError, match="Seestar50"):
+            register_instrument(InstrumentProfile(name="Seestar50"))
+
+    def test_registering_duplicate_custom_name_raises(self):
+        """Re-registering the same custom name without ``replace=True`` raises."""
+        register_instrument(InstrumentProfile(name="MyScope"))
+        with pytest.raises(ValueError, match="MyScope"):
+            register_instrument(InstrumentProfile(name="MyScope"))
+
+    def test_replace_true_overrides_bundled_name(self):
+        """``replace=True`` deliberately overrides a bundled profile."""
+        custom_thresh = 9.9
+        register_instrument(
+            InstrumentProfile(name="Seestar50", thresh=custom_thresh), replace=True
+        )
+        assert load_instrument("Seestar50").thresh == custom_thresh
+
+    def test_replace_true_overrides_custom_name(self):
+        """``replace=True`` deliberately overrides a previously-registered profile."""
+        register_instrument(InstrumentProfile(name="MyScope", thresh=1.5))
+        register_instrument(InstrumentProfile(name="MyScope", thresh=2.5), replace=True)
+        assert load_instrument("MyScope").thresh == 2.5  # noqa: PLR2004
+
+
+class TestRegisterConflicts:
+    """``register_instrument`` eagerly rejects a rule that collides with another."""
+
+    def test_conflicting_rule_raises_naming_both_profiles(self):
+        """
+        A new profile's rule that duplicates an existing profile's rule raises.
+
+        Rules are exact (keyword, casefolded value) matches, so two profiles
+        sharing one would make ``detect_instrument`` ambiguous on any header
+        that satisfies it -- reject the registration up front rather than
+        letting that surface later as a detection-time error on a real frame.
+        """
+        clone = InstrumentProfile(
+            name="Clone",
+            header_match=(HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50"),),
+        )
+        with pytest.raises(ValueError, match="Seestar50") as excinfo:
+            register_instrument(clone)
+        assert "Clone" in str(excinfo.value)
+        # The rejected profile must not have been registered.
+        assert "Clone" not in available_instruments()
+
+    def test_different_value_same_keyword_registers_fine(self):
+        """A rule on the same keyword but a different value does not conflict."""
+        other = InstrumentProfile(
+            name="OtherScope",
+            header_match=(
+                HeaderMatchRule(keyword="INSTRUME", pattern="Some Other Scope"),
+            ),
+        )
+        register_instrument(other)
+        assert load_instrument("OtherScope") is other
+
+    def test_no_header_match_registers_fine(self):
+        """A profile with no ``header_match`` rules can never conflict."""
+        bare = InstrumentProfile(name="Bare")
+        register_instrument(bare)
+        assert load_instrument("Bare") is bare
+
+    def test_replace_true_self_conflict_allowed(self):
+        """Re-registering a profile with its own unchanged rules is not a conflict."""
+        seestar = load_instrument("Seestar50")
+        updated = seestar.model_copy(update={"thresh": 9.9})
+        register_instrument(updated, replace=True)
+        assert load_instrument("Seestar50") is updated
+
 
 class TestDetectInstrument:
     """``detect_instrument`` auto-selects a profile from a frame header."""
@@ -175,7 +247,12 @@ class TestDetectInstrument:
             name="Clone",
             header_match=(HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50"),),
         )
-        register_instrument(clone)
+        # register_instrument now eagerly rejects a colliding rule (issue
+        # #122), so this deliberately-ambiguous fixture is inserted directly
+        # into the isolated registry, bypassing that check, to exercise the
+        # detection-time ambiguity error -- which remains reachable in
+        # practice for bundled profiles shipped with overlapping rules.
+        instruments._REGISTERED["Clone"] = clone  # noqa: SLF001
 
         with pytest.raises(InstrumentDetectionError, match="Seestar50") as excinfo:
             detect_instrument({"INSTRUME": "Seestar S50"})
@@ -189,6 +266,26 @@ class TestDetectInstrument:
         register_instrument(InstrumentProfile(name="NoRules"))
         with pytest.raises(InstrumentDetectionError):
             detect_instrument({"INSTRUME": "NoRules"})
+
+    def test_no_match_error_lists_available_but_not_bare_profile_as_candidate(self):
+        """
+        A profile with no ``header_match`` is "available" but never a "candidate".
+
+        The error message distinguishes the two: ``NoRules`` cannot be
+        auto-detected (it carries no rule to match against) but is still a
+        selectable ``--instrument``/``--profile`` name, so it must appear only
+        in the "all available instruments" listing, not the "auto-detection
+        candidates" one (issue #122).
+        """
+        register_instrument(InstrumentProfile(name="NoRules"))
+
+        with pytest.raises(InstrumentDetectionError) as excinfo:
+            detect_instrument({"INSTRUME": "Some Other Scope"})
+
+        message = str(excinfo.value)
+        candidates_part, available_part = message.split("all available instruments")
+        assert "NoRules" not in candidates_part
+        assert "NoRules" in available_part
 
 
 class TestFileRoundTrip:

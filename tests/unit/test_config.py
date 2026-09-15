@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from bandaid.config import (
     ApertureConfig,
     DriftConfig,
+    HeaderMatchRule,
     InstrumentProfile,
     PhotometryConfig,
     SourceSelectionConfig,
@@ -105,6 +106,30 @@ class TestDefaultsMatchLegacyConstants:
         """
         cfg = InstrumentProfile()
         assert cfg.header_match == ()
+
+    def test_matches_header_true_when_any_rule_matches(self):
+        """``matches_header`` is True when at least one rule matches (OR)."""
+        cfg = InstrumentProfile(
+            name="TwoRules",
+            header_match=(
+                HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50"),
+                HeaderMatchRule(keyword="TELESCOP", pattern="OtherScope"),
+            ),
+        )
+        assert cfg.matches_header({"TELESCOP": "OtherScope"}) is True
+
+    def test_matches_header_false_when_no_rule_matches(self):
+        """``matches_header`` is False when every rule fails to match."""
+        cfg = InstrumentProfile(
+            name="OneRule",
+            header_match=(HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50"),),
+        )
+        assert cfg.matches_header({"INSTRUME": "Some Other Scope"}) is False
+
+    def test_matches_header_false_for_empty_header_match(self):
+        """A profile with no rules never matches (device identity is opt-in)."""
+        cfg = InstrumentProfile()
+        assert cfg.matches_header({"INSTRUME": "Seestar S50"}) is False
 
     def test_photometry_config_composes_defaults(self):
         """PhotometryConfig nests one of each sub-config, instrument unresolved."""

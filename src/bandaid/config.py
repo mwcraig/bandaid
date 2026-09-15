@@ -361,6 +361,33 @@ class InstrumentProfile(BaseModel, frozen=True):
     )
     header_match: tuple[HeaderMatchRule, ...] = ()
 
+    def matches_header(self, header) -> bool:
+        """
+        Check whether ``header`` identifies this instrument.
+
+        True if *any* of ``header_match``'s rules match (OR) -- the single
+        predicate used both by :func:`~bandaid.instruments.detect_instrument`
+        (to pick a profile from a header) and by
+        `~bandaid.scripts.check_frame_consistency`'s batch-mixing guard (to
+        check a later frame against the batch's already-resolved profile), so
+        the two agree on what "matches" means. A profile with an empty
+        ``header_match`` (the bare-class default) never matches anything --
+        device identity must be opt-in.
+
+        Parameters
+        ----------
+        header : astropy.io.fits.Header or collections.abc.Mapping
+            The frame header (or header-like mapping) to check.
+
+        Returns
+        -------
+        bool
+            True if at least one of ``header_match``'s rules matches
+            ``header``; False otherwise (including when ``header_match`` is
+            empty).
+        """
+        return any(rule.matches(header) for rule in self.header_match)
+
     @field_validator("header_map", mode="after")
     @classmethod
     def _freeze_header_map(cls, value) -> Mapping:

@@ -15,10 +15,11 @@ from astropy.table import MaskedColumn, Table
 from astropy.time import Time
 from dateutil import parser
 
-from bandaid import scripts
+from bandaid import instruments, scripts
 from bandaid.catalog import GAIA_DR2_EPOCH
 from bandaid.config import (
     ApertureConfig,
+    HeaderMatchRule,
     InstrumentProfile,
     PhotometryConfig,
     SourceSelectionConfig,
@@ -30,7 +31,7 @@ from bandaid.exceptions import (
     InstrumentDetectionError,
     TooFewStarsError,
 )
-from bandaid.instruments import load_instrument
+from bandaid.instruments import load_instrument, register_instrument
 from bandaid.photometry import (
     min_separation_fwhm,
     neighbor_contamination_flag_sky,
@@ -864,6 +865,48 @@ class TestPrepareBatch:
         assert prep.forced_targets is None
 
 
+class TestBatchPrep:
+    """Unit tests for the ``BatchPrep`` dataclass's own construction invariant."""
+
+    @staticmethod
+    def _kwargs(**overrides: object) -> dict:
+        """Minimal BatchPrep constructor kwargs, overridable per test."""
+        fields = {
+            "radecs": np.zeros((1, 2)),
+            "photometry_coords": SkyCoord([0.0], [0.0], unit="deg"),
+            "cnn": object(),
+            "bayer_masks": {},
+            "center": (10.0, 0.0),
+            "fov_rad": 0.74,
+            "shape": (1920, 1080),
+            "config": PhotometryConfig(instrument=InstrumentProfile()),
+        }
+        fields.update(overrides)
+        return fields
+
+    def test_unresolved_instrument_raises_valueerror(self):
+        """
+        A ``config`` whose ``instrument`` is still None (unresolved) is rejected.
+
+        `check_frame_consistency` and `process_batch` both trust
+        ``config.instrument`` to already be resolved by the time a ``BatchPrep``
+        reaches them -- `prepare_batch` is the only place that is supposed to
+        build one, and it always resolves the instrument first (issue #122).
+        Constructing one directly with a bare, unresolved
+        ``PhotometryConfig()`` must fail loudly instead of silently letting
+        per-frame detection paper over it.
+        """
+        with pytest.raises(ValueError, match="instrument"):
+            scripts.BatchPrep(**self._kwargs(config=PhotometryConfig()))
+
+    def test_resolved_instrument_constructs_fine(self):
+        """A ``config`` with an explicit, resolved instrument constructs fine."""
+        prep = scripts.BatchPrep(
+            **self._kwargs(config=PhotometryConfig(instrument=InstrumentProfile()))
+        )
+        assert prep.config.instrument is not None
+
+
 class TestCheckFrameConsistency:
     """Unit tests for the per-frame pointing/shape guard."""
 
@@ -871,6 +914,18 @@ class TestCheckFrameConsistency:
     # header walked by the header_center_offset (-0.32, +0.15). prep.center now
     # holds this resolved center, so a stable frame reads ~0 offset against it.
     STABLE_CENTER = (9.68, 0.15)
+
+    @pytest.fixture(autouse=True)
+    def _isolate_registry(self, isolate_registry):
+        """
+        Restore the in-process profile registry after each test in this class.
+
+        A couple of tests below register an extra profile to exercise the
+        batch-mixing guard's ambiguity handling (issue #122); without this,
+        that registration would leak into later tests.
+        """
+        with isolate_registry(instruments, "_REGISTERED"):
+            yield
 
     @staticmethod
     def _prep(**overrides: object) -> scripts.BatchPrep:
@@ -1029,6 +1084,109 @@ class TestCheckFrameConsistency:
         )
         header = _consistency_header(INSTRUME="Some Other Scope")
 
+        scripts.check_frame_consistency("ok.fits", header, prep)
+
+    def test_mixing_guard_fires_before_metadata_error(self):
+        """
+        The batch-mixing guard is checked before ``metadata_from_header`` runs.
+
+        A frame from a genuinely different instrument is likely to also be
+        missing a keyword the *batch* instrument's ``header_map`` needs (here,
+        ``egain``, resolved via ``@EGAIN`` rather than the Seestar's literal
+        default). Before this fix, ``metadata_from_header`` ran first and
+        raised the less diagnostic ``FrameMetadataError`` before the guard ever
+        got a chance to name the more likely cause (issue #122); the guard now
+        only needs ``header`` and the batch instrument, so it runs first.
+        """
+        custom_header_map = {
+            **dict(InstrumentProfile().header_map),
+            "egain": "@EGAIN",
+        }
+        custom = InstrumentProfile(
+            name="CustomScope",
+            header_match=(HeaderMatchRule(keyword="INSTRUME", pattern="CustomScope"),),
+            header_map=custom_header_map,
+        )
+        register_instrument(custom)
+        prep = self._prep(
+            config=PhotometryConfig(instrument=custom),
+            instrument_auto_detected=True,
+        )
+        # No INSTRUME (fails the batch-mixing guard) and no EGAIN (would also
+        # fail metadata_from_header's egain check, if it ran).
+        header = _consistency_header()
+
+        with pytest.raises(FrameError) as excinfo:
+            scripts.check_frame_consistency("bad.fits", header, prep)
+
+        assert type(excinfo.value) is FrameError
+        assert excinfo.value.file == "bad.fits"
+
+    def test_missing_keyword_guard_message(self):
+        """
+        The guard names the missing keyword when it's absent from the header.
+
+        Distinguishes "the header never carried the identifying keyword at
+        all" from "it carried the keyword with a different value" (issue
+        #122): the former is worded as a missing-keyword problem rather than
+        the generic "different instrument mixed in" phrasing.
+        """
+        prep = self._prep(
+            config=PhotometryConfig(instrument=load_instrument("Seestar50")),
+            instrument_auto_detected=True,
+        )
+        # _consistency_header() carries no INSTRUME key at all.
+        header = _consistency_header()
+
+        with pytest.raises(FrameError, match="missing") as excinfo:
+            scripts.check_frame_consistency("bad.fits", header, prep)
+        assert "INSTRUME" in str(excinfo.value)
+
+    def test_different_value_guard_message(self):
+        """The guard keeps the "different instrument" wording for a present value."""
+        prep = self._prep(
+            config=PhotometryConfig(instrument=load_instrument("Seestar50")),
+            instrument_auto_detected=True,
+        )
+        header = _consistency_header(INSTRUME="Some Other Scope")
+
+        with pytest.raises(FrameError, match="does not match") as excinfo:
+            scripts.check_frame_consistency("bad.fits", header, prep)
+        assert (
+            "possibly a frame from a different instrument mixed into this batch"
+            in str(excinfo.value)
+        )
+
+    def test_ambiguous_instrument_rejected_by_guard(self):
+        """
+        An auto-detected batch rejects a frame whose header is ambiguous.
+
+        ``check_frame_consistency`` now uses the same predicate as first-frame
+        detection (issue #122): a later frame whose header matches more than
+        one registered profile is rejected even though it matches the batch
+        instrument's own rule, because detection itself could not have picked
+        the batch instrument unambiguously from this header.
+        """
+        clone = InstrumentProfile(
+            name="Clone",
+            header_match=(HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50"),),
+        )
+        # register_instrument now eagerly rejects a colliding rule (issue
+        # #122), so this deliberately-ambiguous fixture is inserted directly
+        # into the isolated registry, bypassing that check, to exercise the
+        # detection-time ambiguity error the guard must still catch.
+        instruments._REGISTERED["Clone"] = clone  # noqa: SLF001
+        prep = self._prep(
+            config=PhotometryConfig(instrument=load_instrument("Seestar50")),
+            instrument_auto_detected=True,
+        )
+        header = _consistency_header(INSTRUME="Seestar S50")
+
+        with pytest.raises(FrameError, match="Clone"):
+            scripts.check_frame_consistency("bad.fits", header, prep)
+
+        # With the duplicate registration gone, a plain matching frame passes.
+        del instruments._REGISTERED["Clone"]  # noqa: SLF001
         scripts.check_frame_consistency("ok.fits", header, prep)
 
     def test_inconsistent_frame_is_skipped_by_batch(self, mocker):

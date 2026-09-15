@@ -120,7 +120,8 @@ def load_instrument(name):
     Resolve an instrument name to its profile.
 
     Registered profiles take precedence over the bundled ones, so a caller can
-    override a bundled telescope in-process via :func:`register_instrument`.
+    override a bundled telescope in-process via
+    ``register_instrument(profile, replace=True)``.
 
     Parameters
     ----------
@@ -146,17 +147,91 @@ def load_instrument(name):
     raise ValueError(msg)
 
 
-def register_instrument(profile):
+def _rule_identity(rule):
+    """
+    Return a rule's normalised identity for conflict comparison.
+
+    Two rules are considered the same match -- and so a conflict when they
+    belong to differently-named profiles -- when they agree on this pair,
+    the same normalisation :meth:`~bandaid.config.HeaderMatchRule.matches`
+    applies to the header value it compares against.
+
+    Parameters
+    ----------
+    rule : HeaderMatchRule
+        The rule to normalise.
+
+    Returns
+    -------
+    tuple of str
+        ``(keyword.upper(), pattern.strip().casefold())``.
+    """
+    return (rule.keyword.upper(), rule.pattern.strip().casefold())
+
+
+def register_instrument(profile, *, replace=False):
     """
     Register a profile so :func:`load_instrument` can resolve it by name.
 
-    Re-registering a name (bundled or not) overrides the previous profile.
+    Two checks run before the registry is touched, both meant to catch a
+    mistake at registration time rather than letting it surface later as a
+    confusing detection-time failure on a real frame:
+
+    - **Duplicate name.** Registering a name that already resolves (bundled or
+      previously registered) raises unless ``replace=True`` is passed, so an
+      accidental name collision does not silently shadow the wrong profile.
+      ``replace=True`` keeps the deliberate "override a bundled telescope
+      in-process" use case working.
+    - **Rule conflict.** A new profile whose ``header_match`` shares an exact
+      ``(keyword, value)`` pair with a *differently-named* existing profile is
+      rejected: `detect_instrument` cannot tell the two apart on a header that
+      satisfies that rule, so the ambiguity is caught here instead of on some
+      later frame.
 
     Parameters
     ----------
     profile : InstrumentProfile
         The profile to register; its ``name`` is the registry key.
+    replace : bool, optional
+        Whether to allow overriding a name that already resolves. Default
+        False. When True, ``profile`` is also exempted from the rule-conflict
+        check against its own prior registration (registering the *same*
+        name with the *same* rules is not a conflict).
+
+    Raises
+    ------
+    ValueError
+        If ``profile.name`` is already registered or bundled and ``replace``
+        is False, or if any of ``profile.header_match`` collides with a rule
+        on a differently-named existing profile.
     """
+    existing_names = set(available_instruments())
+    if profile.name in existing_names and not replace:
+        msg = (
+            f"instrument {profile.name!r} is already registered; pass "
+            "replace=True to override it deliberately"
+        )
+        raise ValueError(msg)
+
+    new_rules = {_rule_identity(rule): rule for rule in profile.header_match}
+    if new_rules:
+        for other_name in sorted(existing_names):
+            if replace and other_name == profile.name:
+                continue
+            other = load_instrument(other_name)
+            for other_rule in other.header_match:
+                identity = _rule_identity(other_rule)
+                if identity in new_rules:
+                    msg = (
+                        f"instrument {profile.name!r}'s header_match rule "
+                        f"{new_rules[identity].keyword}=="
+                        f"{new_rules[identity].pattern!r} conflicts with "
+                        f"already-registered instrument {other_name!r}'s rule "
+                        f"{other_rule.keyword}=={other_rule.pattern!r} -- "
+                        "detect_instrument could never tell them apart"
+                    )
+                    raise ValueError(msg)
+
     _REGISTERED[profile.name] = profile
 
 
@@ -198,27 +273,41 @@ def detect_instrument(header):
     ------
     InstrumentDetectionError
         If zero or more than one profile matches, naming the header values the
-        candidate rules reference and the available/ambiguous profile names.
+        candidate rules reference, the auto-detection candidates (the
+        profiles a header could possibly resolve to), and separately the full
+        set of available instrument names (including profiles that carry no
+        ``header_match`` and so can never be auto-detected, only chosen
+        explicitly).
     """
     profiles = [load_instrument(name) for name in available_instruments()]
-    rules = [(profile, rule) for profile in profiles for rule in profile.header_match]
-    matched = sorted({profile.name for profile, rule in rules if rule.matches(header)})
+    candidates = [profile for profile in profiles if profile.header_match]
+    matched = sorted(
+        {profile.name for profile in candidates if profile.matches_header(header)}
+    )
 
     if len(matched) == 1:
         return load_instrument(matched[0])
 
-    seen = {rule.keyword: header.get(rule.keyword) for _, rule in rules}
+    seen = {
+        rule.keyword: header.get(rule.keyword)
+        for profile in candidates
+        for rule in profile.header_match
+    }
+    candidate_names = ", ".join(sorted({profile.name for profile in candidates}))
     available = ", ".join(available_instruments())
+    detail = (
+        f"auto-detection candidates: {candidate_names or 'none'}; all available "
+        f"instruments (pass --instrument/--profile explicitly): {available}"
+    )
     if not matched:
         msg = (
             f"no bundled/registered instrument profile's header_match matched "
-            f"this frame's header (checked {seen}); available instruments: "
-            f"{available}"
+            f"this frame's header (checked {seen}); {detail}"
         )
     else:
         msg = (
             f"ambiguous instrument: {', '.join(matched)} all matched this "
-            f"frame's header (checked {seen}); available instruments: {available}"
+            f"frame's header (checked {seen}); {detail}"
         )
     raise InstrumentDetectionError(msg)
 
