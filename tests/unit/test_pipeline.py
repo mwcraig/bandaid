@@ -193,10 +193,10 @@ class TestPrepareImage:
 
         ``prepare_image`` is a legitimate direct/single-frame entry point, so
         an unresolvable header is that frame's problem, not a batch-fatal one
-        (PR #122): the ``InstrumentDetectionError`` `resolve_config_instrument`
-        raises is wrapped as `FrameMetadataError`, keeping this failure inside
-        the same `FrameError` family a caller's ``except FrameError`` skip loop
-        already handles.
+        (PR #122): ``InstrumentDetectionError`` is itself a
+        `FrameMetadataError`, so it propagates with the file attached and is
+        caught by the same ``except FrameError`` skip loop other frame errors
+        are.
         """
         externals = stub_prepare_image_externals()
         externals.load_frame.side_effect = lambda _file: LoadedFrame(
@@ -209,7 +209,7 @@ class TestPrepareImage:
             )
 
         assert exc_info.value.file == "unused.fits"
-        assert isinstance(exc_info.value.__cause__, InstrumentDetectionError)
+        assert isinstance(exc_info.value, InstrumentDetectionError)
 
     def test_instrument_wcs_scale_tolerance_reaches_alignment(
         self, stub_prepare_image_externals
@@ -1124,16 +1124,16 @@ class TestCalibrationSequence:
 
     def test_unmatched_header_raises_frame_metadata_error(self):
         """
-        An unresolvable header raises FrameMetadataError, not InstrumentDetectionError.
+        An unresolvable header raises FrameMetadataError, via InstrumentDetectionError.
 
         ``calibration_sequence`` is one of the per-frame entry points
         (PR #122): when ``profile`` is None, ``metadata_from_header`` detects
-        the instrument and can raise the batch-fatal
-        ``InstrumentDetectionError``. Wrap it here with the file attached, the
-        same as the existing ``FrameMetadataError`` branch, so it stays inside
-        the ``FrameError`` family a per-frame skip loop already handles. A
-        frame with an empty header is handed in directly, so the failure
-        happens before any detection would run.
+        the instrument and can raise ``InstrumentDetectionError``, itself a
+        `FrameMetadataError`. It is labelled with the file here, the same as
+        the metadata errors `metadata_from_header` raises directly, so it
+        stays inside the ``FrameError`` family a per-frame skip loop already
+        handles. A frame with an empty header is handed in directly, so the
+        failure happens before any detection would run.
         """
         frame = LoadedFrame(np.zeros((10, 10)), {})
 
@@ -1143,7 +1143,7 @@ class TestCalibrationSequence:
             )
 
         assert exc_info.value.file == "fake_file.fits"
-        assert isinstance(exc_info.value.__cause__, InstrumentDetectionError)
+        assert isinstance(exc_info.value, InstrumentDetectionError)
 
     @pytest.mark.parametrize("compressed", [False, True], ids=["plain", "gz"])
     def test_opens_the_file_exactly_once(

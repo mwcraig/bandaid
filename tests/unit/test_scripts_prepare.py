@@ -227,17 +227,26 @@ class TestPrepareBatch:
 
         assert prep.instrument_auto_detected is False
 
-    def test_unmatched_first_frame_header_raises_instrument_detection_error(
-        self, mocker
-    ):
-        """A first frame whose header matches no profile fails the whole batch."""
+    def test_unmatched_first_frame_header_raises_batch_prep_error(self, mocker):
+        """
+        A first frame whose header matches no profile fails the whole batch.
+
+        ``InstrumentDetectionError`` is now a `FrameMetadataError` (recoverable
+        per-frame) by declaration (PR #122 follow-up), so `prepare_batch` --
+        the one caller that actually wants the fatal behavior, since an
+        unresolvable first frame leaves no detection/PSF settings to prepare
+        the batch with -- wraps it into the batch-fatal `BatchPrepError`
+        itself instead of relying on inheritance.
+        """
         _patch_prep(mocker)
         frame = scripts.LoadedFrame(np.zeros((4, 4)), {})
 
-        with pytest.raises(InstrumentDetectionError):
+        with pytest.raises(BatchPrepError) as exc_info:
             scripts.prepare_batch(
                 "frame1.fits", cnn=object(), config=PhotometryConfig(), frame=frame
             )
+
+        assert isinstance(exc_info.value.__cause__, InstrumentDetectionError)
 
     def test_first_frame_resolved_with_config_instrument_profile(self, mocker):
         """
@@ -1067,17 +1076,21 @@ class TestCheckFrameConsistency:
 
         scripts.check_frame_consistency("ok.fits", header, prep)
 
-    def test_explicitly_chosen_instrument_header_mismatch_not_rejected(self):
+    def test_explicitly_chosen_instrument_unmatched_header_not_rejected(self):
         """
-        An EXPLICITLY-chosen instrument's ``header_match`` is not policed.
+        An EXPLICITLY-chosen instrument tolerates a header that matches nothing.
 
         ``--instrument``/``--profile``/``--config`` (or
         ``config=PhotometryConfig(instrument=...)``) is an explicit,
-        deliberate choice, so a mismatched or headerless frame is trusted and
-        photometered rather than rejected -- the batch-mixing guard exists
-        only to catch a night that rode along on an *auto-detected* profile
+        deliberate choice, so a header that resolves to no registered
+        instrument at all (missing/malformed, matching neither the batch
+        instrument nor any other) is trusted and photometered rather than
+        rejected -- the escape hatch this guard grants an explicit selection
         (``instrument_auto_detected=False`` is the ``_prep()`` default, as it
-        would be for an explicit selection reaching `prepare_batch`).
+        would be for an explicit selection reaching `prepare_batch``). This is
+        narrower than "the guard is skipped entirely" (issue #122 follow-up):
+        see `test_explicitly_chosen_instrument_different_registered_instrument_rejected`
+        for the case that is still policed.
         """
         prep = self._prep(
             config=PhotometryConfig(instrument=load_instrument("Seestar50"))
@@ -1085,6 +1098,36 @@ class TestCheckFrameConsistency:
         header = _consistency_header(INSTRUME="Some Other Scope")
 
         scripts.check_frame_consistency("ok.fits", header, prep)
+
+    def test_explicitly_chosen_instrument_different_registered_instrument_rejected(
+        self,
+    ):
+        """
+        An EXPLICITLY-chosen instrument still rejects a header naming another one.
+
+        Before this, ``instrument_auto_detected=False`` disabled the guard
+        entirely, so a scripted workflow that always passes
+        ``--instrument Seestar50`` got zero mixing protection: frames from a
+        second registered telescope riding along on the same batch were
+        photometered under the wrong profile's tuning -- exactly the
+        silently-wrong-results class this guard exists to prevent (issue #122
+        follow-up). The guard is narrowed, not disabled, for an explicit
+        selection: it still fires when the header positively identifies a
+        *different, registered* instrument; only a header matching nothing at
+        all is exempt (see the sibling test above).
+        """
+        other = InstrumentProfile(
+            name="OtherScope",
+            header_match=(HeaderMatchRule(keyword="INSTRUME", pattern="Other Scope"),),
+        )
+        register_instrument(other)
+        prep = self._prep(
+            config=PhotometryConfig(instrument=load_instrument("Seestar50"))
+        )
+        header = _consistency_header(INSTRUME="Other Scope")
+
+        with pytest.raises(FrameError, match="instrument"):
+            scripts.check_frame_consistency("bad.fits", header, prep)
 
     def test_mixing_guard_fires_before_metadata_error(self):
         """
@@ -1156,6 +1199,39 @@ class TestCheckFrameConsistency:
             "possibly a frame from a different instrument mixed into this batch"
             in str(excinfo.value)
         )
+
+    def test_multi_rule_present_wrong_value_is_not_reported_as_missing(self):
+        """
+        One absent OR-rule keyword does not mean that keyword is required.
+
+        ``header_match`` is OR semantics: a profile matches if *any* rule
+        matches. For a profile with ``INSTRUME=Foo OR TELESCOP=Bar``, a header
+        carrying ``INSTRUME=Other`` (present, wrong value) and no ``TELESCOP``
+        at all used to report only that ``TELESCOP`` is missing -- because the
+        old check fired the "missing" branch whenever *any* rule's keyword was
+        absent, not only when *all* of them were (a Copilot-flagged bug, issue
+        #122 follow-up). The more accurate "does not match" diagnostic is
+        correct here: the header did carry an identifying keyword, just with
+        the wrong value.
+        """
+        custom = InstrumentProfile(
+            name="MultiRuleScope",
+            header_match=(
+                HeaderMatchRule(keyword="INSTRUME", pattern="Foo"),
+                HeaderMatchRule(keyword="TELESCOP", pattern="Bar"),
+            ),
+        )
+        register_instrument(custom)
+        prep = self._prep(
+            config=PhotometryConfig(instrument=custom),
+            instrument_auto_detected=True,
+        )
+        # _consistency_header() carries no TELESCOP key at all.
+        header = _consistency_header(INSTRUME="Other")
+
+        with pytest.raises(FrameError, match="does not match") as excinfo:
+            scripts.check_frame_consistency("bad.fits", header, prep)
+        assert "missing" not in str(excinfo.value)
 
     def test_ambiguous_instrument_rejected_by_guard(self):
         """

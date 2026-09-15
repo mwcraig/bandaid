@@ -63,6 +63,7 @@ def _profile_path(name):
     return _profiles_root().joinpath(name, _PROFILE_FILENAME)
 
 
+@cache
 def _bundled_names():
     """
     Return the names of the bundled profiles.
@@ -71,6 +72,13 @@ def _bundled_names():
     -------
     list of str
         Subdirectories of ``meta_json_files`` that hold a ``profile.json``.
+
+    Notes
+    -----
+    Cached: the bundled directory does not change within a process, and this
+    is on the per-frame batch-mixing-guard path (`~bandaid.scripts.
+    check_frame_consistency`), so an uncached walk here would cost a
+    directory listing on every frame.
     """
     return [
         entry.name
@@ -163,10 +171,14 @@ def _rule_identity(rule):
 
     Notes
     -----
-    Two rules that agree on this pair match exactly the same header values
-    (it is the normalisation :meth:`~bandaid.config.HeaderMatchRule.matches`
-    applies), so they are a conflict when they belong to differently-named
-    profiles.
+    Two rules that agree on this pair are a conflict when they belong to
+    differently-named profiles: they match exactly the same header values for
+    an `astropy.io.fits.Header` input, whose ``.get`` is itself
+    case-insensitive on the keyword. This normalisation is *not* the one
+    :meth:`~bandaid.config.HeaderMatchRule.matches` applies for a plain
+    `collections.abc.Mapping` input, though -- ``matches`` does no keyword-case
+    folding of its own there, so a mapping whose keys are not uppercase FITS
+    convention can disagree with this conflict check (issue #122 follow-up).
     """
     return (rule.keyword.upper(), rule.pattern.strip().casefold())
 
@@ -202,7 +214,12 @@ def register_instrument(profile, *, replace=False):
       previously registered) raises unless ``replace=True`` is passed, so an
       accidental name collision does not silently shadow the wrong profile.
       ``replace=True`` keeps the deliberate "override a bundled telescope
-      in-process" use case working.
+      in-process" use case working. When ``replace=True`` and ``profile``
+      carries no ``header_match`` of its own, the replaced profile's
+      ``header_match`` is inherited (rather than silently emptied), so the
+      "retune one knob" shape -- e.g.
+      ``InstrumentProfile(name='Seestar50', thresh=9.9)`` -- keeps that name
+      auto-detectable; pass an explicit ``header_match`` to change it too.
     - **Rule conflict.** A new profile whose ``header_match`` shares an exact
       ``(keyword, value)`` pair with a *differently-named* existing profile is
       rejected: `detect_instrument` cannot tell the two apart on a header that
@@ -216,6 +233,16 @@ def register_instrument(profile, *, replace=False):
             "replace=True to override it deliberately"
         )
         raise ValueError(msg)
+
+    if replace and not profile.header_match and profile.name in existing_names:
+        # The "retune one knob" override shape --
+        # InstrumentProfile(name='Seestar50', thresh=9.9) -- otherwise leaves
+        # header_match at the bare-class default (empty), silently stripping
+        # the replaced profile's detection rule: detect_instrument would then
+        # have no candidates for this name at all (issue #122).
+        previous = load_instrument(profile.name)
+        if previous.header_match:
+            profile = profile.model_copy(update={"header_match": previous.header_match})
 
     new_rules = {_rule_identity(rule): rule for rule in profile.header_match}
     if new_rules:
@@ -285,13 +312,14 @@ def detect_instrument(header):
     """
     profiles = [load_instrument(name) for name in available_instruments()]
     candidates = [profile for profile in profiles if profile.header_match]
-    matched = sorted(
-        {profile.name for profile in candidates if profile.matches_header(header)}
-    )
+    matched_profiles = [
+        profile for profile in candidates if profile.matches_header(header)
+    ]
 
-    if len(matched) == 1:
-        return load_instrument(matched[0])
+    if len(matched_profiles) == 1:
+        return matched_profiles[0]
 
+    matched = sorted({profile.name for profile in matched_profiles})
     seen = {
         rule.keyword: header.get(rule.keyword)
         for profile in candidates
@@ -316,12 +344,55 @@ def detect_instrument(header):
     raise InstrumentDetectionError(msg)
 
 
+def resolve_profile(profile, header):
+    """
+    Return ``profile`` unchanged, or auto-detect and log it from ``header``.
+
+    The single "``None`` means resolve from the header" step, shared by every
+    place that accepts a possibly-unset profile: this used to be
+    reimplemented inline, without logging, by
+    `~bandaid.photometry.metadata_from_header`, while
+    `resolve_config_instrument` (below) logged the detected name -- so a
+    standalone `~bandaid.photometry.metadata_from_header` or
+    `~bandaid.photometry.calibration_sequence` call left no trace of which
+    instrument was picked (PR #122 follow-up). Both now funnel through this.
+
+    Parameters
+    ----------
+    profile : InstrumentProfile or None
+        The profile to return unchanged, or None to auto-detect from
+        ``header``.
+    header : astropy.io.fits.Header or collections.abc.Mapping
+        The frame header to detect from; only consulted when ``profile`` is
+        None.
+
+    Returns
+    -------
+    resolved : InstrumentProfile
+        ``profile`` unchanged, or the profile detected from ``header``. When
+        ``profile`` needs resolving, `detect_instrument` may raise
+        `~bandaid.exceptions.InstrumentDetectionError` (zero or more than one
+        profile matched the header); that propagates unchanged.
+    auto_detected : bool
+        True if ``profile`` was resolved by detection (the incoming
+        ``profile`` was None); False if it was already set explicitly.
+    """
+    if profile is not None:
+        return profile, False
+    detected = detect_instrument(header)
+    logger.info(
+        "auto-detected instrument profile %r from the frame header", detected.name
+    )
+    return detected, True
+
+
 def resolve_config_instrument(config, header):
     """
     Return ``config`` (unchanged or with ``instrument`` auto-detected) and how.
 
-    The single "``None`` means resolve from the header" step shared by the two
-    places a header is in hand early enough to do it:
+    A thin `~bandaid.config.PhotometryConfig`-shaped wrapper around
+    :func:`resolve_profile`, used by the two places a header is in hand early
+    enough to resolve the instrument from it:
     `~bandaid.scripts.prepare_batch` (the batch path) and
     `~bandaid.photometry.prepare_image` (the direct/per-frame path). The
     second return value tells `~bandaid.scripts.prepare_batch` whether to mark
@@ -349,10 +420,7 @@ def resolve_config_instrument(config, header):
         ``config.instrument`` was None); False if it was already set
         explicitly.
     """
-    if config.instrument is not None:
+    detected, auto_detected = resolve_profile(config.instrument, header)
+    if not auto_detected:
         return config, False
-    detected = detect_instrument(header)
-    logger.info(
-        "auto-detected instrument profile %r from the frame header", detected.name
-    )
     return config.model_copy(update={"instrument": detected}), True

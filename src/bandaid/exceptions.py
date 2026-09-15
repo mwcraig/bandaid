@@ -137,7 +137,7 @@ class BatchPrepError(BandaidError):
     """
 
 
-class InstrumentDetectionError(BatchPrepError):
+class InstrumentDetectionError(FrameMetadataError):
     """
     A frame header did not resolve to exactly one registered instrument profile.
 
@@ -145,9 +145,12 @@ class InstrumentDetectionError(BatchPrepError):
     `~bandaid.config.PhotometryConfig` carries no explicit ``instrument`` (the
     default): zero profiles matched the frame's header (no bundled/registered
     instrument claims it) or more than one did (an ambiguous registration).
-    Fatal like its parent `BatchPrepError` -- an unresolvable instrument means
-    the whole batch has no detection/PSF settings to run with, not just one bad
-    frame. The message names the header values seen and the candidate profile
-    names so the fix (register the right profile, or pass ``--instrument``
-    explicitly) is obvious from the error alone.
+    Recoverable per-frame like its parent `FrameMetadataError` at every call
+    site that can see it except one: `~bandaid.scripts.prepare_batch` is the
+    single caller that wraps it into the fatal `BatchPrepError` instead, since
+    an unresolvable *first* frame leaves the whole batch with no
+    detection/PSF settings to run with. The message names the header values
+    seen and the candidate profile names so the fix (register the right
+    profile, or pass ``--instrument`` explicitly) is obvious from the error
+    alone.
     """

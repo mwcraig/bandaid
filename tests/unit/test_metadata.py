@@ -1,5 +1,7 @@
 """Unit tests for header/metadata parsing, airmass, good-star mask, and starlist."""
 
+import logging
+
 import astropy.units as u
 import numpy as np
 import pytest
@@ -252,6 +254,25 @@ class TestMetadataFromHeader:
         """
         metadata = metadata_from_header(_seestar_header())
         assert metadata["egain"] == pytest.approx(0.3116)
+
+    def test_omitted_profile_auto_detection_is_logged(self, caplog):
+        """
+        Auto-detecting the profile here logs, the same as ``resolve_config_instrument``.
+
+        Before this, ``metadata_from_header`` re-implemented "``profile=None``
+        means detect" inline with no logging, while
+        `~bandaid.instruments.resolve_config_instrument` logged the detected
+        name -- so a standalone `metadata_from_header` call left no trace of
+        which instrument was picked (PR #122 follow-up). Both now funnel
+        through the same detect-or-resolve helper, so both log identically.
+        """
+        with caplog.at_level(logging.INFO, logger="bandaid.instruments"):
+            metadata_from_header(_seestar_header())
+
+        assert any(
+            "auto-detected instrument profile 'Seestar50'" in record.message
+            for record in caplog.records
+        )
 
     def test_omitted_profile_with_undetectable_header_raises(self):
         """

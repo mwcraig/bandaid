@@ -52,7 +52,7 @@ from .exceptions import (
     WCSSolveError,
 )
 from .image2sl_qt import bayer_balance_image
-from .instruments import detect_instrument, resolve_config_instrument
+from .instruments import resolve_config_instrument, resolve_profile
 
 logger = logging.getLogger(__name__)
 
@@ -919,13 +919,11 @@ def calibration_sequence(
     FrameMetadataError
         If the header is missing a required keyword (propagated from
         `metadata_from_header`, with the source file attached). Also raised,
-        with the source file attached and the original chained as
-        ``__cause__``, when ``profile`` is None and the header matches zero or
-        more than one bundled/registered instrument profile:
-        `calibration_sequence` is itself a direct/single-frame entry point, so
-        the batch-fatal `~bandaid.exceptions.InstrumentDetectionError`
-        `metadata_from_header` raises there is wrapped rather than left to
-        propagate.
+        with the source file attached, when ``profile`` is None and the
+        header matches zero or more than one bundled/registered instrument
+        profile: `metadata_from_header` raises the subclass
+        `~bandaid.exceptions.InstrumentDetectionError` there, which
+        propagates as a `FrameMetadataError` since it is one.
     DegenerateBayerChannelError
         If ``detect_on_bayer_balanced`` is True and a CFA sub-grid sample is
         empty or has zero variance (propagated from `bayer_balance_image`,
@@ -940,18 +938,12 @@ def calibration_sequence(
     try:
         metadata = metadata_from_header(header, profile=profile)
     except FrameMetadataError as exc:
-        # metadata_from_header has only the header, not the path; label it here.
+        # metadata_from_header has only the header, not the path; label it
+        # here. InstrumentDetectionError is itself a FrameMetadataError
+        # (issue/PR #122), so this also catches an unresolvable header
+        # without a separate wrapping branch.
         exc.file = file
         raise
-    except InstrumentDetectionError as exc:
-        # calibration_sequence is itself a direct/single-frame entry point
-        # (unlike prepare_batch, which resolves once for the whole batch), so
-        # an unresolvable header here is this frame's problem, not a
-        # batch-fatal one: wrap the batch-fatal InstrumentDetectionError as a
-        # FrameMetadataError (issue/PR #122) so it stays inside the
-        # FrameError family a caller's `except FrameError` skip loop already
-        # handles.
-        raise FrameMetadataError(str(exc), file=file) from exc
     max_adu = metadata["largest_usable_adu_value"]
 
     # Multiplying by 1 should force conversion from int to float data
@@ -1148,8 +1140,9 @@ def metadata_from_header(header, *, profile=None):
         FITS header to look up values in.
     profile : InstrumentProfile or None, optional
         The instrument whose ``header_map`` resolves the header. None (the
-        default) means "resolve from the header": `detect_instrument` is
-        called on ``header`` itself, the same "auto-detect" semantics as
+        default) means "resolve from the header": `~bandaid.instruments.
+        resolve_profile` detects it (and logs the detected name), the same
+        "auto-detect" semantics as
         `~bandaid.config.PhotometryConfig.instrument`.
 
     Returns
@@ -1163,12 +1156,11 @@ def metadata_from_header(header, *, profile=None):
         If a required header keyword is missing or cannot be parsed, or if the
         system gain (``egain``) is absent with no template default. If
         ``profile`` is None and ``header`` matches zero or more than one
-        bundled/registered instrument profile, the unrelated
+        bundled/registered instrument profile, the subclass
         `~bandaid.exceptions.InstrumentDetectionError` propagates instead
-        (from `~bandaid.instruments.detect_instrument`).
+        (from `~bandaid.instruments.resolve_profile`).
     """
-    if profile is None:
-        profile = detect_instrument(header)
+    profile, _ = resolve_profile(profile, header)
     template = profile.header_map
 
     # Collect fallback values from "#key" entries
@@ -2422,18 +2414,16 @@ def prepare_image(
         `DegenerateBayerChannelError` -- both with `file` already attached by
         `calibration_sequence` itself, and `_drop_off_frame_catalog_stars` may
         raise `NoUsableStarsError` when every catalog star projects outside
-        the frame; both propagate unchanged.)
+        the frame; all three propagate unchanged.)
     FrameMetadataError
         If a WCS must be solved (``wcs`` is None) but the frame metadata has no
         usable numeric ``pixscale`` to scale-check the solve against. The source
-        `file` is attached before it propagates. Also raised, with `file`
-        attached and the original chained as ``__cause__``, when
+        `file` is attached before it propagates.
+    InstrumentDetectionError
+        A `FrameMetadataError` subclass, raised with `file` attached when
         ``config.instrument`` is None and the frame's header matches zero or
-        more than one bundled/registered instrument profile: `prepare_image`
-        is itself a direct/single-frame entry point, so the batch-fatal
-        `~bandaid.exceptions.InstrumentDetectionError`
-        `~bandaid.instruments.resolve_config_instrument` raises there is
-        wrapped rather than left to propagate.
+        more than one bundled/registered instrument profile (propagated from
+        `~bandaid.instruments.resolve_config_instrument`).
     """
     # "calibrate" the data and get initial detections for WCS alignment and
     # FWHM estimation. calibration_sequence raises TooFewStarsError (a
@@ -2449,16 +2439,15 @@ def prepare_image(
     # caller. prepare_image has no batch-mixing guard to feed, so the "was it
     # detected" flag is not needed here.
     #
-    # prepare_image is itself a legitimate direct/single-frame entry point
-    # (unlike prepare_batch, which resolves once for the whole batch), so an
-    # unresolvable header here is this frame's problem, not a batch-fatal one:
-    # wrap the batch-fatal InstrumentDetectionError as a FrameMetadataError
-    # (issue/PR #122) so it stays inside the FrameError family a caller's
-    # `except FrameError` skip loop already handles.
+    # InstrumentDetectionError is itself a FrameMetadataError (issue/PR #122
+    # follow-up), so it already stays inside the FrameError family a caller's
+    # `except FrameError` skip loop handles -- just label it with the file,
+    # the same as every other FrameMetadataError raised here.
     try:
         config, _ = resolve_config_instrument(config, frame.header)
     except InstrumentDetectionError as exc:
-        raise FrameMetadataError(str(exc), file=file) from exc
+        exc.file = file
+        raise
     instrument = config.instrument
     # Receives calibration_sequence's own detection-time array (see its
     # docstring) so centroiding reuses it instead of balancing a second copy.
@@ -2810,15 +2799,13 @@ def process_one_image(
     ValueError
         If "L4" maps to anything but None, or the TR/TG/TB channels it is
         built from are missing.
-    FrameMetadataError
-        If ``config.instrument`` is None and the frame's header matches zero
-        or more than one bundled/registered instrument profile. The source
-        `file` is attached and the batch-fatal
-        `~bandaid.exceptions.InstrumentDetectionError`
-        `~bandaid.instruments.resolve_config_instrument` raises is chained as
-        ``__cause__``, consistent with `prepare_image` (this function resolves
-        the instrument itself, before calling `prepare_image`, so that call's
-        own resolution is a no-op).
+    InstrumentDetectionError
+        A `FrameMetadataError` subclass, raised with `file` attached when
+        ``config.instrument`` is None and the frame's header matches zero or
+        more than one bundled/registered instrument profile (propagated from
+        `~bandaid.instruments.resolve_config_instrument`), consistent with
+        `prepare_image` (this function resolves the instrument itself, before
+        calling `prepare_image`, so that call's own resolution is a no-op).
 
     Notes
     -----
@@ -2837,10 +2824,13 @@ def process_one_image(
     # one open: the loaded frame is passed through via `frame=`.
     if frame is None:
         frame = _load_frame(file)
+    # InstrumentDetectionError is itself a FrameMetadataError (issue/PR #122
+    # follow-up); just label it with the file, like prepare_image does.
     try:
         config, _ = resolve_config_instrument(config, frame.header)
     except InstrumentDetectionError as exc:
-        raise FrameMetadataError(str(exc), file=file) from exc
+        exc.file = file
+        raise
     img = prepare_image(
         file,
         radecs,

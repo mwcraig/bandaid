@@ -46,6 +46,25 @@ class TestHeaderMatchRule:
         rule = HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50")
         assert rule.matches({"INSTRUME": "  Seestar S50  "}) is True
 
+    def test_keyword_present_true_regardless_of_value(self):
+        """
+        ``keyword_present`` checks presence only, unlike ``matches``.
+
+        `~bandaid.scripts.check_frame_consistency`'s batch-mixing guard needs
+        to distinguish "the keyword is absent" from "the keyword is present
+        with the wrong value" for its diagnostic message; ``matches`` conflates
+        both into False, so the guard uses this instead (issue #122
+        follow-up), the same ``header.get(self.keyword)`` lookup ``matches``
+        itself uses.
+        """
+        rule = HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50")
+        assert rule.keyword_present({"INSTRUME": "Some Other Scope"}) is True
+
+    def test_keyword_present_false_when_absent(self):
+        """A header without the keyword at all is not present."""
+        rule = HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50")
+        assert rule.keyword_present({}) is False
+
 
 @pytest.fixture(autouse=True)
 def _isolate_registry(isolate_registry):
@@ -121,6 +140,48 @@ class TestAvailableInstruments:
         """
         assert set(available_instruments()) == {"Seestar50"}
 
+    def test_bundled_profiles_have_pairwise_disjoint_header_match_rules(self):
+        """
+        No two bundled profiles can ever match the same header.
+
+        ``register_instrument``'s rule-conflict check only runs inside
+        ``register_instrument`` itself; the bundled profiles under
+        ``meta_json_files/`` are loaded directly and never pass through it
+        (issue #122). Today there is only one bundled profile, so this cannot
+        yet fail -- but it pins the invariant that check exists to protect,
+        so a future ``meta_json_files/<Name>/profile.json`` shipped with a
+        ``header_match`` rule copy-pasted from another bundled profile (or
+        genuinely overlapping one) fails CI instead of making
+        ``detect_instrument`` ambiguous for every user of both telescopes.
+        """
+        seen = {}
+        for name in sorted(instruments._bundled_names()):  # noqa: SLF001
+            for rule in load_instrument(name).header_match:
+                identity = instruments._rule_identity(rule)  # noqa: SLF001
+                assert identity not in seen, (
+                    f"{name!r}'s rule {rule.keyword}=={rule.pattern!r} "
+                    f"conflicts with {seen.get(identity)!r}'s"
+                )
+                seen[identity] = name
+
+    def test_bundled_names_directory_walk_is_cached(self, mocker):
+        """
+        Repeated ``_bundled_names()`` calls do not re-walk the bundled directory.
+
+        ``_bundled_names()`` used to be the only loader in this module without
+        ``@cache``, so ``detect_instrument`` walked ``meta_json_files/`` on
+        every call, now on the per-frame batch-mixing-guard path (issue/PR
+        #122 follow-up). Caching collapses repeated calls to a single walk.
+        """
+        instruments._bundled_names.cache_clear()  # noqa: SLF001
+        walk_spy = mocker.spy(instruments, "_profiles_root")
+
+        first = instruments._bundled_names()  # noqa: SLF001
+        second = instruments._bundled_names()  # noqa: SLF001
+
+        assert walk_spy.call_count == 1
+        assert first is second
+
 
 class TestRegister:
     """A user can register a custom profile and load it back by name."""
@@ -153,6 +214,39 @@ class TestRegister:
             InstrumentProfile(name="Seestar50", thresh=custom_thresh), replace=True
         )
         assert load_instrument("Seestar50").thresh == custom_thresh
+
+    def test_replace_true_with_empty_header_match_inherits_the_previous_rules(self):
+        """
+        ``replace=True`` with a fresh profile keeps the replaced ``header_match``.
+
+        The documented "override a bundled telescope in-process" path --
+        ``InstrumentProfile(name='Seestar50', thresh=9.9)``, the natural
+        "retune one knob" shape -- used to leave ``header_match`` empty (a
+        bare ``InstrumentProfile()`` defaults it to ``()``), which silently
+        stripped Seestar50's detection rule: `detect_instrument` then had no
+        candidates, and the next flagless run on real Seestar frames raised
+        `~bandaid.exceptions.InstrumentDetectionError` for the whole batch
+        with no warning pointing at ``replace=True`` as the cause (issue #122
+        follow-up). Inheriting the replaced profile's ``header_match`` when
+        the new one carries none keeps the "retune one knob" mental model
+        working.
+        """
+        original = load_instrument("Seestar50")
+        custom_thresh = 9.9
+        register_instrument(
+            InstrumentProfile(name="Seestar50", thresh=custom_thresh), replace=True
+        )
+        replaced = load_instrument("Seestar50")
+        assert replaced.thresh == custom_thresh
+        assert replaced.header_match == original.header_match
+
+    def test_replace_true_own_header_match_is_not_overridden(self):
+        """A replacement that supplies its own ``header_match`` keeps it."""
+        own_rule = (HeaderMatchRule(keyword="INSTRUME", pattern="Custom Seestar"),)
+        register_instrument(
+            InstrumentProfile(name="Seestar50", header_match=own_rule), replace=True
+        )
+        assert load_instrument("Seestar50").header_match == own_rule
 
     def test_replace_true_overrides_custom_name(self):
         """``replace=True`` deliberately overrides a previously-registered profile."""
@@ -286,6 +380,23 @@ class TestDetectInstrument:
         candidates_part, available_part = message.split("all available instruments")
         assert "NoRules" not in candidates_part
         assert "NoRules" in available_part
+
+    def test_single_match_does_not_reload_the_profile_by_name(self, mocker):
+        """
+        The single matched profile is reused, not re-resolved by name.
+
+        The single-match branch used to call ``load_instrument(matched[0])``
+        again instead of reusing the profile object already resolved while
+        building ``candidates`` -- a redundant (and, for a bundled profile, an
+        uncached) directory walk (issue/PR #122 follow-up). So there is
+        exactly one ``load_instrument`` call per available instrument name,
+        with no extra call to re-resolve the match.
+        """
+        load_spy = mocker.spy(instruments, "load_instrument")
+
+        detect_instrument({"INSTRUME": "Seestar S50"})
+
+        assert load_spy.call_count == len(available_instruments())
 
 
 class TestFileRoundTrip:
