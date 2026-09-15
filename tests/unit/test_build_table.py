@@ -6,11 +6,11 @@ import astropy.units as u
 import numpy as np
 import pytest
 from _helpers import (
-    _bright_neighbor_scene,
+    _bright_neighbor_image,
     _fake_phot_factory,
     _make_image_data,
     _make_tan_wcs,
-    _peak_scene_photometry,
+    _peak_image_photometry,
     _single_source_photometry_inputs,
     filter_table,
 )
@@ -27,6 +27,8 @@ from bandaid.photometry import (
     _L4_RECOMBINED_COLUMNS,
     _MASK_INDEPENDENT_COLUMNS,
     ImageData,
+    _aperture_annulus_geometry,
+    _peak_box_cutouts,
     build_photometry_table,
     calculate_l4_quantities,
     metadata_from_header,
@@ -341,6 +343,46 @@ class TestBuildPhotometryTable:
         assert len(claimed) == len(set(claimed)), "a column is in two tuples"
         assert set(claimed) == set(table.colnames)
 
+    # --- Hoisted peak-cutout extraction and aperture/annulus geometry ---
+
+    @pytest.mark.parametrize(
+        ("kwarg", "precompute"),
+        [
+            ("peak_cutouts", _peak_box_cutouts),
+            (
+                "geometry",
+                lambda image, coords, fwhm: _aperture_annulus_geometry(
+                    fwhm, RELATIVE_RADII, ANNULUS
+                ),
+            ),
+        ],
+    )
+    def test_table_identical_with_and_without_precomputed(
+        self, make_test_image, kwarg, precompute
+    ):
+        """
+        ``build_photometry_table`` is identical with/without a precomputed hoist kwarg.
+
+        Covers both hoisted arguments -- ``peak_cutouts`` and ``geometry`` --
+        with the same body. Runs real (non-mocked) ``measure_photometry``
+        end-to-end so the actual hoist is exercised, not a stub.
+        """
+        image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+        img = _make_image_data(_make_tan_wcs(image.shape), coords, None)
+        img.calibrated_data = image
+
+        without = build_photometry_table(img, mask=mask)
+
+        with_precomputed = build_photometry_table(
+            img, mask=mask, **{kwarg: precompute(image, coords, fwhm)}
+        )
+
+        assert without.colnames == with_precomputed.colnames
+        for col in without.colnames:
+            np.testing.assert_array_equal(
+                np.asarray(without[col]), np.asarray(with_precomputed[col])
+            )
+
 
 class TestCalculateL4Quantities:
     """Unit tests for the RGB->L4 combination ``calculate_l4_quantities``."""
@@ -403,12 +445,12 @@ class TestCalculateL4Quantities:
         ``measure_photometry`` per channel, the inputs must now differ for
         every star and the L4 value must be their elementwise maximum.
         """
-        image, coords = _bright_neighbor_scene(make_test_image)
+        image, coords = _bright_neighbor_image(make_test_image)
         masks = bayer_masks_rggb(image.shape)
 
         by_filter = {}
         for name, mask in masks.items():
-            phot = _peak_scene_photometry(image, coords, mask)
+            phot = _peak_image_photometry(image, coords, mask)
             by_filter[name] = filter_table(
                 phot["tot_count"],
                 phot["aperture_area"],

@@ -21,9 +21,9 @@ from bandaid.photometry import ANNULUS, RELATIVE_RADII, ImageData, LoadedFrame
 # Fixed random seed for reproducible noise in generated test images.
 SEED = 843032
 
-# FWHM of the peak_count test scene; the bright neighbor in ``_bright_neighbor_scene``
+# FWHM of the peak_count test image; the bright neighbor in ``_bright_neighbor_image``
 # sits well outside the ~2*FWHM peak box at this width.
-_PEAK_SCENE_FWHM = 3.0
+_PEAK_IMAGE_FWHM = 3.0
 
 
 def _single_source_photometry_inputs(make_test_image, fwhm=2.3, annulus=ANNULUS):
@@ -70,9 +70,9 @@ def _single_source_photometry_inputs(make_test_image, fwhm=2.3, annulus=ANNULUS)
     return image, coords, fwhm, mask
 
 
-def _bright_neighbor_scene(make_test_image, fwhm=_PEAK_SCENE_FWHM, sky=10.0):
+def _bright_neighbor_image(make_test_image, fwhm=_PEAK_IMAGE_FWHM, sky=10.0):
     """
-    Build a scene with a faint target, a bright close neighbor, and a control.
+    Build a test image with a faint target, a bright close neighbor, and a control.
 
     The target (peak ~110 with sky) has a 5000-count neighbor 10 px away --
     outside the 1-FWHM aperture and the ~2*FWHM peak box, but inside the old
@@ -111,18 +111,21 @@ def _bright_neighbor_scene(make_test_image, fwhm=_PEAK_SCENE_FWHM, sky=10.0):
     return image, coords
 
 
-def _peak_scene_photometry(image, centroid_coords, mask):
+def _peak_image_photometry(image, centroid_coords, mask, peak_cutouts=None):
     """
-    Run ``measure_photometry`` on the bright-neighbor scene.
+    Run ``measure_photometry`` on the bright-neighbor test image.
 
     Parameters
     ----------
     image : numpy.ndarray
-        Scene from `_bright_neighbor_scene`.
+        Image from `_bright_neighbor_image`.
     centroid_coords : numpy.ndarray
         Measured centroid coordinates.
     mask : numpy.ndarray or None
         Bayer channel mask (True = excluded), or None for the full frame.
+    peak_cutouts : numpy.ndarray or None, optional
+        Precomputed peak-count box cutouts forwarded to
+        ``measure_photometry``. By default None.
 
     Returns
     -------
@@ -132,11 +135,12 @@ def _peak_scene_photometry(image, centroid_coords, mask):
     return measure_photometry(
         image,
         centroid_coords,
-        _PEAK_SCENE_FWHM,
+        _PEAK_IMAGE_FWHM,
         1.0,
         mask,
         radii=(1.0,),
         annulus=(5.0, 8.0),
+        peak_cutouts=peak_cutouts,
     )
 
 
