@@ -668,24 +668,6 @@ def _check_instrument_mixing(file, header, prep, batch_instrument):
     """
     Reject a frame whose header does not resolve to the batch's instrument.
 
-    A later frame whose header does not resolve, through
-    `~bandaid.instruments.detect_instrument`, to the same profile
-    `prepare_batch` resolved is rejected -- e.g. a night with a different
-    telescope's frames accidentally interleaved. Using `detect_instrument`
-    (rather than only checking the batch instrument's own ``header_match``
-    rules) means a header that is *ambiguous* across the registered profiles
-    is rejected too, not just one that matches a definite other instrument
-    (issue #122). Enforced only when ``prep.instrument_auto_detected`` is
-    True *and* ``batch_instrument.header_match`` is non-empty: an explicitly
-    chosen instrument (``--instrument``/``--profile``/``--config``, or
-    ``config=PhotometryConfig(instrument=...)``) is trusted unconditionally,
-    and a bare/custom profile with no rules carries no device-identity claim
-    to check in the first place. Called by `check_frame_consistency` before
-    the header is otherwise resolved, so a frame from a genuinely different
-    instrument is rejected with this diagnostic message rather than the less
-    informative `FrameMetadataError` that resolving its header through the
-    *batch* instrument's ``header_map`` would likely raise first.
-
     Parameters
     ----------
     file : str or Path
@@ -704,6 +686,28 @@ def _check_instrument_mixing(file, header, prep, batch_instrument):
     FrameError
         If the guard is enforced and ``header`` does not resolve to
         ``batch_instrument``.
+
+    Notes
+    -----
+    A later frame whose header does not resolve, through
+    `~bandaid.instruments.detect_instrument`, to the same profile
+    `prepare_batch` resolved is rejected -- e.g. a night with a different
+    telescope's frames accidentally interleaved. Using `detect_instrument`
+    (rather than only checking the batch instrument's own ``header_match``
+    rules) means a header that is *ambiguous* across the registered profiles
+    is rejected too, not just one that matches a definite other instrument
+    (PR #122). Enforced only when ``prep.instrument_auto_detected`` is True
+    *and* ``batch_instrument.header_match`` is non-empty: an explicitly chosen
+    instrument (``--instrument``/``--profile``/``--config``, or
+    ``config=PhotometryConfig(instrument=...)``) is trusted unconditionally,
+    and a bare/custom profile with no rules carries no device-identity claim
+    to check in the first place.
+
+    `check_frame_consistency` calls this before the header is otherwise
+    resolved, so a frame from a genuinely different instrument is rejected
+    with this diagnostic message rather than the less informative
+    `FrameMetadataError` that resolving its header through the *batch*
+    instrument's ``header_map`` would likely raise first.
     """
     guard_active = (
         prep.instrument_auto_detected
@@ -759,24 +763,9 @@ def check_frame_consistency(file, header, prep):
     shape would be photometered against a catalog that no longer covers it,
     producing silently wrong results -- so reject it instead.
 
-    The batch-mixing guard runs first, needing only ``header`` and the batch
-    instrument: a frame whose header does not resolve, through
-    `~bandaid.instruments.detect_instrument`, to the same profile
-    `prepare_batch` resolved is rejected -- e.g. a night with a different
-    telescope's frames accidentally interleaved. Using `detect_instrument`
-    (rather than only checking the batch instrument's own ``header_match``
-    rules) means a header that is *ambiguous* across the registered profiles
-    is rejected too, not just one that matches a definite other instrument
-    (issue #122). This guard is enforced only when
-    ``prep.instrument_auto_detected`` is True *and* ``header_match`` is
-    non-empty: an explicitly chosen instrument (``--instrument``/``--profile``/
-    ``--config``, or ``config=PhotometryConfig(instrument=...)``) is trusted
-    unconditionally, and a bare/custom profile with no rules carries no
-    device-identity claim to check in the first place. Running the guard
-    before the header is otherwise resolved means a frame from a genuinely
-    different instrument is rejected with this diagnostic message rather than
-    the less informative `FrameMetadataError` that resolving its header
-    through the *batch* instrument's ``header_map`` would likely raise first.
+    The batch-mixing guard (`_check_instrument_mixing`) runs first, needing
+    only ``header`` and the batch instrument: a later frame whose header does
+    not resolve to the profile `prepare_batch` auto-detected is rejected.
 
     The header is then resolved through the batch instrument's ``header_map``
     (``prep.config.instrument``), the same dialect that resolved the prep's

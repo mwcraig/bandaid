@@ -26,12 +26,19 @@ available_instruments()  # -> ['Seestar50']
 profile = load_instrument("Seestar50")
 
 # Share a tuned profile through a file, or register one so load_instrument
-# resolves it by name (a registered name overrides a bundled one).
+# resolves it by name. A name that already resolves (bundled or registered)
+# is refused unless you override it deliberately with replace=True.
 profile.to_file("my_scope.json")
-mine = InstrumentProfile.from_file("my_scope.json")
-register_instrument(mine)
-available_instruments()  # -> ['Seestar50', '<mine.name>']
+mine = InstrumentProfile.from_file("my_scope.json")  # still named "Seestar50"
+register_instrument(mine, replace=True)
+available_instruments()  # -> ['Seestar50']
 ```
+
+`register_instrument` also refuses a profile whose `header_match` rule
+duplicates a differently named profile's rule (the same keyword and value):
+`detect_instrument` could never tell the two apart, so the conflict is
+reported at registration rather than as an "ambiguous instrument" error on
+some later frame. Give a new telescope its own name and its own rule.
 
 Pass a profile to a batch through the config:
 
@@ -184,6 +191,10 @@ From quickest to most permanent:
     register_instrument(InstrumentProfile.from_file("my_scope.json"))
     load_instrument("MyScope")  # now resolves by name
     ```
+
+    Registering a name that already resolves raises unless you pass
+    `replace=True`, and a `header_match` rule that duplicates another
+    profile's is refused outright (see above).
 
     This registration lives only in the current Python session — a separate
     `bandaid process --instrument MyScope` invocation is a new process with an

@@ -151,11 +151,6 @@ def _rule_identity(rule):
     """
     Return a rule's normalised identity for conflict comparison.
 
-    Two rules are considered the same match -- and so a conflict when they
-    belong to differently-named profiles -- when they agree on this pair,
-    the same normalisation :meth:`~bandaid.config.HeaderMatchRule.matches`
-    applies to the header value it compares against.
-
     Parameters
     ----------
     rule : HeaderMatchRule
@@ -165,6 +160,13 @@ def _rule_identity(rule):
     -------
     tuple of str
         ``(keyword.upper(), pattern.strip().casefold())``.
+
+    Notes
+    -----
+    Two rules that agree on this pair match exactly the same header values
+    (it is the normalisation :meth:`~bandaid.config.HeaderMatchRule.matches`
+    applies), so they are a conflict when they belong to differently-named
+    profiles.
     """
     return (rule.keyword.upper(), rule.pattern.strip().casefold())
 
@@ -172,21 +174,6 @@ def _rule_identity(rule):
 def register_instrument(profile, *, replace=False):
     """
     Register a profile so :func:`load_instrument` can resolve it by name.
-
-    Two checks run before the registry is touched, both meant to catch a
-    mistake at registration time rather than letting it surface later as a
-    confusing detection-time failure on a real frame:
-
-    - **Duplicate name.** Registering a name that already resolves (bundled or
-      previously registered) raises unless ``replace=True`` is passed, so an
-      accidental name collision does not silently shadow the wrong profile.
-      ``replace=True`` keeps the deliberate "override a bundled telescope
-      in-process" use case working.
-    - **Rule conflict.** A new profile whose ``header_match`` shares an exact
-      ``(keyword, value)`` pair with a *differently-named* existing profile is
-      rejected: `detect_instrument` cannot tell the two apart on a header that
-      satisfies that rule, so the ambiguity is caught here instead of on some
-      later frame.
 
     Parameters
     ----------
@@ -204,6 +191,23 @@ def register_instrument(profile, *, replace=False):
         If ``profile.name`` is already registered or bundled and ``replace``
         is False, or if any of ``profile.header_match`` collides with a rule
         on a differently-named existing profile.
+
+    Notes
+    -----
+    Two checks run before the registry is touched, both meant to catch a
+    mistake at registration time rather than letting it surface later as a
+    confusing detection-time failure on a real frame:
+
+    - **Duplicate name.** Registering a name that already resolves (bundled or
+      previously registered) raises unless ``replace=True`` is passed, so an
+      accidental name collision does not silently shadow the wrong profile.
+      ``replace=True`` keeps the deliberate "override a bundled telescope
+      in-process" use case working.
+    - **Rule conflict.** A new profile whose ``header_match`` shares an exact
+      ``(keyword, value)`` pair with a *differently-named* existing profile is
+      rejected: `detect_instrument` cannot tell the two apart on a header that
+      satisfies that rule, so the ambiguity is caught here instead of on some
+      later frame.
     """
     existing_names = set(available_instruments())
     if profile.name in existing_names and not replace:

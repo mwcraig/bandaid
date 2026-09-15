@@ -86,8 +86,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     whose header does not match the batch instrument's rules, but only when
     that instrument was itself auto-detected (not an explicit
     `--instrument`/`--profile`/`--config`) and `header_match` is non-empty --
-    an explicit choice is trusted unconditionally. See
-    `docs/instrument_profiles.md`.
+    an explicit choice is trusted unconditionally. The guard resolves the
+    later frame through `detect_instrument` itself, so a header that is
+    ambiguous across registered profiles is rejected too, and it runs before
+    the header is resolved through the batch instrument's `header_map`, so a
+    mixed-in frame is reported as a mismatch rather than as a missing header
+    keyword. `InstrumentProfile.matches_header(header)` is the shared
+    predicate. `BatchPrep` now requires a `config` whose `instrument` is
+    resolved. See `docs/instrument_profiles.md`.
+- `register_instrument` checks for conflicts before touching the registry:
+    a name that already resolves (bundled or registered) is refused unless
+    `replace=True` is passed, and a `header_match` rule that duplicates a
+    differently named profile's rule (same keyword and value) raises
+    `ValueError` at registration instead of surfacing later as an
+    "ambiguous instrument" detection error on a real frame.
 
 ### Changed
 
@@ -187,7 +199,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     headers auto-detect; pass `--instrument Seestar50` (or any explicit
     profile) to opt back out of auto-detection. `metadata_from_header`'s own
     `profile=None` default changed the same way, from a silent Seestar50
-    fallback to `detect_instrument(header)`.
+    fallback to `detect_instrument(header)`. Only `prepare_batch` lets
+    `InstrumentDetectionError` propagate (batch-fatal); the direct
+    single-frame entry points `prepare_image`, `process_one_image`, and
+    `calibration_sequence` wrap it as a `FrameMetadataError` with the source
+    file attached and the detection error chained as its cause, so a
+    per-frame `except FrameError` skip loop keeps working.
 
 ### Fixed
 

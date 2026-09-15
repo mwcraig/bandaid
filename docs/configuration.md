@@ -108,10 +108,14 @@ available_instruments()  # -> ['Seestar50']
 profile = load_instrument("Seestar50")
 config = PhotometryConfig(instrument=profile)
 
-# Save / load a tuned profile, or register one so load_instrument finds it by name.
+# Save / load a tuned profile, or register one so load_instrument finds it by
+# name. The round-tripped copy is still named "Seestar50", so overriding the
+# bundled profile with it must be explicit; a profile with a new name registers
+# without replace=True, but its header_match rules must not duplicate another
+# profile's (see Instrument profiles).
 profile.to_file("my_scope.json")
 mine = InstrumentProfile.from_file("my_scope.json")
-register_instrument(mine)
+register_instrument(mine, replace=True)
 ```
 
 Add a telescope at runtime by registering a profile or loading one from a file —
