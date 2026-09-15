@@ -232,7 +232,7 @@ class TestPrepareBatch:
         A first frame whose header matches no profile fails the whole batch.
 
         ``InstrumentDetectionError`` is now a `FrameMetadataError` (recoverable
-        per-frame) by declaration (PR #122 follow-up), so `prepare_batch` --
+        per-frame) by declaration, so `prepare_batch` --
         the one caller that actually wants the fatal behavior, since an
         unresolvable first frame leaves no detection/PSF settings to prepare
         the batch with -- wraps it into the batch-fatal `BatchPrepError`
@@ -900,8 +900,8 @@ class TestBatchPrep:
         `check_frame_consistency` and `process_batch` both trust
         ``config.instrument`` to already be resolved by the time a ``BatchPrep``
         reaches them -- `prepare_batch` is the only place that is supposed to
-        build one, and it always resolves the instrument first (issue #122).
-        Constructing one directly with a bare, unresolved
+        build one, and it always resolves the instrument first. Constructing
+        one directly with a bare, unresolved
         ``PhotometryConfig()`` must fail loudly instead of silently letting
         per-frame detection paper over it.
         """
@@ -930,8 +930,8 @@ class TestCheckFrameConsistency:
         Restore the in-process profile registry after each test in this class.
 
         A couple of tests below register an extra profile to exercise the
-        batch-mixing guard's ambiguity handling (issue #122); without this,
-        that registration would leak into later tests.
+        batch-mixing guard's ambiguity handling; without this, that
+        registration would leak into later tests.
         """
         with isolate_registry(instruments, "_REGISTERED"):
             yield
@@ -1088,8 +1088,8 @@ class TestCheckFrameConsistency:
         rejected -- the escape hatch this guard grants an explicit selection
         (``instrument_auto_detected=False`` is the ``_prep()`` default, as it
         would be for an explicit selection reaching `prepare_batch``). This is
-        narrower than "the guard is skipped entirely" (issue #122 follow-up):
-        see `test_explicitly_chosen_instrument_different_registered_instrument_rejected`
+        narrower than "the guard is skipped entirely": see
+        `test_explicitly_chosen_instrument_different_registered_instrument_rejected`
         for the case that is still policed.
         """
         prep = self._prep(
@@ -1110,8 +1110,8 @@ class TestCheckFrameConsistency:
         ``--instrument Seestar50`` got zero mixing protection: frames from a
         second registered telescope riding along on the same batch were
         photometered under the wrong profile's tuning -- exactly the
-        silently-wrong-results class this guard exists to prevent (issue #122
-        follow-up). The guard is narrowed, not disabled, for an explicit
+        silently-wrong-results class this guard exists to prevent. The guard
+        is narrowed, not disabled, for an explicit
         selection: it still fires when the header positively identifies a
         *different, registered* instrument; only a header matching nothing at
         all is exempt (see the sibling test above).
@@ -1138,8 +1138,8 @@ class TestCheckFrameConsistency:
         ``egain``, resolved via ``@EGAIN`` rather than the Seestar's literal
         default). Before this fix, ``metadata_from_header`` ran first and
         raised the less diagnostic ``FrameMetadataError`` before the guard ever
-        got a chance to name the more likely cause (issue #122); the guard now
-        only needs ``header`` and the batch instrument, so it runs first.
+        got a chance to name the more likely cause; the guard now only needs
+        ``header`` and the batch instrument, so it runs first.
         """
         custom_header_map = {
             **dict(InstrumentProfile().header_map),
@@ -1170,9 +1170,9 @@ class TestCheckFrameConsistency:
         The guard names the missing keyword when it's absent from the header.
 
         Distinguishes "the header never carried the identifying keyword at
-        all" from "it carried the keyword with a different value" (issue
-        #122): the former is worded as a missing-keyword problem rather than
-        the generic "different instrument mixed in" phrasing.
+        all" from "it carried the keyword with a different value": the former
+        is worded as a missing-keyword problem rather than the generic
+        "different instrument mixed in" phrasing.
         """
         prep = self._prep(
             config=PhotometryConfig(instrument=load_instrument("Seestar50")),
@@ -1209,8 +1209,8 @@ class TestCheckFrameConsistency:
         carrying ``INSTRUME=Other`` (present, wrong value) and no ``TELESCOP``
         at all used to report only that ``TELESCOP`` is missing -- because the
         old check fired the "missing" branch whenever *any* rule's keyword was
-        absent, not only when *all* of them were (a Copilot-flagged bug, issue
-        #122 follow-up). The more accurate "does not match" diagnostic is
+        absent, not only when *all* of them were (a Copilot-flagged bug). The
+        more accurate "does not match" diagnostic is
         correct here: the header did carry an identifying keyword, just with
         the wrong value.
         """
@@ -1238,7 +1238,7 @@ class TestCheckFrameConsistency:
         An auto-detected batch rejects a frame whose header is ambiguous.
 
         ``check_frame_consistency`` now uses the same predicate as first-frame
-        detection (issue #122): a later frame whose header matches more than
+        detection: a later frame whose header matches more than
         one registered profile is rejected even though it matches the batch
         instrument's own rule, because detection itself could not have picked
         the batch instrument unambiguously from this header.
@@ -1247,9 +1247,9 @@ class TestCheckFrameConsistency:
             name="Clone",
             header_match=(HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50"),),
         )
-        # register_instrument now eagerly rejects a colliding rule (issue
-        # #122), so this deliberately-ambiguous fixture is inserted directly
-        # into the isolated registry, bypassing that check, to exercise the
+        # register_instrument now eagerly rejects a colliding rule, so this
+        # deliberately-ambiguous fixture is inserted directly into the
+        # isolated registry, bypassing that check, to exercise the
         # detection-time ambiguity error the guard must still catch.
         instruments._REGISTERED["Clone"] = clone  # noqa: SLF001
         prep = self._prep(

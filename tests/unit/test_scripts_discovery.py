@@ -229,8 +229,7 @@ class TestPhotometerFrames:
         ``photometer_frames`` is the caller that knows the first frame's path,
         so it catches the fatal error here and re-raises with that path folded
         into a clear, top-level message (chaining the original as the cause)
-        instead of letting a bare ``BatchPrepError`` surface uncaught. PR #122
-        review thread on ``prepare_batch``'s uncaught call site.
+        instead of letting a bare ``BatchPrepError`` surface uncaught.
         """
         frame = tmp_path / "a.fit"
         frame.write_bytes(b"")

@@ -193,9 +193,9 @@ class TestPrepareImage:
         A frame whose header matches no profile raises a per-frame error.
 
         ``prepare_image`` is a legitimate direct/single-frame entry point, so
-        an unresolvable header is that frame's problem, not a batch-fatal one
-        (PR #122): ``InstrumentDetectionError`` is itself a
-        `FrameMetadataError`, so it propagates with the file attached and is
+        an unresolvable header is that frame's problem, not a batch-fatal one:
+        ``InstrumentDetectionError`` is itself a `FrameMetadataError`, so it
+        propagates with the file attached and is
         caught by the same ``except FrameError`` skip loop other frame errors
         are.
         """
@@ -1060,8 +1060,7 @@ class TestCalibrationSequence:
         profile ``calibration_sequence`` actually resolved, so a direct call
         on a future non-Seestar profile detected and fit the FWHM at
         Seestar50's settings even though ``profile`` auto-detected correctly.
-        Now the defaults are pulled from the resolved profile itself (PR #122
-        review thread).
+        Now the defaults are pulled from the resolved profile itself.
         """
         custom = InstrumentProfile(
             name="CustomScope",
@@ -1176,8 +1175,8 @@ class TestCalibrationSequence:
         """
         An unresolvable header raises FrameMetadataError, via InstrumentDetectionError.
 
-        ``calibration_sequence`` is one of the per-frame entry points
-        (PR #122): when ``profile`` is None, ``metadata_from_header`` detects
+        ``calibration_sequence`` is one of the per-frame entry points: when
+        ``profile`` is None, ``metadata_from_header`` detects
         the instrument and can raise ``InstrumentDetectionError``, itself a
         `FrameMetadataError`. It is labelled with the file here, the same as
         the metadata errors `metadata_from_header` raises directly, so it
@@ -1486,8 +1485,8 @@ class TestProcessOneImage:
         ``process_one_image`` used to reuse its own unresolved ``config``
         after calling ``prepare_image`` (which resolves internally), so a
         default (``instrument=None``) config reached ``build_photometry_table``
-        still unresolved (PR #122). Resolve once, from the loaded frame's
-        header, before calling ``prepare_image``, and pass the resolved config
+        still unresolved. Resolve once, from the loaded frame's header, before
+        calling ``prepare_image``, and pass the resolved config
         down. ``prepare_image`` and ``build_photometry_table`` are stubbed so
         this only exercises the resolution/reuse, and ``_load_frame`` is
         spied on to confirm the file is still opened exactly once.

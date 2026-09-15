@@ -944,9 +944,9 @@ def calibration_sequence(
         ``fwhm_n_stars`` back any of those four parameters left as None. None
         (the default) means "resolve from the header" -- `resolve_profile`
         detects it once, up front, and the same resolved profile backs both
-        `metadata_from_header` and these defaults (PR #122 review thread; a
-        direct caller used to get Seestar50's tuning here regardless of which
-        profile actually resolved).
+        `metadata_from_header` and these defaults (a direct caller used to
+        get Seestar50's tuning here regardless of which profile actually
+        resolved).
     frame : LoadedFrame or None, optional
         Pre-loaded frame; when None the file is opened once via the loader.
     detection_image_out : dict or None, optional
@@ -988,17 +988,17 @@ def calibration_sequence(
     try:
         # Resolve the profile once, up front, so the detection/FWHM defaults
         # below and metadata_from_header's header dialect both come from the
-        # same profile -- not just the latter, as before (PR #122 review
-        # thread). Passing the now-resolved profile through keeps
+        # same profile -- not just the latter, as before. Passing the
+        # now-resolved profile through keeps
         # metadata_from_header's own resolve_profile call a no-op rather than
         # a second auto-detection.
         resolved_profile, _ = resolve_profile(profile, header)
         metadata = metadata_from_header(header, profile=resolved_profile)
     except FrameMetadataError as exc:
         # metadata_from_header has only the header, not the path; label it
-        # here. InstrumentDetectionError is itself a FrameMetadataError
-        # (issue/PR #122), so this also catches an unresolvable header
-        # without a separate wrapping branch.
+        # here. InstrumentDetectionError is itself a FrameMetadataError, so
+        # this also catches an unresolvable header without a separate
+        # wrapping branch.
         exc.file = file
         raise
     threshold, opening, fwhm_cutout_half, fwhm_n_stars = _resolve_detection_defaults(
@@ -2883,8 +2883,8 @@ def process_one_image(
     # Resolve the instrument once, here, from the loaded frame's header, and
     # pass the resolved config down -- rather than letting prepare_image
     # resolve its own copy and this function going on to reuse the original,
-    # unresolved config for build_photometry_table below (PR #122). Opening
-    # the file here (instead of leaving it to prepare_image) still costs only
+    # unresolved config for build_photometry_table below. Opening the file
+    # here (instead of leaving it to prepare_image) still costs only
     # one open: the loaded frame is passed through via `frame=`.
     if frame is None:
         frame = _load_frame(file)

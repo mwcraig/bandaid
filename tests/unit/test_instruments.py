@@ -53,9 +53,8 @@ class TestHeaderMatchRule:
         `~bandaid.scripts.check_frame_consistency`'s batch-mixing guard needs
         to distinguish "the keyword is absent" from "the keyword is present
         with the wrong value" for its diagnostic message; ``matches`` conflates
-        both into False, so the guard uses this instead (issue #122
-        follow-up), the same ``header.get(self.keyword)`` lookup ``matches``
-        itself uses.
+        both into False, so the guard uses this instead, the same
+        ``header.get(self.keyword)`` lookup ``matches`` itself uses.
         """
         rule = HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50")
         assert rule.keyword_present({"INSTRUME": "Some Other Scope"}) is True
@@ -146,8 +145,8 @@ class TestAvailableInstruments:
 
         ``register_instrument``'s rule-conflict check only runs inside
         ``register_instrument`` itself; the bundled profiles under
-        ``meta_json_files/`` are loaded directly and never pass through it
-        (issue #122). Today there is only one bundled profile, so this cannot
+        ``meta_json_files/`` are loaded directly and never pass through it.
+        Today there is only one bundled profile, so this cannot
         yet fail -- but it pins the invariant that check exists to protect,
         so a future ``meta_json_files/<Name>/profile.json`` shipped with a
         ``header_match`` rule copy-pasted from another bundled profile (or
@@ -170,8 +169,8 @@ class TestAvailableInstruments:
 
         ``_bundled_names()`` used to be the only loader in this module without
         ``@cache``, so ``detect_instrument`` walked ``meta_json_files/`` on
-        every call, now on the per-frame batch-mixing-guard path (issue/PR
-        #122 follow-up). Caching collapses repeated calls to a single walk.
+        every call, now on the per-frame batch-mixing-guard path. Caching
+        collapses repeated calls to a single walk.
         """
         instruments._bundled_names.cache_clear()  # noqa: SLF001
         walk_spy = mocker.spy(instruments, "_profiles_root")
@@ -226,8 +225,8 @@ class TestRegister:
         stripped Seestar50's detection rule: `detect_instrument` then had no
         candidates, and the next flagless run on real Seestar frames raised
         `~bandaid.exceptions.InstrumentDetectionError` for the whole batch
-        with no warning pointing at ``replace=True`` as the cause (issue #122
-        follow-up). Inheriting the replaced profile's ``header_match`` when
+        with no warning pointing at ``replace=True`` as the cause. Inheriting
+        the replaced profile's ``header_match`` when
         the new one carries none keeps the "retune one knob" mental model
         working.
         """
@@ -341,9 +340,9 @@ class TestDetectInstrument:
             name="Clone",
             header_match=(HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50"),),
         )
-        # register_instrument now eagerly rejects a colliding rule (issue
-        # #122), so this deliberately-ambiguous fixture is inserted directly
-        # into the isolated registry, bypassing that check, to exercise the
+        # register_instrument now eagerly rejects a colliding rule, so this
+        # deliberately-ambiguous fixture is inserted directly into the
+        # isolated registry, bypassing that check, to exercise the
         # detection-time ambiguity error -- which remains reachable in
         # practice for bundled profiles shipped with overlapping rules.
         instruments._REGISTERED["Clone"] = clone  # noqa: SLF001
@@ -369,7 +368,7 @@ class TestDetectInstrument:
         auto-detected (it carries no rule to match against) but is still a
         selectable ``--instrument``/``--profile`` name, so it must appear only
         in the "all available instruments" listing, not the "auto-detection
-        candidates" one (issue #122).
+        candidates" one.
         """
         register_instrument(InstrumentProfile(name="NoRules"))
 
@@ -388,8 +387,8 @@ class TestDetectInstrument:
         The single-match branch used to call ``load_instrument(matched[0])``
         again instead of reusing the profile object already resolved while
         building ``candidates`` -- a redundant (and, for a bundled profile, an
-        uncached) directory walk (issue/PR #122 follow-up). So there is
-        exactly one ``load_instrument`` call per available instrument name,
+        uncached) directory walk. So there is exactly one ``load_instrument``
+        call per available instrument name,
         with no extra call to re-resolve the match.
         """
         load_spy = mocker.spy(instruments, "load_instrument")

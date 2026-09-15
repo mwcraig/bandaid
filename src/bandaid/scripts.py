@@ -730,8 +730,8 @@ def _check_instrument_mixing(file, header, prep, batch_instrument):
     telescope's frames accidentally interleaved. Using `detect_instrument`
     (rather than only checking the batch instrument's own ``header_match``
     rules) means a header that is *ambiguous* across the registered profiles
-    is rejected too, not just one that matches a definite other instrument
-    (PR #122). Enforced whenever ``batch_instrument.header_match`` is
+    is rejected too, not just one that matches a definite other instrument.
+    Enforced whenever ``batch_instrument.header_match`` is
     non-empty (a bare/custom profile with no rules carries no device-identity
     claim to check in the first place); a bare ``batch_instrument`` (or None)
     skips the guard entirely.
@@ -849,7 +849,7 @@ def check_frame_consistency(file, header, prep):
         the checks.
     """
     # Batch-mixing guard: needs only header and the batch instrument, so it
-    # runs before the header is otherwise resolved (issue #122); see
+    # runs before the header is otherwise resolved; see
     # _check_instrument_mixing.
     batch_instrument = prep.config.instrument
     _check_instrument_mixing(file, header, prep, batch_instrument)
@@ -1546,8 +1546,7 @@ def photometer_frames(
     except BatchPrepError as exc:
         # prepare_batch's own message has no idea which file it was given --
         # this is the caller that knows the first frame's path, so fold it in
-        # instead of letting a bare BatchPrepError surface uncaught (PR #122
-        # review thread on this call site).
+        # instead of letting a bare BatchPrepError surface uncaught.
         msg = f"could not prepare the batch from the first frame ({frames[0]}): {exc}"
         raise BatchPrepError(msg) from exc
     results = process_batch(

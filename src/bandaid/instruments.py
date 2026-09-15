@@ -239,7 +239,7 @@ def register_instrument(profile, *, replace=False):
         # InstrumentProfile(name='Seestar50', thresh=9.9) -- otherwise leaves
         # header_match at the bare-class default (empty), silently stripping
         # the replaced profile's detection rule: detect_instrument would then
-        # have no candidates for this name at all (issue #122).
+        # have no candidates for this name at all.
         previous = load_instrument(profile.name)
         if previous.header_match:
             profile = profile.model_copy(update={"header_match": previous.header_match})

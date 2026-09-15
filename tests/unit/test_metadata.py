@@ -263,8 +263,8 @@ class TestMetadataFromHeader:
         means detect" inline with no logging, while
         `~bandaid.instruments.resolve_config_instrument` logged the detected
         name -- so a standalone `metadata_from_header` call left no trace of
-        which instrument was picked (PR #122 follow-up). Both now funnel
-        through the same detect-or-resolve helper, so both log identically.
+        which instrument was picked. Both now funnel through the same
+        detect-or-resolve helper, so both log identically.
         """
         with caplog.at_level(logging.INFO, logger="bandaid.instruments"):
             metadata_from_header(_seestar_header())
