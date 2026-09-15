@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from _helpers import SEED, _make_tan_wcs
+from _helpers import SEED, _make_tan_wcs, _seestar_header, five_diagonal_regions
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.nddata import CCDData
@@ -16,9 +16,9 @@ from eloy import detection
 from skimage.measure import label, regionprops
 from skimage.morphology import binary_opening
 
-from bandaid import photometry
+from bandaid import instruments, photometry
 from bandaid.ballet import NumpyBallet
-from bandaid.config import InstrumentProfile, PhotometryConfig
+from bandaid.config import HeaderMatchRule, InstrumentProfile, PhotometryConfig
 from bandaid.exceptions import (
     DegenerateBayerChannelError,
     FrameMetadataError,
@@ -27,6 +27,7 @@ from bandaid.exceptions import (
     TooFewStarsError,
 )
 from bandaid.image2sl_qt import bayer_balance_image, generate_bayer_masks
+from bandaid.instruments import register_instrument
 from bandaid.photometry import (
     CENTROID_PAD_PIX,
     DETECTION_OPENING,
@@ -1046,6 +1047,55 @@ class TestCalibrationSequence:
         with pytest.raises(TooFewStarsError):
             calibration_sequence(path, threshold=1, opening=custom_opening)
         assert stars_detection_mock.call_args.kwargs["opening"] == custom_opening
+
+    def test_unset_defaults_follow_the_resolved_profile_not_seestar50(
+        self, tmp_path, mocker, isolate_registry
+    ):
+        """
+        Unset detection/FWHM parameters follow the *resolved* profile.
+
+        Before this, ``threshold``/``opening``/``fwhm_cutout_half``/
+        ``fwhm_n_stars`` defaulted to module-level constants derived from a
+        bare ``InstrumentProfile()`` (Seestar50's tuning) regardless of which
+        profile ``calibration_sequence`` actually resolved, so a direct call
+        on a future non-Seestar profile detected and fit the FWHM at
+        Seestar50's settings even though ``profile`` auto-detected correctly.
+        Now the defaults are pulled from the resolved profile itself (PR #122
+        review thread).
+        """
+        custom = InstrumentProfile(
+            name="CustomScope",
+            header_match=(HeaderMatchRule(keyword="INSTRUME", pattern="Custom Scope"),),
+            thresh=3.0,
+            detection_opening=9,
+            fwhm_cutout_half=11,
+            fwhm_n_stars=13,
+        )
+        with isolate_registry(instruments, "_REGISTERED"):
+            register_instrument(custom)
+
+            header = _seestar_header()
+            header["INSTRUME"] = "Custom Scope"
+            path = tmp_path / "custom.fits"
+            fits.PrimaryHDU(np.zeros((200, 200)), header=header).writeto(
+                path, output_verify="silentfix"
+            )
+
+            detect = mocker.patch(
+                "bandaid.photometry._detect_stars", side_effect=five_diagonal_regions
+            )
+            fwhm_helper = mocker.patch(
+                "bandaid.photometry._fwhm_from_coords", return_value=2.5
+            )
+
+            calibration_sequence(path)
+
+        assert detect.call_args.kwargs["threshold"] == custom.thresh
+        assert detect.call_args.kwargs["opening"] == custom.detection_opening
+        assert (
+            fwhm_helper.call_args.kwargs["fwhm_cutout_half"] == custom.fwhm_cutout_half
+        )
+        assert fwhm_helper.call_args.kwargs["n_stars"] == custom.fwhm_n_stars
 
     def test_detects_on_balanced_copy_when_flagged(
         self, make_test_image, tmp_path, mocker

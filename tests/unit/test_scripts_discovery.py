@@ -11,6 +11,7 @@ from bandaid import scripts
 from bandaid.config import (
     PhotometryConfig,
 )
+from bandaid.exceptions import BatchPrepError
 
 
 class TestExpandFramePaths:
@@ -217,6 +218,35 @@ class TestPhotometerFrames:
         assert kwargs["write_qa_manifest"] is True
         assert kwargs["output_dir"] == "."
         assert kwargs["output_suffix"] == ".star"
+
+    def test_first_frame_batch_prep_error_gets_actionable_message(
+        self, mocker, tmp_path
+    ):
+        """
+        A ``BatchPrepError`` from ``prepare_batch`` names the offending frame.
+
+        ``prepare_batch``'s own message has no idea which file it was given --
+        ``photometer_frames`` is the caller that knows the first frame's path,
+        so it catches the fatal error here and re-raises with that path folded
+        into a clear, top-level message (chaining the original as the cause)
+        instead of letting a bare ``BatchPrepError`` surface uncaught. PR #122
+        review thread on ``prepare_batch``'s uncaught call site.
+        """
+        frame = tmp_path / "a.fit"
+        frame.write_bytes(b"")
+
+        _stub_load_frame(mocker)
+        mocker.patch("bandaid.scripts.Ballet", return_value=object())
+        original = BatchPrepError("no bundled/registered instrument matched")
+        mocker.patch("bandaid.scripts.prepare_batch", side_effect=original)
+
+        with pytest.raises(
+            BatchPrepError, match="no bundled/registered instrument matched"
+        ) as exc_info:
+            scripts.photometer_frames([str(frame)])
+
+        assert str(frame.resolve()) in str(exc_info.value)
+        assert exc_info.value.__cause__ is original
 
     def test_forced_targets_forwarded_to_prepare_batch(self, mocker, tmp_path):
         """The ``forced_targets`` SkyCoord reaches ``prepare_batch`` unchanged."""

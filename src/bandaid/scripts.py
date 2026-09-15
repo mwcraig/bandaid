@@ -1517,6 +1517,12 @@ def photometer_frames(
     ValueError
         If the arguments expand to no FITS frames. `expand_frame_paths` may also
         raise `ValueError`/`FileNotFoundError` for a malformed path argument.
+    BatchPrepError
+        If `prepare_batch` cannot build the once-per-batch preparation from
+        the first frame (e.g. its header does not resolve to exactly one
+        registered instrument profile). Re-raised here with the first frame's
+        path folded into the message, chaining the original as ``__cause__``,
+        so the failure is actionable instead of a bare traceback.
     """
     frames = expand_frame_paths(files)
     if not frames:
@@ -1531,14 +1537,22 @@ def photometer_frames(
     # prepare_batch derives the prep from it and process_batch photometers it
     # -- so the whole run opens each frame exactly once (issue #44).
     first_frame = _load_frame(frames[0])
-    prep = prepare_batch(
-        frames[0],
-        cnn=cnn,
-        config=config,
-        append_l4=append_l4,
-        forced_targets=forced_targets,
-        frame=first_frame,
-    )
+    try:
+        prep = prepare_batch(
+            frames[0],
+            cnn=cnn,
+            config=config,
+            append_l4=append_l4,
+            forced_targets=forced_targets,
+            frame=first_frame,
+        )
+    except BatchPrepError as exc:
+        # prepare_batch's own message has no idea which file it was given --
+        # this is the caller that knows the first frame's path, so fold it in
+        # instead of letting a bare BatchPrepError surface uncaught (PR #122
+        # review thread on this call site).
+        msg = f"could not prepare the batch from the first frame ({frames[0]}): {exc}"
+        raise BatchPrepError(msg) from exc
     results = process_batch(
         frames,
         prep,

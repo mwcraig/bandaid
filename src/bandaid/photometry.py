@@ -838,15 +838,55 @@ def _detect_stars(image, threshold=THRESH, opening=DETECTION_OPENING):
     return sorted(regions, key=lambda r: r.intensity_max, reverse=True)
 
 
+def _resolve_detection_defaults(
+    profile, *, threshold, opening, fwhm_cutout_half, fwhm_n_stars
+):
+    """
+    Back any of ``calibration_sequence``'s four unset detection/FWHM knobs.
+
+    Each of ``threshold``/``opening``/``fwhm_cutout_half``/``fwhm_n_stars`` that
+    is None falls back to ``profile``'s matching field.
+
+    Parameters
+    ----------
+    profile : InstrumentProfile
+        The resolved instrument profile to default from.
+    threshold : float or None
+        `calibration_sequence`'s ``threshold``; None means "use
+        ``profile.thresh``".
+    opening : int or None
+        `calibration_sequence`'s ``opening``; None means "use
+        ``profile.detection_opening``".
+    fwhm_cutout_half : int or None
+        `calibration_sequence`'s ``fwhm_cutout_half``; None means "use
+        ``profile.fwhm_cutout_half``".
+    fwhm_n_stars : int or None
+        `calibration_sequence`'s ``fwhm_n_stars``; None means "use
+        ``profile.fwhm_n_stars``".
+
+    Returns
+    -------
+    tuple of (float, int, int, int)
+        ``(threshold, opening, fwhm_cutout_half, fwhm_n_stars)``, each either
+        the caller's own value (if not None) or ``profile``'s matching field.
+    """
+    return (
+        profile.thresh if threshold is None else threshold,
+        profile.detection_opening if opening is None else opening,
+        profile.fwhm_cutout_half if fwhm_cutout_half is None else fwhm_cutout_half,
+        profile.fwhm_n_stars if fwhm_n_stars is None else fwhm_n_stars,
+    )
+
+
 def calibration_sequence(
     file,
-    threshold=1,
-    opening=DETECTION_OPENING,
+    threshold=None,
+    opening=None,
     *,
     detect_on_bayer_balanced=False,
     cnn=None,
-    fwhm_cutout_half=_FWHM_CUTOUT_HALF,
-    fwhm_n_stars=_FWHM_N_STARS,
+    fwhm_cutout_half=None,
+    fwhm_n_stars=None,
     profile=None,
     frame=None,
     detection_image_out=None,
@@ -868,11 +908,15 @@ def calibration_sequence(
     ----------
     file : str
         Path to the FITS file.
-    threshold : float, optional
-        Detection threshold for star finding, by default 1
-    opening : int, optional
+    threshold : float or None, optional
+        Detection threshold for star finding. None (the default) uses the
+        resolved ``profile``'s own ``thresh``, so a direct call on a
+        non-Seestar profile detects at that profile's tuning rather than a
+        fixed literal.
+    opening : int or None, optional
         Size of the morphological-opening kernel passed to `_detect_stars`;
-        gates faint-star detection. By default ``DETECTION_OPENING``.
+        gates faint-star detection. None (the default) uses the resolved
+        ``profile``'s own ``detection_opening``.
     detect_on_bayer_balanced : bool, optional
         When True, run source detection and the FWHM fit on a Bayer-balanced
         *copy* of the data. The returned ``calibrated_data`` is always the
@@ -886,17 +930,23 @@ def calibration_sequence(
         detection ``opening``.
         Default None preserves the legacy integer-cutout FWHM. See
         `_fwhm_from_coords`.
-    fwhm_cutout_half : int, optional
+    fwhm_cutout_half : int or None, optional
         Half-width (px) of the square cutout used to build the effective PSF for
-        the FWHM fit. By default ``_FWHM_CUTOUT_HALF``.
-    fwhm_n_stars : int, optional
+        the FWHM fit. None (the default) uses the resolved ``profile``'s own
+        ``fwhm_cutout_half``.
+    fwhm_n_stars : int or None, optional
         Cap on how many of the brightest unsaturated detections feed the FWHM
-        fit; forwarded to `_fwhm_from_coords` as its ``n_stars``. By default
-        ``_FWHM_N_STARS``.
+        fit; forwarded to `_fwhm_from_coords` as its ``n_stars``. None (the
+        default) uses the resolved ``profile``'s own ``fwhm_n_stars``.
     profile : InstrumentProfile or None, optional
-        The instrument whose ``header_map`` resolves the frame metadata, passed
-        through to `metadata_from_header`. None (the default) means "resolve
-        from the header" -- `metadata_from_header` detects it.
+        The instrument whose ``header_map`` resolves the frame metadata, and
+        whose own ``thresh``/``detection_opening``/``fwhm_cutout_half``/
+        ``fwhm_n_stars`` back any of those four parameters left as None. None
+        (the default) means "resolve from the header" -- `resolve_profile`
+        detects it once, up front, and the same resolved profile backs both
+        `metadata_from_header` and these defaults (PR #122 review thread; a
+        direct caller used to get Seestar50's tuning here regardless of which
+        profile actually resolved).
     frame : LoadedFrame or None, optional
         Pre-loaded frame; when None the file is opened once via the loader.
     detection_image_out : dict or None, optional
@@ -921,7 +971,7 @@ def calibration_sequence(
         `metadata_from_header`, with the source file attached). Also raised,
         with the source file attached, when ``profile`` is None and the
         header matches zero or more than one bundled/registered instrument
-        profile: `metadata_from_header` raises the subclass
+        profile: `resolve_profile` raises the subclass
         `~bandaid.exceptions.InstrumentDetectionError` there, which
         propagates as a `FrameMetadataError` since it is one.
     DegenerateBayerChannelError
@@ -936,7 +986,14 @@ def calibration_sequence(
     header = frame.header
 
     try:
-        metadata = metadata_from_header(header, profile=profile)
+        # Resolve the profile once, up front, so the detection/FWHM defaults
+        # below and metadata_from_header's header dialect both come from the
+        # same profile -- not just the latter, as before (PR #122 review
+        # thread). Passing the now-resolved profile through keeps
+        # metadata_from_header's own resolve_profile call a no-op rather than
+        # a second auto-detection.
+        resolved_profile, _ = resolve_profile(profile, header)
+        metadata = metadata_from_header(header, profile=resolved_profile)
     except FrameMetadataError as exc:
         # metadata_from_header has only the header, not the path; label it
         # here. InstrumentDetectionError is itself a FrameMetadataError
@@ -944,6 +1001,13 @@ def calibration_sequence(
         # without a separate wrapping branch.
         exc.file = file
         raise
+    threshold, opening, fwhm_cutout_half, fwhm_n_stars = _resolve_detection_defaults(
+        resolved_profile,
+        threshold=threshold,
+        opening=opening,
+        fwhm_cutout_half=fwhm_cutout_half,
+        fwhm_n_stars=fwhm_n_stars,
+    )
     max_adu = metadata["largest_usable_adu_value"]
 
     # Multiplying by 1 should force conversion from int to float data
