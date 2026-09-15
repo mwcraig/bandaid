@@ -178,7 +178,7 @@ def _rule_identity(rule):
     :meth:`~bandaid.config.HeaderMatchRule.matches` applies for a plain
     `collections.abc.Mapping` input, though -- ``matches`` does no keyword-case
     folding of its own there, so a mapping whose keys are not uppercase FITS
-    convention can disagree with this conflict check (issue #122 follow-up).
+    convention can disagree with this conflict check.
     """
     return (rule.keyword.upper(), rule.pattern.strip().casefold())
 
@@ -348,15 +348,6 @@ def resolve_profile(profile, header):
     """
     Return ``profile`` unchanged, or auto-detect and log it from ``header``.
 
-    The single "``None`` means resolve from the header" step, shared by every
-    place that accepts a possibly-unset profile: this used to be
-    reimplemented inline, without logging, by
-    `~bandaid.photometry.metadata_from_header`, while
-    `resolve_config_instrument` (below) logged the detected name -- so a
-    standalone `~bandaid.photometry.metadata_from_header` or
-    `~bandaid.photometry.calibration_sequence` call left no trace of which
-    instrument was picked (PR #122 follow-up). Both now funnel through this.
-
     Parameters
     ----------
     profile : InstrumentProfile or None
@@ -376,6 +367,14 @@ def resolve_profile(profile, header):
     auto_detected : bool
         True if ``profile`` was resolved by detection (the incoming
         ``profile`` was None); False if it was already set explicitly.
+
+    Notes
+    -----
+    The single "``None`` means resolve from the header" step, shared by
+    every place that accepts a possibly-unset profile:
+    `resolve_config_instrument` and `~bandaid.photometry.metadata_from_header`
+    previously reimplemented it separately (one logged the detected name,
+    one didn't); both now funnel through here.
     """
     if profile is not None:
         return profile, False

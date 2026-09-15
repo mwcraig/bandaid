@@ -420,11 +420,11 @@ def _resolve_batch_instrument(config, header):
     BatchPrepError
         If ``config.instrument`` is None and ``header`` matches zero or more
         than one bundled/registered instrument profile. InstrumentDetectionError
-        is a FrameMetadataError (recoverable per-frame) by declaration (PR #122
-        follow-up), but `prepare_batch` is the one caller that actually wants
-        the fatal behavior -- an unresolvable *first* frame leaves the whole
-        batch with no detection/PSF settings to prepare with -- so it is
-        wrapped here instead of relying on inheritance.
+        is a FrameMetadataError (recoverable per-frame) by declaration, but
+        `prepare_batch` is the one caller that actually wants the fatal
+        behavior -- an unresolvable *first* frame leaves the whole batch with
+        no detection/PSF settings to prepare with -- so it is wrapped here
+        instead of relying on inheritance.
     """
     try:
         return resolve_config_instrument(config, header)
@@ -494,14 +494,11 @@ def prepare_batch(
     Raises
     ------
     BatchPrepError
-        If too few stars are detected in ``first_file`` to measure an FWHM, so
-        the batch preparation cannot be built. Also raised, with the original
-        chained as ``__cause__``, if ``config.instrument`` is None and the
-        first frame's header matches zero or more than one
-        bundled/registered instrument profile: `prepare_batch` is the one
-        caller that wants the fatal behavior, so it wraps the (otherwise
-        recoverable, per-frame) `~bandaid.exceptions.InstrumentDetectionError`
-        `~bandaid.instruments.resolve_config_instrument` raises there.
+        If too few stars are detected in ``first_file`` to measure an FWHM.
+        Also raised (original chained as ``__cause__``) if ``config.instrument``
+        is None and the first frame's header does not resolve to exactly one
+        instrument profile: `prepare_batch` is the one caller that treats that
+        as fatal.
     FrameMetadataError
         If the first frame's metadata has no parseable observation time
         (``obs_time``, usually mapped from ``DATE-OBS``), which is needed to
@@ -748,9 +745,9 @@ def _check_instrument_mixing(file, header, prep, batch_instrument):
     registered* instrument is rejected even under an explicit selection --
     otherwise a scripted workflow that always passes a fixed
     ``--instrument`` would get zero protection against a second telescope's
-    frames riding along on the same batch (issue #122 follow-up). An
-    auto-detected batch (the default) is never exempted: any outcome other
-    than a match to ``batch_instrument`` is rejected.
+    frames riding along on the same batch. An auto-detected batch (the
+    default) is never exempted: any outcome other than a match to
+    ``batch_instrument`` is rejected.
 
     `check_frame_consistency` calls this before the header is otherwise
     resolved, so a frame from a genuinely different instrument is rejected

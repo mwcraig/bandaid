@@ -244,7 +244,7 @@ class HeaderMatchRule(BaseModel, frozen=True):
         case-insensitive on the keyword by its own ``.get``, but a plain
         `collections.abc.Mapping` is not -- ``keyword`` must match one of its
         keys exactly (the FITS convention is uppercase) for the lookup to
-        find it (issue #122 follow-up).
+        find it.
         """
         value = header.get(self.keyword)
         if value is None:
@@ -254,13 +254,6 @@ class HeaderMatchRule(BaseModel, frozen=True):
     def keyword_present(self, header) -> bool:
         """
         Check whether ``keyword`` is present in ``header`` at all.
-
-        Unlike `matches`, this does not check the value -- it distinguishes
-        "the keyword is absent" from "the keyword is present but its value
-        does not match ``pattern``", the distinction
-        `~bandaid.scripts.check_frame_consistency`'s batch-mixing guard needs
-        for its diagnostic message (issue #122 follow-up), where `matches`
-        conflates both into False.
 
         Parameters
         ----------
@@ -272,6 +265,14 @@ class HeaderMatchRule(BaseModel, frozen=True):
         bool
             True if ``header.get(self.keyword)`` is not None -- the same
             lookup `matches` itself uses.
+
+        Notes
+        -----
+        Unlike `matches`, this does not check the value -- it distinguishes
+        "the keyword is absent" from "the keyword is present but its value
+        does not match ``pattern``", the distinction
+        `~bandaid.scripts.check_frame_consistency`'s batch-mixing guard needs
+        for its diagnostic message, where `matches` conflates both into False.
         """
         return header.get(self.keyword) is not None
 
@@ -398,19 +399,6 @@ class InstrumentProfile(BaseModel, frozen=True):
         """
         Check whether ``header`` identifies this instrument.
 
-        True if *any* of ``header_match``'s rules match (OR) -- the single
-        predicate used both by :func:`~bandaid.instruments.detect_instrument`
-        (to pick a profile from a header) and by
-        `~bandaid.scripts.check_frame_consistency`'s batch-mixing guard (to
-        check a later frame against the batch's already-resolved profile), so
-        the two agree on what "matches" means. The guard's own diagnostic
-        message additionally distinguishes a missing keyword from a
-        present-but-wrong value using each rule's
-        :meth:`HeaderMatchRule.keyword_present`, the same underlying
-        ``header.get`` lookup this method's rules use (issue #122 follow-up).
-        A profile with an empty ``header_match`` (the bare-class default)
-        never matches anything -- device identity must be opt-in.
-
         Parameters
         ----------
         header : astropy.io.fits.Header or collections.abc.Mapping
@@ -422,6 +410,15 @@ class InstrumentProfile(BaseModel, frozen=True):
             True if at least one of ``header_match``'s rules matches
             ``header``; False otherwise (including when ``header_match`` is
             empty).
+
+        Notes
+        -----
+        True if *any* of ``header_match``'s rules match (OR) -- the single
+        predicate used both by :func:`~bandaid.instruments.detect_instrument`
+        and by `~bandaid.scripts.check_frame_consistency`'s batch-mixing guard,
+        so the two agree on what "matches" means. A profile with an empty
+        ``header_match`` (the bare-class default) never matches anything --
+        device identity must be opt-in.
         """
         return any(rule.matches(header) for rule in self.header_match)
 

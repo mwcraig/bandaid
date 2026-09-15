@@ -2503,10 +2503,10 @@ def prepare_image(
     # caller. prepare_image has no batch-mixing guard to feed, so the "was it
     # detected" flag is not needed here.
     #
-    # InstrumentDetectionError is itself a FrameMetadataError (issue/PR #122
-    # follow-up), so it already stays inside the FrameError family a caller's
-    # `except FrameError` skip loop handles -- just label it with the file,
-    # the same as every other FrameMetadataError raised here.
+    # InstrumentDetectionError is itself a FrameMetadataError, so it already
+    # stays inside the FrameError family a caller's `except FrameError` skip
+    # loop handles -- just label it with the file, the same as every other
+    # FrameMetadataError raised here.
     try:
         config, _ = resolve_config_instrument(config, frame.header)
     except InstrumentDetectionError as exc:
@@ -2888,8 +2888,8 @@ def process_one_image(
     # one open: the loaded frame is passed through via `frame=`.
     if frame is None:
         frame = _load_frame(file)
-    # InstrumentDetectionError is itself a FrameMetadataError (issue/PR #122
-    # follow-up); just label it with the file, like prepare_image does.
+    # InstrumentDetectionError is itself a FrameMetadataError; just label it
+    # with the file, like prepare_image does.
     try:
         config, _ = resolve_config_instrument(config, frame.header)
     except InstrumentDetectionError as exc:
