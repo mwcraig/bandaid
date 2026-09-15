@@ -43,6 +43,7 @@ from .config import (
 from .exceptions import (
     DegenerateBayerChannelError,
     FrameMetadataError,
+    InstrumentDetectionError,
     NoUsableStarsError,
     StarListValidationError,
     TooFewStarsError,
@@ -917,11 +918,14 @@ def calibration_sequence(
         source is saturated, so no usable PSF can be fit.
     FrameMetadataError
         If the header is missing a required keyword (propagated from
-        `metadata_from_header`, with the source file attached). If ``profile``
-        is None and the header matches zero or more than one
-        bundled/registered instrument profile, the unrelated
-        `~bandaid.exceptions.InstrumentDetectionError` propagates instead
-        (also from `metadata_from_header`).
+        `metadata_from_header`, with the source file attached). Also raised,
+        with the source file attached and the original chained as
+        ``__cause__``, when ``profile`` is None and the header matches zero or
+        more than one bundled/registered instrument profile:
+        `calibration_sequence` is itself a direct/single-frame entry point, so
+        the batch-fatal `~bandaid.exceptions.InstrumentDetectionError`
+        `metadata_from_header` raises there is wrapped rather than left to
+        propagate.
     DegenerateBayerChannelError
         If ``detect_on_bayer_balanced`` is True and a CFA sub-grid sample is
         empty or has zero variance (propagated from `bayer_balance_image`,
@@ -939,6 +943,15 @@ def calibration_sequence(
         # metadata_from_header has only the header, not the path; label it here.
         exc.file = file
         raise
+    except InstrumentDetectionError as exc:
+        # calibration_sequence is itself a direct/single-frame entry point
+        # (unlike prepare_batch, which resolves once for the whole batch), so
+        # an unresolvable header here is this frame's problem, not a
+        # batch-fatal one: wrap the batch-fatal InstrumentDetectionError as a
+        # FrameMetadataError (issue/PR #122) so it stays inside the
+        # FrameError family a caller's `except FrameError` skip loop already
+        # handles.
+        raise FrameMetadataError(str(exc), file=file) from exc
     max_adu = metadata["largest_usable_adu_value"]
 
     # Multiplying by 1 should force conversion from int to float data
@@ -2407,17 +2420,20 @@ def prepare_image(
         `TooFewStarsError` or, when ``detect_on_bayer_balanced`` is True and a
         CFA sub-grid sample is empty or has zero variance,
         `DegenerateBayerChannelError` -- both with `file` already attached by
-        `calibration_sequence` itself. When ``config.instrument`` is None and
-        the frame's header matches zero or more than one bundled/registered
-        instrument profile, `~bandaid.exceptions.InstrumentDetectionError`
-        propagates from `~bandaid.instruments.resolve_config_instrument`, and
-        `_drop_off_frame_catalog_stars` may raise `NoUsableStarsError` when
-        every catalog star projects outside the frame; all propagate
-        unchanged.)
+        `calibration_sequence` itself, and `_drop_off_frame_catalog_stars` may
+        raise `NoUsableStarsError` when every catalog star projects outside
+        the frame; both propagate unchanged.)
     FrameMetadataError
         If a WCS must be solved (``wcs`` is None) but the frame metadata has no
         usable numeric ``pixscale`` to scale-check the solve against. The source
-        `file` is attached before it propagates.
+        `file` is attached before it propagates. Also raised, with `file`
+        attached and the original chained as ``__cause__``, when
+        ``config.instrument`` is None and the frame's header matches zero or
+        more than one bundled/registered instrument profile: `prepare_image`
+        is itself a direct/single-frame entry point, so the batch-fatal
+        `~bandaid.exceptions.InstrumentDetectionError`
+        `~bandaid.instruments.resolve_config_instrument` raises there is
+        wrapped rather than left to propagate.
     """
     # "calibrate" the data and get initial detections for WCS alignment and
     # FWHM estimation. calibration_sequence raises TooFewStarsError (a
@@ -2428,10 +2444,21 @@ def prepare_image(
         frame = _load_frame(file)
     config = config or PhotometryConfig()
     # This is the other resolution point (besides prepare_batch, for the batch
-    # path) -- a direct caller (or process_one_image with a default config)
-    # gets the same auto-detection. prepare_image has no batch-mixing guard to
-    # feed, so the "was it detected" flag is not needed here.
-    config, _ = resolve_config_instrument(config, frame.header)
+    # path) -- a direct caller gets the same auto-detection. process_one_image
+    # resolves its config before calling here, so this is a no-op for that
+    # caller. prepare_image has no batch-mixing guard to feed, so the "was it
+    # detected" flag is not needed here.
+    #
+    # prepare_image is itself a legitimate direct/single-frame entry point
+    # (unlike prepare_batch, which resolves once for the whole batch), so an
+    # unresolvable header here is this frame's problem, not a batch-fatal one:
+    # wrap the batch-fatal InstrumentDetectionError as a FrameMetadataError
+    # (issue/PR #122) so it stays inside the FrameError family a caller's
+    # `except FrameError` skip loop already handles.
+    try:
+        config, _ = resolve_config_instrument(config, frame.header)
+    except InstrumentDetectionError as exc:
+        raise FrameMetadataError(str(exc), file=file) from exc
     instrument = config.instrument
     # Receives calibration_sequence's own detection-time array (see its
     # docstring) so centroiding reuses it instead of balancing a second copy.
@@ -2757,7 +2784,9 @@ def process_one_image(
     config : PhotometryConfig or None, optional
         Photometry configuration threaded through to `prepare_image` and
         `build_photometry_table`. If None (default), a default
-        ``PhotometryConfig`` is used.
+        ``PhotometryConfig`` is used. If its ``instrument`` is None, it is
+        resolved by detection from the frame header before either call, so
+        both see the same resolved profile.
     bayer_balance_detection : bool, optional
         Whether to perform source detection on Bayer balanced data. This is usually
         desirable for data with a bayer pattern.
@@ -2781,6 +2810,15 @@ def process_one_image(
     ValueError
         If "L4" maps to anything but None, or the TR/TG/TB channels it is
         built from are missing.
+    FrameMetadataError
+        If ``config.instrument`` is None and the frame's header matches zero
+        or more than one bundled/registered instrument profile. The source
+        `file` is attached and the batch-fatal
+        `~bandaid.exceptions.InstrumentDetectionError`
+        `~bandaid.instruments.resolve_config_instrument` raises is chained as
+        ``__cause__``, consistent with `prepare_image` (this function resolves
+        the instrument itself, before calling `prepare_image`, so that call's
+        own resolution is a no-op).
 
     Notes
     -----
@@ -2791,6 +2829,18 @@ def process_one_image(
     # a FrameError (TooFewStarsError / WCSSolveError) when the frame is unusable;
     # let it propagate to the batch loop.
     config = config or PhotometryConfig()
+    # Resolve the instrument once, here, from the loaded frame's header, and
+    # pass the resolved config down -- rather than letting prepare_image
+    # resolve its own copy and this function going on to reuse the original,
+    # unresolved config for build_photometry_table below (PR #122). Opening
+    # the file here (instead of leaving it to prepare_image) still costs only
+    # one open: the loaded frame is passed through via `frame=`.
+    if frame is None:
+        frame = _load_frame(file)
+    try:
+        config, _ = resolve_config_instrument(config, frame.header)
+    except InstrumentDetectionError as exc:
+        raise FrameMetadataError(str(exc), file=file) from exc
     img = prepare_image(
         file,
         radecs,

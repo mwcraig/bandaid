@@ -34,7 +34,11 @@ WCS failure) that the one-line skip message summarizes.
 
 A skipped frame is recoverable; a `BatchPrepError` is not. The once-per-batch
 preparation is built from the **first** frame, and if that fails — too few stars
-to measure an FWHM, or Gaia returns too few reference stars for the field — there
+to measure an FWHM, Gaia returns too few reference stars for the field, or (with
+no explicit `--instrument`/`--profile`/config `instrument`) the first frame's
+header does not resolve to exactly one instrument profile
+(`InstrumentDetectionError`; see [Instrument
+profiles](instrument_profiles.md#auto-detection-from-the-fits-header)) — there
 is nothing to process the rest of the batch against, so the whole run stops.
 
 Fix: make sure the **first** frame in the batch is a good one (the batch is
@@ -79,9 +83,18 @@ or could not be parsed for that frame. The most common cause is using a telescop
 whose headers use different keyword names than the bundled Seestar50 profile
 expects.
 
-The fix is a `header_map` that translates *your* telescope's header keywords into
-the metadata bandaid needs. Build (or adjust) an instrument profile and verify it
-parses a single frame with `-vv`:
+It can also mean instrument auto-detection failed for that frame: when a direct
+call to `prepare_image`, `process_one_image`, or `calibration_sequence` (rather
+than a `prepare_batch` run) is given no explicit instrument and the frame's
+header does not resolve to exactly one profile, the underlying
+`InstrumentDetectionError` is wrapped as a `FrameMetadataError` — chained as its
+cause — so the frame is skipped rather than aborting a whole batch built around a
+single call. Run with `-vv` to see the chained `InstrumentDetectionError` and the
+header values it checked.
+
+The fix for a missing/unparsable header field is a `header_map` that translates
+*your* telescope's header keywords into the metadata bandaid needs. Build (or
+adjust) an instrument profile and verify it parses a single frame with `-vv`:
 
 ```bash
 $ bandaid process one_frame.fit --profile my_scope.json -o /tmp/check -vv

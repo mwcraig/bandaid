@@ -45,10 +45,11 @@ prep = prepare_batch(first_file, cnn=cnn, config=config)
 ## Auto-detection from the FITS header
 
 `PhotometryConfig.instrument` defaults to `None`, which means "figure it out
-from the frame header" rather than a hard-coded telescope. The first place a
-header is in hand — `prepare_batch` for a normal run, or `prepare_image` for a
-direct/single-frame call — calls `detect_instrument` on it and carries the
-resolved profile forward for the rest of the batch:
+from the frame header" rather than a hard-coded telescope. `prepare_batch`
+resolves it once, from the first frame's header, and carries the resolved
+profile forward for the rest of the batch. The direct/single-frame entry
+points — `prepare_image`, `process_one_image`, and `calibration_sequence` —
+instead resolve it per call, from whichever frame they are handed:
 
 ```python
 from bandaid import PhotometryConfig, prepare_batch
@@ -62,10 +63,16 @@ Detection works from `InstrumentProfile.header_match`: a tuple of
 `(keyword, pattern)` rules. A profile is a candidate if **any** rule matches
 (header value present, stripped and compared case-insensitively); exactly one
 matching profile wins. Zero or more than one match raises
-`InstrumentDetectionError`, naming the header values it checked and the
-available/ambiguous profile names — a fatal error for the whole batch, not a
-per-frame skip, since without a resolved instrument there is no detection/PSF
-tuning to run with.
+`InstrumentDetectionError` (from `detect_instrument`/`metadata_from_header`),
+naming the header values it checked and the available/ambiguous profile
+names. How that propagates depends on the entry point: `prepare_batch` lets
+it propagate unchanged, a fatal error for the whole batch, not a per-frame
+skip, since without a resolved instrument there is no detection/PSF tuning to
+run with. `prepare_image`, `process_one_image`, and `calibration_sequence`
+instead wrap it as `FrameMetadataError` (a `FrameError`), chaining the
+`InstrumentDetectionError` as its cause, so a caller's per-frame
+`except FrameError` skip loop still works for these direct/single-frame entry
+points.
 
 The bundled Seestar50 profile matches on `INSTRUME == "Seestar S50"` —
 deliberately **not** `TELESCOP`. On real hardware `TELESCOP` embeds a
@@ -91,8 +98,8 @@ give it an explicit `header_match` — see
 
 ### Precedence
 
-From most to least specific, the first one supplied wins and disables
-auto-detection for the rest:
+For the CLI / batch path (`prepare_batch`), from most to least specific, the
+first one supplied wins and disables auto-detection for the rest:
 
 1. CLI `--instrument NAME` or `--profile FILE`.
 1. A `--config FILE` whose `instrument` field is a concrete profile (not
@@ -100,8 +107,10 @@ auto-detection for the rest:
 1. Header auto-detection (`detect_instrument`) — used when none of the above
     is given, i.e. `PhotometryConfig.instrument` is `None`. This is also what
     a `--config` file with an explicit `"instrument": null` defers to.
-1. An `InstrumentDetectionError` if the header does not resolve to exactly
-    one profile.
+1. An `InstrumentDetectionError`, batch-fatal, if the header does not resolve
+    to exactly one profile (see [Auto-detection from the FITS
+    header](#auto-detection-from-the-fits-header) above for how this differs
+    for the direct/single-frame entry points).
 
 `--instrument Seestar50` (or any bundled/registered name) is always available
 as an explicit escape hatch when a frame's header is missing, malformed, or

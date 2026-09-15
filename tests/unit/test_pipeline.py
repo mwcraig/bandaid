@@ -34,6 +34,7 @@ from bandaid.photometry import (
     N_GAIA_STARS_ALIGN,
     THRESH,
     _MASK_INDEPENDENT_COLUMNS,
+    ImageData,
     LoadedFrame,
     _box_opening,
     _brightest_unsaturated,
@@ -184,19 +185,31 @@ class TestPrepareImage:
         resolved = externals.calibration_sequence.call_args.kwargs["profile"]
         assert resolved.name == "Seestar50"
 
-    def test_unmatched_header_raises_instrument_detection_error(
+    def test_unmatched_header_raises_frame_metadata_error(
         self, stub_prepare_image_externals
     ):
-        """A frame whose header matches no profile raises, not an AttributeError."""
+        """
+        A frame whose header matches no profile raises a per-frame error.
+
+        ``prepare_image`` is a legitimate direct/single-frame entry point, so
+        an unresolvable header is that frame's problem, not a batch-fatal one
+        (PR #122): the ``InstrumentDetectionError`` `resolve_config_instrument`
+        raises is wrapped as `FrameMetadataError`, keeping this failure inside
+        the same `FrameError` family a caller's ``except FrameError`` skip loop
+        already handles.
+        """
         externals = stub_prepare_image_externals()
         externals.load_frame.side_effect = lambda _file: LoadedFrame(
             np.zeros((10, 10)), {}
         )
 
-        with pytest.raises(InstrumentDetectionError):
+        with pytest.raises(FrameMetadataError) as exc_info:
             prepare_image(
                 "unused.fits", np.zeros((5, 2)), None, config=PhotometryConfig()
             )
+
+        assert exc_info.value.file == "unused.fits"
+        assert isinstance(exc_info.value.__cause__, InstrumentDetectionError)
 
     def test_instrument_wcs_scale_tolerance_reaches_alignment(
         self, stub_prepare_image_externals
@@ -1109,6 +1122,29 @@ class TestCalibrationSequence:
             calibration_sequence(path, threshold=1, detect_on_bayer_balanced=True)
         assert exc_info.value.file == path
 
+    def test_unmatched_header_raises_frame_metadata_error(self):
+        """
+        An unresolvable header raises FrameMetadataError, not InstrumentDetectionError.
+
+        ``calibration_sequence`` is one of the per-frame entry points
+        (PR #122): when ``profile`` is None, ``metadata_from_header`` detects
+        the instrument and can raise the batch-fatal
+        ``InstrumentDetectionError``. Wrap it here with the file attached, the
+        same as the existing ``FrameMetadataError`` branch, so it stays inside
+        the ``FrameError`` family a per-frame skip loop already handles. A
+        frame with an empty header is handed in directly, so the failure
+        happens before any detection would run.
+        """
+        frame = LoadedFrame(np.zeros((10, 10)), {})
+
+        with pytest.raises(FrameMetadataError) as exc_info:
+            calibration_sequence(
+                "fake_file.fits", threshold=1, profile=None, frame=frame
+            )
+
+        assert exc_info.value.file == "fake_file.fits"
+        assert isinstance(exc_info.value.__cause__, InstrumentDetectionError)
+
     @pytest.mark.parametrize("compressed", [False, True], ids=["plain", "gz"])
     def test_opens_the_file_exactly_once(
         self, make_test_image, tmp_path, fromfile_spy, compressed
@@ -1392,6 +1428,57 @@ class TestProcessOneImage:
         process_one_image(path, {}, _REF_RADECS, None, masks)
 
         assert spy.call_count == 1
+
+    def test_resolves_instrument_once_and_reuses_it(self, mocker):
+        """
+        A default config's instrument is resolved once and passed downstream.
+
+        ``process_one_image`` used to reuse its own unresolved ``config``
+        after calling ``prepare_image`` (which resolves internally), so a
+        default (``instrument=None``) config reached ``build_photometry_table``
+        still unresolved (PR #122). Resolve once, from the loaded frame's
+        header, before calling ``prepare_image``, and pass the resolved config
+        down. ``prepare_image`` and ``build_photometry_table`` are stubbed so
+        this only exercises the resolution/reuse, and ``_load_frame`` is
+        spied on to confirm the file is still opened exactly once.
+        """
+        header = {"INSTRUME": "Seestar S50"}
+        load_frame = mocker.patch(
+            "bandaid.photometry._load_frame",
+            side_effect=lambda _file: LoadedFrame(np.zeros((10, 10)), header),
+        )
+        centroid_coords = np.array([[10.0, 10.0], [20.0, 20.0]])
+        img = ImageData(
+            calibrated_data=np.zeros((50, 50)),
+            coords=centroid_coords,
+            fwhm=3.0,
+            centroid_coords=centroid_coords,
+            aligned_coords=centroid_coords,
+            wcs=None,
+            header=header,
+            metadata={"egain": 1.0},
+        )
+        prepare_image_mock = mocker.patch(
+            "bandaid.photometry.prepare_image", return_value=img
+        )
+        table = Table({"tot_count": [1.0]})
+        build_table_mock = mocker.patch(
+            "bandaid.photometry.build_photometry_table", return_value=table
+        )
+
+        process_one_image(
+            "unused.fits",
+            {},
+            _REF_RADECS,
+            None,
+            {"TR": None},
+            config=PhotometryConfig(),
+        )
+
+        resolved_config = build_table_mock.call_args.kwargs["config"]
+        assert resolved_config.instrument.name == "Seestar50"
+        assert prepare_image_mock.call_args.kwargs["config"] is resolved_config
+        load_frame.assert_called_once()
 
 
 # --- Real-frame smoke test -------------------------------------------------
