@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from _helpers import SEED, _make_tan_wcs
+from _helpers import SEED, _make_tan_wcs, _seestar_header, five_diagonal_regions
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.nddata import CCDData
@@ -16,16 +16,18 @@ from eloy import detection
 from skimage.measure import label, regionprops
 from skimage.morphology import binary_opening
 
-from bandaid import photometry
+from bandaid import instruments, photometry
 from bandaid.ballet import NumpyBallet
-from bandaid.config import InstrumentProfile, PhotometryConfig
+from bandaid.config import HeaderMatchRule, InstrumentProfile, PhotometryConfig
 from bandaid.exceptions import (
     DegenerateBayerChannelError,
     FrameMetadataError,
+    InstrumentDetectionError,
     NoUsableStarsError,
     TooFewStarsError,
 )
 from bandaid.image2sl_qt import bayer_balance_image, generate_bayer_masks
+from bandaid.instruments import register_instrument
 from bandaid.photometry import (
     CENTROID_PAD_PIX,
     DETECTION_OPENING,
@@ -33,6 +35,8 @@ from bandaid.photometry import (
     N_GAIA_STARS_ALIGN,
     THRESH,
     _MASK_INDEPENDENT_COLUMNS,
+    ImageData,
+    LoadedFrame,
     _box_opening,
     _brightest_unsaturated,
     _detect_stars,
@@ -95,6 +99,9 @@ class TestPrepareImage:
             None,
             photometry_coords=None,
             wcs=wcs,
+            # This test only exercises the alignment fallback, not instrument
+            # detection, and the written header carries no INSTRUME/TELESCOP.
+            config=PhotometryConfig(instrument=InstrumentProfile()),
         )
 
         assert np.array_equal(img.coords, img.aligned_coords)
@@ -156,6 +163,54 @@ class TestPrepareImage:
 
         externals.centroid_stars.assert_called_once()
         assert externals.centroid_stars.call_args.args[0] is calibrated
+
+    def test_auto_detects_instrument_from_frame_header(
+        self, stub_prepare_image_externals
+    ):
+        """
+        A default (``instrument=None``) config resolves by detecting the header.
+
+        ``prepare_image`` is the other resolution point (besides
+        ``prepare_batch``): a direct caller with a default config must get the
+        same auto-detection, so ``calibration_sequence`` still sees a
+        concrete profile.
+        """
+        externals = stub_prepare_image_externals()
+        mocker_load_frame = externals.load_frame
+        mocker_load_frame.side_effect = lambda _file: LoadedFrame(
+            np.zeros((10, 10)), {"INSTRUME": "Seestar S50"}
+        )
+
+        prepare_image("unused.fits", np.zeros((5, 2)), None, config=PhotometryConfig())
+
+        resolved = externals.calibration_sequence.call_args.kwargs["profile"]
+        assert resolved.name == "Seestar50"
+
+    def test_unmatched_header_raises_frame_metadata_error(
+        self, stub_prepare_image_externals
+    ):
+        """
+        A frame whose header matches no profile raises a per-frame error.
+
+        ``prepare_image`` is a legitimate direct/single-frame entry point, so
+        an unresolvable header is that frame's problem, not a batch-fatal one:
+        ``InstrumentDetectionError`` is itself a `FrameMetadataError`, so it
+        propagates with the file attached and is
+        caught by the same ``except FrameError`` skip loop other frame errors
+        are.
+        """
+        externals = stub_prepare_image_externals()
+        externals.load_frame.side_effect = lambda _file: LoadedFrame(
+            np.zeros((10, 10)), {}
+        )
+
+        with pytest.raises(FrameMetadataError) as exc_info:
+            prepare_image(
+                "unused.fits", np.zeros((5, 2)), None, config=PhotometryConfig()
+            )
+
+        assert exc_info.value.file == "unused.fits"
+        assert isinstance(exc_info.value, InstrumentDetectionError)
 
     def test_instrument_wcs_scale_tolerance_reaches_alignment(
         self, stub_prepare_image_externals
@@ -488,8 +543,10 @@ def _write_seestar_fits(path, image):
     """Write ``image`` to ``path`` with the header keys the pipeline reads."""
     ccd = CCDData(image, unit="adu")
     # metadata_from_header indexes CREATOR directly ("!CREATOR index 0"), so it
-    # must be present; the others feed "@KEY" lookups used downstream.
+    # must be present; the others feed "@KEY" lookups used downstream. INSTRUME
+    # is what a default (instrument=None) PhotometryConfig auto-detects on.
     ccd.header["CREATOR"] = "ZWO Seestar S50"
+    ccd.header["INSTRUME"] = "Seestar S50"
     ccd.header["DATE-OBS"] = "2024-01-01T00:00:00"
     ccd.header["BAYERPAT"] = "RGGB"
     # Real Seestar frames carry pointing and site so airmass derives (issue #29);
@@ -991,6 +1048,54 @@ class TestCalibrationSequence:
             calibration_sequence(path, threshold=1, opening=custom_opening)
         assert stars_detection_mock.call_args.kwargs["opening"] == custom_opening
 
+    def test_unset_defaults_follow_the_resolved_profile_not_seestar50(
+        self, tmp_path, mocker, isolate_registry
+    ):
+        """
+        Unset detection/FWHM parameters follow the *resolved* profile.
+
+        Before this, ``threshold``/``opening``/``fwhm_cutout_half``/
+        ``fwhm_n_stars`` defaulted to module-level constants derived from a
+        bare ``InstrumentProfile()`` (Seestar50's tuning) regardless of which
+        profile ``calibration_sequence`` actually resolved, so a direct call
+        on a future non-Seestar profile detected and fit the FWHM at
+        Seestar50's settings even though ``profile`` auto-detected correctly.
+        Now the defaults are pulled from the resolved profile itself.
+        """
+        custom = InstrumentProfile(
+            name="CustomScope",
+            header_match=(HeaderMatchRule(keyword="INSTRUME", pattern="Custom Scope"),),
+            thresh=3.0,
+            detection_opening=9,
+            fwhm_cutout_half=11,
+            fwhm_n_stars=13,
+        )
+        with isolate_registry(instruments, "_REGISTERED"):
+            register_instrument(custom)
+
+            header = _seestar_header()
+            header["INSTRUME"] = "Custom Scope"
+            path = tmp_path / "custom.fits"
+            fits.PrimaryHDU(np.zeros((200, 200)), header=header).writeto(
+                path, output_verify="silentfix"
+            )
+
+            detect = mocker.patch(
+                "bandaid.photometry._detect_stars", side_effect=five_diagonal_regions
+            )
+            fwhm_helper = mocker.patch(
+                "bandaid.photometry._fwhm_from_coords", return_value=2.5
+            )
+
+            calibration_sequence(path)
+
+        assert detect.call_args.kwargs["threshold"] == custom.thresh
+        assert detect.call_args.kwargs["opening"] == custom.detection_opening
+        assert (
+            fwhm_helper.call_args.kwargs["fwhm_cutout_half"] == custom.fwhm_cutout_half
+        )
+        assert fwhm_helper.call_args.kwargs["n_stars"] == custom.fwhm_n_stars
+
     def test_detects_on_balanced_copy_when_flagged(
         self, make_test_image, tmp_path, mocker
     ):
@@ -1065,6 +1170,29 @@ class TestCalibrationSequence:
         with pytest.raises(DegenerateBayerChannelError) as exc_info:
             calibration_sequence(path, threshold=1, detect_on_bayer_balanced=True)
         assert exc_info.value.file == path
+
+    def test_unmatched_header_raises_frame_metadata_error(self):
+        """
+        An unresolvable header raises FrameMetadataError, via InstrumentDetectionError.
+
+        ``calibration_sequence`` is one of the per-frame entry points: when
+        ``profile`` is None, ``metadata_from_header`` detects
+        the instrument and can raise ``InstrumentDetectionError``, itself a
+        `FrameMetadataError`. It is labelled with the file here, the same as
+        the metadata errors `metadata_from_header` raises directly, so it
+        stays inside the ``FrameError`` family a per-frame skip loop already
+        handles. A frame with an empty header is handed in directly, so the
+        failure happens before any detection would run.
+        """
+        frame = LoadedFrame(np.zeros((10, 10)), {})
+
+        with pytest.raises(FrameMetadataError) as exc_info:
+            calibration_sequence(
+                "fake_file.fits", threshold=1, profile=None, frame=frame
+            )
+
+        assert exc_info.value.file == "fake_file.fits"
+        assert isinstance(exc_info.value, InstrumentDetectionError)
 
     @pytest.mark.parametrize("compressed", [False, True], ids=["plain", "gz"])
     def test_opens_the_file_exactly_once(
@@ -1349,6 +1477,57 @@ class TestProcessOneImage:
         process_one_image(path, {}, _REF_RADECS, None, masks)
 
         assert spy.call_count == 1
+
+    def test_resolves_instrument_once_and_reuses_it(self, mocker):
+        """
+        A default config's instrument is resolved once and passed downstream.
+
+        ``process_one_image`` used to reuse its own unresolved ``config``
+        after calling ``prepare_image`` (which resolves internally), so a
+        default (``instrument=None``) config reached ``build_photometry_table``
+        still unresolved. Resolve once, from the loaded frame's header, before
+        calling ``prepare_image``, and pass the resolved config
+        down. ``prepare_image`` and ``build_photometry_table`` are stubbed so
+        this only exercises the resolution/reuse, and ``_load_frame`` is
+        spied on to confirm the file is still opened exactly once.
+        """
+        header = {"INSTRUME": "Seestar S50"}
+        load_frame = mocker.patch(
+            "bandaid.photometry._load_frame",
+            side_effect=lambda _file: LoadedFrame(np.zeros((10, 10)), header),
+        )
+        centroid_coords = np.array([[10.0, 10.0], [20.0, 20.0]])
+        img = ImageData(
+            calibrated_data=np.zeros((50, 50)),
+            coords=centroid_coords,
+            fwhm=3.0,
+            centroid_coords=centroid_coords,
+            aligned_coords=centroid_coords,
+            wcs=None,
+            header=header,
+            metadata={"egain": 1.0},
+        )
+        prepare_image_mock = mocker.patch(
+            "bandaid.photometry.prepare_image", return_value=img
+        )
+        table = Table({"tot_count": [1.0]})
+        build_table_mock = mocker.patch(
+            "bandaid.photometry.build_photometry_table", return_value=table
+        )
+
+        process_one_image(
+            "unused.fits",
+            {},
+            _REF_RADECS,
+            None,
+            {"TR": None},
+            config=PhotometryConfig(),
+        )
+
+        resolved_config = build_table_mock.call_args.kwargs["config"]
+        assert resolved_config.instrument.name == "Seestar50"
+        assert prepare_image_mock.call_args.kwargs["config"] is resolved_config
+        load_frame.assert_called_once()
 
 
 # --- Real-frame smoke test -------------------------------------------------

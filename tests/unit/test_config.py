@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from bandaid.config import (
     ApertureConfig,
     DriftConfig,
+    HeaderMatchRule,
     InstrumentProfile,
     PhotometryConfig,
     SourceSelectionConfig,
@@ -94,14 +95,50 @@ class TestDefaultsMatchLegacyConstants:
         assert cfg.header_map["obs_time"] == "@DATE-OBS"
         assert "egain" in cfg.header_map
 
+    def test_instrument_header_match_defaults_to_empty(self):
+        """
+        A bare ``InstrumentProfile()`` carries no header-match rules.
+
+        Device identity must be opt-in: a bare profile shares the Seestar
+        *tuning* defaults, but must not accidentally claim to *be* a Seestar
+        for auto-detection purposes. Only the bundled Seestar50 profile (loaded
+        from ``profile.json``) carries a rule.
+        """
+        cfg = InstrumentProfile()
+        assert cfg.header_match == ()
+
+    def test_matches_header_true_when_any_rule_matches(self):
+        """``matches_header`` is True when at least one rule matches (OR)."""
+        cfg = InstrumentProfile(
+            name="TwoRules",
+            header_match=(
+                HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50"),
+                HeaderMatchRule(keyword="TELESCOP", pattern="OtherScope"),
+            ),
+        )
+        assert cfg.matches_header({"TELESCOP": "OtherScope"}) is True
+
+    def test_matches_header_false_when_no_rule_matches(self):
+        """``matches_header`` is False when every rule fails to match."""
+        cfg = InstrumentProfile(
+            name="OneRule",
+            header_match=(HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50"),),
+        )
+        assert cfg.matches_header({"INSTRUME": "Some Other Scope"}) is False
+
+    def test_matches_header_false_for_empty_header_match(self):
+        """A profile with no rules never matches (device identity is opt-in)."""
+        cfg = InstrumentProfile()
+        assert cfg.matches_header({"INSTRUME": "Seestar S50"}) is False
+
     def test_photometry_config_composes_defaults(self):
-        """PhotometryConfig nests one of each sub-config with default values."""
+        """PhotometryConfig nests one of each sub-config, instrument unresolved."""
         cfg = PhotometryConfig()
         assert isinstance(cfg.apertures, ApertureConfig)
         assert isinstance(cfg.source_selection, SourceSelectionConfig)
         assert isinstance(cfg.drift, DriftConfig)
-        assert isinstance(cfg.instrument, InstrumentProfile)
-        assert cfg.instrument.fwhm_n_stars == EXPECTED_FWHM_N_STARS
+        # None means "resolve from the frame header" -- see detect_instrument.
+        assert cfg.instrument is None
 
 
 class TestImmutability:
@@ -109,7 +146,7 @@ class TestImmutability:
 
     def test_cannot_mutate(self):
         """Assigning to a field on a constructed config raises."""
-        cfg = PhotometryConfig()
+        cfg = PhotometryConfig(instrument=InstrumentProfile())
         with pytest.raises(ValidationError):
             cfg.instrument.detection_opening = 7
 
@@ -240,6 +277,16 @@ class TestValidators:
 
 class TestOverrides:
     """Non-default values round-trip through construction."""
+
+    def test_instrument_defaults_to_none(self):
+        """
+        A bare ``PhotometryConfig()`` carries ``instrument=None``.
+
+        ``None`` means "resolve from the frame header" for both the CLI and
+        the Python API: there is no code outside this repo to preserve, so a
+        bare config no longer hard-defaults to Seestar50.
+        """
+        assert PhotometryConfig().instrument is None
 
     def test_instrument_override(self):
         """A custom detection opening is preserved on the nested config."""

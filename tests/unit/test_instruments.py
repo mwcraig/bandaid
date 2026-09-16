@@ -12,12 +12,57 @@ extended, and that a profile round-trips through ``to_file``/``from_file``.
 import pytest
 
 from bandaid import instruments
-from bandaid.config import InstrumentProfile
+from bandaid.config import HeaderMatchRule, InstrumentProfile
+from bandaid.exceptions import InstrumentDetectionError
 from bandaid.instruments import (
     available_instruments,
+    detect_instrument,
     load_instrument,
     register_instrument,
 )
+
+
+class TestHeaderMatchRule:
+    """Unit tests for ``HeaderMatchRule``'s header/pattern comparison."""
+
+    def test_matches_case_insensitively(self):
+        """A differently-cased header value still matches."""
+        rule = HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50")
+        assert rule.matches({"INSTRUME": "seestar s50"}) is True
+        assert rule.matches({"INSTRUME": "SEESTAR S50"}) is True
+
+    def test_no_match_returns_false(self):
+        """A present but different header value does not match."""
+        rule = HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50")
+        assert rule.matches({"INSTRUME": "Some Other Scope"}) is False
+
+    def test_absent_keyword_returns_false(self):
+        """A header without the keyword at all does not match."""
+        rule = HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50")
+        assert rule.matches({}) is False
+
+    def test_whitespace_is_stripped(self):
+        """Leading/trailing whitespace on the header value is ignored."""
+        rule = HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50")
+        assert rule.matches({"INSTRUME": "  Seestar S50  "}) is True
+
+    def test_keyword_present_true_regardless_of_value(self):
+        """
+        ``keyword_present`` checks presence only, unlike ``matches``.
+
+        `~bandaid.scripts.check_frame_consistency`'s batch-mixing guard needs
+        to distinguish "the keyword is absent" from "the keyword is present
+        with the wrong value" for its diagnostic message; ``matches`` conflates
+        both into False, so the guard uses this instead, the same
+        ``header.get(self.keyword)`` lookup ``matches`` itself uses.
+        """
+        rule = HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50")
+        assert rule.keyword_present({"INSTRUME": "Some Other Scope"}) is True
+
+    def test_keyword_present_false_when_absent(self):
+        """A header without the keyword at all is not present."""
+        rule = HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50")
+        assert rule.keyword_present({}) is False
 
 
 @pytest.fixture(autouse=True)
@@ -55,6 +100,20 @@ class TestLoadInstrument:
         # default margin is 0.0 (no widening); guard against an accidental revert.
         assert default.cone_radius_margin == 0.0
 
+    def test_seestar_bundle_carries_header_match_rule(self):
+        """
+        The bundled Seestar50 profile matches on INSTRUME, unlike the bare class.
+
+        Device identity must be opt-in (see ``InstrumentProfile.header_match``
+        docs), so only the *bundled* profile carries the rule; a bare
+        ``InstrumentProfile()`` -- even with identical tuning -- carries none.
+        """
+        profile = load_instrument("Seestar50")
+        assert profile.header_match == (
+            HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50"),
+        )
+        assert InstrumentProfile().header_match == ()
+
     def test_seestar_header_map_carries_dialect(self):
         """The bundled profile carries the Seestar header dialect."""
         profile = load_instrument("Seestar50")
@@ -80,6 +139,48 @@ class TestAvailableInstruments:
         """
         assert set(available_instruments()) == {"Seestar50"}
 
+    def test_bundled_profiles_have_pairwise_disjoint_header_match_rules(self):
+        """
+        No two bundled profiles can ever match the same header.
+
+        ``register_instrument``'s rule-conflict check only runs inside
+        ``register_instrument`` itself; the bundled profiles under
+        ``meta_json_files/`` are loaded directly and never pass through it.
+        Today there is only one bundled profile, so this cannot
+        yet fail -- but it pins the invariant that check exists to protect,
+        so a future ``meta_json_files/<Name>/profile.json`` shipped with a
+        ``header_match`` rule copy-pasted from another bundled profile (or
+        genuinely overlapping one) fails CI instead of making
+        ``detect_instrument`` ambiguous for every user of both telescopes.
+        """
+        seen = {}
+        for name in sorted(instruments._bundled_names()):  # noqa: SLF001
+            for rule in load_instrument(name).header_match:
+                identity = instruments._rule_identity(rule)  # noqa: SLF001
+                assert identity not in seen, (
+                    f"{name!r}'s rule {rule.keyword}=={rule.pattern!r} "
+                    f"conflicts with {seen.get(identity)!r}'s"
+                )
+                seen[identity] = name
+
+    def test_bundled_names_directory_walk_is_cached(self, mocker):
+        """
+        Repeated ``_bundled_names()`` calls do not re-walk the bundled directory.
+
+        ``_bundled_names()`` used to be the only loader in this module without
+        ``@cache``, so ``detect_instrument`` walked ``meta_json_files/`` on
+        every call, now on the per-frame batch-mixing-guard path. Caching
+        collapses repeated calls to a single walk.
+        """
+        instruments._bundled_names.cache_clear()  # noqa: SLF001
+        walk_spy = mocker.spy(instruments, "_profiles_root")
+
+        first = instruments._bundled_names()  # noqa: SLF001
+        second = instruments._bundled_names()  # noqa: SLF001
+
+        assert walk_spy.call_count == 1
+        assert first is second
+
 
 class TestRegister:
     """A user can register a custom profile and load it back by name."""
@@ -93,6 +194,208 @@ class TestRegister:
         assert loaded is custom
         assert loaded.thresh == custom_thresh
         assert "MyScope" in available_instruments()
+
+    def test_registering_existing_bundled_name_raises(self):
+        """Registering over a bundled name without ``replace=True`` raises."""
+        with pytest.raises(ValueError, match="Seestar50"):
+            register_instrument(InstrumentProfile(name="Seestar50"))
+
+    def test_registering_duplicate_custom_name_raises(self):
+        """Re-registering the same custom name without ``replace=True`` raises."""
+        register_instrument(InstrumentProfile(name="MyScope"))
+        with pytest.raises(ValueError, match="MyScope"):
+            register_instrument(InstrumentProfile(name="MyScope"))
+
+    def test_replace_true_overrides_bundled_name(self):
+        """``replace=True`` deliberately overrides a bundled profile."""
+        custom_thresh = 9.9
+        register_instrument(
+            InstrumentProfile(name="Seestar50", thresh=custom_thresh), replace=True
+        )
+        assert load_instrument("Seestar50").thresh == custom_thresh
+
+    def test_replace_true_with_empty_header_match_inherits_the_previous_rules(self):
+        """
+        ``replace=True`` with a fresh profile keeps the replaced ``header_match``.
+
+        The documented "override a bundled telescope in-process" path --
+        ``InstrumentProfile(name='Seestar50', thresh=9.9)``, the natural
+        "retune one knob" shape -- used to leave ``header_match`` empty (a
+        bare ``InstrumentProfile()`` defaults it to ``()``), which silently
+        stripped Seestar50's detection rule: `detect_instrument` then had no
+        candidates, and the next flagless run on real Seestar frames raised
+        `~bandaid.exceptions.InstrumentDetectionError` for the whole batch
+        with no warning pointing at ``replace=True`` as the cause. Inheriting
+        the replaced profile's ``header_match`` when
+        the new one carries none keeps the "retune one knob" mental model
+        working.
+        """
+        original = load_instrument("Seestar50")
+        custom_thresh = 9.9
+        register_instrument(
+            InstrumentProfile(name="Seestar50", thresh=custom_thresh), replace=True
+        )
+        replaced = load_instrument("Seestar50")
+        assert replaced.thresh == custom_thresh
+        assert replaced.header_match == original.header_match
+
+    def test_replace_true_own_header_match_is_not_overridden(self):
+        """A replacement that supplies its own ``header_match`` keeps it."""
+        own_rule = (HeaderMatchRule(keyword="INSTRUME", pattern="Custom Seestar"),)
+        register_instrument(
+            InstrumentProfile(name="Seestar50", header_match=own_rule), replace=True
+        )
+        assert load_instrument("Seestar50").header_match == own_rule
+
+    def test_replace_true_overrides_custom_name(self):
+        """``replace=True`` deliberately overrides a previously-registered profile."""
+        register_instrument(InstrumentProfile(name="MyScope", thresh=1.5))
+        register_instrument(InstrumentProfile(name="MyScope", thresh=2.5), replace=True)
+        assert load_instrument("MyScope").thresh == 2.5  # noqa: PLR2004
+
+
+class TestRegisterConflicts:
+    """``register_instrument`` eagerly rejects a rule that collides with another."""
+
+    def test_conflicting_rule_raises_naming_both_profiles(self):
+        """
+        A new profile's rule that duplicates an existing profile's rule raises.
+
+        Rules are exact (keyword, casefolded value) matches, so two profiles
+        sharing one would make ``detect_instrument`` ambiguous on any header
+        that satisfies it -- reject the registration up front rather than
+        letting that surface later as a detection-time error on a real frame.
+        """
+        clone = InstrumentProfile(
+            name="Clone",
+            header_match=(HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50"),),
+        )
+        with pytest.raises(ValueError, match="Seestar50") as excinfo:
+            register_instrument(clone)
+        assert "Clone" in str(excinfo.value)
+        # The rejected profile must not have been registered.
+        assert "Clone" not in available_instruments()
+
+    def test_different_value_same_keyword_registers_fine(self):
+        """A rule on the same keyword but a different value does not conflict."""
+        other = InstrumentProfile(
+            name="OtherScope",
+            header_match=(
+                HeaderMatchRule(keyword="INSTRUME", pattern="Some Other Scope"),
+            ),
+        )
+        register_instrument(other)
+        assert load_instrument("OtherScope") is other
+
+    def test_no_header_match_registers_fine(self):
+        """A profile with no ``header_match`` rules can never conflict."""
+        bare = InstrumentProfile(name="Bare")
+        register_instrument(bare)
+        assert load_instrument("Bare") is bare
+
+    def test_replace_true_self_conflict_allowed(self):
+        """Re-registering a profile with its own unchanged rules is not a conflict."""
+        seestar = load_instrument("Seestar50")
+        updated = seestar.model_copy(update={"thresh": 9.9})
+        register_instrument(updated, replace=True)
+        assert load_instrument("Seestar50") is updated
+
+
+class TestDetectInstrument:
+    """``detect_instrument`` auto-selects a profile from a frame header."""
+
+    def test_instrume_match_selects_seestar50(self):
+        """A header carrying the Seestar50 INSTRUME value resolves to it."""
+        profile = detect_instrument({"INSTRUME": "Seestar S50"})
+        assert profile.name == "Seestar50"
+
+    def test_real_telescop_serial_does_not_block_detection(self):
+        """
+        A per-device TELESCOP serial is irrelevant to the match.
+
+        Real Seestar frames carry ``TELESCOP='S50_<serial>'`` (a per-device
+        string) alongside the stable ``INSTRUME='Seestar S50'``; only INSTRUME
+        is in the bundled rule, so an arbitrary TELESCOP serial must not
+        prevent detection.
+        """
+        profile = detect_instrument(
+            {"INSTRUME": "Seestar S50", "TELESCOP": "S50_0e597e9b"}
+        )
+        assert profile.name == "Seestar50"
+
+    def test_unmatched_header_raises_naming_seen_values_and_available(self):
+        """No matching profile raises, naming the header values and candidates."""
+        with pytest.raises(InstrumentDetectionError, match="Seestar50") as excinfo:
+            detect_instrument({"INSTRUME": "Some Other Scope"})
+        assert "Some Other Scope" in str(excinfo.value)
+
+    def test_missing_both_keywords_raises(self):
+        """A header with neither INSTRUME nor TELESCOP raises rather than guessing."""
+        with pytest.raises(InstrumentDetectionError):
+            detect_instrument({})
+
+    def test_ambiguous_match_raises_naming_candidates(self):
+        """Two registered profiles matching the same header raise, naming both."""
+        clone = InstrumentProfile(
+            name="Clone",
+            header_match=(HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50"),),
+        )
+        # register_instrument now eagerly rejects a colliding rule, so this
+        # deliberately-ambiguous fixture is inserted directly into the
+        # isolated registry, bypassing that check, to exercise the
+        # detection-time ambiguity error -- which remains reachable in
+        # practice for bundled profiles shipped with overlapping rules.
+        instruments._REGISTERED["Clone"] = clone  # noqa: SLF001
+
+        with pytest.raises(InstrumentDetectionError, match="Seestar50") as excinfo:
+            detect_instrument({"INSTRUME": "Seestar S50"})
+        assert "Clone" in str(excinfo.value)
+
+    def test_empty_header_match_profile_never_auto_selected(self):
+        """A profile with no header_match rules is never returned by detection."""
+        # header_match=() (the bare-class default) means this profile can never
+        # be a detection candidate, even though the header value happens to
+        # equal its name -- there is no rule to match against.
+        register_instrument(InstrumentProfile(name="NoRules"))
+        with pytest.raises(InstrumentDetectionError):
+            detect_instrument({"INSTRUME": "NoRules"})
+
+    def test_no_match_error_lists_available_but_not_bare_profile_as_candidate(self):
+        """
+        A profile with no ``header_match`` is "available" but never a "candidate".
+
+        The error message distinguishes the two: ``NoRules`` cannot be
+        auto-detected (it carries no rule to match against) but is still a
+        selectable ``--instrument``/``--profile`` name, so it must appear only
+        in the "all available instruments" listing, not the "auto-detection
+        candidates" one.
+        """
+        register_instrument(InstrumentProfile(name="NoRules"))
+
+        with pytest.raises(InstrumentDetectionError) as excinfo:
+            detect_instrument({"INSTRUME": "Some Other Scope"})
+
+        message = str(excinfo.value)
+        candidates_part, available_part = message.split("all available instruments")
+        assert "NoRules" not in candidates_part
+        assert "NoRules" in available_part
+
+    def test_single_match_does_not_reload_the_profile_by_name(self, mocker):
+        """
+        The single matched profile is reused, not re-resolved by name.
+
+        The single-match branch used to call ``load_instrument(matched[0])``
+        again instead of reusing the profile object already resolved while
+        building ``candidates`` -- a redundant (and, for a bundled profile, an
+        uncached) directory walk. So there is exactly one ``load_instrument``
+        call per available instrument name,
+        with no extra call to re-resolve the match.
+        """
+        load_spy = mocker.spy(instruments, "load_instrument")
+
+        detect_instrument({"INSTRUME": "Seestar S50"})
+
+        assert load_spy.call_count == len(available_instruments())
 
 
 class TestFileRoundTrip:

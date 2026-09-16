@@ -43,6 +43,7 @@ from .config import (
 from .exceptions import (
     DegenerateBayerChannelError,
     FrameMetadataError,
+    InstrumentDetectionError,
     NoUsableStarsError,
     StarListValidationError,
     TooFewStarsError,
@@ -51,7 +52,7 @@ from .exceptions import (
     WCSSolveError,
 )
 from .image2sl_qt import bayer_balance_image
-from .instruments import load_instrument
+from .instruments import resolve_config_instrument, resolve_profile
 
 logger = logging.getLogger(__name__)
 
@@ -837,15 +838,55 @@ def _detect_stars(image, threshold=THRESH, opening=DETECTION_OPENING):
     return sorted(regions, key=lambda r: r.intensity_max, reverse=True)
 
 
+def _resolve_detection_defaults(
+    profile, *, threshold, opening, fwhm_cutout_half, fwhm_n_stars
+):
+    """
+    Back any of ``calibration_sequence``'s four unset detection/FWHM knobs.
+
+    Each of ``threshold``/``opening``/``fwhm_cutout_half``/``fwhm_n_stars`` that
+    is None falls back to ``profile``'s matching field.
+
+    Parameters
+    ----------
+    profile : InstrumentProfile
+        The resolved instrument profile to default from.
+    threshold : float or None
+        `calibration_sequence`'s ``threshold``; None means "use
+        ``profile.thresh``".
+    opening : int or None
+        `calibration_sequence`'s ``opening``; None means "use
+        ``profile.detection_opening``".
+    fwhm_cutout_half : int or None
+        `calibration_sequence`'s ``fwhm_cutout_half``; None means "use
+        ``profile.fwhm_cutout_half``".
+    fwhm_n_stars : int or None
+        `calibration_sequence`'s ``fwhm_n_stars``; None means "use
+        ``profile.fwhm_n_stars``".
+
+    Returns
+    -------
+    tuple of (float, int, int, int)
+        ``(threshold, opening, fwhm_cutout_half, fwhm_n_stars)``, each either
+        the caller's own value (if not None) or ``profile``'s matching field.
+    """
+    return (
+        profile.thresh if threshold is None else threshold,
+        profile.detection_opening if opening is None else opening,
+        profile.fwhm_cutout_half if fwhm_cutout_half is None else fwhm_cutout_half,
+        profile.fwhm_n_stars if fwhm_n_stars is None else fwhm_n_stars,
+    )
+
+
 def calibration_sequence(
     file,
-    threshold=1,
-    opening=DETECTION_OPENING,
+    threshold=None,
+    opening=None,
     *,
     detect_on_bayer_balanced=False,
     cnn=None,
-    fwhm_cutout_half=_FWHM_CUTOUT_HALF,
-    fwhm_n_stars=_FWHM_N_STARS,
+    fwhm_cutout_half=None,
+    fwhm_n_stars=None,
     profile=None,
     frame=None,
     detection_image_out=None,
@@ -867,11 +908,15 @@ def calibration_sequence(
     ----------
     file : str
         Path to the FITS file.
-    threshold : float, optional
-        Detection threshold for star finding, by default 1
-    opening : int, optional
+    threshold : float or None, optional
+        Detection threshold for star finding. None (the default) uses the
+        resolved ``profile``'s own ``thresh``, so a direct call on a
+        non-Seestar profile detects at that profile's tuning rather than a
+        fixed literal.
+    opening : int or None, optional
         Size of the morphological-opening kernel passed to `_detect_stars`;
-        gates faint-star detection. By default ``DETECTION_OPENING``.
+        gates faint-star detection. None (the default) uses the resolved
+        ``profile``'s own ``detection_opening``.
     detect_on_bayer_balanced : bool, optional
         When True, run source detection and the FWHM fit on a Bayer-balanced
         *copy* of the data. The returned ``calibrated_data`` is always the
@@ -885,17 +930,23 @@ def calibration_sequence(
         detection ``opening``.
         Default None preserves the legacy integer-cutout FWHM. See
         `_fwhm_from_coords`.
-    fwhm_cutout_half : int, optional
+    fwhm_cutout_half : int or None, optional
         Half-width (px) of the square cutout used to build the effective PSF for
-        the FWHM fit. By default ``_FWHM_CUTOUT_HALF``.
-    fwhm_n_stars : int, optional
+        the FWHM fit. None (the default) uses the resolved ``profile``'s own
+        ``fwhm_cutout_half``.
+    fwhm_n_stars : int or None, optional
         Cap on how many of the brightest unsaturated detections feed the FWHM
-        fit; forwarded to `_fwhm_from_coords` as its ``n_stars``. By default
-        ``_FWHM_N_STARS``.
+        fit; forwarded to `_fwhm_from_coords` as its ``n_stars``. None (the
+        default) uses the resolved ``profile``'s own ``fwhm_n_stars``.
     profile : InstrumentProfile or None, optional
-        The instrument whose ``header_map`` resolves the frame metadata, passed
-        through to `metadata_from_header`. Defaults to the bundled Seestar50
-        profile.
+        The instrument whose ``header_map`` resolves the frame metadata, and
+        whose own ``thresh``/``detection_opening``/``fwhm_cutout_half``/
+        ``fwhm_n_stars`` back any of those four parameters left as None. None
+        (the default) means "resolve from the header" -- `resolve_profile`
+        detects it once, up front, and the same resolved profile backs both
+        `metadata_from_header` and these defaults (a direct caller used to
+        get Seestar50's tuning here regardless of which profile actually
+        resolved).
     frame : LoadedFrame or None, optional
         Pre-loaded frame; when None the file is opened once via the loader.
     detection_image_out : dict or None, optional
@@ -917,7 +968,12 @@ def calibration_sequence(
         source is saturated, so no usable PSF can be fit.
     FrameMetadataError
         If the header is missing a required keyword (propagated from
-        `metadata_from_header`, with the source file attached).
+        `metadata_from_header`, with the source file attached). Also raised,
+        with the source file attached, when ``profile`` is None and the
+        header matches zero or more than one bundled/registered instrument
+        profile: `resolve_profile` raises the subclass
+        `~bandaid.exceptions.InstrumentDetectionError` there, which
+        propagates as a `FrameMetadataError` since it is one.
     DegenerateBayerChannelError
         If ``detect_on_bayer_balanced`` is True and a CFA sub-grid sample is
         empty or has zero variance (propagated from `bayer_balance_image`,
@@ -930,11 +986,28 @@ def calibration_sequence(
     header = frame.header
 
     try:
-        metadata = metadata_from_header(header, profile=profile)
+        # Resolve the profile once, up front, so the detection/FWHM defaults
+        # below and metadata_from_header's header dialect both come from the
+        # same profile -- not just the latter, as before. Passing the
+        # now-resolved profile through keeps
+        # metadata_from_header's own resolve_profile call a no-op rather than
+        # a second auto-detection.
+        resolved_profile, _ = resolve_profile(profile, header)
+        metadata = metadata_from_header(header, profile=resolved_profile)
     except FrameMetadataError as exc:
-        # metadata_from_header has only the header, not the path; label it here.
+        # metadata_from_header has only the header, not the path; label it
+        # here. InstrumentDetectionError is itself a FrameMetadataError, so
+        # this also catches an unresolvable header without a separate
+        # wrapping branch.
         exc.file = file
         raise
+    threshold, opening, fwhm_cutout_half, fwhm_n_stars = _resolve_detection_defaults(
+        resolved_profile,
+        threshold=threshold,
+        opening=opening,
+        fwhm_cutout_half=fwhm_cutout_half,
+        fwhm_n_stars=fwhm_n_stars,
+    )
     max_adu = metadata["largest_usable_adu_value"]
 
     # Multiplying by 1 should force conversion from int to float data
@@ -1130,9 +1203,11 @@ def metadata_from_header(header, *, profile=None):
     header : astropy.io.fits.Header or dict
         FITS header to look up values in.
     profile : InstrumentProfile or None, optional
-        The instrument whose ``header_map`` resolves the header. Defaults to the
-        bundled Seestar50 profile, preserving the historical behaviour for
-        callers that do not pass one.
+        The instrument whose ``header_map`` resolves the header. None (the
+        default) means "resolve from the header": `~bandaid.instruments.
+        resolve_profile` detects it (and logs the detected name), the same
+        "auto-detect" semantics as
+        `~bandaid.config.PhotometryConfig.instrument`.
 
     Returns
     -------
@@ -1143,10 +1218,13 @@ def metadata_from_header(header, *, profile=None):
     ------
     FrameMetadataError
         If a required header keyword is missing or cannot be parsed, or if the
-        system gain (``egain``) is absent with no template default.
+        system gain (``egain``) is absent with no template default. If
+        ``profile`` is None and ``header`` matches zero or more than one
+        bundled/registered instrument profile, the subclass
+        `~bandaid.exceptions.InstrumentDetectionError` propagates instead
+        (from `~bandaid.instruments.resolve_profile`).
     """
-    if profile is None:
-        profile = load_instrument("Seestar50")
+    profile, _ = resolve_profile(profile, header)
     template = profile.header_map
 
     # Collect fallback values from "#key" entries
@@ -2399,12 +2477,17 @@ def prepare_image(
         CFA sub-grid sample is empty or has zero variance,
         `DegenerateBayerChannelError` -- both with `file` already attached by
         `calibration_sequence` itself, and `_drop_off_frame_catalog_stars` may
-        raise `NoUsableStarsError` when every catalog star projects outside the
-        frame; all three propagate unchanged.)
+        raise `NoUsableStarsError` when every catalog star projects outside
+        the frame; all three propagate unchanged.)
     FrameMetadataError
         If a WCS must be solved (``wcs`` is None) but the frame metadata has no
         usable numeric ``pixscale`` to scale-check the solve against. The source
         `file` is attached before it propagates.
+    InstrumentDetectionError
+        A `FrameMetadataError` subclass, raised with `file` attached when
+        ``config.instrument`` is None and the frame's header matches zero or
+        more than one bundled/registered instrument profile (propagated from
+        `~bandaid.instruments.resolve_config_instrument`).
     """
     # "calibrate" the data and get initial detections for WCS alignment and
     # FWHM estimation. calibration_sequence raises TooFewStarsError (a
@@ -2414,6 +2497,21 @@ def prepare_image(
     if frame is None:
         frame = _load_frame(file)
     config = config or PhotometryConfig()
+    # This is the other resolution point (besides prepare_batch, for the batch
+    # path) -- a direct caller gets the same auto-detection. process_one_image
+    # resolves its config before calling here, so this is a no-op for that
+    # caller. prepare_image has no batch-mixing guard to feed, so the "was it
+    # detected" flag is not needed here.
+    #
+    # InstrumentDetectionError is itself a FrameMetadataError, so it already
+    # stays inside the FrameError family a caller's `except FrameError` skip
+    # loop handles -- just label it with the file, the same as every other
+    # FrameMetadataError raised here.
+    try:
+        config, _ = resolve_config_instrument(config, frame.header)
+    except InstrumentDetectionError as exc:
+        exc.file = file
+        raise
     instrument = config.instrument
     # Receives calibration_sequence's own detection-time array (see its
     # docstring) so centroiding reuses it instead of balancing a second copy.
@@ -2739,7 +2837,9 @@ def process_one_image(
     config : PhotometryConfig or None, optional
         Photometry configuration threaded through to `prepare_image` and
         `build_photometry_table`. If None (default), a default
-        ``PhotometryConfig`` is used.
+        ``PhotometryConfig`` is used. If its ``instrument`` is None, it is
+        resolved by detection from the frame header before either call, so
+        both see the same resolved profile.
     bayer_balance_detection : bool, optional
         Whether to perform source detection on Bayer balanced data. This is usually
         desirable for data with a bayer pattern.
@@ -2763,6 +2863,13 @@ def process_one_image(
     ValueError
         If "L4" maps to anything but None, or the TR/TG/TB channels it is
         built from are missing.
+    InstrumentDetectionError
+        A `FrameMetadataError` subclass, raised with `file` attached when
+        ``config.instrument`` is None and the frame's header matches zero or
+        more than one bundled/registered instrument profile (propagated from
+        `~bandaid.instruments.resolve_config_instrument`), consistent with
+        `prepare_image` (this function resolves the instrument itself, before
+        calling `prepare_image`, so that call's own resolution is a no-op).
 
     Notes
     -----
@@ -2773,6 +2880,21 @@ def process_one_image(
     # a FrameError (TooFewStarsError / WCSSolveError) when the frame is unusable;
     # let it propagate to the batch loop.
     config = config or PhotometryConfig()
+    # Resolve the instrument once, here, from the loaded frame's header, and
+    # pass the resolved config down -- rather than letting prepare_image
+    # resolve its own copy and this function going on to reuse the original,
+    # unresolved config for build_photometry_table below. Opening the file
+    # here (instead of leaving it to prepare_image) still costs only
+    # one open: the loaded frame is passed through via `frame=`.
+    if frame is None:
+        frame = _load_frame(file)
+    # InstrumentDetectionError is itself a FrameMetadataError; just label it
+    # with the file, like prepare_image does.
+    try:
+        config, _ = resolve_config_instrument(config, frame.header)
+    except InstrumentDetectionError as exc:
+        exc.file = file
+        raise
     img = prepare_image(
         file,
         radecs,

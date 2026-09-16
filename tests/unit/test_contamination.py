@@ -5,7 +5,7 @@ import pytest
 from _helpers import SEED
 from astropy.coordinates import SkyCoord
 
-from bandaid.config import ApertureConfig, PhotometryConfig
+from bandaid.config import ApertureConfig, InstrumentProfile, PhotometryConfig
 from bandaid.photometry import (
     CONTAMINATION_TOLERANCE,
     MOFFAT_BETA,
@@ -361,7 +361,9 @@ class TestNeighborContaminationFlagSky:
         flagged when the configured ``max(config.apertures.radii)`` is passed
         through ``aperture_radius_fwhm``.
         """
-        config = PhotometryConfig(apertures=ApertureConfig(radii=(2.0,)))
+        config = PhotometryConfig(
+            apertures=ApertureConfig(radii=(2.0,)), instrument=InstrumentProfile()
+        )
         r_ap = max(config.apertures.radii)
         tol = config.instrument.contamination_tolerance
         beta = config.instrument.moffat_beta

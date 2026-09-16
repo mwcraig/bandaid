@@ -17,7 +17,7 @@ functions: no shared mutable state, no "is it done yet?" bookkeeping.
 import csv
 import glob
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import astropy.units as u
@@ -33,10 +33,12 @@ from .exceptions import (
     BatchPrepError,
     FrameError,
     FrameMetadataError,
+    InstrumentDetectionError,
     TooFewStarsError,
     WCSSolveError,
 )
 from .image2sl_qt import generate_bayer_masks
+from .instruments import detect_instrument, resolve_config_instrument
 from .photometry import (
     N_GAIA_STARS_ALIGN_RETRY,
     LoadedFrame,
@@ -214,10 +216,26 @@ class BatchPrep:
         Expected ``(height, width)`` of every frame.
     config : PhotometryConfig
         The photometry configuration to apply to every frame in the batch.
+        ``config.instrument`` must already be resolved (not None):
+        `prepare_batch` is the only place meant to build a ``BatchPrep``, and
+        it always resolves the instrument (explicitly or by detection) before
+        constructing one -- see `__post_init__`.
     forced_targets : astropy.coordinates.SkyCoord or None
         The ICRS forced-target sky positions appended to
         ``photometry_coords`` by `prepare_batch`. None when the batch was
         prepared without any.
+    instrument_auto_detected : bool
+        Whether ``config.instrument`` was resolved by
+        `~bandaid.instruments.detect_instrument` (the incoming config's
+        ``instrument`` was None) rather than given explicitly
+        (``--instrument``/``--profile``/``--config`` with a concrete
+        instrument, or ``config=PhotometryConfig(instrument=...)``).
+        `check_frame_consistency`'s batch-mixing guard is enforced only when
+        this is True: an explicit selection is trusted even on a frame whose
+        header does not match ``config.instrument.header_match`` -- the guard
+        exists to catch a different telescope's frames riding along on an
+        *auto-detected* profile, not to second-guess a user's explicit
+        choice. Default False.
     """
 
     radecs: np.ndarray
@@ -227,8 +245,29 @@ class BatchPrep:
     center: tuple
     fov_rad: float
     shape: tuple
-    config: PhotometryConfig = field(default_factory=PhotometryConfig)
+    config: PhotometryConfig
     forced_targets: SkyCoord | None = None
+    instrument_auto_detected: bool = False
+
+    def __post_init__(self) -> None:
+        """
+        Verify ``config.instrument`` was already resolved.
+
+        Constructing a ``BatchPrep`` with an unresolved (``None``) instrument
+        would make `check_frame_consistency` re-run detection per frame
+        instead of once for the batch -- so reject it here instead.
+
+        Raises
+        ------
+        ValueError
+            If ``config.instrument`` is None.
+        """
+        if self.config.instrument is None:
+            msg = (
+                "BatchPrep.config.instrument must be resolved (not None) -- "
+                "construct BatchPrep via prepare_batch"
+            )
+            raise ValueError(msg)
 
 
 def estimate_center_from_header(metadata, profile):
@@ -356,6 +395,43 @@ def resolve_field_center(metadata, profile):
     return center, 0.0
 
 
+def _resolve_batch_instrument(config, header):
+    """
+    Resolve ``config.instrument`` for the batch, wrapping a detection failure.
+
+    Parameters
+    ----------
+    config : PhotometryConfig
+        The config whose ``instrument`` may need resolving.
+    header : astropy.io.fits.Header
+        The first frame's header to detect from; only consulted when
+        ``config.instrument`` is None.
+
+    Returns
+    -------
+    config : PhotometryConfig
+        ``config`` unchanged if ``instrument`` was already set, otherwise a
+        copy with the detected profile.
+    auto_detected : bool
+        True if ``instrument`` was resolved by detection.
+
+    Raises
+    ------
+    BatchPrepError
+        If ``config.instrument`` is None and ``header`` matches zero or more
+        than one bundled/registered instrument profile. InstrumentDetectionError
+        is a FrameMetadataError (recoverable per-frame) by declaration, but
+        `prepare_batch` is the one caller that actually wants the fatal
+        behavior -- an unresolvable *first* frame leaves the whole batch with
+        no detection/PSF settings to prepare with -- so it is wrapped here
+        instead of relying on inheritance.
+    """
+    try:
+        return resolve_config_instrument(config, header)
+    except InstrumentDetectionError as exc:
+        raise BatchPrepError(str(exc)) from exc
+
+
 def prepare_batch(
     first_file,
     *,
@@ -418,8 +494,11 @@ def prepare_batch(
     Raises
     ------
     BatchPrepError
-        If too few stars are detected in ``first_file`` to measure an FWHM, so
-        the batch preparation cannot be built.
+        If too few stars are detected in ``first_file`` to measure an FWHM.
+        Also raised (original chained as ``__cause__``) if ``config.instrument``
+        is None and the first frame's header does not resolve to exactly one
+        instrument profile: `prepare_batch` is the one caller that treats that
+        as fatal.
     FrameMetadataError
         If the first frame's metadata has no parseable observation time
         (``obs_time``, usually mapped from ``DATE-OBS``), which is needed to
@@ -432,6 +511,15 @@ def prepare_batch(
     # (no FWHM/pointing to prepare from), so translate the recoverable
     # per-frame TooFewStarsError into a fatal BatchPrepError.
     config = config or PhotometryConfig()
+    # This is the first place a header is in hand, so resolve here and carry
+    # the instrument forward on the config stored on the returned BatchPrep --
+    # one resolution covers every frame in the batch (see also prepare_image,
+    # the other resolution point, for direct prepare_image/calibration_sequence
+    # callers). instrument_auto_detected gates check_frame_consistency's
+    # batch-mixing guard, which fires only when the instrument was actually
+    # detected, not explicitly chosen. See _resolve_batch_instrument for why
+    # an unresolvable header here becomes a fatal BatchPrepError.
+    config, instrument_auto_detected = _resolve_batch_instrument(config, frame.header)
     instrument = config.instrument
     try:
         # Pass the CNN so the FWHM (which sizes the photometry aperture) is measured
@@ -606,12 +694,119 @@ def prepare_batch(
         shape=(metadata["height"], metadata["width"]),
         config=config,
         forced_targets=forced_targets,
+        instrument_auto_detected=instrument_auto_detected,
     )
+
+
+def _check_instrument_mixing(file, header, prep, batch_instrument):
+    """
+    Reject a frame whose header does not resolve to the batch's instrument.
+
+    Parameters
+    ----------
+    file : str or Path
+        The frame being checked (attached to any raised error).
+    header : astropy.io.fits.Header
+        The frame's FITS header.
+    prep : BatchPrep
+        The batch prep whose ``instrument_auto_detected`` gates whether a
+        header matching no registered instrument is exempted (see Notes).
+    batch_instrument : InstrumentProfile or None
+        ``prep.config.instrument``, supplying the ``header_match`` rules
+        checked against.
+
+    Raises
+    ------
+    FrameError
+        If the guard is enforced and ``header`` does not resolve to
+        ``batch_instrument`` (subject to the no-match exemption described in
+        Notes).
+
+    Notes
+    -----
+    A later frame whose header does not resolve, through
+    `~bandaid.instruments.detect_instrument`, to the same profile
+    `prepare_batch` resolved is rejected -- e.g. a night with a different
+    telescope's frames accidentally interleaved. Using `detect_instrument`
+    (rather than only checking the batch instrument's own ``header_match``
+    rules) means a header that is *ambiguous* across the registered profiles
+    is rejected too, not just one that matches a definite other instrument.
+    Enforced whenever ``batch_instrument.header_match`` is
+    non-empty (a bare/custom profile with no rules carries no device-identity
+    claim to check in the first place); a bare ``batch_instrument`` (or None)
+    skips the guard entirely.
+
+    An explicitly chosen instrument (``--instrument``/``--profile``/
+    ``--config``, or ``config=PhotometryConfig(instrument=...)`` --
+    ``prep.instrument_auto_detected`` is False) is exempted only from the
+    no-match outcome: a header that resolves to *no* registered instrument at
+    all (missing/malformed) is trusted, the deliberate override's intended
+    escape hatch. A header that positively identifies a *different,
+    registered* instrument is rejected even under an explicit selection --
+    otherwise a scripted workflow that always passes a fixed
+    ``--instrument`` would get zero protection against a second telescope's
+    frames riding along on the same batch. An auto-detected batch (the
+    default) is never exempted: any outcome other than a match to
+    ``batch_instrument`` is rejected.
+
+    `check_frame_consistency` calls this before the header is otherwise
+    resolved, so a frame from a genuinely different instrument is rejected
+    with this diagnostic message rather than the less informative
+    `FrameMetadataError` that resolving its header through the *batch*
+    instrument's ``header_map`` would likely raise first.
+    """
+    guard_active = batch_instrument is not None and batch_instrument.header_match
+    if guard_active:
+        try:
+            detected = detect_instrument(header)
+        except InstrumentDetectionError as exc:
+            detected = None
+            detection_error = exc
+        else:
+            detection_error = None
+
+        if detected is None and not prep.instrument_auto_detected:
+            # The explicit-selection escape hatch: a header that resolves to
+            # no registered instrument at all is trusted, not just one that
+            # merely fails to name the batch instrument.
+            mismatched = False
+        else:
+            mismatched = detected is None or detected.name != batch_instrument.name
+        if mismatched:
+            # Distinguish "the header never carried any of the identifying
+            # keywords at all" from "it carried at least one, with the wrong
+            # value" (a present-but-different value more strongly suggests a
+            # genuinely different instrument's frame, rather than an
+            # incomplete header). header_match is OR semantics, so this must
+            # check that *none* of the rules' keywords are present -- one
+            # absent keyword does not mean that keyword was required, when
+            # another rule's keyword is present but simply didn't match.
+            missing = [rule.keyword for rule in batch_instrument.header_match]
+            none_present = not any(
+                rule.keyword_present(header) for rule in batch_instrument.header_match
+            )
+            if none_present:
+                msg = (
+                    f"frame header is missing {missing}, required by the "
+                    f"auto-detected batch instrument {batch_instrument.name!r}'s "
+                    "header_match rules"
+                )
+            else:
+                msg = (
+                    f"frame header does not match the auto-detected batch "
+                    f"instrument {batch_instrument.name!r}'s header_match "
+                    "rules -- possibly a frame from a different instrument "
+                    "mixed into this batch"
+                )
+            if detection_error is not None:
+                msg = f"{msg} ({detection_error})"
+                raise FrameError(msg, file=file) from detection_error
+            raise FrameError(msg, file=file)
 
 
 def check_frame_consistency(file, header, prep):
     """
-    Reject a frame whose pointing or shape disagrees with the batch prep.
+    Reject a frame whose pointing, shape, or instrument disagrees with the batch prep.
 
     `prepare_batch` derives the field pointing, FOV, and image shape from the
     first frame and queries Gaia once for that field. A later frame that drifted
@@ -619,7 +814,11 @@ def check_frame_consistency(file, header, prep):
     shape would be photometered against a catalog that no longer covers it,
     producing silently wrong results -- so reject it instead.
 
-    The header is resolved through the batch instrument's ``header_map``
+    The batch-mixing guard (`_check_instrument_mixing`) runs first, needing
+    only ``header`` and the batch instrument: a later frame whose header does
+    not resolve to the profile `prepare_batch` auto-detected is rejected.
+
+    The header is then resolved through the batch instrument's ``header_map``
     (``prep.config.instrument``), the same dialect that resolved the prep's
     ``center``/``shape`` from the first frame -- so an instrument whose pointing
     lives under different keywords than the Seestar's is compared consistently
@@ -635,19 +834,28 @@ def check_frame_consistency(file, header, prep):
         The frame's FITS header.
     prep : BatchPrep
         The batch prep whose ``center``, ``fov_rad``, and ``shape`` the frame is
-        checked against, and whose ``config.instrument`` supplies the
-        ``header_map`` dialect used to read the header.
+        checked against; whose ``config.instrument`` supplies the
+        ``header_map`` dialect used to read the header and the
+        ``header_match`` rules used for the batch-mixing guard; and whose
+        ``instrument_auto_detected`` gates whether that guard is enforced.
 
     Raises
     ------
     FrameError
-        If the frame's shape or pointing is inconsistent with the prep.
+        If the frame's shape, pointing, or instrument is inconsistent with
+        the prep.
     FrameMetadataError
         If the header cannot be resolved into the metadata needed to perform
         the checks.
     """
+    # Batch-mixing guard: needs only header and the batch instrument, so it
+    # runs before the header is otherwise resolved; see
+    # _check_instrument_mixing.
+    batch_instrument = prep.config.instrument
+    _check_instrument_mixing(file, header, prep, batch_instrument)
+
     try:
-        metadata = metadata_from_header(header, profile=prep.config.instrument)
+        metadata = metadata_from_header(header, profile=batch_instrument)
     except FrameMetadataError as exc:
         # metadata_from_header has only the header, not the path; label it here.
         exc.file = file
@@ -1256,7 +1464,12 @@ def photometer_frames(
         -- expanded by `expand_frame_paths`.
     config : PhotometryConfig or None, optional
         Configuration carried through the batch. None (default) uses a default
-        `PhotometryConfig` (Seestar50).
+        `PhotometryConfig` whose instrument is auto-detected from the first
+        frame's header (see `~bandaid.instruments.detect_instrument`);
+        `prepare_batch` raises `~bandaid.exceptions.BatchPrepError` (chaining
+        the underlying `~bandaid.exceptions.InstrumentDetectionError` as
+        ``__cause__``) if the header does not resolve to exactly one
+        registered profile.
     cnn : object or None, optional
         A pre-built centroider: any object with a ``centroid(cutouts) -> (N, 2)``
         method. None (default) builds a `~bandaid.ballet.Ballet` from
@@ -1301,6 +1514,12 @@ def photometer_frames(
     ValueError
         If the arguments expand to no FITS frames. `expand_frame_paths` may also
         raise `ValueError`/`FileNotFoundError` for a malformed path argument.
+    BatchPrepError
+        If `prepare_batch` cannot build the once-per-batch preparation from
+        the first frame (e.g. its header does not resolve to exactly one
+        registered instrument profile). Re-raised here with the first frame's
+        path folded into the message, chaining the original as ``__cause__``,
+        so the failure is actionable instead of a bare traceback.
     """
     frames = expand_frame_paths(files)
     if not frames:
@@ -1315,14 +1534,21 @@ def photometer_frames(
     # prepare_batch derives the prep from it and process_batch photometers it
     # -- so the whole run opens each frame exactly once (issue #44).
     first_frame = _load_frame(frames[0])
-    prep = prepare_batch(
-        frames[0],
-        cnn=cnn,
-        config=config,
-        append_l4=append_l4,
-        forced_targets=forced_targets,
-        frame=first_frame,
-    )
+    try:
+        prep = prepare_batch(
+            frames[0],
+            cnn=cnn,
+            config=config,
+            append_l4=append_l4,
+            forced_targets=forced_targets,
+            frame=first_frame,
+        )
+    except BatchPrepError as exc:
+        # prepare_batch's own message has no idea which file it was given --
+        # this is the caller that knows the first frame's path, so fold it in
+        # instead of letting a bare BatchPrepError surface uncaught.
+        msg = f"could not prepare the batch from the first frame ({frames[0]}): {exc}"
+        raise BatchPrepError(msg) from exc
     results = process_batch(
         frames,
         prep,

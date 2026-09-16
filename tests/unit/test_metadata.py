@@ -1,5 +1,7 @@
 """Unit tests for header/metadata parsing, airmass, good-star mask, and starlist."""
 
+import logging
+
 import astropy.units as u
 import numpy as np
 import pytest
@@ -12,6 +14,7 @@ from astropy.table import Table
 from bandaid.config import InstrumentProfile, SourceSelectionConfig
 from bandaid.exceptions import (
     FrameMetadataError,
+    InstrumentDetectionError,
     NoUsableStarsError,
     StarListValidationError,
 )
@@ -241,6 +244,48 @@ class TestMetadataFromHeader:
         header["MYEXP"] = expected_exposure
         metadata = metadata_from_header(header, profile=profile)
         assert metadata["exposure"] == expected_exposure
+
+    def test_omitted_profile_auto_detects_from_header(self):
+        """
+        No ``profile=`` resolves by detecting the header, not a hard Seestar50.
+
+        ``_seestar_header`` carries ``INSTRUME='Seestar S50'``, so this still
+        resolves to Seestar50 -- but via detection, not a silent fallback.
+        """
+        metadata = metadata_from_header(_seestar_header())
+        assert metadata["egain"] == pytest.approx(0.3116)
+
+    def test_omitted_profile_auto_detection_is_logged(self, caplog):
+        """
+        Auto-detecting the profile here logs, the same as ``resolve_config_instrument``.
+
+        Before this, ``metadata_from_header`` re-implemented "``profile=None``
+        means detect" inline with no logging, while
+        `~bandaid.instruments.resolve_config_instrument` logged the detected
+        name -- so a standalone `metadata_from_header` call left no trace of
+        which instrument was picked. Both now funnel through the same
+        detect-or-resolve helper, so both log identically.
+        """
+        with caplog.at_level(logging.INFO, logger="bandaid.instruments"):
+            metadata_from_header(_seestar_header())
+
+        assert any(
+            "auto-detected instrument profile 'Seestar50'" in record.message
+            for record in caplog.records
+        )
+
+    def test_omitted_profile_with_undetectable_header_raises(self):
+        """
+        A header matching no instrument raises, instead of silently defaulting.
+
+        Before auto-detection, an omitted ``profile=`` always fell back to the
+        bundled Seestar50, even for a header from an unknown instrument. Now
+        ``profile=None`` means the same "resolve from the header" as
+        ``PhotometryConfig.instrument=None``, so an undetectable header is a
+        clear error rather than a wrong silent guess.
+        """
+        with pytest.raises(InstrumentDetectionError):
+            metadata_from_header({})
 
 
 class TestGoodStarMask:
@@ -511,5 +556,8 @@ class TestMetadataFromHeaderGuard:
 
     def test_incomplete_header_raises(self):
         """A header missing required keywords is a frame metadata error."""
+        # An explicit profile bypasses auto-detection (an empty header matches
+        # no instrument, which is InstrumentDetectionError, not this test's
+        # concern): the point here is the *template* keyword resolution.
         with pytest.raises(FrameMetadataError):
-            metadata_from_header(fits.Header())
+            metadata_from_header(fits.Header(), profile=InstrumentProfile())
