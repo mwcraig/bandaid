@@ -153,6 +153,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     does for NaN), and an all-non-finite or constant frame gives no regions
     without a `RuntimeWarning`. `scikit-image` and `scipy` become
     direct dependencies.
+- `calibration_sequence`'s `threshold`, `opening`, `fwhm_cutout_half`, and
+    `fwhm_n_stars` now default to `None`, meaning "use the resolved instrument
+    profile's value". For a Seestar50, `opening`, `fwhm_cutout_half`, and
+    `fwhm_n_stars` resolve to the same values as before. `threshold` was a
+    hard-coded `1`, which did not match the Seestar50 profile's `thresh` of
+    `0.5`, so a direct call that relied on the default now detects at `0.5`.
+    Pass `threshold=1` to keep the old behavior. `prepare_batch` and
+    `prepare_image` already used the profile's value, so pipeline output is
+    unchanged.
 
 ### Changed (breaking)
 
