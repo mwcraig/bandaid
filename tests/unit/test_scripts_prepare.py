@@ -1265,6 +1265,72 @@ class TestCheckFrameConsistency:
         del instruments._REGISTERED["Clone"]  # noqa: SLF001
         scripts.check_frame_consistency("ok.fits", header, prep)
 
+    def test_explicit_selection_rejects_ambiguous_header(self):
+        """
+        An explicit selection does not exempt an ambiguous header.
+
+        A header matching two registered profiles is rejected under
+        ``instrument_auto_detected=False`` just as under auto-detection: the
+        escape hatch is for a header that identifies nothing, not one that
+        positively identifies more than one instrument.
+        """
+        clone = InstrumentProfile(
+            name="Clone",
+            header_match=(HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50"),),
+        )
+        # Inserted directly: register_instrument would reject the colliding rule.
+        instruments._REGISTERED["Clone"] = clone  # noqa: SLF001
+        prep = self._prep(
+            config=PhotometryConfig(instrument=load_instrument("Seestar50")),
+            instrument_auto_detected=False,
+        )
+        header = _consistency_header(INSTRUME="Seestar S50")
+
+        with pytest.raises(FrameError, match="Clone"):
+            scripts.check_frame_consistency("bad.fits", header, prep)
+
+    @pytest.mark.parametrize(
+        ("auto_detected", "header_kwargs", "expected"),
+        [
+            (True, {}, "auto-detected batch instrument Seestar50's header_match"),
+            (
+                True,
+                {"INSTRUME": "Other Scope"},
+                "auto-detected batch instrument Seestar50's header_match",
+            ),
+            (False, {"INSTRUME": "Other Scope"}, "batch instrument Seestar50's"),
+        ],
+    )
+    def test_guard_message_wording(self, auto_detected, header_kwargs, expected):
+        """
+        Guard messages read cleanly and say auto-detected only when true.
+
+        Covers the missing-keyword and the different-value messages, and the
+        explicit-selection path (a different registered instrument), which
+        must not send the user hunting for a detection problem.
+        """
+        register_instrument(
+            InstrumentProfile(
+                name="OtherScope",
+                header_match=(
+                    HeaderMatchRule(keyword="INSTRUME", pattern="Other Scope"),
+                ),
+            )
+        )
+        prep = self._prep(
+            config=PhotometryConfig(instrument=load_instrument("Seestar50")),
+            instrument_auto_detected=auto_detected,
+        )
+        header = _consistency_header(**header_kwargs)
+
+        with pytest.raises(FrameError) as excinfo:
+            scripts.check_frame_consistency("bad.fits", header, prep)
+
+        message = str(excinfo.value)
+        assert expected in message
+        assert "''s" not in message
+        assert ("auto-detected" in message) is auto_detected
+
     def test_inconsistent_frame_is_skipped_by_batch(self, mocker):
         """process_batch skips an off-field frame and keeps the good one."""
         prep = self._prep()

@@ -308,7 +308,8 @@ def detect_instrument(header):
         profiles a header could possibly resolve to), and separately the full
         set of available instrument names (including profiles that carry no
         ``header_match`` and so can never be auto-detected, only chosen
-        explicitly).
+        explicitly). The error's ``matched`` attribute holds the names of the
+        profiles that matched (empty when none did).
     """
     profiles = [load_instrument(name) for name in available_instruments()]
     candidates = [profile for profile in profiles if profile.header_match]
@@ -341,7 +342,7 @@ def detect_instrument(header):
             f"ambiguous instrument: {', '.join(matched)} all matched this "
             f"frame's header (checked {seen}); {detail}"
         )
-    raise InstrumentDetectionError(msg)
+    raise InstrumentDetectionError(msg, matched=tuple(matched))
 
 
 def resolve_profile(profile, header):

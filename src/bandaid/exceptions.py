@@ -147,4 +147,18 @@ class InstrumentDetectionError(FrameMetadataError):
     message names the header values seen and the candidate profile names
     so the fix (register the right profile, or pass ``--instrument``
     explicitly) is obvious from the error alone.
+
+    Parameters
+    ----------
+    reason : str
+        Human-readable explanation of the failed detection.
+    file : str or pathlib.Path or None, optional
+        The offending frame.
+    matched : tuple of str, optional
+        Names of the profiles that matched the header: empty when none did,
+        two or more when the header was ambiguous.
     """
+
+    def __init__(self, reason, *, file=None, matched=()) -> None:
+        super().__init__(reason, file=file)
+        self.matched = tuple(matched)

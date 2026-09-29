@@ -765,10 +765,12 @@ def _check_instrument_mixing(file, header, prep, batch_instrument):
         else:
             detection_error = None
 
-        if detected is None and not prep.instrument_auto_detected:
+        no_match = detection_error is not None and not detection_error.matched
+        if no_match and not prep.instrument_auto_detected:
             # The explicit-selection escape hatch: a header that resolves to
             # no registered instrument at all is trusted, not just one that
-            # merely fails to name the batch instrument.
+            # merely fails to name the batch instrument. An ambiguous header
+            # (two or more matches) is still rejected.
             mismatched = False
         else:
             mismatched = detected is None or detected.name != batch_instrument.name
@@ -785,16 +787,17 @@ def _check_instrument_mixing(file, header, prep, batch_instrument):
             none_present = not any(
                 rule.keyword_present(header) for rule in batch_instrument.header_match
             )
+            origin = "auto-detected batch" if prep.instrument_auto_detected else "batch"
             if none_present:
                 msg = (
                     f"frame header is missing {missing}, required by the "
-                    f"auto-detected batch instrument {batch_instrument.name!r}'s "
+                    f"{origin} instrument {batch_instrument.name}'s "
                     "header_match rules"
                 )
             else:
                 msg = (
-                    f"frame header does not match the auto-detected batch "
-                    f"instrument {batch_instrument.name!r}'s header_match "
+                    f"frame header does not match the {origin} "
+                    f"instrument {batch_instrument.name}'s header_match "
                     "rules -- possibly a frame from a different instrument "
                     "mixed into this batch"
                 )
