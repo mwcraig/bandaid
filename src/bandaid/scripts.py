@@ -253,14 +253,16 @@ class BatchPrep:
         """
         Verify ``config.instrument`` was already resolved.
 
-        Constructing a ``BatchPrep`` with an unresolved (``None``) instrument
-        would make `check_frame_consistency` re-run detection per frame
-        instead of once for the batch -- so reject it here instead.
-
         Raises
         ------
         ValueError
             If ``config.instrument`` is None.
+
+        Notes
+        -----
+        Constructing a ``BatchPrep`` with an unresolved (``None``) instrument
+        would make `check_frame_consistency` re-run detection per frame
+        instead of once for the batch -- so reject it here instead.
         """
         if self.config.instrument is None:
             msg = (
@@ -419,12 +421,15 @@ def _resolve_batch_instrument(config, header):
     ------
     BatchPrepError
         If ``config.instrument`` is None and ``header`` matches zero or more
-        than one bundled/registered instrument profile. InstrumentDetectionError
-        is a FrameMetadataError (recoverable per-frame) by declaration, but
-        `prepare_batch` is the one caller that actually wants the fatal
-        behavior -- an unresolvable *first* frame leaves the whole batch with
-        no detection/PSF settings to prepare with -- so it is wrapped here
-        instead of relying on inheritance.
+        than one bundled/registered instrument profile.
+
+    Notes
+    -----
+    `~bandaid.exceptions.InstrumentDetectionError` is a `FrameMetadataError`
+    (recoverable per-frame) by declaration, but `prepare_batch` is the one
+    caller that wants the fatal behavior: an unresolvable *first* frame leaves
+    the whole batch with no detection/PSF settings to prepare with. So it is
+    wrapped here instead of relying on inheritance.
     """
     try:
         return resolve_config_instrument(config, header)

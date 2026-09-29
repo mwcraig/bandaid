@@ -942,11 +942,7 @@ def calibration_sequence(
         The instrument whose ``header_map`` resolves the frame metadata, and
         whose own ``thresh``/``detection_opening``/``fwhm_cutout_half``/
         ``fwhm_n_stars`` back any of those four parameters left as None. None
-        (the default) means "resolve from the header" -- `resolve_profile`
-        detects it once, up front, and the same resolved profile backs both
-        `metadata_from_header` and these defaults (a direct caller used to
-        get Seestar50's tuning here regardless of which profile actually
-        resolved).
+        (the default) means "resolve from the header"; see Notes.
     frame : LoadedFrame or None, optional
         Pre-loaded frame; when None the file is opened once via the loader.
     detection_image_out : dict or None, optional
@@ -979,6 +975,12 @@ def calibration_sequence(
         empty or has zero variance (propagated from `bayer_balance_image`,
         with the source file attached).
 
+    Notes
+    -----
+    When ``profile`` is None, `resolve_profile` detects it once, up front, and
+    the same resolved profile backs both `metadata_from_header` and the four
+    detection/FWHM defaults, so a direct call on a non-Seestar frame is tuned
+    for the instrument that actually resolved.
     """
     if frame is None:
         frame = _load_frame(file)
