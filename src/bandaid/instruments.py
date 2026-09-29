@@ -215,11 +215,11 @@ def register_instrument(profile, *, replace=False):
       accidental name collision does not silently shadow the wrong profile.
       ``replace=True`` keeps the deliberate "override a bundled telescope
       in-process" use case working. When ``replace=True`` and ``profile``
-      carries no ``header_match`` of its own, the replaced profile's
-      ``header_match`` is inherited (rather than silently emptied), so the
-      "retune one knob" shape -- e.g.
-      ``InstrumentProfile(name='Seestar50', thresh=9.9)`` -- keeps that name
-      auto-detectable; pass an explicit ``header_match`` to change it too.
+      omits ``header_match``, the replaced profile's ``header_match`` is
+      inherited (rather than silently emptied), so the "retune one knob"
+      shape -- e.g. ``InstrumentProfile(name='Seestar50', thresh=9.9)`` --
+      keeps that name auto-detectable. An explicitly supplied
+      ``header_match``, including ``()``, is honoured as given.
     - **Rule conflict.** A new profile whose ``header_match`` shares an exact
       ``(keyword, value)`` pair with a *differently-named* existing profile is
       rejected: `detect_instrument` cannot tell the two apart on a header that
@@ -234,7 +234,11 @@ def register_instrument(profile, *, replace=False):
         )
         raise ValueError(msg)
 
-    if replace and not profile.header_match and profile.name in existing_names:
+    if (
+        replace
+        and "header_match" not in profile.model_fields_set
+        and profile.name in existing_names
+    ):
         # The "retune one knob" override shape --
         # InstrumentProfile(name='Seestar50', thresh=9.9) -- otherwise leaves
         # header_match at the bare-class default (empty), silently stripping

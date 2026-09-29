@@ -239,6 +239,14 @@ class TestRegister:
         assert replaced.thresh == custom_thresh
         assert replaced.header_match == original.header_match
 
+    def test_replace_true_explicit_empty_header_match_stays_empty(self):
+        """An explicit ``header_match=()`` on a replacement stays empty."""
+        register_instrument(
+            InstrumentProfile(name="Seestar50", thresh=9.9, header_match=()),
+            replace=True,
+        )
+        assert load_instrument("Seestar50").header_match == ()
+
     def test_replace_true_own_header_match_is_not_overridden(self):
         """A replacement that supplies its own ``header_match`` keeps it."""
         own_rule = (HeaderMatchRule(keyword="INSTRUME", pattern="Custom Seestar"),)
