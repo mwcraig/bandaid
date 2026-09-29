@@ -69,6 +69,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     table with `ra`/`dec` in ICRS degrees. Forced targets skip the
     Gaia-magnitude contamination model; all other quality cuts still apply
     (see the docs for details).
+- Instrument auto-detection from the FITS header. A new `HeaderMatchRule`
+    model and `InstrumentProfile.header_match` field (a tuple of
+    keyword/pattern rules; empty by default -- including on a bare
+    `InstrumentProfile()` -- so device identity is opt-in) drive a new
+    `detect_instrument(header)` in `bandaid.instruments`: it matches the
+    header against every bundled/registered profile's rules and returns the
+    single match, or raises the new `InstrumentDetectionError` (a
+    `FrameMetadataError`, and so a `FrameError`) naming the header values it checked and the
+    available/ambiguous profile names. The bundled Seestar50 profile now
+    carries the rule `INSTRUME == "Seestar S50"` (deliberately not
+    `TELESCOP`, which embeds a per-device serial on real hardware, e.g.
+    `S50_0e597e9b`). `prepare_batch` and `prepare_image` both resolve a
+    `None` `config.instrument` this way, from the first header they have in
+    hand; `check_frame_consistency` also rejects a later frame in the batch
+    whose header does not match the batch instrument's rules when the batch
+    instrument's `header_match` is non-empty. An explicit choice
+    (`--instrument`/`--profile`/`--config`) is exempt only from the "header
+    matches no registered instrument" outcome; a frame whose header
+    positively identifies a different registered instrument, or matches more
+    than one, is still rejected. The guard resolves the
+    later frame through `detect_instrument` itself, so a header that is
+    ambiguous across registered profiles is rejected too, and it runs before
+    the header is resolved through the batch instrument's `header_map`, so a
+    mixed-in frame is reported as a mismatch rather than as a missing header
+    keyword. `InstrumentProfile.matches_header(header)` is the shared
+    predicate. `BatchPrep` now requires a `config` whose `instrument` is
+    resolved. See `docs/instrument_profiles.md`.
+- `register_instrument` checks for conflicts before touching the registry:
+    a name that already resolves (bundled or registered) is refused unless
+    `replace=True` is passed, and a `header_match` rule that duplicates a
+    differently named profile's rule (same keyword and value) raises
+    `ValueError` at registration instead of surfacing later as an
+    "ambiguous instrument" detection error on a real frame.
 
 ### Changed
 
@@ -120,6 +153,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     does for NaN), and an all-non-finite or constant frame gives no regions
     without a `RuntimeWarning`. `scikit-image` and `scipy` become
     direct dependencies.
+- `calibration_sequence`'s `threshold`, `opening`, `fwhm_cutout_half`, and
+    `fwhm_n_stars` now default to `None`, meaning "use the resolved instrument
+    profile's value". For a Seestar50, `opening`, `fwhm_cutout_half`, and
+    `fwhm_n_stars` resolve to the same values as before. `threshold` was a
+    hard-coded `1`, which did not match the Seestar50 profile's `thresh` of
+    `0.5`, so a direct call that relied on the default now detects at `0.5`.
+    Pass `threshold=1` to keep the old behavior. `prepare_batch` and
+    `prepare_image` already used the profile's value, so pipeline output is
+    unchanged.
 
 ### Changed (breaking)
 
@@ -157,6 +199,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     no longer created for L4 rather than removed afterwards.
     `process_one_image` rejects a mask dict that gives "L4" a mask or lacks
     TR/TG/TB with a `ValueError` before photometering anything.
+- `PhotometryConfig.instrument` now defaults to `None` ("resolve from the
+    frame header") instead of hard-defaulting to an `InstrumentProfile()`
+    (the Seestar50 tuning). A bare `PhotometryConfig()` -- from the CLI with
+    no `--instrument`/`--profile`/`--config`, or from Python -- now
+    auto-detects the instrument from the first frame's header instead of
+    silently assuming a Seestar50; an unmatched or headerless frame now
+    raises `InstrumentDetectionError` instead of proceeding with the wrong
+    (or a guessed) instrument. This is invisible to Seestar users, whose
+    headers auto-detect; pass `--instrument Seestar50` (or any explicit
+    profile) to opt back out of auto-detection. `metadata_from_header`'s own
+    `profile=None` default changed the same way, from a silent Seestar50
+    fallback to `detect_instrument(header)`. `prepare_batch` wraps
+    `InstrumentDetectionError` in a batch-fatal `BatchPrepError` (the original
+    is its `__cause__`); the direct single-frame entry points `prepare_image`,
+    `process_one_image`, and `calibration_sequence` re-raise the same
+    `InstrumentDetectionError` with the source file attached, without wrapping
+    or chaining, so a per-frame `except FrameError` skip loop keeps working.
 
 ### Fixed
 
