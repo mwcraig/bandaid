@@ -230,12 +230,12 @@ class BatchPrep:
         ``instrument`` was None) rather than given explicitly
         (``--instrument``/``--profile``/``--config`` with a concrete
         instrument, or ``config=PhotometryConfig(instrument=...)``).
-        `check_frame_consistency`'s batch-mixing guard is enforced only when
-        this is True: an explicit selection is trusted even on a frame whose
-        header does not match ``config.instrument.header_match`` -- the guard
-        exists to catch a different telescope's frames riding along on an
-        *auto-detected* profile, not to second-guess a user's explicit
-        choice. Default False.
+        `check_frame_consistency`'s batch-mixing guard applies to both, with
+        one difference: an explicit selection is exempt from a header that
+        matches *no* registered instrument (missing or malformed), whereas a
+        header that positively identifies a *different* registered
+        instrument, or is ambiguous between several, is rejected either way.
+        An auto-detected batch is never exempt. Default False.
     """
 
     radecs: np.ndarray
@@ -780,8 +780,9 @@ def _check_instrument_mixing(file, header, prep, batch_instrument):
             # absent keyword does not mean that keyword was required, when
             # another rule's keyword is present but simply didn't match.
             missing = [rule.keyword for rule in batch_instrument.header_match]
-            none_present = not any(
-                rule.keyword_present(header) for rule in batch_instrument.header_match
+            none_present = all(
+                header.get(rule.keyword) is None
+                for rule in batch_instrument.header_match
             )
             origin = "auto-detected batch" if prep.instrument_auto_detected else "batch"
             if none_present:

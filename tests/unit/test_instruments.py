@@ -46,24 +46,6 @@ class TestHeaderMatchRule:
         rule = HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50")
         assert rule.matches({"INSTRUME": "  Seestar S50  "}) is True
 
-    def test_keyword_present_true_regardless_of_value(self):
-        """
-        ``keyword_present`` checks presence only, unlike ``matches``.
-
-        `~bandaid.scripts.check_frame_consistency`'s batch-mixing guard needs
-        to distinguish "the keyword is absent" from "the keyword is present
-        with the wrong value" for its diagnostic message; ``matches`` conflates
-        both into False, so the guard uses this instead, the same
-        ``header.get(self.keyword)`` lookup ``matches`` itself uses.
-        """
-        rule = HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50")
-        assert rule.keyword_present({"INSTRUME": "Some Other Scope"}) is True
-
-    def test_keyword_present_false_when_absent(self):
-        """A header without the keyword at all is not present."""
-        rule = HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50")
-        assert rule.keyword_present({}) is False
-
 
 @pytest.fixture(autouse=True)
 def _isolate_registry(isolate_registry):

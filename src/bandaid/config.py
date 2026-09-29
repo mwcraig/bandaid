@@ -251,31 +251,6 @@ class HeaderMatchRule(BaseModel, frozen=True):
             return False
         return str(value).strip().casefold() == self.pattern.strip().casefold()
 
-    def keyword_present(self, header) -> bool:
-        """
-        Check whether ``keyword`` is present in ``header`` at all.
-
-        Parameters
-        ----------
-        header : astropy.io.fits.Header or collections.abc.Mapping
-            The FITS header (or header-like mapping) to check.
-
-        Returns
-        -------
-        bool
-            True if ``header.get(self.keyword)`` is not None -- the same
-            lookup `matches` itself uses.
-
-        Notes
-        -----
-        Unlike `matches`, this does not check the value -- it distinguishes
-        "the keyword is absent" from "the keyword is present but its value
-        does not match ``pattern``", the distinction
-        `~bandaid.scripts.check_frame_consistency`'s batch-mixing guard needs
-        for its diagnostic message, where `matches` conflates both into False.
-        """
-        return header.get(self.keyword) is not None
-
 
 class InstrumentProfile(BaseModel, frozen=True):
     """
