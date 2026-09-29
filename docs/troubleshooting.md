@@ -86,11 +86,10 @@ expects.
 It can also mean instrument auto-detection failed for that frame: when a direct
 call to `prepare_image`, `process_one_image`, or `calibration_sequence` (rather
 than a `prepare_batch` run) is given no explicit instrument and the frame's
-header does not resolve to exactly one profile, the underlying
-`InstrumentDetectionError` is wrapped as a `FrameMetadataError` — chained as its
-cause — so the frame is skipped rather than aborting a whole batch built around a
-single call. Run with `-vv` to see the chained `InstrumentDetectionError` and the
-header values it checked.
+header does not resolve to exactly one profile, the error raised is an
+`InstrumentDetectionError`, a `FrameMetadataError` subclass, so the frame is
+skipped rather than aborting a whole batch built around a single call. Its
+message lists the header values it checked and the profiles it considered.
 
 The fix for a missing/unparsable header field is a `header_map` that translates
 *your* telescope's header keywords into the metadata bandaid needs. Build (or

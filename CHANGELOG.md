@@ -76,17 +76,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `detect_instrument(header)` in `bandaid.instruments`: it matches the
     header against every bundled/registered profile's rules and returns the
     single match, or raises the new `InstrumentDetectionError` (a
-    `BatchPrepError` subclass) naming the header values it checked and the
+    `FrameMetadataError`, and so a `FrameError`) naming the header values it checked and the
     available/ambiguous profile names. The bundled Seestar50 profile now
     carries the rule `INSTRUME == "Seestar S50"` (deliberately not
     `TELESCOP`, which embeds a per-device serial on real hardware, e.g.
     `S50_0e597e9b`). `prepare_batch` and `prepare_image` both resolve a
     `None` `config.instrument` this way, from the first header they have in
     hand; `check_frame_consistency` also rejects a later frame in the batch
-    whose header does not match the batch instrument's rules, but only when
-    that instrument was itself auto-detected (not an explicit
-    `--instrument`/`--profile`/`--config`) and `header_match` is non-empty --
-    an explicit choice is trusted unconditionally. The guard resolves the
+    whose header does not match the batch instrument's rules when the batch
+    instrument's `header_match` is non-empty. An explicit choice
+    (`--instrument`/`--profile`/`--config`) is exempt only from the "header
+    matches no registered instrument" outcome; a frame whose header
+    positively identifies a different registered instrument, or matches more
+    than one, is still rejected. The guard resolves the
     later frame through `detect_instrument` itself, so a header that is
     ambiguous across registered profiles is rejected too, and it runs before
     the header is resolved through the batch instrument's `header_map`, so a
@@ -199,12 +201,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     headers auto-detect; pass `--instrument Seestar50` (or any explicit
     profile) to opt back out of auto-detection. `metadata_from_header`'s own
     `profile=None` default changed the same way, from a silent Seestar50
-    fallback to `detect_instrument(header)`. Only `prepare_batch` lets
-    `InstrumentDetectionError` propagate (batch-fatal); the direct
-    single-frame entry points `prepare_image`, `process_one_image`, and
-    `calibration_sequence` wrap it as a `FrameMetadataError` with the source
-    file attached and the detection error chained as its cause, so a
-    per-frame `except FrameError` skip loop keeps working.
+    fallback to `detect_instrument(header)`. `prepare_batch` wraps
+    `InstrumentDetectionError` in a batch-fatal `BatchPrepError` (the original
+    is its `__cause__`); the direct single-frame entry points `prepare_image`,
+    `process_one_image`, and `calibration_sequence` re-raise the same
+    `InstrumentDetectionError` with the source file attached, without wrapping
+    or chaining, so a per-frame `except FrameError` skip loop keeps working.
 
 ### Fixed
 

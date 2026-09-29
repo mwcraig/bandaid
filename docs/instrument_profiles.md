@@ -6,6 +6,8 @@ the two telescope-specific things the pipeline needs:
 - the **detection / PSF tuning** knobs (`thresh`, `detection_opening`,
     `fwhm_cutout_half`, `fwhm_n_stars`, `contamination_tolerance`, `moffat_beta`,
     `contamination_seeing_margin`, `wcs_scale_tolerance`), and
+- the **field-center** settings (`header_center_offset`, `cone_radius_margin`),
+    which control where the Gaia cone is centered and how wide it is, and
 - the **header map** — a small mapping that tells the pipeline how to read that
     telescope's per-frame FITS headers into the metadata it needs.
 
@@ -72,14 +74,14 @@ Detection works from `InstrumentProfile.header_match`: a tuple of
 matching profile wins. Zero or more than one match raises
 `InstrumentDetectionError` (from `detect_instrument`/`metadata_from_header`),
 naming the header values it checked and the available/ambiguous profile
-names. How that propagates depends on the entry point: `prepare_batch` lets
-it propagate unchanged, a fatal error for the whole batch, not a per-frame
-skip, since without a resolved instrument there is no detection/PSF tuning to
-run with. `prepare_image`, `process_one_image`, and `calibration_sequence`
-instead wrap it as `FrameMetadataError` (a `FrameError`), chaining the
-`InstrumentDetectionError` as its cause, so a caller's per-frame
-`except FrameError` skip loop still works for these direct/single-frame entry
-points.
+names. How that propagates depends on the entry point: `prepare_batch` wraps it in
+`BatchPrepError` (chaining the original as `__cause__`), a fatal error for the
+whole batch rather than a per-frame skip, since without a resolved instrument
+there is no detection/PSF tuning to prepare with. `prepare_image`,
+`process_one_image`, and `calibration_sequence` let the
+`InstrumentDetectionError` itself propagate with the source file attached;
+because it is a `FrameMetadataError` (and so a `FrameError`), a caller's
+per-frame `except FrameError` skip loop still works.
 
 The bundled Seestar50 profile matches on `INSTRUME == "Seestar S50"` —
 deliberately **not** `TELESCOP`. On real hardware `TELESCOP` embeds a
@@ -121,7 +123,11 @@ first one supplied wins and disables auto-detection for the rest:
 
 `--instrument Seestar50` (or any bundled/registered name) is always available
 as an explicit escape hatch when a frame's header is missing, malformed, or
-otherwise undetectable.
+otherwise undetectable. An explicit selection is exempt only from the "header
+matches no registered instrument" outcome of the later-frame check: if a
+frame's header positively identifies a different registered instrument, or
+matches more than one, that frame is still rejected. The check only runs when
+the selected profile has a non-empty `header_match`.
 
 ## The `header_map` directive language
 
@@ -225,6 +231,7 @@ A `my_scope.json` looks like:
     "moffat_beta": 3.0,
     "contamination_seeing_margin": 1.25,
     "wcs_scale_tolerance": 0.05,
+    "header_center_offset": null,
     "header_match": [{"keyword": "INSTRUME", "pattern": "MyScope Model 1"}],
     "header_map": {
         "obs_time": "@DATE-OBS",
@@ -244,6 +251,18 @@ A `my_scope.json` looks like:
     }
 }
 ```
+
+`"header_center_offset": null` is deliberate. `header_center_offset` is a
+fixed sky vector `(Delta(RA*cos(dec)), Delta(dec))`, in degrees, from the
+header pointing to the true field center; when it is set, the Gaia cone is
+centered on the header pointing moved by that vector. The class default is
+the Seestar S50's correction, so a profile that omits the field silently
+inherits it and would have every frame's cone centered off its true field.
+Set it to `null` for a telescope whose header already points at the field
+center. `cone_radius_margin` (degrees, default `0.0`) is extra radius added to
+`fov_rad` for the Gaia cone when it is centered on a resolved center;
+widening it has been found to hurt plate solving, so leave it at `0.0` unless
+your instrument is shown to need a buffer.
 
 `header_match` is optional — omit it (or leave it `[]`) and the profile is
 still fully usable via `--instrument`/`--profile`/`--config`, just never

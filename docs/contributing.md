@@ -44,6 +44,7 @@ To bundle a telescope:
         "fwhm_n_stars": 25,
         "contamination_tolerance": 0.01,
         "moffat_beta": 3.0,
+        "header_center_offset": null,
         "header_match": [{"keyword": "INSTRUME", "pattern": "MyScope Model 1"}],
         "header_map": {
             "obs_time": "@DATE-OBS",
@@ -64,10 +65,18 @@ To bundle a telescope:
     }
     ```
 
+    `"header_center_offset": null` is needed because the class default is the
+    Seestar S50's correction from its header pointing to the true field
+    center, so any other instrument that omits the field would silently
+    inherit it (see [Instrument profiles](instrument_profiles.md#adding-a-telescope)).
+
 1. Update the bundled-set test in `tests/unit/test_instruments.py`
     (`test_lists_exactly_the_bundled_profiles`) to include the new name. That test
     pins the *complete* discovered set, so adding a telescope is a deliberate,
-    reviewed change rather than a silent one.
+    reviewed change rather than a silent one. Also run
+    `test_bundled_profiles_have_pairwise_disjoint_header_match_rules`, which
+    fails if the new profile's `header_match` collides with an existing
+    profile's rule.
 
 1. Open a pull request. No other code changes are needed: the registry discovers
     the new directory automatically (`available_instruments()` scans
