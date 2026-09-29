@@ -1,5 +1,7 @@
 """Unit tests for once-per-batch preparation and frame-consistency checks."""
 
+import csv
+
 import astropy.units as u
 import numpy as np
 import pytest
@@ -1350,6 +1352,45 @@ class TestCheckFrameConsistency:
             user_specific_metadata={},
         )
         assert list(results) == ["good.fits"]
+
+    def test_mixing_guard_skip_is_recorded_and_batch_continues(self, mocker, tmp_path):
+        """
+        process_batch skips a guard-rejected frame and records it in the manifest.
+
+        Exercises the whole path for an auto-detected batch: the guard's
+        `FrameError` is caught by the per-frame loop, the frame is absent from
+        the results, its QA manifest row reads ``skipped: FrameError``, and
+        the good frame after it is still processed.
+        """
+        prep = self._prep(
+            config=PhotometryConfig(instrument=load_instrument("Seestar50")),
+            instrument_auto_detected=True,
+        )
+
+        def _fake_load_frame(file):
+            instrume = "Some Other Scope" if file == "bad.fits" else "Seestar S50"
+            return scripts.LoadedFrame(
+                np.zeros((2, 2)), _consistency_header(INSTRUME=instrume)
+            )
+
+        mocker.patch("bandaid.scripts._load_frame", side_effect=_fake_load_frame)
+        mocker.patch(
+            "bandaid.scripts.process_one_image",
+            return_value={"TR": Table({"tot_count": [1.0]})},
+        )
+        results = scripts.process_batch(
+            ["bad.fits", "good.fits"],
+            prep,
+            user_specific_metadata={},
+            output_dir=tmp_path,
+            write_frame=lambda _result, path: path,
+        )
+
+        assert list(results) == ["good.fits"]
+        with (tmp_path / scripts.QA_MANIFEST_FILENAME).open(newline="") as f:
+            rows = {row["file"]: row for row in csv.DictReader(f)}
+        assert rows["bad.fits"]["status"] == "skipped: FrameError"
+        assert rows["good.fits"]["status"] == "ok"
 
 
 class TestQaRecordOkForcedTargets:
