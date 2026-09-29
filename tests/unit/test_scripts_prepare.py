@@ -6,6 +6,7 @@ import astropy.units as u
 import numpy as np
 import pytest
 from _helpers import (
+    SEESTAR_RULE,
     _batch_metadata,
     _batch_radecs_mags,
     _consistency_header,
@@ -1250,7 +1251,7 @@ class TestCheckFrameConsistency:
         """
         clone = InstrumentProfile(
             name="Clone",
-            header_match=(HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50"),),
+            header_match=(SEESTAR_RULE,),
         )
         # register_instrument now eagerly rejects a colliding rule, so this
         # deliberately-ambiguous fixture is inserted directly into the
@@ -1281,7 +1282,7 @@ class TestCheckFrameConsistency:
         """
         clone = InstrumentProfile(
             name="Clone",
-            header_match=(HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50"),),
+            header_match=(SEESTAR_RULE,),
         )
         # Inserted directly: register_instrument would reject the colliding rule.
         instruments._REGISTERED["Clone"] = clone  # noqa: SLF001

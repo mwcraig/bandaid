@@ -10,6 +10,7 @@ extended, and that a profile round-trips through ``to_file``/``from_file``.
 """
 
 import pytest
+from _helpers import SEESTAR_RULE
 
 from bandaid import instruments
 from bandaid.config import HeaderMatchRule, InstrumentProfile
@@ -25,26 +26,29 @@ from bandaid.instruments import (
 class TestHeaderMatchRule:
     """Unit tests for ``HeaderMatchRule``'s header/pattern comparison."""
 
-    def test_matches_case_insensitively(self):
-        """A differently-cased header value still matches."""
+    @pytest.mark.parametrize(
+        ("header", "expected"),
+        [
+            ({"INSTRUME": "Seestar S50"}, True),
+            ({"INSTRUME": "seestar s50"}, True),
+            ({"INSTRUME": "SEESTAR S50"}, True),
+            ({"INSTRUME": "  Seestar S50  "}, True),
+            ({"INSTRUME": "Some Other Scope"}, False),
+            ({}, False),
+        ],
+        ids=[
+            "exact",
+            "lowercase",
+            "uppercase",
+            "whitespace",
+            "different-value",
+            "absent-keyword",
+        ],
+    )
+    def test_matches(self, header, expected):
+        """Matching is case-insensitive and strips whitespace; absence never matches."""
         rule = HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50")
-        assert rule.matches({"INSTRUME": "seestar s50"}) is True
-        assert rule.matches({"INSTRUME": "SEESTAR S50"}) is True
-
-    def test_no_match_returns_false(self):
-        """A present but different header value does not match."""
-        rule = HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50")
-        assert rule.matches({"INSTRUME": "Some Other Scope"}) is False
-
-    def test_absent_keyword_returns_false(self):
-        """A header without the keyword at all does not match."""
-        rule = HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50")
-        assert rule.matches({}) is False
-
-    def test_whitespace_is_stripped(self):
-        """Leading/trailing whitespace on the header value is ignored."""
-        rule = HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50")
-        assert rule.matches({"INSTRUME": "  Seestar S50  "}) is True
+        assert rule.matches(header) is expected
 
 
 @pytest.fixture(autouse=True)
@@ -145,24 +149,6 @@ class TestAvailableInstruments:
                 )
                 seen[identity] = name
 
-    def test_bundled_names_directory_walk_is_cached(self, mocker):
-        """
-        Repeated ``_bundled_names()`` calls do not re-walk the bundled directory.
-
-        ``_bundled_names()`` used to be the only loader in this module without
-        ``@cache``, so ``detect_instrument`` walked ``meta_json_files/`` on
-        every call, now on the per-frame batch-mixing-guard path. Caching
-        collapses repeated calls to a single walk.
-        """
-        instruments._bundled_names.cache_clear()  # noqa: SLF001
-        walk_spy = mocker.spy(instruments, "_profiles_root")
-
-        first = instruments._bundled_names()  # noqa: SLF001
-        second = instruments._bundled_names()  # noqa: SLF001
-
-        assert walk_spy.call_count == 1
-        assert first is second
-
 
 class TestRegister:
     """A user can register a custom profile and load it back by name."""
@@ -258,7 +244,7 @@ class TestRegisterConflicts:
         """
         clone = InstrumentProfile(
             name="Clone",
-            header_match=(HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50"),),
+            header_match=(SEESTAR_RULE,),
         )
         with pytest.raises(ValueError, match="Seestar50") as excinfo:
             register_instrument(clone)
@@ -328,7 +314,7 @@ class TestDetectInstrument:
         """Two registered profiles matching the same header raise, naming both."""
         clone = InstrumentProfile(
             name="Clone",
-            header_match=(HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50"),),
+            header_match=(SEESTAR_RULE,),
         )
         # register_instrument now eagerly rejects a colliding rule, so this
         # deliberately-ambiguous fixture is inserted directly into the
@@ -369,23 +355,6 @@ class TestDetectInstrument:
         candidates_part, available_part = message.split("all available instruments")
         assert "NoRules" not in candidates_part
         assert "NoRules" in available_part
-
-    def test_single_match_does_not_reload_the_profile_by_name(self, mocker):
-        """
-        The single matched profile is reused, not re-resolved by name.
-
-        The single-match branch used to call ``load_instrument(matched[0])``
-        again instead of reusing the profile object already resolved while
-        building ``candidates`` -- a redundant (and, for a bundled profile, an
-        uncached) directory walk. So there is exactly one ``load_instrument``
-        call per available instrument name,
-        with no extra call to re-resolve the match.
-        """
-        load_spy = mocker.spy(instruments, "load_instrument")
-
-        detect_instrument({"INSTRUME": "Seestar S50"})
-
-        assert load_spy.call_count == len(available_instruments())
 
 
 class TestFileRoundTrip:

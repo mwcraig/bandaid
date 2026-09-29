@@ -17,7 +17,12 @@ from astropy.wcs import WCS
 
 from bandaid import measure_photometry, scripts
 from bandaid.config import InstrumentProfile, PhotometryConfig
+from bandaid.instruments import load_instrument
 from bandaid.photometry import ANNULUS, RELATIVE_RADII, ImageData, LoadedFrame
+
+# The bundled Seestar50 auto-detection rule, so tests that mean "the Seestar
+# rule" follow profile.json instead of restating its literal.
+SEESTAR_RULE = load_instrument("Seestar50").header_match[0]
 
 # Fixed random seed for reproducible noise in generated test images.
 SEED = 843032

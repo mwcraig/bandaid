@@ -11,6 +11,7 @@ validators reject the values that would silently break the pipeline.
 
 import numpy as np
 import pytest
+from _helpers import SEESTAR_RULE
 from pydantic import ValidationError
 
 from bandaid.config import (
@@ -112,7 +113,7 @@ class TestDefaultsMatchLegacyConstants:
         cfg = InstrumentProfile(
             name="TwoRules",
             header_match=(
-                HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50"),
+                SEESTAR_RULE,
                 HeaderMatchRule(keyword="TELESCOP", pattern="OtherScope"),
             ),
         )
@@ -122,7 +123,7 @@ class TestDefaultsMatchLegacyConstants:
         """``matches_header`` is False when every rule fails to match."""
         cfg = InstrumentProfile(
             name="OneRule",
-            header_match=(HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50"),),
+            header_match=(SEESTAR_RULE,),
         )
         assert cfg.matches_header({"INSTRUME": "Some Other Scope"}) is False
 
