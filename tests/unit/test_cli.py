@@ -21,7 +21,7 @@ from click.testing import CliRunner
 
 from bandaid import cli
 from bandaid.config import InstrumentProfile, PhotometryConfig, SourceSelectionConfig
-from bandaid.exceptions import BatchPrepError
+from bandaid.exceptions import BatchPrepError, FrameMetadataError
 from bandaid.instruments import _REGISTERED, register_instrument
 from bandaid.writers import write_starlist_set
 
@@ -174,6 +174,25 @@ def test_process_batch_prep_error_is_a_clean_cli_message(runner, mocker, tmp_pat
     assert result.exit_code == 1
     assert "Traceback" not in result.output
     assert "no bundled/registered instrument matched" in result.output
+
+
+def test_process_first_frame_metadata_error_is_a_clean_cli_message(
+    runner, mocker, tmp_path
+):
+    """A first-frame ``FrameMetadataError`` reads as a clean error."""
+    mocker.patch(
+        "bandaid.cli.photometer_frames",
+        side_effect=FrameMetadataError("bad DATE-OBS"),
+    )
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+
+    result = runner.invoke(cli.main, ["process", str(frame)])
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert "Traceback" not in result.output
+    assert "bad DATE-OBS" in result.output
 
 
 @pytest.mark.usefixtures("fully_failed_photometer")

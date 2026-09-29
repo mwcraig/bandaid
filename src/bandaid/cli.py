@@ -36,7 +36,7 @@ from pydantic import ValidationError
 
 from .ballet import download_weights
 from .config import InstrumentProfile, PhotometryConfig, SourceSelectionConfig
-from .exceptions import BatchPrepError
+from .exceptions import BatchPrepError, FrameError
 from .instruments import available_instruments, load_instrument
 from .logging_setup import configure_logging
 from .scripts import QA_MANIFEST_FILENAME, photometer_frames
@@ -607,7 +607,8 @@ def process(
     # scripts.photometer_frames; surface its argument errors (no frames, bad
     # path) and a fatal batch-prep failure (e.g. no usable Gaia catalog, or --
     # with no --instrument/--profile/--config -- an undetectable instrument)
-    # as clean CLI errors.
+    # as clean CLI errors. process_batch skips every per-frame FrameError, so
+    # one that escapes is from first-frame preparation and is fatal.
     try:
         frames, results = photometer_frames(
             files,
@@ -622,7 +623,7 @@ def process(
             write_qa_manifest=qa_manifest,
             forced_targets=forced_targets,
         )
-    except (ValueError, FileNotFoundError, BatchPrepError) as exc:
+    except (ValueError, FileNotFoundError, BatchPrepError, FrameError) as exc:
         raise click.ClickException(str(exc)) from exc
 
     click.echo(f"Processed {len(results)} of {len(frames)} frames into {output_dir}")
