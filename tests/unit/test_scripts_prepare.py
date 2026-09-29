@@ -297,7 +297,10 @@ class TestPrepareBatch:
 
         captured = calibration_sequence.call_args.kwargs
         assert captured.get("detect_on_bayer_balanced") is True
-        assert captured.get("fwhm_n_stars") == fwhm_n_stars
+        # fwhm_n_stars is left unset so calibration_sequence resolves it from
+        # the profile, exactly as the per-frame call does.
+        assert captured.get("fwhm_n_stars") is None
+        assert captured["profile"].fwhm_n_stars == fwhm_n_stars
 
     def test_gaia_queried_at_resolved_center_over_unwidened_field(self, mocker):
         """

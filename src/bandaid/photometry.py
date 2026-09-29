@@ -2518,12 +2518,8 @@ def prepare_image(
     detection_image_out = {}
     calibrated_data, metadata, coords, fwhm, _ = calibration_sequence(
         file,
-        threshold=instrument.thresh,
-        opening=instrument.detection_opening,
         detect_on_bayer_balanced=detect_on_bayer_balanced,
         cnn=cnn,
-        fwhm_cutout_half=instrument.fwhm_cutout_half,
-        fwhm_n_stars=instrument.fwhm_n_stars,
         profile=instrument,
         frame=frame,
         detection_image_out=detection_image_out,

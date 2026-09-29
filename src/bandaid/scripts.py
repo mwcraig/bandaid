@@ -530,12 +530,8 @@ def prepare_batch(
         # the photometry it protects.
         _, metadata, _, fwhm_pix, _ = calibration_sequence(
             first_file,
-            threshold=instrument.thresh,
-            opening=instrument.detection_opening,
             detect_on_bayer_balanced=True,
             cnn=cnn,
-            fwhm_cutout_half=instrument.fwhm_cutout_half,
-            fwhm_n_stars=instrument.fwhm_n_stars,
             profile=instrument,
             frame=frame,
         )

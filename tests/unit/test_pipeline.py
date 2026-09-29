@@ -134,10 +134,12 @@ class TestPrepareImage:
             config=config,
         )
 
-        kwargs = externals.calibration_sequence.call_args.kwargs
-        assert kwargs["threshold"] == expected_thresh
-        assert kwargs["opening"] == expected_opening
-        assert kwargs["fwhm_n_stars"] == expected_fwhm_n_stars
+        # The values travel via the profile: calibration_sequence resolves
+        # the unset threshold/opening/fwhm_n_stars from it.
+        profile = externals.calibration_sequence.call_args.kwargs["profile"]
+        assert profile.thresh == expected_thresh
+        assert profile.detection_opening == expected_opening
+        assert profile.fwhm_n_stars == expected_fwhm_n_stars
 
     def test_stubbed_calibration_sequence_feeds_centroiding_when_balanced(
         self, stub_prepare_image_externals
