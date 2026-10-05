@@ -26,6 +26,8 @@ $ bandaid process night-of-2026-06-27/ -o out/ -v
 
 - **[Installation](installation.md)** — requirements and the Ballet weights.
 - **[Getting started](getting_started.md)** — the ~10-minute end-to-end run.
+- **[Instrument profiles](instrument_profiles.md#adding-a-telescope)** — use a
+    telescope other than the Seestar50.
 
 ## Copyright
 

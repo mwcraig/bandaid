@@ -55,8 +55,10 @@ frames, results = photometer_frames(["night-of-2026-06-27/"], output_dir="out/")
 See the [documentation](https://bandaid.readthedocs.io/) for the full guide —
 [installation](https://bandaid.readthedocs.io/en/latest/installation/), a
 [getting-started tutorial](https://bandaid.readthedocs.io/en/latest/getting_started/),
-the [command-line reference](https://bandaid.readthedocs.io/en/latest/command_line/), and
-[configuration](https://bandaid.readthedocs.io/en/latest/configuration/).
+the [command-line reference](https://bandaid.readthedocs.io/en/latest/command_line/),
+[configuration](https://bandaid.readthedocs.io/en/latest/configuration/), and
+[adding a telescope](https://bandaid.readthedocs.io/en/latest/instrument_profiles/#adding-a-telescope)
+other than the Seestar50.
 
 ## Data-quality flags
 
