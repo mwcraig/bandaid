@@ -17,7 +17,13 @@ from dataclasses import dataclass, field
 import astropy.units as u
 import numpy as np
 from aavso_starlist_schema import StarList
-from astropy.coordinates import AltAz, EarthLocation, SkyCoord, search_around_sky
+from astropy.coordinates import (
+    FK5,
+    AltAz,
+    EarthLocation,
+    SkyCoord,
+    search_around_sky,
+)
 from astropy.io import fits
 from astropy.stats import SigmaClip
 from astropy.table import Table
@@ -66,6 +72,7 @@ __all__ = [
     "centroid_drift_flag",
     "centroid_stars",
     "eloy_to_starlist",
+    "estimate_center_from_header",
     "good_star_mask",
     "measure_photometry",
     "metadata_from_header",
@@ -2422,6 +2429,106 @@ def _drop_off_frame_catalog_stars(aligned_coords, photometry_coords, shape, file
     return aligned_coords[keep], photometry_coords[keep]
 
 
+def _parse_obs_time(obs_time, *, file=None):
+    """
+    Parse a header observation time as `~astropy.time.Time`.
+
+    Parameters
+    ----------
+    obs_time : str
+        The ``obs_time`` metadata value (usually from ``DATE-OBS``).
+    file : str or Path, optional
+        The frame to attach to the error.
+
+    Returns
+    -------
+    astropy.time.Time
+        The parsed time.
+
+    Raises
+    ------
+    FrameMetadataError
+        If ``obs_time`` cannot be parsed.
+
+    Notes
+    -----
+    ``dateutil`` mirrors `build_photometry_table`'s tolerant
+    ``DATE-OBS`` parsing, so every consumer accepts the same header date forms
+    (``Time()`` alone is stricter than ``dateutil``).
+    """
+    try:
+        return Time(parser.parse(obs_time))
+    # OverflowError: dateutil raises it for all-digit strings too large for a
+    # C long (e.g. a corrupted numeric DATE-OBS), documented in parser.parse.
+    except (ValueError, TypeError, OverflowError) as exc:
+        msg = f"could not parse observation time (obs_time) {obs_time!r}"
+        raise FrameMetadataError(msg, file=file) from exc
+
+
+def estimate_center_from_header(metadata, profile):
+    """
+    Convert a frame's header pointing to an ICRS field center.
+
+    Parameters
+    ----------
+    metadata : dict
+        Frame metadata carrying ``ra``/``dec`` (the header pointing, in
+        degrees) and, for an ``"fk5"``/``"date"`` profile, ``obs_time``.
+        Numeric-string ``ra``/``dec`` values (the raw ``@RA``/``@DEC`` form) are
+        coerced to float.
+    profile : InstrumentProfile
+        The instrument whose ``header_frame``/``header_equinox`` say how the
+        header pointing is written.
+
+    Returns
+    -------
+    tuple of float
+        The ``(ra, dec)`` ICRS center in degrees, with RA wrapped into
+        ``[0, 360)``.
+
+    Raises
+    ------
+    FrameMetadataError
+        If the header resolved no numeric ``ra``/``dec`` pointing, or the
+        profile needs ``obs_time`` and it is missing or unparsable.
+
+    Notes
+    -----
+    ``"icrs"`` returns the pointing unchanged. ``"fk5"`` interprets it in
+    ``FK5(equinox=...)`` -- the equinox being the frame's ``obs_time`` for
+    ``"date"``, else the profile's epoch string -- and converts to ICRS; that
+    applies precession only. This is the single coercion point for every center
+    path (`~bandaid.scripts.prepare_batch`,
+    `~bandaid.scripts.check_frame_consistency` and `prepare_image`), so a bad pointing
+    surfaces as a labellable metadata error rather than a bare
+    ``KeyError``/``TypeError``/``ValueError``.
+    """
+    try:
+        ra = float(metadata["ra"])
+        dec = float(metadata["dec"])
+    except (KeyError, TypeError, ValueError) as exc:
+        msg = (
+            "header resolved no numeric pointing (ra/dec) through the instrument "
+            f"header_map: ra={metadata.get('ra')!r}, dec={metadata.get('dec')!r}"
+        )
+        raise FrameMetadataError(msg) from exc
+    if profile.header_frame == "icrs":
+        return (ra % 360.0, dec)
+    if profile.header_equinox == "date":
+        obs_time = metadata.get("obs_time")
+        if obs_time is None:
+            msg = (
+                "header_equinox='date' needs the frame's observation time "
+                "(obs_time, usually mapped from DATE-OBS), but none was resolved"
+            )
+            raise FrameMetadataError(msg)
+        equinox = _parse_obs_time(obs_time)
+    else:
+        equinox = Time(profile.header_equinox)
+    icrs = SkyCoord(ra, dec, unit="deg", frame=FK5(equinox=equinox)).icrs
+    return (float(icrs.ra.deg), float(icrs.dec.deg))
+
+
 def prepare_image(
     file,
     radecs,
@@ -2549,24 +2656,22 @@ def prepare_image(
                 f"(got {expected_pixscale!r}); cannot scale-check the solved WCS"
             )
             raise FrameMetadataError(msg, file=file)
-        # The Gaia catalog is queried at the header pointing, so align can
-        # reject a solved WCS that puts that location off-frame. Unlike
-        # pixscale (instrument-profile-sourced), ra/dec come from the frame
-        # header, so a frame without them just skips the check. The @RA/@DEC
-        # directives pass the header value through untouched, so it often
-        # arrives as a numeric string; coerce it the way the airmass path
-        # already does (float(metadata["ra"])) instead of treating a string as
-        # missing. A None/absent value or one that will not parse just skips
-        # the check.
+        # The Gaia catalog is queried at the header pointing converted to ICRS,
+        # so align can reject a solved WCS that puts that location off-frame.
+        # Unlike pixscale (instrument-profile-sourced), the pointing comes from
+        # the frame header, so a frame whose pointing is absent or cannot be
+        # converted just skips the check. bool is excluded explicitly because
+        # float() would accept it.
         ra = metadata.get("ra")
         dec = metadata.get("dec")
         if isinstance(ra, bool) or isinstance(dec, bool):
             expected_center = None
         else:
             try:
-                expected_center = SkyCoord(float(ra), float(dec), unit="deg")
-            except (TypeError, ValueError):
-                # float(None) raises TypeError, float("N/A") raises ValueError.
+                expected_center = SkyCoord(
+                    *estimate_center_from_header(metadata, instrument), unit="deg"
+                )
+            except FrameMetadataError:
                 expected_center = None
         shape = calibrated_data.shape
     else:

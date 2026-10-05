@@ -48,6 +48,7 @@ from bandaid.photometry import (
     prepare_image,
     process_one_image,
 )
+from bandaid.scripts import estimate_center_from_header
 
 
 class TestPrepareImage:
@@ -282,7 +283,12 @@ class TestPrepareImage:
             calibrated=np.zeros((10, 12)),
         )
 
-        prepare_image("unused.fits", np.zeros((5, 2)), None)
+        prepare_image(
+            "unused.fits",
+            np.zeros((5, 2)),
+            None,
+            config=PhotometryConfig(instrument=InstrumentProfile()),
+        )
 
         kwargs = externals.align.call_args.kwargs
         center = kwargs["expected_center"]
@@ -326,12 +332,70 @@ class TestPrepareImage:
             metadata={"creator": "spy", "pixscale": 2.4, "ra": "10.0", "dec": "20.0"},
         )
 
-        prepare_image("unused.fits", np.zeros((5, 2)), None)
+        prepare_image(
+            "unused.fits",
+            np.zeros((5, 2)),
+            None,
+            config=PhotometryConfig(instrument=InstrumentProfile()),
+        )
 
         center = externals.align.call_args.kwargs["expected_center"]
         assert isinstance(center, SkyCoord)
         assert center.ra.deg == pytest.approx(10.0)
         assert center.dec.deg == pytest.approx(20.0)
+
+    def test_header_center_converted_to_icrs_for_alignment(
+        self, stub_prepare_image_externals
+    ):
+        """
+        An equinox-of-date header pointing is converted before the center check.
+
+        The Gaia cone is centered on the header pointing converted to ICRS, so
+        the in-frame check must compare against that same converted location,
+        not the raw header value.
+        """
+        metadata = {
+            "creator": "spy",
+            "pixscale": 2.4,
+            "ra": 10.0,
+            "dec": 20.0,
+            "obs_time": "2025-09-09T05:00:00",
+        }
+        profile = InstrumentProfile(header_frame="fk5", header_equinox="date")
+        externals = stub_prepare_image_externals(metadata=metadata)
+
+        prepare_image(
+            "unused.fits",
+            np.zeros((5, 2)),
+            None,
+            config=PhotometryConfig(instrument=profile),
+        )
+
+        expected_ra, expected_dec = estimate_center_from_header(metadata, profile)
+        center = externals.align.call_args.kwargs["expected_center"]
+        assert center.ra.deg == pytest.approx(expected_ra)
+        assert center.dec.deg == pytest.approx(expected_dec)
+        # Precession over ~25 years moves the pointing by far more than this.
+        assert center.ra.deg != pytest.approx(10.0, abs=0.1)
+
+    def test_equinox_of_date_without_obs_time_skips_center_check(
+        self, stub_prepare_image_externals
+    ):
+        """A pointing that cannot be converted to ICRS skips the check."""
+        externals = stub_prepare_image_externals(
+            metadata={"creator": "spy", "pixscale": 2.4, "ra": 10.0, "dec": 20.0}
+        )
+
+        prepare_image(
+            "unused.fits",
+            np.zeros((5, 2)),
+            None,
+            config=PhotometryConfig(
+                instrument=InstrumentProfile(header_frame="fk5", header_equinox="date")
+            ),
+        )
+
+        assert externals.align.call_args.kwargs["expected_center"] is None
 
     def test_unparsable_header_radec_skips_center_check(
         self, stub_prepare_image_externals
@@ -568,11 +632,20 @@ _REF_RADECS = np.array(
 )
 
 
+# ICRS field center of the frames _write_seestar_fits writes: the Seestar50
+# profile reads their header RA/DEC as equinox-of-date, so the solved WCS must
+# sit at the converted pointing to pass the in-frame check.
+_SYNTHETIC_FIELD_CENTER = estimate_center_from_header(
+    {"ra": 10.0, "dec": 20.0, "obs_time": "2024-01-01T00:00:00"},
+    InstrumentProfile(header_frame="fk5", header_equinox="date"),
+)
+
+
 def _stub_wcs_and_centroid(
     mocker,
     *,
     wcs_image_size=(500, 500),
-    wcs_crval=(10.0, 20.0),
+    wcs_crval=_SYNTHETIC_FIELD_CENTER,
 ):
     """
     Stub the slow/networked externals reached via ``prepare_image``.

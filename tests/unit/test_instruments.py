@@ -11,6 +11,7 @@ extended, and that a profile round-trips through ``to_file``/``from_file``.
 
 import pytest
 from _helpers import SEESTAR_RULE
+from pydantic import ValidationError
 
 from bandaid import instruments
 from bandaid.config import HeaderMatchRule, InstrumentProfile
@@ -78,13 +79,24 @@ class TestLoadInstrument:
         assert profile.fwhm_cutout_half == default.fwhm_cutout_half
         assert profile.contamination_tolerance == default.contamination_tolerance
         assert profile.moffat_beta == default.moffat_beta
-        # The framing constants (issue #83) live in profile.json but must match
-        # the class defaults, so the bundled and default profiles agree.
-        assert profile.header_center_offset == default.header_center_offset
         assert profile.cone_radius_margin == default.cone_radius_margin
         # DR2 A/B (issue #83) found widening the cone is net harmful, so the
         # default margin is 0.0 (no widening); guard against an accidental revert.
         assert default.cone_radius_margin == 0.0
+
+    def test_seestar_header_pointing_is_fk5_of_date(self):
+        """
+        The bundled Seestar50 declares its header pointing as FK5 of date.
+
+        The Seestar writes RA/DEC in the equinox of the observation date; a bare
+        ``InstrumentProfile()`` assumes an ICRS header so a custom telescope does
+        not inherit that.
+        """
+        profile = load_instrument("Seestar50")
+        assert (profile.header_frame, profile.header_equinox) == ("fk5", "date")
+
+        default = InstrumentProfile()
+        assert (default.header_frame, default.header_equinox) == ("icrs", "J2000")
 
     def test_seestar_bundle_carries_header_match_rule(self):
         """
@@ -366,3 +378,10 @@ class TestFileRoundTrip:
         path = tmp_path / "s50.json"
         profile.to_file(path)
         assert InstrumentProfile.from_file(path) == profile
+
+    def test_from_file_rejects_removed_header_center_offset(self, tmp_path):
+        """A profile file still carrying ``header_center_offset`` fails to load."""
+        path = tmp_path / "old.json"
+        path.write_text('{"name": "Old", "header_center_offset": [-0.32, 0.15]}')
+        with pytest.raises(ValidationError, match="header_equinox"):
+            InstrumentProfile.from_file(path)

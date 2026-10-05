@@ -5,7 +5,8 @@
     "fwhm_cutout_half": 25,
     "contamination_tolerance": 0.01,
     "moffat_beta": 3.0,
-    "header_center_offset": [-0.32, 0.15],
+    "header_frame": "fk5",
+    "header_equinox": "date",
     "cone_radius_margin": 0.0,
     "header_match": [{"keyword": "INSTRUME", "pattern": "Seestar S50"}],
     "header_map": {

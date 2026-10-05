@@ -220,6 +220,32 @@ class TestValidators:
         with pytest.raises(ValidationError, match="contamination_seeing_margin"):
             InstrumentProfile(contamination_seeing_margin=margin)
 
+    @pytest.mark.parametrize("equinox", ["date", "J2000", "B1950", "J2025.5"])
+    def test_valid_header_equinox_accepted(self, equinox):
+        """``"date"`` and astropy J/B epoch strings are valid header equinoxes."""
+        assert InstrumentProfile(header_equinox=equinox).header_equinox == equinox
+
+    @pytest.mark.parametrize("equinox", ["now", "2000", "junk", "2025-01-01"])
+    def test_invalid_header_equinox_rejected(self, equinox):
+        """Anything that is neither ``"date"`` nor a J/B epoch string is rejected."""
+        with pytest.raises(ValidationError, match="header_equinox"):
+            InstrumentProfile(header_equinox=equinox)
+
+    def test_unknown_header_frame_rejected(self):
+        """Only ``"icrs"`` and ``"fk5"`` are accepted header frames."""
+        with pytest.raises(ValidationError, match="header_frame"):
+            InstrumentProfile(header_frame="galactic")
+
+    @pytest.mark.parametrize("old_value", [[-0.32, 0.15], None])
+    def test_removed_header_center_offset_rejected(self, old_value):
+        """The removed ``header_center_offset`` key is a hard error with a hint."""
+        with pytest.raises(ValidationError) as excinfo:
+            InstrumentProfile(header_center_offset=old_value)
+        assert "header_frame" in str(excinfo.value)
+        assert "header_equinox" in str(excinfo.value)
+        with pytest.raises(ValidationError, match="header_frame"):
+            InstrumentProfile.model_validate({"header_center_offset": old_value})
+
     def test_contaminant_default_tracks_gaia(self):
         """The derived contaminant limit follows a custom Gaia limit by +3."""
         gaia_limit = 14

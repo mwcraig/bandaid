@@ -40,44 +40,122 @@ from bandaid.photometry import (
     neighbor_contamination_flag_sky,
 )
 
+# FK5(J2000) differs from ICRS by well under a tenth of an arcsecond; 25 years of
+# precession moves a pointing by about a third of a degree.
+FRAME_TIE_ARCSEC = 0.1
+PRECESSION_MIN_DEG = 0.3
+
 
 class TestEstimateCenterFromHeader:
     """Unit tests for ``estimate_center_from_header``."""
 
-    def test_walks_header_pointing_by_profile_offset(self):
-        """The header pointing is shifted to the field center by the profile vector."""
-        # The bare Seestar defaults carry the framing offset (the default pipeline
-        # is the Seestar), so the estimate walks the header away from the corner.
-        profile = InstrumentProfile()
-        d_ra_cosdec, d_dec = profile.header_center_offset
-        metadata = {"ra": 10.0, "dec": 30.0}
+    # A profile whose header pointing is in the equinox of the observation date,
+    # like the bundled Seestar50.
+    OF_DATE = InstrumentProfile(header_frame="fk5", header_equinox="date")
 
-        ra, dec = scripts.estimate_center_from_header(metadata, profile)
-
-        assert dec == pytest.approx(30.0 + d_dec)
-        # The RA offset is stored as Delta(RA*cos(dec)); dividing by cos(dec)
-        # recovers the RA shift itself.
-        assert ra == pytest.approx(10.0 + d_ra_cosdec / np.cos(np.radians(30.0)))
-
-    def test_no_offset_returns_header_unchanged(self):
-        """A profile without framing constants returns the raw header pointing."""
-        profile = InstrumentProfile(header_center_offset=None)
+    @pytest.mark.parametrize("header_equinox", ["J2000", "date", "J2025.5"])
+    def test_icrs_header_is_returned_unchanged(self, header_equinox):
+        """An ICRS header pointing passes through; the equinox is not consulted."""
+        profile = InstrumentProfile(header_frame="icrs", header_equinox=header_equinox)
         metadata = {"ra": 10.0, "dec": 30.0}
 
         assert scripts.estimate_center_from_header(metadata, profile) == (10.0, 30.0)
 
+    def test_default_profile_is_icrs(self):
+        """A bare profile treats the header as ICRS, so nothing is converted."""
+        metadata = {"ra": 10.0, "dec": 30.0}
+
+        center = scripts.estimate_center_from_header(metadata, InstrumentProfile())
+
+        assert center == (10.0, 30.0)
+
+    def test_icrs_ra_is_wrapped_into_range(self):
+        """An out-of-range ICRS header RA is wrapped into [0, 360)."""
+        ra, dec = scripts.estimate_center_from_header(
+            {"ra": -0.22, "dec": 0.0}, InstrumentProfile()
+        )
+
+        assert ra == pytest.approx(359.78)
+        assert dec == 0.0
+
+    @pytest.mark.parametrize(
+        ("ra", "dec", "obs_time", "expected_shift"),
+        [
+            # (Delta(RA*cos(dec)), Delta(dec)) in degrees from the header pointing
+            # to the plate-solved field center, as predicted by precession for
+            # fields spread around the sky.
+            (26.6833, 13.0547, "2025-09-09T03:00:00", (-0.335, -0.128)),
+            (172.45, 30.07, "2026-03-15T05:00:00", (-0.302, 0.145)),
+            (157.6, 70.5, "2026-03-15T05:00:00", (-0.164, 0.134)),
+        ],
+        ids=["LS Psc", "TU UMa", "Qatar-8"],
+    )
+    def test_of_date_header_is_precessed_to_icrs(
+        self, ra, dec, obs_time, expected_shift
+    ):
+        """A header in the equinox of date is converted back to ICRS."""
+        metadata = {"ra": ra, "dec": dec, "obs_time": obs_time}
+
+        center_ra, center_dec = scripts.estimate_center_from_header(
+            metadata, self.OF_DATE
+        )
+
+        d_ra_cosdec = (center_ra - ra) * np.cos(np.radians(dec))
+        assert d_ra_cosdec == pytest.approx(expected_shift[0], abs=0.01)
+        assert center_dec - dec == pytest.approx(expected_shift[1], abs=0.01)
+
+    def test_fk5_j2000_header_moves_only_by_the_frame_tie(self):
+        """An FK5 J2000 header differs from ICRS by well under an arcsecond."""
+        profile = InstrumentProfile(header_frame="fk5", header_equinox="J2000")
+
+        ra, dec = scripts.estimate_center_from_header(
+            {"ra": 10.0, "dec": 30.0}, profile
+        )
+
+        moved = SkyCoord(ra, dec, unit="deg").separation(
+            SkyCoord(10.0, 30.0, unit="deg")
+        )
+        assert moved.arcsec < FRAME_TIE_ARCSEC
+
+    def test_fixed_equinox_ignores_the_observation_time(self):
+        """A fixed header equinox gives one answer whatever (or no) obs_time."""
+        profile = InstrumentProfile(header_frame="fk5", header_equinox="J2025.5")
+        pointing = {"ra": 10.0, "dec": 30.0}
+
+        without_time = scripts.estimate_center_from_header(pointing, profile)
+        with_time = scripts.estimate_center_from_header(
+            {**pointing, "obs_time": "2010-01-01T00:00:00"}, profile
+        )
+
+        assert with_time == pytest.approx(without_time)
+        # 25.5 years of precession is a third of a degree, so the conversion
+        # was applied.
+        moved = SkyCoord(*without_time, unit="deg").separation(
+            SkyCoord(10.0, 30.0, unit="deg")
+        )
+        assert moved.deg > PRECESSION_MIN_DEG
+
+    @pytest.mark.parametrize(
+        "time_fields",
+        [{}, {"obs_time": None}, {"obs_time": "not-a-date"}],
+        ids=["obs_time-missing", "obs_time-None", "obs_time-unparsable"],
+    )
+    def test_of_date_header_needs_an_observation_time(self, time_fields):
+        """Without a usable observation time an of-date header cannot be converted."""
+        metadata = {"ra": 10.0, "dec": 30.0, **time_fields}
+
+        with pytest.raises(FrameMetadataError, match="obs_time"):
+            scripts.estimate_center_from_header(metadata, self.OF_DATE)
+
     def test_string_pointing_is_coerced_to_float(self):
         """A numeric-string header pointing (the raw @RA/@DEC form) is coerced."""
         # @RA/@DEC pass the header value through untouched, so it often arrives
-        # as a numeric string; the estimate must do arithmetic on floats.
-        profile = InstrumentProfile()
+        # as a numeric string.
         metadata = {"ra": "10.0", "dec": "0.0"}
 
-        ra, dec = scripts.estimate_center_from_header(metadata, profile)
+        center = scripts.estimate_center_from_header(metadata, InstrumentProfile())
 
-        d_ra_cosdec, d_dec = profile.header_center_offset
-        assert ra == pytest.approx(10.0 + d_ra_cosdec)  # cos(0) == 1
-        assert dec == pytest.approx(d_dec)
+        assert center == (10.0, 0.0)
 
     @pytest.mark.parametrize(
         "metadata",
@@ -93,42 +171,22 @@ class TestEstimateCenterFromHeader:
         A missing/non-numeric pointing fails as a metadata error, not a bare one.
 
         The coercion is the single choke point every center path funnels through
-        (the estimate, the raw-header fallback in ``resolve_field_center``, and
-        ``check_frame_consistency``), so translating the failure here keeps the
-        recoverable/fatal error semantics and per-frame labelling consistent
-        (#58/#78) instead of leaking a bare ``KeyError``/``TypeError``/``ValueError``.
+        (``prepare_batch`` and ``check_frame_consistency``), so translating the
+        failure here keeps the recoverable/fatal error semantics and per-frame
+        labelling consistent (#58/#78) instead of leaking a bare
+        ``KeyError``/``TypeError``/``ValueError``.
         """
         with pytest.raises(FrameMetadataError, match="pointing"):
             scripts.estimate_center_from_header(metadata, InstrumentProfile())
 
-    def test_wrapped_ra_stays_in_range(self):
-        """A field near RA 0h whose offset pushes RA negative wraps into [0, 360)."""
-        # Seestar offset -0.32 deg at dec 0: RA 0.1 -> -0.22, which must wrap to
-        # ~359.78 before it reaches the Gaia cone query rather than going negative.
-        profile = InstrumentProfile()
-        ra, _dec = scripts.estimate_center_from_header({"ra": 0.1, "dec": 0.0}, profile)
+    def test_precession_across_ra_zero_stays_in_range(self):
+        """A field near RA 0h that crosses 0 under precession wraps into [0, 360)."""
+        metadata = {"ra": 0.1, "dec": 0.0, "obs_time": "2026-04-28T03:03:43"}
 
-        # approx(359.78) both pins the wrapped value and confirms it is a
-        # non-negative, in-range RA (0.1 - 0.32 would otherwise be -0.22).
-        assert ra >= 0.0
-        assert ra == pytest.approx(359.78)
+        ra, _dec = scripts.estimate_center_from_header(metadata, self.OF_DATE)
 
-
-class TestResolveFieldCenter:
-    """Unit tests for ``resolve_field_center``'s priority order and errors."""
-
-    def test_raw_header_fallback_translates_bad_pointing(self):
-        """
-        The raw-header fallback surfaces a bad pointing as a metadata error.
-
-        With no framing constants and no resolvable object name the resolver
-        falls back to the raw header pointing; a non-numeric value there must
-        raise ``FrameMetadataError`` like every other center path, not a bare
-        ``ValueError``.
-        """
-        profile = InstrumentProfile(header_center_offset=None)
-        with pytest.raises(FrameMetadataError, match="pointing"):
-            scripts.resolve_field_center({"ra": "junk", "dec": 0.0}, profile)
+        # 0.1 deg minus ~0.34 deg of precession would be negative unwrapped.
+        assert ra == pytest.approx(359.76, abs=0.01)
 
 
 class TestPrepareBatch:
@@ -305,10 +363,10 @@ class TestPrepareBatch:
 
     def test_gaia_queried_at_resolved_center_over_unwidened_field(self, mocker):
         """
-        Gaia is queried at the resolved field center over the (unwidened) field.
+        Gaia is queried at the ICRS field center over the (unwidened) field.
 
-        The Seestar header points ~0.35 deg off the field center, so the cone is
-        centered on the header-estimate field center (not the raw header). The
+        The Seestar header pointing is in the equinox of date, so the cone is
+        centered on that pointing converted to ICRS (not the raw header). The
         cone is NOT widened: the default margin is 0.0 because a live-DR2 A/B
         found widening reshuffles the plate-solver asterisms and loses frames
         (issue #83).
@@ -316,12 +374,16 @@ class TestPrepareBatch:
         prep_data = _patch_prep(mocker)
         scripts.prepare_batch("frame1.fits", cnn=object())
 
-        instrument = InstrumentProfile()
+        instrument = load_instrument("Seestar50")
         expected_center = scripts.estimate_center_from_header(
             prep_data.metadata, instrument
         )
         center, fov = prep_data.cached_gaia_radecs.call_args.args
         assert center == pytest.approx(expected_center)
+        # The precession since J2000 is about a third of a degree, so the raw
+        # header pointing would not satisfy the assertion above.
+        raw = SkyCoord(prep_data.metadata["ra"], prep_data.metadata["dec"], unit="deg")
+        assert SkyCoord(*center, unit="deg").separation(raw).deg > PRECESSION_MIN_DEG
         # fov_rad is a field *radius*; with the default 0.0 margin the query takes
         # exactly the full field (2 * radius), with no widening.
         assert instrument.cone_radius_margin == 0.0
@@ -330,61 +392,20 @@ class TestPrepareBatch:
         )
 
     def test_batchprep_center_is_resolved_field_center(self, mocker):
-        """``BatchPrep.center`` stores the resolved true center, not the header."""
+        """``BatchPrep.center`` stores the ICRS field center, not the header."""
         prep_data = _patch_prep(mocker)
 
         prep = scripts.prepare_batch("frame1.fits", cnn=object())
 
         expected = scripts.estimate_center_from_header(
-            prep_data.metadata, InstrumentProfile()
+            prep_data.metadata, load_instrument("Seestar50")
         )
         assert prep.center == pytest.approx(expected)
 
-    def test_falls_back_to_from_name_without_framing_constants(self, mocker):
-        """A profile with no framing offset resolves the center by object name."""
-        metadata = _batch_metadata()
-        metadata["object"] = "SS Leo"
-        prep_data = _patch_prep(mocker, metadata=metadata)
-        resolved = SkyCoord(168.0, 11.0, unit="deg")
-        mocker.patch.object(scripts.SkyCoord, "from_name", return_value=resolved)
-        instrument = InstrumentProfile(name="NoFraming", header_center_offset=None)
-
-        scripts.prepare_batch(
-            "frame1.fits",
-            cnn=object(),
-            config=PhotometryConfig(instrument=instrument),
-        )
-
-        center, _fov = prep_data.cached_gaia_radecs.call_args.args
-        assert center == pytest.approx((168.0, 11.0))
-
-    def test_from_name_failure_falls_back_to_raw_header(self, mocker):
-        """When object resolution fails the center degrades to the raw header."""
-        metadata = _batch_metadata()
-        metadata["object"] = "Unresolvable"
-        prep_data = _patch_prep(mocker, metadata=metadata)
-
-        def _boom(_name):
-            msg = "name not resolved"
-            raise ValueError(msg)
-
-        mocker.patch.object(scripts.SkyCoord, "from_name", side_effect=_boom)
-        instrument = InstrumentProfile(name="NoFraming", header_center_offset=None)
-
-        scripts.prepare_batch(
-            "frame1.fits",
-            cnn=object(),
-            config=PhotometryConfig(instrument=instrument),
-        )
-
-        center, _fov = prep_data.cached_gaia_radecs.call_args.args
-        assert center == pytest.approx((metadata["ra"], metadata["dec"]))
-
-    def test_absent_object_falls_back_to_raw_header(self, mocker):
-        """No ``object`` metadata and no framing constants uses the raw header."""
-        # _batch_metadata() carries no "object", so from_name is never attempted.
+    def test_icrs_profile_centers_on_raw_header(self, mocker):
+        """A profile with an ICRS header queries Gaia at the header pointing."""
         prep_data = _patch_prep(mocker)
-        instrument = InstrumentProfile(name="NoFraming", header_center_offset=None)
+        instrument = InstrumentProfile(name="IcrsHeader")
 
         scripts.prepare_batch(
             "frame1.fits",
@@ -395,6 +416,21 @@ class TestPrepareBatch:
         center, _fov = prep_data.cached_gaia_radecs.call_args.args
         assert center == pytest.approx(
             (prep_data.metadata["ra"], prep_data.metadata["dec"])
+        )
+
+    def test_center_never_resolves_the_object_name(self, mocker):
+        """The field center comes from the header; the object name is not looked up."""
+        metadata = _batch_metadata()
+        metadata["object"] = "SS Leo"
+        prep_data = _patch_prep(mocker, metadata=metadata)
+        from_name = mocker.patch.object(scripts.SkyCoord, "from_name")
+
+        scripts.prepare_batch("frame1.fits", cnn=object())
+
+        from_name.assert_not_called()
+        center, _fov = prep_data.cached_gaia_radecs.call_args.args
+        assert center == pytest.approx(
+            scripts.estimate_center_from_header(metadata, load_instrument("Seestar50"))
         )
 
     def test_obs_epoch_forwarded_to_gaia_query(self, mocker):
@@ -462,8 +498,8 @@ class TestPrepareBatch:
         """
         A bad first-frame pointing fails as a metadata error naming the frame.
 
-        ``resolve_field_center`` knows the pointing is bad but not which file it
-        came from; ``prepare_batch`` attaches ``first_file`` before re-raising,
+        ``estimate_center_from_header`` knows the pointing is bad but not which file
+        it came from; ``prepare_batch`` attaches ``first_file`` before re-raising,
         matching the ``metadata_from_header``/``obs_time`` labelling right above
         the call so the failure is actionable.
         """
@@ -925,10 +961,10 @@ class TestBatchPrep:
 class TestCheckFrameConsistency:
     """Unit tests for the per-frame pointing/shape guard."""
 
-    # The true field center for a Seestar frame pointing at RA=10/DEC=0: the raw
-    # header walked by the header_center_offset (-0.32, +0.15). prep.center now
-    # holds this resolved center, so a stable frame reads ~0 offset against it.
-    STABLE_CENTER = (9.68, 0.15)
+    # The field center for a frame pointing at RA=10/DEC=0 under the bare
+    # (ICRS-header) profile these tests use: the header pointing itself.
+    # prep.center holds this, so a stable frame reads ~0 offset against it.
+    STABLE_CENTER = (10.0, 0.0)
 
     @pytest.fixture(autouse=True)
     def _isolate_registry(self, isolate_registry):
@@ -984,17 +1020,37 @@ class TestCheckFrameConsistency:
 
     def test_drifted_frame_within_radius_accepted(self):
         """
-        A frame drifted <1 field radius from the true center is accepted.
+        A frame drifted <1 field radius from the batch center is accepted.
 
-        The check compares the frame's *estimated* field center to the prep's
-        true center, so the ~0.35 deg header-to-center baseline no longer eats
-        into the drift margin. A frame whose header moved 0.5 deg (well inside
-        the 0.74 deg radius) is kept, where comparing the raw header against the
-        true center would have falsely rejected it.
+        A frame whose header moved 0.5 deg (well inside the 0.74 deg radius) is
+        kept; only drift beyond the field radius is rejected.
         """
-        # RA=10.5 -> estimated center (10.18, 0.15), 0.5 deg from STABLE_CENTER.
+        # RA=10.5 is 0.5 deg from STABLE_CENTER under the ICRS-header profile.
         header = _consistency_header(RA=10.5)
         scripts.check_frame_consistency("ok.fits", header, self._prep())
+
+    def test_fk5_of_date_frame_compared_in_icrs(self):
+        """With an fk5/"date" profile the frame's converted center is compared."""
+        profile = InstrumentProfile(header_frame="fk5", header_equinox="date")
+        obs_time = "2026-04-28T03:03:43"
+        header = _consistency_header(**{"DATE-OBS": obs_time})
+        center = scripts.estimate_center_from_header(
+            {"ra": 10.0, "dec": 0.0, "obs_time": obs_time}, profile
+        )
+        # The precession shift (~0.3 deg) is real: the raw header would not match.
+        assert center != (10.0, 0.0)
+        prep = self._prep(center=center, config=PhotometryConfig(instrument=profile))
+        scripts.check_frame_consistency("ok.fits", header, prep)
+
+    def test_fk5_of_date_frame_without_obs_time_labeled_with_file(self):
+        """An fk5/"date" frame lacking DATE-OBS is a metadata error naming the file."""
+        profile = InstrumentProfile(header_frame="fk5", header_equinox="date")
+        prep = self._prep(config=PhotometryConfig(instrument=profile))
+        header = _consistency_header()
+        del header["DATE-OBS"]
+        with pytest.raises(FrameMetadataError, match="obs_time") as excinfo:
+            scripts.check_frame_consistency("bad.fits", header, prep)
+        assert excinfo.value.file == "bad.fits"
 
     def test_missing_keyword_raises_metadata_error(self):
         """A header missing a needed keyword is a metadata error."""
