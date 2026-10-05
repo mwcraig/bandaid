@@ -47,7 +47,7 @@ with a numeric suffix on the subdirectory).
 | ---------------------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `FILES...`                         | —                | Frames to photometer: directories, globs, and/or paths.                                                                                 |
 | `-o, --output-dir DIR`             | `.`              | Where to write the `.star` files and QA manifest.                                                                                       |
-| `--instrument NAME`                | `Seestar50`      | A bundled/registered instrument profile (see `bandaid instrument list`).                                                                |
+| `--instrument NAME`                | auto-detect      | A bundled/registered instrument profile (see `bandaid instrument list`).                                                                |
 | `--profile FILE`                   | —                | An instrument-profile JSON file (alternative to `--instrument`).                                                                        |
 | `--config FILE`                    | —                | A full `PhotometryConfig` JSON file (see `bandaid config init`).                                                                        |
 | `--gaia-mag-limit LIMIT`           | `15.0`           | Magnitude limit for the photometry targets (overrides the config).                                                                      |
@@ -68,6 +68,18 @@ with a numeric suffix on the subdirectory).
 `--profile`, not both. `--gaia-mag-limit` and `--min-snr` then override only
 those two `source_selection` fields, leaving the rest of the loaded config
 (including a `--config` file's `contaminant_mag_offset`) untouched.
+
+**Instrument resolution, most to least specific:** `--instrument` or
+`--profile` > a `--config` file whose `instrument` field is a concrete
+profile (not `null`) > auto-detection from the first frame's FITS header
+(`INSTRUME` for the bundled Seestar50) > a clean error naming what was
+checked. With none of `--instrument`/`--profile`/`--config` given — the
+common case for a Seestar user — the run auto-detects; an unmatched or
+headerless first frame stops the batch with a message naming the header
+values seen and the available/ambiguous profiles, rather than silently
+guessing. See
+[Auto-detection from the FITS header](instrument_profiles.md#auto-detection-from-the-fits-header)
+for the full rationale.
 
 `--forced-targets` appends its rows to the photometry target list for every
 frame in the batch. `FILE` needs only `ra`/`dec` columns, matched
@@ -128,7 +140,9 @@ $ bandaid config validate config.json
 ```
 
 `config init` writes (or prints, with no `-o`) a default `PhotometryConfig` as
-JSON. `config validate` parses a config file and reports any validation errors
+JSON — its `"instrument"` field is `null`, meaning auto-detect; fill in a
+concrete profile (e.g. from `bandaid instrument show Seestar50`) to pin one.
+`config validate` parses a config file and reports any validation errors
 with a non-zero exit code, so you catch a typo before it fails deep in a batch.
 
 ## `bandaid weights` — get the default Ballet weights
