@@ -1681,6 +1681,23 @@ class TestProcessOneImage:
         rgb_sum = sum(result[name]["tot_count"] for name in ("TR", "TG", "TB"))
         np.testing.assert_allclose(result["L4"]["tot_count"], rgb_sum)
 
+    def test_tables_carry_the_solved_scale_and_offset(self, l4_frame):
+        """
+        Every table's meta carries the solved plate scale and solve offset.
+
+        ``_qa_record_ok`` only sees the tables, so ``process_one_image`` stamps
+        the solved scale (arcsec/px) and the solved-centre-to-header-centre
+        separation (deg) on each one.
+        """
+        path, masks = l4_frame
+
+        result = process_one_image(path, {}, _REF_RADECS, None, masks)
+
+        for table in result.values():
+            # The stubbed TAN WCS is built at 2.4 arcsec/px.
+            assert table.meta["wcs_pixscale"] == pytest.approx(2.4, rel=1e-3)
+            assert 0 <= table.meta["solve_offset_deg"] < 1
+
     def test_l4_channel_skips_the_full_frame_photometry_pass(self, l4_frame, mocker):
         """
         L4's own full-frame ``measure_photometry`` pass is skipped (PR #120).
