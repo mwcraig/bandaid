@@ -423,8 +423,24 @@ class TestPrepareImage:
 
     @pytest.mark.parametrize(
         ("ra", "dec"),
-        [("N/A", "N/A"), (True, True), (None, None), (10.0, 91.0)],
-        ids=["non-numeric", "bool", "missing", "dec-91"],
+        [
+            ("N/A", "N/A"),
+            (True, True),
+            (True, 20.0),
+            (10.0, True),
+            (None, None),
+            (10.0, 91.0),
+            (np.nan, 20.0),
+        ],
+        ids=[
+            "non-numeric",
+            "bool",
+            "ra-bool",
+            "dec-bool",
+            "missing",
+            "dec-91",
+            "ra-nan",
+        ],
     )
     def test_unusable_header_radec_raises(self, stub_prepare_image_externals, ra, dec):
         """Header ra/dec that are not a usable sky position reject the frame."""
