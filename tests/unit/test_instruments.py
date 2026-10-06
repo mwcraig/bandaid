@@ -24,7 +24,8 @@ from bandaid.instruments import (
 )
 
 EXPECTED_CONE_MARGIN = 0.4
-EXPECTED_WCS_POINTING_TOLERANCE = 0.25
+EXPECTED_WCS_POINTING_TOLERANCE = 0.30
+EXPECTED_SEESTAR_PIXSCALE = 2.376
 EXPECTED_SOLVE_POOL_SCALE = 0.9
 
 
@@ -93,7 +94,7 @@ class TestLoadInstrument:
         assert load_instrument("Seestar50").cone_radius_margin == EXPECTED_CONE_MARGIN
 
     def test_wcs_pointing_tolerance_default(self):
-        """The pointing tolerance defaults to 0.25 deg, and the bundle agrees."""
+        """The pointing tolerance defaults to 0.30 deg, and the bundle agrees."""
         assert InstrumentProfile().wcs_pointing_tolerance == (
             EXPECTED_WCS_POINTING_TOLERANCE
         )
@@ -142,6 +143,9 @@ class TestLoadInstrument:
         profile = load_instrument("Seestar50")
         assert profile.header_map["obs_time"] == "@DATE-OBS"
         assert profile.header_map["egain"] == pytest.approx(0.3116)
+        assert profile.header_map["pixscale"] == pytest.approx(
+            EXPECTED_SEESTAR_PIXSCALE
+        )
 
     def test_unknown_instrument_raises(self):
         """An unregistered, unbundled name raises rather than guessing."""

@@ -41,8 +41,8 @@ EXPECTED_THRESH = 0.5
 EXPECTED_DETECTION_OPENING = 5
 EXPECTED_FWHM_CUTOUT_HALF = 25
 EXPECTED_FWHM_N_STARS = 25
-EXPECTED_WCS_SCALE_TOLERANCE = 0.05
-EXPECTED_WCS_POINTING_TOLERANCE = 0.25
+EXPECTED_WCS_SCALE_TOLERANCE = 0.005
+EXPECTED_WCS_POINTING_TOLERANCE = 0.30
 # Not a legacy constant: the "SNR >= 2" floor did not previously exist anywhere
 # in bandaid (issue #101). 2.0 is a new, deliberate default, pinned here so an
 # accidental change to it is caught.

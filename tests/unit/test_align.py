@@ -183,11 +183,17 @@ class TestAlign:
             (2.4, 2.4, None),
             (4.2, 2.4, WCSScaleError),
             (4.2, None, None),
+            (2.359, 2.376, WCSScaleError),
+            (2.383, 2.376, None),
+            (2.3705, 2.376, None),
         ],
         ids=[
             "matching-scale-accepted",
             "wrong-scale-rejected",
             "no-expected-scale-skips-check",
+            "degraded-solve-0.7-percent-off-rejected",
+            "real-spread-0.3-percent-high-accepted",
+            "real-spread-0.2-percent-low-accepted",
         ],
     )
     def test_scale_check_gates_on_expected_pixscale(
@@ -200,7 +206,9 @@ class TestAlign:
         twirl-returns-a-self-consistent-but-wrong-scale case, ~4.2 vs the true
         ~2.4 arcsec/px) raises WCSScaleError rather than photometering at the
         wrong pixel positions; and expected_pixscale=None skips the check
-        entirely (back-compat), trusting even a wrong-scale WCS.
+        entirely (back-compat), trusting even a wrong-scale WCS. The default
+        window is +/-0.5%: a degraded solve 0.7% off the profile scale is
+        rejected, while the 0.2-0.3% spread of good solves is accepted.
         """
         solved_wcs = _make_tan_wcs(pixscale=pixscale)
         mocker.patch("bandaid.photometry.compute_wcs", return_value=solved_wcs)
