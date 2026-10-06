@@ -25,6 +25,7 @@ from bandaid.exceptions import (
     InstrumentDetectionError,
     NoUsableStarsError,
     TooFewStarsError,
+    WCSSolveError,
 )
 from bandaid.image2sl_qt import bayer_balance_image, generate_bayer_masks
 from bandaid.instruments import register_instrument
@@ -423,6 +424,155 @@ class TestPrepareImage:
         )
 
         assert externals.align.call_args.kwargs["expected_center"] is None
+
+    @staticmethod
+    def _pool_catalog(center, offsets_deg) -> np.ndarray:
+        """Catalog stars at the given dec offsets (deg) from ``center``, in order."""
+        ra, dec = center
+        return np.array([[ra, dec + off] for off in offsets_deg])
+
+    def test_solve_pool_cut_to_stars_near_header_center(
+        self, stub_prepare_image_externals
+    ):
+        """
+        ``align`` gets only catalog stars near the header pointing, in order.
+
+        The brightest (first) stars are far off-field; the cut must drop them
+        and keep the fainter near stars in their original brightest-first order.
+        """
+        fov_rad = 1.0
+        externals = stub_prepare_image_externals(
+            metadata={
+                "creator": "spy",
+                "pixscale": 2.4,
+                "ra": 10.0,
+                "dec": 20.0,
+                "fov_rad": fov_rad,
+            }
+        )
+        center = (10.0, 20.0)
+        radecs = self._pool_catalog(center, [5.0, -4.0, 0.5, -0.2, 0.0, 3.0])
+
+        prepare_image(
+            "unused.fits",
+            radecs,
+            None,
+            config=PhotometryConfig(instrument=InstrumentProfile()),
+        )
+
+        received = externals.align.call_args.args[1]
+        np.testing.assert_array_equal(received, radecs[[2, 3, 4]])
+
+    def test_solve_pool_radius_scales_with_config(self, stub_prepare_image_externals):
+        """A star at 0.8 fov_rad is kept at scale 0.9 and dropped at scale 0.5."""
+        fov_rad = 1.0
+        metadata = {
+            "creator": "spy",
+            "pixscale": 2.4,
+            "ra": 10.0,
+            "dec": 20.0,
+            "fov_rad": fov_rad,
+        }
+        radecs = self._pool_catalog((10.0, 20.0), [0.0, 0.8 * fov_rad])
+
+        externals = stub_prepare_image_externals(metadata=metadata)
+        prepare_image(
+            "unused.fits",
+            radecs,
+            None,
+            config=PhotometryConfig(
+                instrument=InstrumentProfile(solve_pool_radius_scale=0.9)
+            ),
+        )
+        assert len(externals.align.call_args.args[1]) == len(radecs)
+
+        externals = stub_prepare_image_externals(metadata=metadata)
+        prepare_image(
+            "unused.fits",
+            radecs,
+            None,
+            config=PhotometryConfig(
+                instrument=InstrumentProfile(solve_pool_radius_scale=0.5)
+            ),
+        )
+        assert len(externals.align.call_args.args[1]) == len(radecs) - 1
+
+    def test_solve_pool_full_catalog_without_header_center(
+        self, stub_prepare_image_externals
+    ):
+        """No usable header pointing means the full catalog reaches ``align``."""
+        externals = stub_prepare_image_externals(
+            metadata={"creator": "spy", "pixscale": 2.4, "fov_rad": 1.0}
+        )
+        radecs = self._pool_catalog((10.0, 20.0), [5.0, 0.0, -4.0])
+
+        prepare_image("unused.fits", radecs, None)
+
+        assert externals.align.call_args.args[1] is radecs
+
+    def test_solve_pool_full_catalog_without_usable_fov_rad(
+        self, stub_prepare_image_externals
+    ):
+        """A missing ``fov_rad`` falls back to the full catalog, not an error."""
+        externals = stub_prepare_image_externals(
+            metadata={"creator": "spy", "pixscale": 2.4, "ra": 10.0, "dec": 20.0}
+        )
+        radecs = self._pool_catalog((10.0, 20.0), [5.0, 0.0, -4.0])
+
+        prepare_image(
+            "unused.fits",
+            radecs,
+            None,
+            config=PhotometryConfig(instrument=InstrumentProfile()),
+        )
+
+        assert externals.align.call_args.args[1] is radecs
+
+    def test_solve_pool_full_catalog_with_supplied_wcs(
+        self, stub_prepare_image_externals
+    ):
+        """A caller-supplied WCS skips the cut; the full catalog reaches ``align``."""
+        externals = stub_prepare_image_externals(
+            metadata={
+                "creator": "spy",
+                "pixscale": 2.4,
+                "ra": 10.0,
+                "dec": 20.0,
+                "fov_rad": 1.0,
+            }
+        )
+        radecs = self._pool_catalog((10.0, 20.0), [5.0, 0.0, -4.0])
+
+        prepare_image("unused.fits", radecs, None, wcs=_make_tan_wcs())
+
+        assert externals.align.call_args.args[1] is radecs
+
+    def test_wcs_solve_error_reports_pool_size(self, stub_prepare_image_externals):
+        """A failed solve says how many catalog stars were in the frame's pool."""
+        externals = stub_prepare_image_externals(
+            metadata={
+                "creator": "spy",
+                "pixscale": 2.4,
+                "ra": 10.0,
+                "dec": 20.0,
+                "fov_rad": 1.0,
+            }
+        )
+        externals.align.side_effect = WCSSolveError("no match")
+        radecs = self._pool_catalog((10.0, 20.0), [5.0, 0.0, 0.1, -4.0])
+
+        with pytest.raises(WCSSolveError) as exc_info:
+            prepare_image(
+                "unused.fits",
+                radecs,
+                None,
+                config=PhotometryConfig(instrument=InstrumentProfile()),
+            )
+
+        text = str(exc_info.value)
+        assert "no match" in text
+        assert "unused.fits" in text
+        assert "solve pool: 2 catalog stars" in text
 
     def test_off_frame_catalog_stars_dropped_before_centroiding(
         self, stub_prepare_image_externals

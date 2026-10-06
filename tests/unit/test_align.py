@@ -16,6 +16,7 @@ from bandaid.photometry import (
     N_GAIA_STARS_ALIGN_RETRY,
     N_IMAGE_STARS_ALIGN,
     WCS_MATCH_TOLERANCE,
+    _solve_pool_near,
     align,
 )
 
@@ -408,3 +409,55 @@ class TestAlign:
     def test_wcs_pointing_error_is_wcs_solve_error(self):
         """WCSPointingError is a WCSSolveError so the batch loop still skips."""
         assert issubclass(WCSPointingError, WCSSolveError)
+
+
+class TestSolvePoolNear:
+    """Unit tests for the per-frame solve-pool cone mask."""
+
+    @staticmethod
+    def _oracle(radecs, ra, dec, radius) -> np.ndarray:
+        center = SkyCoord(ra, dec, unit="deg")
+        stars = SkyCoord(radecs[:, 0], radecs[:, 1], unit="deg")
+        return stars.separation(center).deg <= radius
+
+    def test_matches_skycoord_separation_and_preserves_order(self):
+        """Mask agrees with astropy separations; the kept subset keeps input order."""
+        rng = np.random.default_rng(3)
+        n_stars = 200
+        radecs = np.column_stack(
+            [rng.uniform(9, 11, n_stars), rng.uniform(19, 21, n_stars)],
+        )
+        mask = _solve_pool_near(radecs, 10.0, 20.0, 0.7)
+
+        assert mask.dtype == bool
+        assert mask.shape == (n_stars,)
+        assert 0 < mask.sum() < n_stars
+        np.testing.assert_array_equal(mask, self._oracle(radecs, 10.0, 20.0, 0.7))
+        kept = np.flatnonzero(mask)
+        assert np.all(np.diff(kept) > 0)
+        np.testing.assert_array_equal(radecs[mask], radecs[kept])
+
+    def test_ra_wrap_across_zero(self):
+        """A star at RA 359.9 is 0.2 deg from a center at RA 0.1."""
+        radecs = np.array([[359.9, 10.0], [1.0, 10.0]])
+        mask = _solve_pool_near(radecs, 0.1, 10.0, 0.3)
+        np.testing.assert_array_equal(mask, [True, False])
+
+    def test_high_declination_uses_great_circle(self):
+        """10 deg of RA at dec +85 is ~0.87 deg of sky, not 10 deg."""
+        radecs = np.array([[20.0, 85.0]])
+        assert _solve_pool_near(radecs, 10.0, 85.0, 1.0)[0]
+        assert not _solve_pool_near(radecs, 10.0, 85.0, 0.5)[0]
+
+    def test_empty_input(self):
+        """An empty (0, 2) catalog gives an empty boolean mask."""
+        mask = _solve_pool_near(np.empty((0, 2)), 10.0, 20.0, 1.0)
+        assert mask.dtype == bool
+        assert mask.shape == (0,)
+
+    def test_zero_radius_keeps_only_coincident_star(self):
+        """Radius zero keeps only an exactly coincident star."""
+        radecs = np.array([[10.0, 20.0], [10.0, 20.001]])
+        np.testing.assert_array_equal(
+            _solve_pool_near(radecs, 10.0, 20.0, 0.0), [True, False]
+        )

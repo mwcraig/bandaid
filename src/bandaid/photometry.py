@@ -2467,6 +2467,82 @@ def _parse_obs_time(obs_time, *, file=None):
         raise FrameMetadataError(msg, file=file) from exc
 
 
+def _solve_pool_near(radecs, center_ra, center_dec, radius_deg):
+    """
+    Boolean mask of the catalog stars within a radius of a sky position.
+
+    Parameters
+    ----------
+    radecs : numpy.ndarray
+        Catalog RA/Dec in degrees, shape ``(N, 2)``.
+    center_ra : float
+        Right ascension of the cone center, in degrees.
+    center_dec : float
+        Declination of the cone center, in degrees.
+    radius_deg : float
+        Cone radius in degrees; stars at exactly this separation are kept.
+
+    Returns
+    -------
+    numpy.ndarray
+        Boolean array of length ``N``, True for stars inside the cone.
+
+    Notes
+    -----
+    Uses the haversine great-circle separation in plain numpy because this runs
+    once per frame, where building a ``SkyCoord`` would be needlessly slow.
+    Haversine stays accurate for the small separations involved.
+    """
+    ra = np.radians(radecs[:, 0])
+    dec = np.radians(radecs[:, 1])
+    c_ra = np.radians(center_ra)
+    c_dec = np.radians(center_dec)
+    half_chord = (
+        np.sin((dec - c_dec) / 2) ** 2
+        + np.cos(dec) * np.cos(c_dec) * np.sin((ra - c_ra) / 2) ** 2
+    )
+    separation = 2 * np.arcsin(np.sqrt(np.clip(half_chord, 0.0, 1.0)))
+    return np.degrees(separation) <= radius_deg
+
+
+def _frame_solve_pool(radecs, metadata, center, radius_scale):
+    """
+    Cut the catalog to the stars near one frame's pointing.
+
+    Parameters
+    ----------
+    radecs : numpy.ndarray
+        Catalog RA/Dec in degrees, shape ``(N, 2)``, brightest first.
+    metadata : dict
+        Frame metadata; ``fov_rad`` (field radius, degrees) sets the cone size.
+    center : astropy.coordinates.SkyCoord or None
+        The frame's pointing in ICRS, or None when it is unavailable.
+    radius_scale : float
+        Cone radius as a fraction of ``fov_rad``.
+
+    Returns
+    -------
+    solve_radecs : numpy.ndarray
+        The catalog stars inside the cone, in their original order; the full
+        ``radecs`` when ``center`` is None or ``fov_rad`` is not a finite
+        positive number.
+    pool_radius : float or None
+        The cone radius used in degrees, or None when no cut was made.
+    """
+    fov_rad = metadata.get("fov_rad")
+    if (
+        center is None
+        or isinstance(fov_rad, bool)
+        or not isinstance(fov_rad, (int, float))
+        or not np.isfinite(fov_rad)
+        or fov_rad <= 0
+    ):
+        return radecs, None
+    pool_radius = fov_rad * radius_scale
+    mask = _solve_pool_near(radecs, center.ra.deg, center.dec.deg, pool_radius)
+    return radecs[mask], pool_radius
+
+
 def estimate_center_from_header(metadata, profile):
     """
     Convert a frame's header pointing to an ICRS field center.
@@ -2553,7 +2629,9 @@ def prepare_image(
     file : str or Path
         Path to the FITS file.
     radecs : numpy.ndarray
-        Gaia reference sky coordinates (RA/Dec) used for WCS alignment.
+        Gaia reference sky coordinates (RA/Dec) used for WCS alignment, brightest
+        first. When a WCS is solved, only the stars within this frame's solve
+        pool (see Notes) are handed to `align`.
     cnn : object
         Centroiding CNN model: any object with a ``centroid(cutouts) -> (N, 2)``
         method.
@@ -2601,6 +2679,16 @@ def prepare_image(
         ``config.instrument`` is None and the frame's header matches zero or
         more than one bundled/registered instrument profile (propagated from
         `~bandaid.instruments.resolve_config_instrument`).
+
+    Notes
+    -----
+    The batch catalog can cover a wider cone than any single frame, so each
+    frame cuts it to the stars within ``metadata["fov_rad"]`` times
+    ``config.instrument.solve_pool_radius_scale`` degrees of its own header
+    pointing before solving, keeping brightest-first order. A radius below the
+    field radius keeps more of the brightest pool stars on the rectangular
+    frame. The cut is skipped (full catalog used) when the pointing or field
+    radius is unavailable or a WCS is supplied.
     """
     # "calibrate" the data and get initial detections for WCS alignment and
     # FWHM estimation. calibration_sequence raises TooFewStarsError (a
@@ -2683,10 +2771,18 @@ def prepare_image(
         expected_center = None
         shape = None
 
+    # Cut the catalog to this frame's own solve pool: the batch catalog can be
+    # wider than the frame, so only stars near the header pointing are offered
+    # to the plate solve. Without a pointing (or a usable field radius) the
+    # full catalog is used unchanged.
+    solve_radecs, pool_radius = _frame_solve_pool(
+        radecs, metadata, expected_center, instrument.solve_pool_radius_scale
+    )
+
     try:
         aligned_coords, this_wcs = align(
             coords,
-            radecs,
+            solve_radecs,
             photometry_coords=photometry_coords,
             wcs=wcs,
             expected_pixscale=expected_pixscale,
@@ -2698,6 +2794,11 @@ def prepare_image(
         # align does not know the source file; attach it here so the batch
         # loop can report which frame failed.
         exc.file = file
+        if pool_radius is not None:
+            exc.reason = (
+                f"{exc.reason} (solve pool: {len(solve_radecs)} catalog stars "
+                f"within {pool_radius:.2f} deg of the header pointing)"
+            )
         raise
 
     # Drop catalog stars that projected off-frame, before centroiding/photometry.
