@@ -23,8 +23,6 @@ from bandaid.config import InstrumentProfile, PhotometryConfig, SourceSelectionC
 from bandaid.photometry import (
     ANNULUS,
     RELATIVE_RADII,
-    _L4_OMITTED_COLUMNS,
-    _L4_RECOMBINED_COLUMNS,
     _MASK_INDEPENDENT_COLUMNS,
     ImageData,
     _aperture_annulus_geometry,
@@ -321,27 +319,27 @@ class TestBuildPhotometryTable:
         assert bkgd[0] != bkgd[1]
         np.testing.assert_allclose(bkgd, [true_sky, 4 * true_sky], rtol=0.05)
 
-    def test_l4_schema_tuples_partition_the_columns(self):
+    def test_l4_columns_are_the_built_columns_minus_the_unrecombinable(self):
         """
-        Every column built here is claimed by exactly one L4 schema tuple.
+        L4 has every built column except those not recombined across TR/TG/TB.
 
-        ``calculate_l4_quantities`` copies ``_MASK_INDEPENDENT_COLUMNS`` from
-        TR, computes ``_L4_RECOMBINED_COLUMNS`` and leaves out
-        ``_L4_OMITTED_COLUMNS``. A column added here without being sorted into
-        one of those would silently be missing from L4, so pin the partition.
+        A column added to ``build_photometry_table`` that
+        ``calculate_l4_quantities`` neither copies nor recombines would
+        silently be missing from L4, so compare the real tables.
         """
         coords = np.array([[40.0, 40.0], [90.0, 80.0]])
         table = build_photometry_table(
             self._uniform_frame_image(np.full((128, 128), 10.0), coords), mask=None
         )
 
-        claimed = [
-            *_MASK_INDEPENDENT_COLUMNS,
-            *_L4_RECOMBINED_COLUMNS,
-            *_L4_OMITTED_COLUMNS,
-        ]
-        assert len(claimed) == len(set(claimed)), "a column is in two tuples"
-        assert set(claimed) == set(table.colnames)
+        l4 = calculate_l4_quantities({"TR": table, "TG": table, "TB": table}, egain=0.5)
+
+        assert set(table.colnames) - set(l4.colnames) == {
+            "fluxes",
+            "total_bkg",
+            "bkgd_std",
+        }
+        assert set(l4.colnames) <= set(table.colnames)
 
     # --- Hoisted peak-cutout extraction and aperture/annulus geometry ---
 
@@ -495,15 +493,12 @@ class TestCalculateL4Quantities:
 
         np.testing.assert_array_equal(final_data["peak_count"], [50.0, np.nan])
 
-    def test_l4_table_has_exactly_the_documented_columns(self):
+    def test_l4_table_meta_and_copied_columns_come_from_tr(self):
         """
-        The L4 table carries the copied and recombined columns and no others.
+        The mask-independent columns and meta come across from TR unchanged.
 
         fluxes/total_bkg/bkgd_std are not recombined across TR/TG/TB and have
-        no L4-consistent meaning, so they never appear (issue #21), and nor
-        does anything else a full-frame pass used to leave behind, such as the
-        stale ``sky`` column of #52; the mask-independent columns and meta come
-        across from TR.
+        no L4-consistent meaning, so they never appear (issue #21).
         """
         by_filter = {
             "TR": filter_table([100, 200], [10, 12], [5, 6], [2, 3], [50, 90]),
@@ -513,8 +508,6 @@ class TestCalculateL4Quantities:
 
         final_data = calculate_l4_quantities(by_filter, egain=0.5)
 
-        expected = set(_MASK_INDEPENDENT_COLUMNS) | set(_L4_RECOMBINED_COLUMNS)
-        assert set(final_data.colnames) == expected
         for col in _MASK_INDEPENDENT_COLUMNS:
             np.testing.assert_array_equal(final_data[col], by_filter["TR"][col])
         assert final_data.meta == by_filter["TR"].meta
