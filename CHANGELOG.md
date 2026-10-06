@@ -130,6 +130,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `wcs_pointing_tolerance` from the frame's header pointing, instead of more
     than one field radius, so false solves a fraction of a field away are
     caught. `fov_rad` keeps its catalog-cone meaning (#135).
+- The default `wcs_scale_tolerance` is tightened from `0.05` to `0.005` (0.5%) and
+    the default `wcs_pointing_tolerance` is set to `0.30` degrees, both chosen from
+    a sweep over six Seestar S50 fields. Good solves span -0.23% to +0.29% of the
+    measured scale, so a degraded solve near -0.7% is now rejected and re-solved
+    with the deeper star pool. A custom profile's `pixscale` must now be a
+    measured value (the `wcs_pixscale` column of `qa_manifest.csv`), not the
+    nominal one (#135).
+- The Seestar50 profile's `pixscale` is `2.376` arcsec/px (was `2.4`), the median
+    of 4,766 good solves. The `fwhm_arcsec` used by the contamination cut changes
+    by 1% as a result (#135).
 - `InstrumentProfile.cone_radius_margin` now defaults to `0.4` deg (was `0.0`), so
     the batch Gaia catalog covers that much pointing drift between frames.
     Widening the cone no longer disturbs plate solving because the solve pool is

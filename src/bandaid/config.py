@@ -316,7 +316,10 @@ class InstrumentProfile(BaseModel, frozen=True):
         instrument's expected pixscale before the WCS is rejected as a
         wrong-scale solve (see :func:`~bandaid.photometry.align`). It is an
         instrument setting because it is a tolerance on *this* telescope's plate
-        scale; the empirical basis for the ``0.05`` default is in issue #83.
+        scale. The ``0.005`` (0.5%) default is based on six Seestar S50 fields,
+        where good solves span -0.23% to +0.29% of the measured scale and
+        degraded solves sit near -0.7%. Because the window is this narrow, the
+        profile's ``pixscale`` must be a measured value, not the nominal one.
     wcs_pointing_tolerance : float
         Maximum angular separation, in degrees, between a solved frame center
         and the frame's own header pointing before the WCS is rejected as a
@@ -324,8 +327,9 @@ class InstrumentProfile(BaseModel, frozen=True):
         angle, not a field radius: it covers the header-pointing error plus the
         drift between the header and the solve, and is distinct from ``fov_rad``,
         which sizes the catalog cone. Real solves sit within about ``0.1`` deg
-        of the header center; the ``0.25`` default leaves room for a
-        re-acquisition between frames.
+        of the header center, but the largest legitimate offset measured on six
+        Seestar S50 fields is ``0.29`` deg, so the ``0.30`` default leaves
+        room for a re-acquisition between frames.
     header_frame : {"icrs", "fk5"}
         The coordinate frame the header ``ra``/``dec`` pointing is written in.
         ``"icrs"`` (the default) uses it as is; ``"fk5"`` converts it to ICRS
@@ -388,8 +392,8 @@ class InstrumentProfile(BaseModel, frozen=True):
     # ge=1: a sub-unity margin would *un*-flag pairs the measured first-frame
     # seeing already contaminates, silently shipping blended photometry.
     contamination_seeing_margin: Annotated[float, Field(ge=1.0)] = 1.25
-    wcs_scale_tolerance: Annotated[float, Field(gt=0)] = 0.05
-    wcs_pointing_tolerance: Annotated[float, Field(gt=0)] = 0.25
+    wcs_scale_tolerance: Annotated[float, Field(gt=0)] = 0.005
+    wcs_pointing_tolerance: Annotated[float, Field(gt=0)] = 0.30
     header_frame: Literal["icrs", "fk5"] = "icrs"
     header_equinox: str = "J2000"
     cone_radius_margin: Annotated[float, Field(ge=0)] = 0.4

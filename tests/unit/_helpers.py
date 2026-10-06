@@ -156,11 +156,11 @@ def _peak_image_photometry(image, centroid_coords, mask, peak_cutouts=None):
     )
 
 
-def _make_tan_wcs(image_size=(500, 500), crval=(10.0, 20.0), pixscale=2.4):
+def _make_tan_wcs(image_size=(500, 500), crval=(10.0, 20.0), pixscale=2.376):
     """
     Build a simple TAN WCS centered at ``crval`` for the given image size.
 
-    ``pixscale`` (arcsec/pixel) sets the plate scale; the 2.4 default matches the
+    ``pixscale`` (arcsec/pixel) sets the plate scale; the 2.376 default matches the
     Seestar50. Pass a different value to build a wrong-scale WCS for the plate-scale
     check tests.
     """

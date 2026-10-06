@@ -8,7 +8,7 @@
     "header_frame": "fk5",
     "header_equinox": "date",
     "cone_radius_margin": 0.4,
-    "wcs_pointing_tolerance": 0.25,
+    "wcs_pointing_tolerance": 0.30,
     "header_match": [{"keyword": "INSTRUME", "pattern": "Seestar S50"}],
     "header_map": {
         "_note": "Header map for the Seestar50, raw and stacked frames.",
@@ -29,7 +29,7 @@
         "largest_usable_adu_value": 50000,
         "egain": 0.3116,
         "bayerpat": "@BAYERPAT",
-        "pixscale": 2.4,
+        "pixscale": 2.376,
         "refframe": "ICRS",
         "dec": "@DEC",
         "ra": "@RA",

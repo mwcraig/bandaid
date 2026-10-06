@@ -146,12 +146,15 @@ _FWHM_CUTOUT_HALF = _DEFAULT_INSTRUMENT.fwhm_cutout_half
 # the FWHM (faint sources are mis-centroided, smearing the stacked PSF).
 _FWHM_N_STARS = _DEFAULT_INSTRUMENT.fwhm_n_stars
 # Maximum fractional deviation of a solved plate scale from the instrument's
-# expected pixscale before the WCS is rejected as a wrong-scale solve. 5% sits
-# well above the correct-scale solve spread and far below twirl's wrong-scale
-# solves; the empirical basis for this value is in #83.
+# expected pixscale before the WCS is rejected as a wrong-scale solve. Across
+# six Seestar S50 fields the good solves span -0.23% to +0.29% of the profile
+# scale, while degraded solves sit near -0.7% and wrong-scale solves are far
+# beyond; 0.5% separates them. It only makes sense against a measured profile
+# pixscale, not the nominal one.
 WCS_SCALE_TOLERANCE = _DEFAULT_INSTRUMENT.wcs_scale_tolerance
 # Maximum separation (degrees) of a solved frame center from the frame's header
-# pointing before the WCS is rejected as a mispointed solve.
+# pointing before the WCS is rejected as a mispointed solve. The largest
+# legitimate offset measured on six Seestar S50 fields is 0.29 degrees.
 WCS_POINTING_TOLERANCE = _DEFAULT_INSTRUMENT.wcs_pointing_tolerance
 
 # Minimum SNR a star must have to reach the output (see `good_star_mask`).
@@ -1802,7 +1805,7 @@ def _solve_wcs(
         msg = (
             f"twirl solved a WCS at {last_bad_scale:.3g} arcsec/px, far from the "
             f"expected {expected_pixscale:.3g} arcsec/px "
-            f"(> {scale_tolerance:.0%} off); rejected as a wrong-scale solve"
+            f"(> {scale_tolerance:.1%} off); rejected as a wrong-scale solve"
         )
         raise WCSScaleError(msg)
     if last_bad_center is not None:

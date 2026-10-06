@@ -73,8 +73,8 @@ only when pointing a **different** telescope at the sky.
 | `instrument` | `contamination_tolerance`     | `0.01`        | Max neighbour spillover before flagging                                        |
 | `instrument` | `moffat_beta`                 | `3.0`         | Moffat wing index for the contamination model                                  |
 | `instrument` | `contamination_seeing_margin` | `1.25`        | Seeing-pessimism factor for the once-per-batch flag                            |
-| `instrument` | `wcs_scale_tolerance`         | `0.05`        | Max fractional plate-scale deviation before a WCS is rejected as wrong-scale   |
-| `instrument` | `wcs_pointing_tolerance`      | `0.25`        | Max degrees between a solved frame center and its header pointing              |
+| `instrument` | `wcs_scale_tolerance`         | `0.005`       | Max fractional plate-scale deviation before a WCS is rejected as wrong-scale   |
+| `instrument` | `wcs_pointing_tolerance`      | `0.30`        | Max degrees between a solved frame center and its header pointing              |
 | `instrument` | `cone_radius_margin`          | `0.4`         | Degrees added to `fov_rad` for the once-per-batch Gaia query                   |
 | `instrument` | `solve_pool_radius_scale`     | `0.9`         | Fraction of `fov_rad` used as the radius of each frame's plate-solve star pool |
 | `instrument` | `header_map`                  | Seestar50     | FITS-header dialect resolved by `metadata_from_header`                         |

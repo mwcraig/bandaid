@@ -1716,7 +1716,7 @@ class TestProcessOneImage:
 
         for table in result.values():
             # The stubbed TAN WCS is built at 2.4 arcsec/px.
-            assert table.meta["wcs_pixscale"] == pytest.approx(2.4, rel=1e-3)
+            assert table.meta["wcs_pixscale"] == pytest.approx(2.376, rel=1e-3)
             assert 0 <= table.meta["solve_offset_deg"] < 1
 
     def test_l4_channel_skips_the_full_frame_photometry_pass(self, l4_frame, mocker):

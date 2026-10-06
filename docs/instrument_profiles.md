@@ -233,8 +233,8 @@ A `my_scope.json` looks like:
     "contamination_tolerance": 0.01,
     "moffat_beta": 3.0,
     "contamination_seeing_margin": 1.25,
-    "wcs_scale_tolerance": 0.05,
-    "wcs_pointing_tolerance": 0.25,
+    "wcs_scale_tolerance": 0.005,
+    "wcs_pointing_tolerance": 0.30,
     "header_match": [{"keyword": "INSTRUME", "pattern": "MyScope Model 1"}],
     "header_map": {
         "obs_time": "@DATE-OBS",
@@ -284,12 +284,22 @@ disk of the full field radius is about half off-frame, so a smaller disk puts mo
 of the brightest pool stars actually on the frame. `0.9` keeps the solve rate
 while eliminating false solves.
 
-`wcs_pointing_tolerance` (degrees, default `0.25`, must be `> 0`) is the largest
+`wcs_scale_tolerance` (default `0.005`, i.e. 0.5%, must be `> 0`) is the largest
+fractional difference allowed between a solved frame's plate scale and the
+profile's `pixscale`. Because the window is this narrow, `pixscale` must be a
+**measured** value, not the telescope's nominal one; with a nominal value a
+good solve can fail the check. Measure it by processing a night of frames and
+taking the median of the `wcs_pixscale` column of `qa_manifest.csv` (ignoring
+blank rows). The Seestar50 value, `2.376` arcsec/px, is the median of the good
+solves from six fields, which span -0.23% to +0.29% of it.
+
+`wcs_pointing_tolerance` (degrees, default `0.30`, must be `> 0`) is the largest
 separation allowed between a solved frame's center and that frame's own header
 pointing. A solve that lands farther away is rejected as mispointed and the
 deeper star pool is tried. It is a fixed angle, not a field radius: real solves
-sit within about 0.1 degree of the header pointing, so it only needs to cover
-the header's pointing error and the drift between the header and the solve.
+usually sit within about 0.1 degree of the header pointing, and the largest
+legitimate offset measured on six Seestar S50 fields is 0.29 degree (a
+re-acquisition between frames), so the default covers that with a small margin.
 It is separate from `fov_rad`, which still sizes the Gaia query cone.
 
 `header_match` is optional — omit it (or leave it `[]`) and the profile is

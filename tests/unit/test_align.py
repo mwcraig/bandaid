@@ -323,12 +323,14 @@ class TestAlign:
             ((10.0, 20.0), (10.0, 20.0), None),
             ((15.0, 20.0), (10.0, 20.0), WCSPointingError),
             ((10.0, 20.0), (10.0, 20.2), None),
+            ((10.0, 20.0), (10.0, 20.29), None),
             ((15.0, 20.0), None, None),
         ],
         ids=[
             "center-in-frame-accepted",
             "far-from-center-rejected",
             "slightly-off-frame-accepted",
+            "largest-measured-legitimate-offset-accepted",
             "no-expected-center-skips-check",
         ],
     )
@@ -405,7 +407,7 @@ class TestAlign:
         """
         A larger frame does not widen the pointing limit.
 
-        A solve 0.3 deg from the header center sits inside the half-diagonal of
+        A solve 0.4 deg from the header center sits inside the half-diagonal of
         a 1000-px frame at 2.4 arcsec/px (about 0.47 deg) but is beyond the
         default pointing tolerance, so it is rejected.
         """
@@ -420,7 +422,7 @@ class TestAlign:
                 coords,
                 coords.copy(),
                 photometry_coords=None,
-                expected_center=SkyCoord(10.0, 20.3, unit="deg"),
+                expected_center=SkyCoord(10.0, 20.4, unit="deg"),
                 shape=(1000, 1000),
             )
 
