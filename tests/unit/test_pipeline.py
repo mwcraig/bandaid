@@ -147,13 +147,11 @@ class TestPrepareImage:
         self, stub_prepare_image_externals
     ):
         """
-        The shared stub honours ``detection_image_out`` like the real function.
+        The shared stub's detection image is what ``prepare_image`` centroids.
 
-        ``prepare_image`` reads the centroiding image back out of the dict it
-        hands ``calibration_sequence`` (PR #119), so a stub that ignored the
-        kwarg would raise ``KeyError`` for every ``detect_on_bayer_balanced=True``
-        caller of this fixture. Assert the stub's calibrated array reaches
-        ``centroid_stars`` instead.
+        ``prepare_image`` centroids the ``detection_image`` of the result
+        ``calibration_sequence`` returns. Assert the stub's calibrated array
+        reaches ``centroid_stars``.
         """
         calibrated = np.full((10, 10), 7.0)
         externals = stub_prepare_image_externals(calibrated=calibrated)
@@ -1284,17 +1282,19 @@ class TestCalibrationSequence:
         image = _detectable_image(make_test_image, n_sources=n_sources, fwhm=fwhm)
         path = _write_seestar_fits(tmp_path / "calib.fits", image)
 
-        calibrated, metadata, coords, measured_fwhm, regions = calibration_sequence(
+        result = calibration_sequence(
             path,
             threshold=1,
         )
 
-        assert calibrated is not None
-        assert len(regions) == n_sources
-        assert coords.shape == (n_sources, 2)
+        assert result.calibrated_data is not None
+        assert len(result.regions) == n_sources
+        assert result.coords.shape == (n_sources, 2)
         # The PSF fit recovers the injected FWHM to within ~5%.
-        assert measured_fwhm == pytest.approx(fwhm, rel=0.05)
-        assert metadata["largest_usable_adu_value"] == expected_max_adu
+        assert result.fwhm == pytest.approx(fwhm, rel=0.05)
+        assert result.metadata["largest_usable_adu_value"] == expected_max_adu
+        # Without Bayer balancing, detection ran on the calibrated array itself.
+        assert result.detection_image is result.calibrated_data
 
     def test_too_few_stars_raises(self, make_test_image, tmp_path):
         """Fewer than MIN_DETECTED_STARS detections raises TooFewStarsError."""
@@ -1434,7 +1434,7 @@ class TestCalibrationSequence:
         image = _detectable_image(make_test_image, n_sources=n_sources)
         path = _write_seestar_fits(tmp_path / "bayer_detect.fits", image)
 
-        calibrated, _, coords, _, regions = calibration_sequence(
+        result = calibration_sequence(
             path,
             threshold=1,
             detect_on_bayer_balanced=True,
@@ -1444,10 +1444,13 @@ class TestCalibrationSequence:
         np.testing.assert_allclose(seen["data"], image + marker)
         # ...while the returned calibrated_data is the original, unbalanced counts
         # that downstream photometry relies on.
-        np.testing.assert_allclose(calibrated, image)
+        np.testing.assert_allclose(result.calibrated_data, image)
+        # The result carries the balanced array as a distinct object.
+        assert result.detection_image is not result.calibrated_data
+        np.testing.assert_allclose(result.detection_image, image + marker)
         # Check that the balanced detection still recovers the injected sources.
-        assert len(regions) == n_sources
-        assert coords.shape == (n_sources, 2)
+        assert len(result.regions) == n_sources
+        assert result.coords.shape == (n_sources, 2)
 
     def test_attaches_file_when_bayer_balance_is_degenerate(
         self, make_test_image, tmp_path, mocker
@@ -1866,19 +1869,19 @@ class TestSmokeRealFrame:
 
         # calibration_sequence reaches neither twirl nor the Ballet CNN, so this
         # path needs no stubbing.
-        calibrated, metadata, coords, fwhm, regions = calibration_sequence(
+        result = calibration_sequence(
             str(_REAL_FRAME),
             threshold=THRESH,
         )
 
-        assert calibrated is not None
-        assert len(regions) >= MIN_DETECTED_STARS
-        assert coords.shape == (len(regions), 2)
-        assert np.isfinite(fwhm)
-        assert fwhm > 0
-        assert metadata["largest_usable_adu_value"] == expected_max_adu
-        assert metadata["width"] == calibrated.shape[1]
-        assert metadata["height"] == calibrated.shape[0]
+        assert result.calibrated_data is not None
+        assert len(result.regions) >= MIN_DETECTED_STARS
+        assert result.coords.shape == (len(result.regions), 2)
+        assert np.isfinite(result.fwhm)
+        assert result.fwhm > 0
+        assert result.metadata["largest_usable_adu_value"] == expected_max_adu
+        assert result.metadata["width"] == result.calibrated_data.shape[1]
+        assert result.metadata["height"] == result.calibrated_data.shape[0]
 
     def test_detect_stars_matches_eloy_on_real_frame(self):
         """
@@ -1962,11 +1965,12 @@ class TestSmokeRealFrame:
         true PSF (~2.8 px) -- a regression guard against the re-inflation an
         uncapped fit over thousands of faint detections would smear back in.
         """
-        calibrated, metadata, coords, fwhm, _ = calibration_sequence(
+        result = calibration_sequence(
             str(_REAL_FRAME),
             threshold=THRESH,
         )
-        max_adu = metadata["largest_usable_adu_value"]
+        calibrated, coords = result.calibrated_data, result.coords
+        max_adu = result.metadata["largest_usable_adu_value"]
         n_cap = InstrumentProfile().fwhm_n_stars
 
         # The cap selects at most n_cap unsaturated detections (fewer than the
@@ -1978,7 +1982,7 @@ class TestSmokeRealFrame:
         # The fit calibration_sequence already ran (default cap) lands near the
         # true PSF, not the inflated ~8 px an uncapped CNN fit produced.
         fwhm_ceiling = 6.0  # true PSF ~2.8 px; well clear of the ~8 px inflation
-        assert 0 < fwhm < fwhm_ceiling
+        assert 0 < result.fwhm < fwhm_ceiling
 
     @pytest.mark.remote_data
     def test_real_ballet_cnn_fwhm_smoke(self):
@@ -1993,11 +1997,12 @@ class TestSmokeRealFrame:
         ``centroid_15x15.npz`` from the public ``lgrcia/ballet`` HuggingFace
         repo (no auth) on first run.
         """
-        calibrated, metadata, coords, _, _ = calibration_sequence(
+        result = calibration_sequence(
             str(_REAL_FRAME),
             threshold=THRESH,
         )
-        max_adu = metadata["largest_usable_adu_value"]
+        calibrated, coords = result.calibrated_data, result.coords
+        max_adu = result.metadata["largest_usable_adu_value"]
         cnn = NumpyBallet()
 
         n_cap = InstrumentProfile().fwhm_n_stars

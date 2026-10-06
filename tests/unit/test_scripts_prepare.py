@@ -37,6 +37,7 @@ from bandaid.exceptions import (
 )
 from bandaid.instruments import load_instrument, register_instrument
 from bandaid.photometry import (
+    CalibrationResult,
     min_separation_fwhm,
     neighbor_contamination_flag_sky,
 )
@@ -570,12 +571,13 @@ class TestPrepareBatch:
         mocker.patch("bandaid.scripts.N_GAIA_STARS_ALIGN_RETRY", 1)
         mocker.patch(
             "bandaid.scripts.calibration_sequence",
-            return_value=(
-                np.zeros((4, 4)),
-                metadata,
-                np.zeros((3, 2)),
-                2.0,
-                object(),
+            return_value=CalibrationResult(
+                calibrated_data=np.zeros((4, 4)),
+                metadata=metadata,
+                coords=np.zeros((3, 2)),
+                fwhm=2.0,
+                regions=object(),
+                detection_image=np.zeros((4, 4)),
             ),
         )
         _stub_load_frame(mocker)
@@ -875,12 +877,13 @@ class TestPrepareBatch:
         """A Gaia query failure is surfaced as a fatal BatchPrepError."""
         mocker.patch(
             "bandaid.scripts.calibration_sequence",
-            return_value=(
-                np.zeros((4, 4)),
-                _batch_metadata(),
-                None,
-                2.0,
-                object(),
+            return_value=CalibrationResult(
+                calibrated_data=np.zeros((4, 4)),
+                metadata=_batch_metadata(),
+                coords=None,
+                fwhm=2.0,
+                regions=object(),
+                detection_image=np.zeros((4, 4)),
             ),
         )
         _stub_load_frame(mocker)

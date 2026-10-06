@@ -223,7 +223,7 @@ class TestCalibrationSequenceCnn:
             path, output_verify="silentfix"
         )
         sentinel = object()
-        _, _, _, fwhm, _ = calibration_sequence(path, cnn=sentinel)
+        fwhm = calibration_sequence(path, cnn=sentinel).fwhm
 
         assert fwhm_helper.call_args.kwargs["cnn"] is sentinel
         assert fwhm == stub_fwhm
