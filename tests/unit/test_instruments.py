@@ -23,6 +23,9 @@ from bandaid.instruments import (
     register_instrument,
 )
 
+SEESTAR_CONE_MARGIN = 0.4
+EXPECTED_SOLVE_POOL_SCALE = 0.9
+
 
 class TestHeaderMatchRule:
     """Unit tests for ``HeaderMatchRule``'s header/pattern comparison."""
@@ -79,10 +82,20 @@ class TestLoadInstrument:
         assert profile.fwhm_cutout_half == default.fwhm_cutout_half
         assert profile.contamination_tolerance == default.contamination_tolerance
         assert profile.moffat_beta == default.moffat_beta
-        assert profile.cone_radius_margin == default.cone_radius_margin
-        # DR2 A/B (issue #83) found widening the cone is net harmful, so the
-        # default margin is 0.0 (no widening); guard against an accidental revert.
-        assert default.cone_radius_margin == 0.0
+        assert profile.solve_pool_radius_scale == default.solve_pool_radius_scale
+
+    def test_seestar_cone_margin_widened_but_class_default_is_not(self):
+        """The bundled Seestar50 covers 0.4 deg of drift; the class default does not."""
+        assert load_instrument("Seestar50").cone_radius_margin == SEESTAR_CONE_MARGIN
+        assert InstrumentProfile().cone_radius_margin == 0.0
+
+    def test_solve_pool_radius_scale_default(self):
+        """The solve-pool scale defaults to 0.9 and the bundle does not override it."""
+        assert InstrumentProfile().solve_pool_radius_scale == EXPECTED_SOLVE_POOL_SCALE
+        assert (
+            load_instrument("Seestar50").solve_pool_radius_scale
+            == EXPECTED_SOLVE_POOL_SCALE
+        )
 
     def test_seestar_header_pointing_is_fk5_of_date(self):
         """

@@ -161,6 +161,12 @@ class SourceSelectionConfig(BaseModel, frozen=True):
         Minimum signal-to-noise ratio a star must have to reach the output (see
         `~bandaid.photometry.good_star_mask`). Must be finite and non-negative;
         ``0`` is the fully permissive floor (no star is dropped on SNR alone).
+    gaia_row_limit : int
+        Base maximum number of rows the Gaia query may return for an unwidened
+        field. It is scaled up with the cone area when ``cone_radius_margin``
+        widens the query. A query that hits the limit is checked for
+        truncation: a warning when only contaminant-depth stars are lost, an
+        error when target-depth stars are lost. Must be ``>= 1``.
     """
 
     # Finiteness is enforced by the `allow_inf_nan=False` annotation: a non-finite
@@ -170,6 +176,7 @@ class SourceSelectionConfig(BaseModel, frozen=True):
     gaia_mag_limit: Annotated[float, Field(allow_inf_nan=False)] = 15.0
     contaminant_mag_offset: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 3.0
     min_snr: Annotated[float, Field(ge=0, allow_inf_nan=False)] = 2.0
+    gaia_row_limit: Annotated[int, Field(ge=1)] = 10000
 
     @computed_field
     @property
@@ -321,10 +328,13 @@ class InstrumentProfile(BaseModel, frozen=True):
         anything but the default is rejected when ``header_frame`` is
         ``"icrs"``.
     cone_radius_margin : float
-        Extra radius in degrees added to ``fov_rad`` for the Gaia cone. The
-        default ``0.0`` queries exactly the field; widening the cone has been
-        found to hurt plate solving, so leave it unless an instrument is shown
-        to need a buffer.
+        Extra radius in degrees added to ``fov_rad`` for the once-per-batch Gaia
+        query. It is the amount of pointing drift (between any frame and the
+        first) that the batch catalogue covers. ``0.0`` (the class default)
+        queries exactly the first frame's field.
+    solve_pool_radius_scale : float
+        Fraction of ``fov_rad`` used as the radius of each frame's plate-solve
+        star pool, centred on that frame's own header pointing. Must be ``> 0``.
     header_map : collections.abc.Mapping
         The per-frame FITS-header dialect for this telescope: a mapping of
         metadata key to a directive resolved by
@@ -349,6 +359,13 @@ class InstrumentProfile(BaseModel, frozen=True):
     and has no ``EQUINOX``/``RADESYS`` keyword, so the bundled profile declares
     ``header_frame="fk5"`` with ``header_equinox="date"``. The conversion to
     ICRS is ``FK5(equinox=obs time)``, which applies precession only.
+
+    ``solve_pool_radius_scale`` is below 1 because the frame is a rectangle: a
+    disk of the full field radius is about half off-frame, so a smaller disk
+    puts more of the brightest pool stars actually on the frame. ``0.9`` was
+    found to keep the solve rate while eliminating false solves. Because the
+    pool is cut per frame, widening the batch query with ``cone_radius_margin``
+    does not change which stars the plate solver sees.
     """
 
     name: str = "Seestar50"
@@ -364,8 +381,9 @@ class InstrumentProfile(BaseModel, frozen=True):
     wcs_scale_tolerance: Annotated[float, Field(gt=0)] = 0.05
     header_frame: Literal["icrs", "fk5"] = "icrs"
     header_equinox: str = "J2000"
-    # 0.0: widening the cone hurts plate solving.
+    # The bundled Seestar50 profile sets 0.4; the class default stays 0.0.
     cone_radius_margin: Annotated[float, Field(ge=0)] = 0.0
+    solve_pool_radius_scale: Annotated[float, Field(gt=0)] = 0.9
     header_map: Mapping = Field(
         default_factory=_default_seestar_header_map, validate_default=True
     )

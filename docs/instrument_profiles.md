@@ -7,8 +7,9 @@ the two telescope-specific things the pipeline needs:
     `fwhm_cutout_half`, `fwhm_n_stars`, `contamination_tolerance`, `moffat_beta`,
     `contamination_seeing_margin`, `wcs_scale_tolerance`), and
 - the **field-center** settings (`header_frame`, `header_equinox`,
-    `cone_radius_margin`), which say what coordinate frame the header pointing is
-    written in and how wide the Gaia cone is, and
+    `cone_radius_margin`, `solve_pool_radius_scale`), which say what coordinate
+    frame the header pointing is written in, how wide the Gaia cone is, and how
+    large each frame's plate-solve star pool is, and
 - the **header map** — a small mapping that tells the pipeline how to read that
     telescope's per-frame FITS headers into the metadata it needs.
 
@@ -266,9 +267,18 @@ copied as is. ICRS has no equinox, so setting `header_equinox` without
 been removed: a profile that still sets it to a value fails to load, while
 `null` is accepted and ignored.
 
-`cone_radius_margin` (degrees, default `0.0`) is extra radius added to
-`fov_rad` for the Gaia cone; widening it has been found to hurt plate solving,
-so leave it at `0.0` unless your instrument is shown to need a buffer.
+`cone_radius_margin` (degrees, default `0.0`; the bundled Seestar50 profile uses
+`0.4`) is extra radius added to `fov_rad` for the once-per-batch Gaia query. It is
+the amount of pointing drift between frames (relative to the first frame) that the
+batch catalog covers. Widening it does not hurt plate solving, because each
+frame's solve pool is cut per frame from that frame's own header pointing.
+
+`solve_pool_radius_scale` (default `0.9`, must be `> 0`) is the fraction of
+`fov_rad` used as the radius of each frame's plate-solve star pool, centered on
+that frame's header pointing. It is below 1 because the frame is a rectangle: a
+disk of the full field radius is about half off-frame, so a smaller disk puts more
+of the brightest pool stars actually on the frame. `0.9` keeps the solve rate
+while eliminating false solves.
 
 `header_match` is optional — omit it (or leave it `[]`) and the profile is
 still fully usable via `--instrument`/`--profile`/`--config`, just never
@@ -295,7 +305,8 @@ $ bandaid config validate my_config.json
 
 `InstrumentProfile.from_file` raises the same Pydantic errors directly. The common
 ones are out-of-range values — `thresh`, `contamination_tolerance`,
-`moffat_beta`, and `wcs_scale_tolerance` must be `> 0`; `detection_opening`,
+`moffat_beta`, `wcs_scale_tolerance`, and `solve_pool_radius_scale` must be
+`> 0`; `detection_opening`,
 `fwhm_cutout_half`, and `fwhm_n_stars` must be `>= 1`;
 `contamination_seeing_margin` must be `>= 1`.
 

@@ -48,6 +48,9 @@ EXPECTED_WCS_SCALE_TOLERANCE = 0.05
 EXPECTED_MIN_SNR = 2.0
 
 
+EXPECTED_GAIA_ROW_LIMIT = 10000
+
+
 class TestDefaultsMatchLegacyConstants:
     """A default config reproduces the current module-level constants."""
 
@@ -69,6 +72,7 @@ class TestDefaultsMatchLegacyConstants:
             == EXPECTED_GAIA_MAG_LIMIT + EXPECTED_CONTAMINANT_OFFSET
         )
         assert cfg.min_snr == EXPECTED_MIN_SNR
+        assert cfg.gaia_row_limit == EXPECTED_GAIA_ROW_LIMIT
 
     def test_drift(self):
         """Centroid-drift cuts default to the legacy literal values."""
@@ -207,6 +211,28 @@ class TestValidators:
         """A zero or negative WCS plate-scale tolerance is rejected."""
         with pytest.raises(ValidationError):
             InstrumentProfile(wcs_scale_tolerance=tolerance)
+
+    @pytest.mark.parametrize("scale", [0.0, -0.9])
+    def test_non_positive_solve_pool_radius_scale_rejected(self, scale):
+        """A zero or negative solve-pool radius scale is rejected."""
+        with pytest.raises(ValidationError):
+            InstrumentProfile(solve_pool_radius_scale=scale)
+
+    @pytest.mark.parametrize("scale", [0.5, 1.0])
+    def test_positive_solve_pool_radius_scale_accepted(self, scale):
+        """Positive solve-pool radius scales are accepted."""
+        profile = InstrumentProfile(solve_pool_radius_scale=scale)
+        assert profile.solve_pool_radius_scale == scale
+
+    @pytest.mark.parametrize("limit", [0, -1])
+    def test_non_positive_gaia_row_limit_rejected(self, limit):
+        """A zero or negative Gaia row limit is rejected."""
+        with pytest.raises(ValidationError):
+            SourceSelectionConfig(gaia_row_limit=limit)
+
+    def test_minimal_gaia_row_limit_accepted(self):
+        """A Gaia row limit of 1 is the smallest accepted value."""
+        assert SourceSelectionConfig(gaia_row_limit=1).gaia_row_limit == 1
 
     @pytest.mark.parametrize("margin", [0.99, 0.0, -1.0])
     def test_sub_unity_seeing_margin_rejected(self, margin):
