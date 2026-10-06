@@ -13,6 +13,7 @@ from bandaid import photometry
 from bandaid.exceptions import (
     BandaidError,
     BatchPrepError,
+    CatalogTruncationError,
     FrameError,
     TooFewStarsError,
     WCSSolveError,
@@ -32,6 +33,10 @@ class TestHierarchy:
         """``BatchPrepError`` is fatal, so it must not be a ``FrameError``."""
         assert issubclass(BatchPrepError, BandaidError)
         assert not issubclass(BatchPrepError, FrameError)
+
+    def test_catalog_truncation_error_is_batch_prep_error(self):
+        """A truncated catalog aborts the batch, so it is a ``BatchPrepError``."""
+        assert issubclass(CatalogTruncationError, BatchPrepError)
 
     def test_message_renders_reason_only_without_file(self):
         """With no file attached the message is just the reason."""
