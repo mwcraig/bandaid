@@ -213,23 +213,30 @@ class TestPrepareBatch:
         prep_data = _patch_prep(mocker)
         cnn = object()
 
-        # append_l4 defaults to True (issue #61); pin it False here so this
-        # test's "three CFA masks" stays decoupled from that default.
-        prep = scripts.prepare_batch("frame1.fits", cnn=cnn, append_l4=False)
+        prep = scripts.prepare_batch("frame1.fits", cnn=cnn)
 
         assert isinstance(prep, scripts.BatchPrep)
         np.testing.assert_array_equal(prep.radecs, prep_data.radecs)
         assert prep.cnn is cnn
         assert set(prep.bayer_masks) == {"TR", "TB", "TG"}
 
+    @pytest.mark.parametrize("append_l4", [True, False])
+    def test_append_l4_is_carried_not_planted_in_the_masks(self, mocker, append_l4):
+        """``append_l4`` rides on the bundle; the masks never carry an "L4" entry."""
+        _patch_prep(mocker)
+
+        prep = scripts.prepare_batch("frame1.fits", cnn=object(), append_l4=append_l4)
+
+        assert prep.append_l4 is append_l4
+        assert set(prep.bayer_masks) == {"TR", "TB", "TG"}
+
     def test_append_l4_true_by_default(self, mocker):
-        """Omitting ``append_l4`` adds the L4 channel (issue #61)."""
+        """Omitting ``append_l4`` requests the L4 channel (issue #61)."""
         _patch_prep(mocker)
 
         prep = scripts.prepare_batch("frame1.fits", cnn=object())
 
-        assert set(prep.bayer_masks) == {"TR", "TB", "TG", "L4"}
-        assert prep.bayer_masks["L4"] is None
+        assert prep.append_l4 is True
 
     def test_loads_first_frame_exactly_once(self, mocker):
         """Without a caller-provided frame, the first frame is loaded once (#44)."""

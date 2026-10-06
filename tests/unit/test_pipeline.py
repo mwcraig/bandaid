@@ -1653,7 +1653,7 @@ class TestProcessOneImage:
         _stub_wcs_and_centroid(mocker)
         image = _detectable_image(make_test_image)
         path = _write_seestar_fits(tmp_path / "frame.fits", image)
-        return path, bayer_masks_rggb(image.shape, append_l4=True)
+        return path, bayer_masks_rggb(image.shape)
 
     def test_raises_when_image_rejected(
         self, make_test_image, tmp_path, bayer_masks_rggb
@@ -1666,23 +1666,14 @@ class TestProcessOneImage:
             include_noise=False,
         )
         path = _write_seestar_fits(tmp_path / "few.fits", image)
-        masks = bayer_masks_rggb(image.shape, append_l4=True)
+        masks = bayer_masks_rggb(image.shape)
 
         with pytest.raises(TooFewStarsError, match="stars detected"):
             process_one_image(path, {}, _REF_RADECS, None, masks)
 
-    @pytest.mark.parametrize("l4_first", [False, True], ids=["l4-last", "l4-first"])
-    def test_full_path_builds_per_filter_tables_with_l4(self, l4_frame, l4_first):
-        """
-        Every filter gets a table and the L4 channel sums the RGB counts.
-
-        L4 is built after the RGB loop, so its position in the mask dict is
-        free: the pre-PR #120 contract required "L4" to be ordered after
-        TR/TG/TB, and building it once the loop is done removes that entirely.
-        """
+    def test_full_path_builds_per_filter_tables_with_l4(self, l4_frame):
+        """Every filter gets a table and the L4 channel sums the RGB counts."""
         path, masks = l4_frame
-        if l4_first:
-            masks = {"L4": None, **masks}
 
         result = process_one_image(path, {}, _REF_RADECS, None, masks)
 
@@ -1741,22 +1732,18 @@ class TestProcessOneImage:
         [
             (lambda m: m.pop("TB"), r"\['TB'\]"),
             (lambda m: m.pop("TR"), r"\['TR'\]"),
-            (lambda m: m.update(L4=m["TR"]), "L4"),
         ],
-        ids=["missing-TB", "missing-TR", "L4-with-mask"],
+        ids=["missing-TB", "missing-TR"],
     )
     def test_l4_malformed_mask_dict_raises(self, l4_frame, mocker, mutate, match):
         """
-        A mask dict missing an RGB channel or giving L4 a mask raises ValueError.
+        With L4 requested, a mask dict missing an RGB channel raises ValueError.
 
         TR doubles as the source of L4's copied columns, so the missing-channel
         check must run before any channel lookup or a caller missing TR gets a
-        bare ``KeyError`` instead of the documented ``ValueError``. And L4
-        never photometers the frame itself, so a caller-supplied L4 mask would
-        silently have no effect; before PR #120 a malformed one at least failed
-        inside ``aperture_photometry``, so keep that fail-loud contract.
+        bare ``KeyError`` instead of the documented ``ValueError``.
 
-        Both checks run before the RGB loop: the mask dict is shared across the
+        The check runs before the RGB loop: the mask dict is shared across the
         batch and the ``ValueError`` is not a ``FrameError``, so with
         ``fail_fast=False`` a malformed dict would otherwise photometer every
         frame in full before failing it.
@@ -1769,6 +1756,15 @@ class TestProcessOneImage:
             process_one_image(path, {}, _REF_RADECS, None, masks)
 
         assert build_spy.call_count == 0
+
+    def test_append_l4_false_returns_only_the_given_masks(self, l4_frame):
+        """With ``append_l4=False`` no L4 is built and TR/TG/TB are not required."""
+        path, masks = l4_frame
+        masks.pop("TB")
+
+        result = process_one_image(path, {}, _REF_RADECS, None, masks, append_l4=False)
+
+        assert set(result) == {"TR", "TG"}
 
     def test_opens_the_file_exactly_once(self, l4_frame, fromfile_spy):
         """process_one_image opens the file exactly once end-to-end (#44)."""
@@ -1823,6 +1819,7 @@ class TestProcessOneImage:
             None,
             {"TR": None},
             config=PhotometryConfig(),
+            append_l4=False,
         )
 
         resolved_config = build_table_mock.call_args.kwargs["config"]
@@ -1926,7 +1923,6 @@ class TestSmokeRealFrame:
                 "roworder": metadata["roworder"],
                 "ybayroff": metadata["ybayroff"],
             },
-            append_l4=True,
         )
 
         # twirl is stubbed, so radecs is never matched; it only needs >=

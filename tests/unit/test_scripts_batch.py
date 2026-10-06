@@ -1,6 +1,7 @@
 """Unit tests for the per-frame batch loop and batch-to-disk orchestration."""
 
 import csv
+import dataclasses
 import logging
 from pathlib import Path
 
@@ -99,6 +100,19 @@ class TestProcessBatch:
             assert cnn is prep.cnn
             assert masks is prep.bayer_masks
             assert call.kwargs["input_photometry_coords"] is prep.photometry_coords
+
+    @pytest.mark.parametrize("append_l4", [True, False])
+    def test_passes_the_preps_append_l4_flag(self, mocker, append_l4):
+        """``process_one_image`` receives the flag the prep carries."""
+        prep = dataclasses.replace(_dummy_prep(), append_l4=append_l4)
+        process_one_image = mocker.patch(
+            "bandaid.scripts.process_one_image",
+            return_value={"TR": Table({"tot_count": [1.0]})},
+        )
+
+        scripts.process_batch(["a.fits"], prep)
+
+        assert process_one_image.call_args.kwargs["append_l4"] is append_l4
 
     def test_emits_progress_log_per_frame(self, patched_process_one_image, caplog):
         """Each frame logs a ``processing i/N: name`` line at INFO for --verbose."""

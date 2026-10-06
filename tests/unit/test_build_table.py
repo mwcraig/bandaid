@@ -284,7 +284,8 @@ class TestBuildPhotometryTable:
         """
         true_sky = 10.0
         shape = (256, 256)
-        masks = bayer_masks_rggb(shape, append_l4=True)
+        # A mask of None measures the whole frame, which is what L4 reports.
+        masks = {**bayer_masks_rggb(shape), "L4": None}
         coords = np.array([[100.0, 100.0], [150.0, 120.0], [90.0, 160.0]])
         img = self._uniform_frame_image(np.full(shape, true_sky), coords)
 

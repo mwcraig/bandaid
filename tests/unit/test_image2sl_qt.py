@@ -1,11 +1,11 @@
 """
 Unit tests for :mod:`bandaid.image2sl_qt`.
 
-Covers Bayer-mask generation (``generate_bayer_masks``) -- the optional
-``append_l4`` luminance-channel entry and the ``roworder``/``xbayroff``/
-``ybayroff`` re-anchoring of the CFA pattern, pinned both to the standard
-FITS keyword convention and to Han Kleijn's Bayer conformance images -- and
-the per-channel ``bayer_balance_image`` flattening of a raw Bayer frame.
+Covers Bayer-mask generation (``generate_bayer_masks``) -- the
+``roworder``/``xbayroff``/``ybayroff`` re-anchoring of the CFA pattern, pinned
+both to the standard FITS keyword convention and to Han Kleijn's Bayer
+conformance images -- and the per-channel ``bayer_balance_image`` flattening of a
+raw Bayer frame.
 """
 
 from pathlib import Path
@@ -21,21 +21,13 @@ SHAPE = (4, 4)
 METADATA = {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0}
 
 
-def test_append_l4_true_by_default():
-    """Without ``append_l4`` an "L4" -> None entry is added last (issue #61)."""
-    default = generate_bayer_masks(SHAPE, METADATA)
-    explicit_true = generate_bayer_masks(SHAPE, METADATA, append_l4=True)
-    without_l4 = generate_bayer_masks(SHAPE, METADATA, append_l4=False)
+def test_returns_only_the_three_channel_masks():
+    """The result holds exactly the TR/TB/TG masks, in that order."""
+    masks = generate_bayer_masks(SHAPE, METADATA)
 
-    assert isinstance(default, dict)
-    # Key order is preserved (R, B, G), with L4 last.
-    assert list(default) == ["TR", "TB", "TG", "L4"]
-    assert default["L4"] is None
-    # Passing the default explicitly behaves the same as omitting it.
-    assert list(explicit_true) == list(default)
-    # append_l4=False still omits the entry entirely.
-    assert list(without_l4) == ["TR", "TB", "TG"]
-    assert "L4" not in without_l4
+    assert isinstance(masks, dict)
+    assert list(masks) == ["TR", "TB", "TG"]
+    assert all(isinstance(mask, np.ndarray) for mask in masks.values())
 
 
 def _assert_valid_positions(mask, positions):
@@ -95,7 +87,7 @@ def test_generate_bayer_masks_roworder_offsets(roworder, xbayroff, ybayroff, exp
         "xbayroff": xbayroff,
         "ybayroff": ybayroff,
     }
-    masks = generate_bayer_masks(SHAPE, metadata, append_l4=False)
+    masks = generate_bayer_masks(SHAPE, metadata)
 
     assert set(masks) == set(expected)
     for color, positions in expected.items():
@@ -138,7 +130,6 @@ def test_masks_select_the_right_colors_for_ybayroff(ybayroff):
     masks = generate_bayer_masks(
         SHAPE,
         {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": ybayroff},
-        append_l4=False,
     )
     for name, mask in masks.items():
         selected = colors[~mask]  # in the mask, False means use/valid
@@ -154,7 +145,6 @@ def test_xbayroff_is_honored():
     masks = generate_bayer_masks(
         SHAPE,
         {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0, "xbayroff": 1},
-        append_l4=False,
     )
     for name, mask in masks.items():
         selected = colors[~mask]
@@ -209,7 +199,7 @@ def test_generate_bayer_masks_against_han_kleijn_conformance_images(fixture_name
         "xbayroff": header.get("XBAYROFF", 0),
         "ybayroff": header.get("YBAYROFF", 0),
     }
-    masks = generate_bayer_masks(data.shape, metadata, append_l4=False)
+    masks = generate_bayer_masks(data.shape, metadata)
 
     n_rows = data.shape[0]
     for color, (top, bottom, left, right) in _BAYER_V6_SOLID_BLOCKS.items():
