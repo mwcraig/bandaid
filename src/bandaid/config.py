@@ -258,9 +258,11 @@ class InstrumentProfile(BaseModel, frozen=True):
     """
     A named telescope: detection/FWHM/PSF settings plus its FITS-header dialect.
 
-    The defaults are the Seestar50 values. Change these only when pointing a
-    different telescope at the sky; they depend on the plate scale, the PSF, and
-    the instrument's sensitivity to contamination. A profile bundles the two
+    The tuning defaults are the Seestar50 values; ``header_frame``,
+    ``header_equinox`` and ``header_match`` are not, and come from the bundled
+    profile. Change the tuning values only when pointing a different telescope
+    at the sky; they depend on the plate scale, the PSF, and the instrument's
+    sensitivity to contamination. A profile bundles the two
     halves of "what a telescope is": the detection tuning knobs *and* the
     ``header_map`` that resolves that telescope's per-frame FITS header into the
     metadata the pipeline needs. Named profiles live in
@@ -310,21 +312,18 @@ class InstrumentProfile(BaseModel, frozen=True):
     header_frame : {"icrs", "fk5"}
         The coordinate frame the header ``ra``/``dec`` pointing is written in.
         ``"icrs"`` (the default) uses it as is; ``"fk5"`` converts it to ICRS
-        using ``header_equinox``.
+        using ``header_equinox``. Case-insensitive.
     header_equinox : str
         The equinox of an ``"fk5"`` header pointing: ``"date"`` for the equinox
         of the frame's own observation time, or an astropy epoch string such as
-        ``"J2000"`` or ``"J2025.5"``. Ignored when ``header_frame`` is
+        ``"J2000"`` or ``"J2025.5"``. Case-insensitive. ICRS has no equinox, so
+        anything but the default is rejected when ``header_frame`` is
         ``"icrs"``.
     cone_radius_margin : float
-        Extra field radius in degrees added to ``fov_rad`` when the Gaia cone is
-        centered on the header pointing. ``0.0`` (the default) leaves the query
-        radius unchanged, querying exactly the field. A live-DR2 A/B on SS Leo (issue
-        #83, 635 frames over two nights) found that widening the cone is *net
-        harmful*: the extra edge stars reshuffle the brightest-N asterisms fed to
-        the plate-solver, breaking frames that solved on the unwidened cone
-        (0.1 deg margin was net -46 frames vs 0.0). Keep it 0.0 unless a specific
-        instrument is shown to need a buffer.
+        Extra radius in degrees added to ``fov_rad`` for the Gaia cone. The
+        default ``0.0`` queries exactly the field; widening the cone has been
+        found to hurt plate solving, so leave it unless an instrument is shown
+        to need a buffer.
     header_map : collections.abc.Mapping
         The per-frame FITS-header dialect for this telescope: a mapping of
         metadata key to a directive resolved by
@@ -364,8 +363,7 @@ class InstrumentProfile(BaseModel, frozen=True):
     wcs_scale_tolerance: Annotated[float, Field(gt=0)] = 0.05
     header_frame: Literal["icrs", "fk5"] = "icrs"
     header_equinox: str = "J2000"
-    # The cone is NOT widened (margin 0.0): a live-DR2 A/B on SS Leo showed
-    # widening reshuffles the plate-solver asterisms and loses frames (issue #83).
+    # 0.0: widening the cone hurts plate solving.
     cone_radius_margin: Annotated[float, Field(ge=0)] = 0.0
     header_map: Mapping = Field(
         default_factory=_default_seestar_header_map, validate_default=True
@@ -413,21 +411,49 @@ class InstrumentProfile(BaseModel, frozen=True):
         Returns
         -------
         object
-            ``data`` unchanged.
+            ``data``, without the ``header_center_offset`` key if it was
+            ``None``.
 
         Raises
         ------
         ValueError
-            If ``data`` is a mapping containing ``header_center_offset``.
+            If ``data`` is a mapping with a ``header_center_offset`` that is
+            not ``None``.
+
+        Notes
+        -----
+        ``None`` used to mean "center on the raw header", which is what the
+        default ``header_frame="icrs"`` does, so it is dropped rather than
+        rejected.
         """
-        if isinstance(data, Mapping) and "header_center_offset" in data:
+        if not isinstance(data, Mapping) or "header_center_offset" not in data:
+            return data
+        if data["header_center_offset"] is not None:
             msg = (
                 "header_center_offset has been removed; delete it and declare the "
                 "header's coordinate frame with header_frame and header_equinox "
                 '(header_frame="fk5", header_equinox="date" for a Seestar)'
             )
             raise ValueError(msg)
-        return data
+        return {k: v for k, v in data.items() if k != "header_center_offset"}
+
+    @field_validator("header_frame", mode="before")
+    @classmethod
+    def _lowercase_header_frame(cls, value):
+        """
+        Lower-case ``header_frame`` so it is matched case-insensitively.
+
+        Parameters
+        ----------
+        value : object
+            The candidate frame.
+
+        Returns
+        -------
+        object
+            ``value`` lower-cased if it is a string, else unchanged.
+        """
+        return value.lower() if isinstance(value, str) else value
 
     @field_validator("header_equinox", mode="after")
     @classmethod
@@ -438,12 +464,12 @@ class InstrumentProfile(BaseModel, frozen=True):
         Parameters
         ----------
         value : str
-            The candidate equinox.
+            The candidate equinox, in any case.
 
         Returns
         -------
         str
-            ``value`` unchanged.
+            ``"date"``, or the epoch string with an upper-case ``J``/``B``.
 
         Raises
         ------
@@ -451,19 +477,50 @@ class InstrumentProfile(BaseModel, frozen=True):
             If ``value`` is neither ``"date"`` nor parseable as a Julian
             (``"J2000"``) or Besselian (``"B1950"``) epoch.
         """
-        if value == "date":
-            return value
+        if value.lower() == "date":
+            return "date"
+        epoch = value.upper()
         for fmt in ("jyear_str", "byear_str"):
             try:
-                Time(value, format=fmt)
+                Time(epoch, format=fmt)
             except ValueError:
                 continue
-            return value
+            return epoch
         msg = (
             f'header_equinox {value!r} must be "date" or an epoch string such as '
             '"J2000", "B1950" or "J2025.5"'
         )
         raise ValueError(msg)
+
+    @model_validator(mode="after")
+    def _check_icrs_has_no_equinox(self):
+        """
+        Reject a ``header_equinox`` set alongside ``header_frame="icrs"``.
+
+        Returns
+        -------
+        InstrumentProfile
+            The validated profile.
+
+        Raises
+        ------
+        ValueError
+            If ``header_frame`` is ``"icrs"`` and ``header_equinox`` is not the
+            default ``"J2000"``.
+
+        Notes
+        -----
+        ICRS has no equinox, so one set here would be silently ignored and the
+        header pointing left unconverted.
+        """
+        if self.header_frame == "icrs" and self.header_equinox != "J2000":
+            msg = (
+                f"header_equinox {self.header_equinox!r} is set but header_frame "
+                'is "icrs", which has no equinox; set header_frame="fk5" or '
+                "remove header_equinox"
+            )
+            raise ValueError(msg)
+        return self
 
     @field_validator("header_map", mode="after")
     @classmethod

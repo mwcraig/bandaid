@@ -21,6 +21,8 @@ from astropy.coordinates import (
     FK5,
     AltAz,
     EarthLocation,
+    Latitude,
+    Longitude,
     SkyCoord,
     search_around_sky,
 )
@@ -2489,8 +2491,9 @@ def estimate_center_from_header(metadata, profile):
     Raises
     ------
     FrameMetadataError
-        If the header resolved no numeric ``ra``/``dec`` pointing, or the
-        profile needs ``obs_time`` and it is missing or unparsable.
+        If the header resolved no numeric ``ra``/``dec`` pointing with a
+        declination in ``[-90, 90]``, or the profile needs ``obs_time`` and it
+        is missing or unparsable.
 
     Notes
     -----
@@ -2504,16 +2507,17 @@ def estimate_center_from_header(metadata, profile):
     ``KeyError``/``TypeError``/``ValueError``.
     """
     try:
-        ra = float(metadata["ra"])
-        dec = float(metadata["dec"])
+        ra = Longitude(float(metadata["ra"]), unit="deg")
+        # Latitude raises ValueError for a declination outside [-90, 90].
+        dec = Latitude(float(metadata["dec"]), unit="deg")
     except (KeyError, TypeError, ValueError) as exc:
         msg = (
-            "header resolved no numeric pointing (ra/dec) through the instrument "
+            "header resolved no usable pointing (ra/dec) through the instrument "
             f"header_map: ra={metadata.get('ra')!r}, dec={metadata.get('dec')!r}"
         )
         raise FrameMetadataError(msg) from exc
     if profile.header_frame == "icrs":
-        return (ra % 360.0, dec)
+        return (float(ra.deg), float(dec.deg))
     if profile.header_equinox == "date":
         obs_time = metadata.get("obs_time")
         if obs_time is None:
@@ -2525,7 +2529,7 @@ def estimate_center_from_header(metadata, profile):
         equinox = _parse_obs_time(obs_time)
     else:
         equinox = Time(profile.header_equinox)
-    icrs = SkyCoord(ra, dec, unit="deg", frame=FK5(equinox=equinox)).icrs
+    icrs = SkyCoord(ra, dec, frame=FK5(equinox=equinox)).icrs
     return (float(icrs.ra.deg), float(icrs.dec.deg))
 
 

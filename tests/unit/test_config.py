@@ -223,28 +223,85 @@ class TestValidators:
     @pytest.mark.parametrize("equinox", ["date", "J2000", "B1950", "J2025.5"])
     def test_valid_header_equinox_accepted(self, equinox):
         """``"date"`` and astropy J/B epoch strings are valid header equinoxes."""
-        assert InstrumentProfile(header_equinox=equinox).header_equinox == equinox
+        profile = InstrumentProfile(header_frame="fk5", header_equinox=equinox)
+        assert profile.header_equinox == equinox
+
+    @pytest.mark.parametrize(
+        ("equinox", "stored"),
+        [
+            ("Date", "date"),
+            ("DATE", "date"),
+            ("j2000", "J2000"),
+            ("b1950", "B1950"),
+            ("j2025.5", "J2025.5"),
+        ],
+    )
+    def test_header_equinox_is_case_insensitive(self, equinox, stored):
+        """Any casing is accepted and stored in one canonical form."""
+        profile = InstrumentProfile(header_frame="fk5", header_equinox=equinox)
+        assert profile.header_equinox == stored
 
     @pytest.mark.parametrize("equinox", ["now", "2000", "junk", "2025-01-01"])
     def test_invalid_header_equinox_rejected(self, equinox):
         """Anything that is neither ``"date"`` nor a J/B epoch string is rejected."""
         with pytest.raises(ValidationError, match="header_equinox"):
-            InstrumentProfile(header_equinox=equinox)
+            InstrumentProfile(header_frame="fk5", header_equinox=equinox)
 
     def test_unknown_header_frame_rejected(self):
         """Only ``"icrs"`` and ``"fk5"`` are accepted header frames."""
         with pytest.raises(ValidationError, match="header_frame"):
             InstrumentProfile(header_frame="galactic")
 
-    @pytest.mark.parametrize("old_value", [[-0.32, 0.15], None])
-    def test_removed_header_center_offset_rejected(self, old_value):
+    @pytest.mark.parametrize(
+        ("frame", "stored"), [("FK5", "fk5"), ("Fk5", "fk5"), ("ICRS", "icrs")]
+    )
+    def test_header_frame_is_case_insensitive(self, frame, stored):
+        """A frame copied from a FITS ``RADESYS`` card (upper case) is accepted."""
+        assert InstrumentProfile(header_frame=frame).header_frame == stored
+
+    @pytest.mark.parametrize("equinox", ["date", "B1950", "J2025.5", "Date"])
+    def test_icrs_header_frame_rejects_an_equinox(self, equinox):
+        """
+        An equinox on an ICRS header is an error rather than silently ignored.
+
+        ICRS has no equinox, so setting one means the frame was left at its
+        default by mistake and the pointing would go unconverted.
+        """
+        with pytest.raises(ValidationError, match="header_frame"):
+            InstrumentProfile(header_frame="icrs", header_equinox=equinox)
+        with pytest.raises(ValidationError, match="header_frame"):
+            InstrumentProfile(header_equinox=equinox)
+
+    @pytest.mark.parametrize("equinox", ["J2000", "j2000"])
+    def test_icrs_header_frame_accepts_the_default_equinox(self, equinox):
+        """The default ``"J2000"`` equinox is accepted alongside ``"icrs"``."""
+        profile = InstrumentProfile(header_frame="icrs", header_equinox=equinox)
+        assert (profile.header_frame, profile.header_equinox) == ("icrs", "J2000")
+
+    def test_removed_header_center_offset_rejected(self):
         """The removed ``header_center_offset`` key is a hard error with a hint."""
         with pytest.raises(ValidationError) as excinfo:
-            InstrumentProfile(header_center_offset=old_value)
+            InstrumentProfile(header_center_offset=[-0.32, 0.15])
         assert "header_frame" in str(excinfo.value)
         assert "header_equinox" in str(excinfo.value)
         with pytest.raises(ValidationError, match="header_frame"):
-            InstrumentProfile.model_validate({"header_center_offset": old_value})
+            InstrumentProfile.model_validate({"header_center_offset": [-0.32, 0.15]})
+
+    def test_null_header_center_offset_is_dropped(self):
+        """
+        A ``null`` ``header_center_offset`` loads as an ICRS header.
+
+        Profiles written for a non-Seestar telescope were told to set the key
+        to ``null`` to center on the raw header, which is what ``"icrs"`` means.
+        """
+        data = {"name": "Other", "header_center_offset": None}
+
+        profile = InstrumentProfile.model_validate(data)
+
+        assert (profile.header_frame, profile.header_equinox) == ("icrs", "J2000")
+        # The caller's mapping is left as it was.
+        assert data == {"name": "Other", "header_center_offset": None}
+        assert InstrumentProfile(header_center_offset=None).header_frame == "icrs"
 
     def test_contaminant_default_tracks_gaia(self):
         """The derived contaminant limit follows a custom Gaia limit by +3."""

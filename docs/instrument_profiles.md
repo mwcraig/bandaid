@@ -260,9 +260,11 @@ omits both. The Seestar S50 writes FK5 coordinates in the equinox of the
 observation date, so its profile sets `"header_frame": "fk5"` and
 `"header_equinox": "date"`; `"date"` uses each frame's own observation time,
 and a fixed epoch such as `"J2000"` or `"J2025.5"` is also accepted.
-`header_equinox` is only used when `header_frame` is `"fk5"`. The old
-`header_center_offset` key has been removed and a profile that still carries it
-fails to load.
+Both keys are case-insensitive, so a `RADESYS` value such as `"FK5"` can be
+copied as is. ICRS has no equinox, so setting `header_equinox` without
+`"header_frame": "fk5"` is an error. The old `header_center_offset` key has
+been removed: a profile that still sets it to a value fails to load, while
+`null` is accepted and ignored.
 
 `cone_radius_margin` (degrees, default `0.0`) is extra radius added to
 `fov_rad` for the Gaia cone; widening it has been found to hurt plate solving,

@@ -53,11 +53,10 @@ class TestEstimateCenterFromHeader:
     # like the bundled Seestar50.
     OF_DATE = InstrumentProfile(header_frame="fk5", header_equinox="date")
 
-    @pytest.mark.parametrize("header_equinox", ["J2000", "date", "J2025.5"])
-    def test_icrs_header_is_returned_unchanged(self, header_equinox):
-        """An ICRS header pointing passes through; the equinox is not consulted."""
-        profile = InstrumentProfile(header_frame="icrs", header_equinox=header_equinox)
-        metadata = {"ra": 10.0, "dec": 30.0}
+    def test_icrs_header_is_returned_unchanged(self):
+        """An ICRS header pointing passes through unconverted."""
+        profile = InstrumentProfile(header_frame="icrs")
+        metadata = {"ra": 10.0, "dec": 30.0, "obs_time": "2026-04-28T03:03:43"}
 
         assert scripts.estimate_center_from_header(metadata, profile) == (10.0, 30.0)
 
@@ -178,6 +177,18 @@ class TestEstimateCenterFromHeader:
         """
         with pytest.raises(FrameMetadataError, match="pointing"):
             scripts.estimate_center_from_header(metadata, InstrumentProfile())
+
+    @pytest.mark.parametrize(
+        "profile",
+        [InstrumentProfile(), OF_DATE],
+        ids=["icrs", "fk5-of-date"],
+    )
+    def test_out_of_range_dec_raises_metadata_error(self, profile):
+        """A declination outside [-90, 90] is a metadata error in either frame."""
+        metadata = {"ra": 10.0, "dec": 91.0, "obs_time": "2026-04-28T03:03:43"}
+
+        with pytest.raises(FrameMetadataError, match="pointing"):
+            scripts.estimate_center_from_header(metadata, profile)
 
     def test_precession_across_ra_zero_stays_in_range(self):
         """A field near RA 0h that crosses 0 under precession wraps into [0, 360)."""

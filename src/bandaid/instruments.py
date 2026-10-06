@@ -183,6 +183,41 @@ def _rule_identity(rule):
     return (rule.keyword.upper(), rule.pattern.strip().casefold())
 
 
+def _inherit_header_identity(profile, previous):
+    """
+    Carry a replaced profile's header identity over to its replacement.
+
+    Parameters
+    ----------
+    profile : InstrumentProfile
+        The replacement profile.
+    previous : InstrumentProfile
+        The profile being replaced.
+
+    Returns
+    -------
+    InstrumentProfile
+        ``profile``, with ``header_match`` and the
+        ``header_frame``/``header_equinox`` pair taken from ``previous``
+        wherever ``profile`` did not set them explicitly.
+    """
+    inherited = {}
+    # The "retune one knob" override shape --
+    # InstrumentProfile(name='Seestar50', thresh=9.9) -- otherwise leaves
+    # header_match at the bare-class default (empty), silently stripping
+    # the replaced profile's detection rule: detect_instrument would then
+    # have no candidates for this name at all.
+    if "header_match" not in profile.model_fields_set and previous.header_match:
+        inherited["header_match"] = previous.header_match
+    # Likewise the bare-class header frame is ICRS, which would silently stop
+    # converting the replaced profile's header pointing. The two fields are
+    # only meaningful together, so they are inherited as a pair.
+    if profile.model_fields_set.isdisjoint({"header_frame", "header_equinox"}):
+        inherited["header_frame"] = previous.header_frame
+        inherited["header_equinox"] = previous.header_equinox
+    return profile.model_copy(update=inherited) if inherited else profile
+
+
 def register_instrument(profile, *, replace=False):
     """
     Register a profile so :func:`load_instrument` can resolve it by name.
@@ -220,6 +255,9 @@ def register_instrument(profile, *, replace=False):
       shape -- e.g. ``InstrumentProfile(name='Seestar50', thresh=9.9)`` --
       keeps that name auto-detectable. An explicitly supplied
       ``header_match``, including ``()``, is honoured as given.
+      ``header_frame`` and ``header_equinox`` are inherited the same way, as a
+      pair, when ``profile`` sets neither, so the header pointing keeps being
+      converted as before.
     - **Rule conflict.** A new profile whose ``header_match`` shares an exact
       ``(keyword, value)`` pair with a *differently-named* existing profile is
       rejected: `detect_instrument` cannot tell the two apart on a header that
@@ -234,19 +272,8 @@ def register_instrument(profile, *, replace=False):
         )
         raise ValueError(msg)
 
-    if (
-        replace
-        and "header_match" not in profile.model_fields_set
-        and profile.name in existing_names
-    ):
-        # The "retune one knob" override shape --
-        # InstrumentProfile(name='Seestar50', thresh=9.9) -- otherwise leaves
-        # header_match at the bare-class default (empty), silently stripping
-        # the replaced profile's detection rule: detect_instrument would then
-        # have no candidates for this name at all.
-        previous = load_instrument(profile.name)
-        if previous.header_match:
-            profile = profile.model_copy(update={"header_match": previous.header_match})
+    if replace and profile.name in existing_names:
+        profile = _inherit_header_identity(profile, load_instrument(profile.name))
 
     new_rules = {_rule_identity(rule): rule for rule in profile.header_match}
     if new_rules:

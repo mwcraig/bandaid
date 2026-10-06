@@ -397,20 +397,30 @@ class TestPrepareImage:
 
         assert externals.align.call_args.kwargs["expected_center"] is None
 
+    @pytest.mark.parametrize(
+        ("ra", "dec"), [("N/A", "N/A"), (10.0, 91.0)], ids=["non-numeric", "dec-91"]
+    )
     def test_unparsable_header_radec_skips_center_check(
-        self, stub_prepare_image_externals
+        self, stub_prepare_image_externals, ra, dec
     ):
         """
-        Non-numeric header ra/dec skip the check rather than raising.
+        Non-numeric or out-of-range header ra/dec skip the check, not raise.
 
-        A frame whose pointing cannot be coerced to a float should still solve
+        A frame whose pointing is not a usable sky position should still solve
         (just without the pointing check), mirroring the missing-ra/dec path.
         """
         externals = stub_prepare_image_externals(
-            metadata={"creator": "spy", "pixscale": 2.4, "ra": "N/A", "dec": "N/A"}
+            metadata={"creator": "spy", "pixscale": 2.4, "ra": ra, "dec": dec}
         )
 
-        prepare_image("unused.fits", np.zeros((5, 2)), None)
+        # An ICRS profile, so the pointing itself is what fails rather than a
+        # missing observation time.
+        prepare_image(
+            "unused.fits",
+            np.zeros((5, 2)),
+            None,
+            config=PhotometryConfig(instrument=InstrumentProfile()),
+        )
 
         assert externals.align.call_args.kwargs["expected_center"] is None
 
