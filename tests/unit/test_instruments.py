@@ -11,6 +11,7 @@ extended, and that a profile round-trips through ``to_file``/``from_file``.
 
 import pytest
 from _helpers import SEESTAR_RULE
+from pydantic import ValidationError
 
 from bandaid import instruments
 from bandaid.config import HeaderMatchRule, InstrumentProfile
@@ -78,13 +79,24 @@ class TestLoadInstrument:
         assert profile.fwhm_cutout_half == default.fwhm_cutout_half
         assert profile.contamination_tolerance == default.contamination_tolerance
         assert profile.moffat_beta == default.moffat_beta
-        # The framing constants (issue #83) live in profile.json but must match
-        # the class defaults, so the bundled and default profiles agree.
-        assert profile.header_center_offset == default.header_center_offset
         assert profile.cone_radius_margin == default.cone_radius_margin
         # DR2 A/B (issue #83) found widening the cone is net harmful, so the
         # default margin is 0.0 (no widening); guard against an accidental revert.
         assert default.cone_radius_margin == 0.0
+
+    def test_seestar_header_pointing_is_fk5_of_date(self):
+        """
+        The bundled Seestar50 declares its header pointing as FK5 of date.
+
+        The Seestar writes RA/DEC in the equinox of the observation date; a bare
+        ``InstrumentProfile()`` assumes an ICRS header so a custom telescope does
+        not inherit that.
+        """
+        profile = load_instrument("Seestar50")
+        assert (profile.header_frame, profile.header_equinox) == ("fk5", "date")
+
+        default = InstrumentProfile()
+        assert (default.header_frame, default.header_equinox) == ("icrs", "J2000")
 
     def test_seestar_bundle_carries_header_match_rule(self):
         """
@@ -222,6 +234,43 @@ class TestRegister:
             InstrumentProfile(name="Seestar50", header_match=own_rule), replace=True
         )
         assert load_instrument("Seestar50").header_match == own_rule
+
+    def test_replace_true_inherits_the_previous_header_frame(self):
+        """
+        ``replace=True`` with a fresh profile keeps the replaced header frame.
+
+        A bare ``InstrumentProfile()`` defaults to an ICRS header, so the
+        "retune one knob" shape would otherwise stop converting the Seestar's
+        equinox-of-date pointing and move the Gaia cone off the field.
+        """
+        original = load_instrument("Seestar50")
+        register_instrument(
+            InstrumentProfile(name="Seestar50", thresh=9.9), replace=True
+        )
+        replaced = load_instrument("Seestar50")
+        assert (replaced.header_frame, replaced.header_equinox) == (
+            original.header_frame,
+            original.header_equinox,
+        )
+
+    @pytest.mark.parametrize(
+        ("frame_fields", "expected"),
+        [
+            ({"header_frame": "icrs"}, ("icrs", "J2000")),
+            ({"header_frame": "fk5"}, ("fk5", "J2000")),
+            ({"header_frame": "fk5", "header_equinox": "J2025.5"}, ("fk5", "J2025.5")),
+        ],
+        ids=["icrs", "fk5-default-equinox", "fk5-fixed-epoch"],
+    )
+    def test_replace_true_own_header_frame_is_not_overridden(
+        self, frame_fields, expected
+    ):
+        """A replacement that sets either frame field keeps both as given."""
+        register_instrument(
+            InstrumentProfile(name="Seestar50", **frame_fields), replace=True
+        )
+        replaced = load_instrument("Seestar50")
+        assert (replaced.header_frame, replaced.header_equinox) == expected
 
     def test_replace_true_overrides_custom_name(self):
         """``replace=True`` deliberately overrides a previously-registered profile."""
@@ -366,3 +415,16 @@ class TestFileRoundTrip:
         path = tmp_path / "s50.json"
         profile.to_file(path)
         assert InstrumentProfile.from_file(path) == profile
+
+    def test_from_file_rejects_removed_header_center_offset(self, tmp_path):
+        """A profile file still carrying ``header_center_offset`` fails to load."""
+        path = tmp_path / "old.json"
+        path.write_text('{"name": "Old", "header_center_offset": [-0.32, 0.15]}')
+        with pytest.raises(ValidationError, match="header_equinox"):
+            InstrumentProfile.from_file(path)
+
+    def test_from_file_accepts_null_header_center_offset(self, tmp_path):
+        """A profile file with ``"header_center_offset": null`` still loads."""
+        path = tmp_path / "old.json"
+        path.write_text('{"name": "Old", "header_center_offset": null}')
+        assert InstrumentProfile.from_file(path).header_frame == "icrs"

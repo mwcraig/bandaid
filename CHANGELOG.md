@@ -165,6 +165,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- `InstrumentProfile.header_center_offset` is replaced by `header_frame` and
+    `header_equinox`, which declare the frame of the header RA/DEC; the Seestar50
+    profile uses `"fk5"`/`"date"`. A profile that still sets the old key to
+    anything but `null` fails validation. `scripts.resolve_field_center` and the
+    object-name lookup are removed; the Gaia cone is always centered on the
+    converted header pointing (#132).
 - `measure_photometry` and `build_photometry_table` renamed their keyword-only
     `relative_radii=` argument to `radii=`. Both are re-exported from the package
     root, so calls using `relative_radii=` now raise `TypeError`; pass `radii=`
@@ -219,6 +225,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Gaia cone is now centered correctly at every RA. The fixed Seestar header
+    offset was precession from equinox-of-date to J2000 and only matched fields
+    near RA ~11.5 h; precession is now applied to each frame's pointing (#132).
 - The L4 `peak_count` no longer goes NaN when just one of TR/TG/TB has a NaN
     peak (a star at the frame edge whose peak box holds no unmasked pixel in
     that channel) while its counts stay finite. The channel peaks are now

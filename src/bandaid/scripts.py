@@ -23,8 +23,6 @@ from pathlib import Path
 import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
-from astropy.time import Time
-from dateutil import parser
 
 from .ballet import Ballet
 from .catalog import cached_gaia_radecs
@@ -43,7 +41,9 @@ from .photometry import (
     N_GAIA_STARS_ALIGN_RETRY,
     LoadedFrame,
     _load_frame,
+    _parse_obs_time,
     calibration_sequence,
+    estimate_center_from_header,
     good_star_mask,
     metadata_from_header,
     neighbor_contamination_flag_sky,
@@ -81,7 +81,6 @@ __all__ = [
     "photometer_frames",
     "prepare_batch",
     "process_batch",
-    "resolve_field_center",
 ]
 
 # Filename endings treated as FITS frames when expanding directory/glob arguments.
@@ -204,9 +203,9 @@ class BatchPrep:
         Mapping of filter name to Bayer mask, as returned by
         `generate_bayer_masks`.
     center : tuple of float
-        ``(ra, dec)`` in degrees of the resolved *true* field center the Gaia
-        catalog was queried for (the header pointing walked to the field center,
-        not the raw header; see `resolve_field_center`). `check_frame_consistency`
+        ``(ra, dec)`` in degrees (ICRS) of the field center the Gaia catalog was
+        queried for (the header pointing converted by
+        `estimate_center_from_header`). `check_frame_consistency`
         compares each frame's estimated center against it to reject frames that
         drifted off the field.
     fov_rad : float
@@ -270,131 +269,6 @@ class BatchPrep:
                 "construct BatchPrep via prepare_batch"
             )
             raise ValueError(msg)
-
-
-def estimate_center_from_header(metadata, profile):
-    """
-    Walk a frame's header pointing to its true field center.
-
-    The Seestar reports a pointing that sits ~0.35 deg off the center of the
-    frame (mid-left of the field), so a Gaia cone centered on the raw header
-    clips the far side of the field and starves the plate-solve matcher (issue
-    #83). ``profile.header_center_offset`` is the fixed sky vector
-    ``(Delta(RA*cos(dec)), Delta(dec))`` in degrees from that header pointing to
-    the field center; this applies it. When the profile carries no offset the
-    header pointing is returned unchanged (the historical behaviour).
-
-    Parameters
-    ----------
-    metadata : dict
-        Frame metadata carrying ``ra``/``dec`` (the header pointing, in
-        degrees). Numeric-string values (the raw ``@RA``/``@DEC`` form) are
-        coerced to float.
-    profile : InstrumentProfile
-        The instrument whose ``header_center_offset`` is applied.
-
-    Returns
-    -------
-    tuple of float
-        The ``(ra, dec)`` field center in degrees, with RA wrapped into
-        ``[0, 360)``.
-
-    Raises
-    ------
-    FrameMetadataError
-        If the header resolved no numeric ``ra``/``dec`` pointing (absent
-        keyword or non-numeric value). This is the single coercion point every
-        center path funnels through -- the estimate, the raw-header fallback in
-        :func:`resolve_field_center`, and :func:`check_frame_consistency` -- so
-        the failure surfaces as a recoverable, labellable metadata error rather
-        than a bare ``KeyError``/``TypeError``/``ValueError``.
-    """
-    try:
-        ra = float(metadata["ra"])
-        dec = float(metadata["dec"])
-    except (KeyError, TypeError, ValueError) as exc:
-        msg = (
-            "header resolved no numeric pointing (ra/dec) through the instrument "
-            f"header_map: ra={metadata.get('ra')!r}, dec={metadata.get('dec')!r}"
-        )
-        raise FrameMetadataError(msg) from exc
-    offset = profile.header_center_offset
-    if offset is None:
-        # No framing constants: the raw header pointing, RA wrapped for safety.
-        return (ra % 360.0, dec)
-    d_ra_cosdec, d_dec = offset
-    center_dec = dec + d_dec
-    # The offset stores Delta(RA*cos(dec)); divide by cos(dec) to get the RA
-    # shift itself. The pointing is far from the poles, so cos(dec) is safe.
-    # Wrap into [0, 360) so a shift across RA 0h never hands the Gaia cone a
-    # negative RA.
-    center_ra = (ra + d_ra_cosdec / np.cos(np.radians(dec))) % 360.0
-    return (center_ra, center_dec)
-
-
-def resolve_field_center(metadata, profile):
-    """
-    Resolve the field center to query Gaia for, and the cone margin to add.
-
-    Parameters
-    ----------
-    metadata : dict
-        Frame metadata carrying the header pointing (``ra``/``dec``) and,
-        optionally, the target ``object`` name.
-    profile : InstrumentProfile
-        The batch instrument, supplying ``header_center_offset`` and
-        ``cone_radius_margin``.
-
-    Returns
-    -------
-    center : tuple of float
-        The ``(ra, dec)`` field center in degrees.
-    margin : float
-        Extra field radius in degrees to widen the Gaia cone by (the profile's
-        ``cone_radius_margin`` for the estimate/from_name paths, ``0.0`` for the
-        raw-header fallback).
-
-    Notes
-    -----
-    The center is resolved in priority order:
-
-    1. The profile carries framing constants (``header_center_offset``) -- walk
-       the header pointing to the field center with
-       :func:`estimate_center_from_header`. No network.
-    2. Otherwise resolve the frame's ``object`` name with
-       :meth:`~astropy.coordinates.SkyCoord.from_name` -- the fallback for
-       instruments without framing constants (needs network).
-    3. On any ``from_name`` failure (network error, unresolvable/absent name)
-       fall back to the raw header pointing -- the historical behaviour.
-    """
-    if profile.header_center_offset is not None:
-        center = estimate_center_from_header(metadata, profile)
-        logger.info("field center from header estimate: %s", center)
-        return center, profile.cone_radius_margin
-
-    obj = metadata.get("object")
-    if obj:
-        try:
-            resolved = SkyCoord.from_name(obj)
-            center = (resolved.ra.deg, resolved.dec.deg)
-        # from_name raises NameResolveError plus a range of network/HTTP errors;
-        # any failure degrades to the raw header (issue #83 safety net).
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "SkyCoord.from_name(%r) failed (%s); using raw header pointing",
-                obj,
-                exc,
-            )
-        else:
-            logger.info("field center from SkyCoord.from_name(%r): %s", obj, center)
-            return center, profile.cone_radius_margin
-
-    # Past the early return above, the profile carries no offset, so the estimate
-    # returns the raw header pointing unchanged -- reuse it as the single coercion
-    # point so a bad pointing surfaces as a FrameMetadataError here too.
-    center = estimate_center_from_header(metadata, profile)
-    logger.info("field center from raw header pointing: %s", center)
-    return center, 0.0
 
 
 def _resolve_batch_instrument(config, header):
@@ -558,31 +432,21 @@ def prepare_batch(
             "positions to the observation epoch"
         )
         raise FrameMetadataError(msg, file=first_file)
-    # dateutil mirrors build_photometry_table's tolerant DATE-OBS parsing, so
-    # the Gaia epoch accepts the same header date forms as the rest of the
-    # pipeline (Time() alone is stricter than dateutil).
-    try:
-        obs_epoch = Time(parser.parse(obs_time))
-    # OverflowError: dateutil raises it for all-digit strings too large for a
-    # C long (e.g. a corrupted numeric DATE-OBS), documented in parser.parse.
-    except (ValueError, TypeError, OverflowError) as exc:
-        msg = f"could not parse observation time (obs_time) {obs_time!r}"
-        raise FrameMetadataError(msg, file=first_file) from exc
+    obs_epoch = _parse_obs_time(obs_time, file=first_file)
 
-    # The header pointing can be offset from the field center, so center the Gaia
-    # cone on the resolved *true* center (not the raw header) and widen it by the
-    # profile margin, else the far side of the field is clipped from the catalog
-    # and the plate-solve matcher starves (issue #83).
+    # Center the Gaia cone on the header pointing converted to ICRS.
     # fov_rad is a field *radius*; cached_gaia_radecs takes the full field and
     # halves it internally (matching the established twirl.gaia_radecs usage).
-    # resolve_field_center knows a bad pointing but not which file it came from;
-    # attach first_file so the failure names the frame, like the obs_time/
+    # estimate_center_from_header knows a bad pointing but not which file it came
+    # from; attach first_file so the failure names the frame, like the obs_time/
     # metadata_from_header labelling above.
     try:
-        center, cone_margin = resolve_field_center(metadata, instrument)
+        center = estimate_center_from_header(metadata, instrument)
     except FrameMetadataError as exc:
         exc.file = first_file
         raise
+    cone_margin = instrument.cone_radius_margin
+    logger.info("field center from header pointing: %s", center)
     # A Gaia query failure (network/service error) is fatal for the whole batch;
     # surface it as a BatchPrepError instead of a raw astroquery/requests error.
     try:
@@ -827,9 +691,9 @@ def check_frame_consistency(file, header, prep):
     (``prep.config.instrument``), the same dialect that resolved the prep's
     ``center``/``shape`` from the first frame -- so an instrument whose pointing
     lives under different keywords than the Seestar's is compared consistently
-    (issue #59). The frame's header pointing is walked to its field center with
-    :func:`estimate_center_from_header` before the comparison, so it is measured
-    center-to-center against ``prep.center`` (issue #83).
+    (issue #59). The frame's header pointing is converted to ICRS with
+    :func:`estimate_center_from_header` before the comparison, the same way
+    ``prep.center`` was.
 
     Parameters
     ----------
@@ -877,11 +741,8 @@ def check_frame_consistency(file, header, prep):
     if ra is None or dec is None:
         msg = "header resolved no pointing (ra/dec) through the instrument header_map"
         raise FrameMetadataError(msg, file=file)
-    # prep.center is the resolved *true* field center, so walk this frame's
-    # header pointing to its own field center the same way (issue #83). Comparing
-    # center-to-center means a stable frame reads ~0 offset; comparing the raw
-    # header against the true center would bake in the header-to-center baseline
-    # and erode the drift margin (prep.fov_rad) by that much.
+    # prep.center is the first frame's header pointing converted to ICRS, so
+    # convert this frame's the same way before comparing.
     # The None case is caught by the explicit guard above; a present-but-non-
     # numeric pointing surfaces from estimate_center_from_header, which sits
     # outside the metadata_from_header try/except, so label it with the file here.

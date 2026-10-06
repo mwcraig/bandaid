@@ -6,8 +6,9 @@ the two telescope-specific things the pipeline needs:
 - the **detection / PSF tuning** knobs (`thresh`, `detection_opening`,
     `fwhm_cutout_half`, `fwhm_n_stars`, `contamination_tolerance`, `moffat_beta`,
     `contamination_seeing_margin`, `wcs_scale_tolerance`), and
-- the **field-center** settings (`header_center_offset`, `cone_radius_margin`),
-    which control where the Gaia cone is centered and how wide it is, and
+- the **field-center** settings (`header_frame`, `header_equinox`,
+    `cone_radius_margin`), which say what coordinate frame the header pointing is
+    written in and how wide the Gaia cone is, and
 - the **header map** — a small mapping that tells the pipeline how to read that
     telescope's per-frame FITS headers into the metadata it needs.
 
@@ -231,7 +232,6 @@ A `my_scope.json` looks like:
     "moffat_beta": 3.0,
     "contamination_seeing_margin": 1.25,
     "wcs_scale_tolerance": 0.05,
-    "header_center_offset": null,
     "header_match": [{"keyword": "INSTRUME", "pattern": "MyScope Model 1"}],
     "header_map": {
         "obs_time": "@DATE-OBS",
@@ -252,17 +252,23 @@ A `my_scope.json` looks like:
 }
 ```
 
-`"header_center_offset": null` is deliberate. `header_center_offset` is a
-fixed sky vector `(Delta(RA*cos(dec)), Delta(dec))`, in degrees, from the
-header pointing to the true field center; when it is set, the Gaia cone is
-centered on the header pointing moved by that vector. The class default is
-the Seestar S50's correction, so a profile that omits the field silently
-inherits it and would have every frame's cone centered off its true field.
-Set it to `null` for a telescope whose header already points at the field
-center. `cone_radius_margin` (degrees, default `0.0`) is extra radius added to
-`fov_rad` for the Gaia cone when it is centered on a resolved center;
-widening it has been found to hurt plate solving, so leave it at `0.0` unless
-your instrument is shown to need a buffer.
+The Gaia cone is centered on the frame's header pointing, converted to ICRS.
+`header_frame` (`"icrs"` or `"fk5"`, default `"icrs"`) and `header_equinox`
+(default `"J2000"`) say how the header writes that pointing, like the FITS
+`RADESYS` and `EQUINOX` keywords. A telescope whose header is already ICRS
+omits both. The Seestar S50 writes FK5 coordinates in the equinox of the
+observation date, so its profile sets `"header_frame": "fk5"` and
+`"header_equinox": "date"`; `"date"` uses each frame's own observation time,
+and a fixed epoch such as `"J2000"` or `"J2025.5"` is also accepted.
+Both keys are case-insensitive, so a `RADESYS` value such as `"FK5"` can be
+copied as is. ICRS has no equinox, so setting `header_equinox` without
+`"header_frame": "fk5"` is an error. The old `header_center_offset` key has
+been removed: a profile that still sets it to a value fails to load, while
+`null` is accepted and ignored.
+
+`cone_radius_margin` (degrees, default `0.0`) is extra radius added to
+`fov_rad` for the Gaia cone; widening it has been found to hurt plate solving,
+so leave it at `0.0` unless your instrument is shown to need a buffer.
 
 `header_match` is optional — omit it (or leave it `[]`) and the profile is
 still fully usable via `--instrument`/`--profile`/`--config`, just never

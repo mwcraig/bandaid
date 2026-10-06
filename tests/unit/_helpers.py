@@ -312,6 +312,8 @@ def _consistency_header(**overrides: object) -> dict:
         "RA": 10.0,
         "DEC": 0.0,
         "CREATOR": "ZWO Seestar S50",
+        # Needed per frame by an fk5/"date" profile (the bundled Seestar50).
+        "DATE-OBS": "2026-04-28T03:03:43",
     }
     header.update(overrides)
     return header
@@ -453,9 +455,9 @@ def _dummy_prep():
         photometry_coords=SkyCoord([10.0, 10.1], [0.0, 0.0], unit="deg"),
         cnn=object(),
         bayer_masks={"TR": np.zeros((2, 2), dtype=bool)},
-        # The resolved true field center (raw header RA=10/DEC=0 walked by the
-        # Seestar header_center_offset), matching what prepare_batch now stores.
-        center=(9.68, 0.15),
+        # The field center prepare_batch stores for a header pointing at
+        # RA=10/DEC=0 under the bare (ICRS-header) profile below.
+        center=(10.0, 0.0),
         fov_rad=0.74,
         shape=(1920, 1080),
         # A resolved (non-None) instrument, matching what prepare_batch would
