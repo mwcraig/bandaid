@@ -42,6 +42,7 @@ EXPECTED_DETECTION_OPENING = 5
 EXPECTED_FWHM_CUTOUT_HALF = 25
 EXPECTED_FWHM_N_STARS = 25
 EXPECTED_WCS_SCALE_TOLERANCE = 0.05
+EXPECTED_WCS_POINTING_TOLERANCE = 0.25
 # Not a legacy constant: the "SNR >= 2" floor did not previously exist anywhere
 # in bandaid (issue #101). 2.0 is a new, deliberate default, pinned here so an
 # accidental change to it is caught.
@@ -91,6 +92,7 @@ class TestDefaultsMatchLegacyConstants:
         assert cfg.moffat_beta == EXPECTED_MOFFAT_BETA
         assert cfg.contamination_seeing_margin == EXPECTED_CONTAMINATION_SEEING_MARGIN
         assert cfg.wcs_scale_tolerance == EXPECTED_WCS_SCALE_TOLERANCE
+        assert cfg.wcs_pointing_tolerance == EXPECTED_WCS_POINTING_TOLERANCE
 
     def test_instrument_carries_seestar_header_map(self):
         """A bare profile defaults to the Seestar50 name and header dialect."""
@@ -211,6 +213,12 @@ class TestValidators:
         """A zero or negative WCS plate-scale tolerance is rejected."""
         with pytest.raises(ValidationError):
             InstrumentProfile(wcs_scale_tolerance=tolerance)
+
+    @pytest.mark.parametrize("tolerance", [0.0, -0.25])
+    def test_non_positive_wcs_pointing_tolerance_rejected(self, tolerance):
+        """A zero or negative WCS pointing tolerance is rejected."""
+        with pytest.raises(ValidationError):
+            InstrumentProfile(wcs_pointing_tolerance=tolerance)
 
     @pytest.mark.parametrize("scale", [0.0, -0.9])
     def test_non_positive_solve_pool_radius_scale_rejected(self, scale):

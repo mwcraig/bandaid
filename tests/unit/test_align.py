@@ -369,6 +369,53 @@ class TestAlign:
         )
         assert returned_wcs is solved_wcs
 
+    def test_pointing_tolerance_param_controls_the_check(self, mocker):
+        """
+        ``pointing_tolerance`` (degrees) sets how far the solved center may sit.
+
+        The limit is a fixed angle, independent of the frame size: a solve 0.2
+        deg from the header center passes the default tolerance but is rejected
+        as mispointed once the tolerance drops to 0.1 deg, and the error says
+        which limit was exceeded.
+        """
+        solved_wcs = _make_tan_wcs(crval=(10.0, 20.0))
+        mocker.patch("bandaid.photometry.compute_wcs", return_value=solved_wcs)
+        coords = align_coords(N_IMAGE_STARS_ALIGN)
+        kwargs = {
+            "photometry_coords": None,
+            "expected_center": SkyCoord(10.0, 20.2, unit="deg"),
+            "shape": (500, 500),
+        }
+
+        _, returned_wcs = align(coords, coords.copy(), **kwargs)
+        assert returned_wcs is solved_wcs
+
+        with pytest.raises(WCSPointingError, match=r"0\.1 deg"):
+            align(coords, coords.copy(), pointing_tolerance=0.1, **kwargs)
+
+    def test_pointing_limit_does_not_scale_with_frame_size(self, mocker):
+        """
+        A larger frame does not widen the pointing limit.
+
+        A solve 0.3 deg from the header center sits inside the half-diagonal of
+        a 1000-px frame at 2.4 arcsec/px (about 0.47 deg) but is beyond the
+        default pointing tolerance, so it is rejected.
+        """
+        mocker.patch(
+            "bandaid.photometry.compute_wcs",
+            return_value=_make_tan_wcs((1000, 1000), crval=(10.0, 20.0)),
+        )
+        coords = align_coords(N_IMAGE_STARS_ALIGN)
+
+        with pytest.raises(WCSPointingError, match="center"):
+            align(
+                coords,
+                coords.copy(),
+                photometry_coords=None,
+                expected_center=SkyCoord(10.0, 20.3, unit="deg"),
+                shape=(1000, 1000),
+            )
+
     def test_supplied_wcs_center_not_checked(self):
         """A caller-supplied WCS is trusted and not center-checked."""
         mispointed_wcs = _make_tan_wcs(crval=(15.0, 20.0))

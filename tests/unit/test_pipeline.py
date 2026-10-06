@@ -233,6 +233,27 @@ class TestPrepareImage:
 
         assert externals.align.call_args.kwargs["scale_tolerance"] == expected_tolerance
 
+    def test_instrument_wcs_pointing_tolerance_reaches_alignment(
+        self, stub_prepare_image_externals
+    ):
+        """
+        The instrument's ``wcs_pointing_tolerance`` is forwarded to ``align``.
+
+        Spy on ``align`` and assert a non-default profile tolerance arrives as
+        ``pointing_tolerance``.
+        """
+        expected_tolerance = 0.13
+        externals = stub_prepare_image_externals()
+
+        config = PhotometryConfig(
+            instrument=InstrumentProfile(wcs_pointing_tolerance=expected_tolerance),
+        )
+        prepare_image("unused.fits", np.zeros((5, 2)), None, config=config)
+
+        assert (
+            externals.align.call_args.kwargs["pointing_tolerance"] == expected_tolerance
+        )
+
     def test_missing_pixscale_raises_when_solving(self, stub_prepare_image_externals):
         """
         A missing/non-numeric ``pixscale`` fails loud instead of silent-skipping.
