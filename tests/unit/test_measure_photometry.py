@@ -19,6 +19,7 @@ from bandaid.photometry import (
     ANNULUS,
     RELATIVE_RADII,
     _aperture_annulus_geometry,
+    _channel_id_cutouts,
     _finite_centroids,
     _peak_box_cutouts,
     _peak_box_side,
@@ -498,6 +499,64 @@ def test_precomputed_peak_cutouts_match_internal_computation_with_channel_mask(
         np.testing.assert_array_equal(
             without["peak_count"], with_precomputed["peak_count"]
         )
+
+
+def test_precomputed_keep_cutouts_match_plain_mask(make_test_image, bayer_masks_rggb):
+    """
+    Channel-id keep-cutouts give the same ``peak_count`` as the plain mask.
+
+    One float channel-id image cut once per frame replaces the per-channel
+    mask cutout; each channel's keep array is ``id_cutouts == channel_index``.
+    The last star's box runs off the frame corner, so the NaN padding must
+    stay excluded exactly as it is on the plain-mask path.
+    """
+    image, coords = _bright_neighbor_image(make_test_image)
+    coords = np.vstack([coords, [[0.0, 0.0]]])
+    masks = bayer_masks_rggb(image.shape)
+    id_cutouts = _channel_id_cutouts(list(masks.values()), coords, _PEAK_IMAGE_FWHM)
+
+    for index, mask in enumerate(masks.values()):
+        without = _peak_image_photometry(image, coords, mask)
+        with_keep = _peak_image_photometry(
+            image, coords, mask, keep_cutouts=id_cutouts == index
+        )
+        np.testing.assert_array_equal(without["peak_count"], with_keep["peak_count"])
+
+
+@pytest.mark.parametrize("bad_shape", [(1, 3, 3), (2, 2, 2)])
+def test_measure_photometry_rejects_keep_cutouts_with_wrong_shape(
+    make_test_image, bad_shape
+):
+    """A ``keep_cutouts`` not shaped ``(n_finite, box_side, box_side)`` raises."""
+    image, coords = _bright_neighbor_image(make_test_image)
+
+    with pytest.raises(ValueError, match="keep_cutouts"):
+        _peak_image_photometry(
+            image, coords, None, keep_cutouts=np.ones(bad_shape, dtype=bool)
+        )
+
+
+def test_channel_id_cutouts_none_when_a_pixel_is_unmasked_in_two_channels(
+    make_test_image, bayer_masks_rggb
+):
+    """Overlapping custom masks cannot share one id image, so no cutouts are built."""
+    image, coords = _bright_neighbor_image(make_test_image)
+    masks = bayer_masks_rggb(image.shape)
+    overlapping = [masks["TR"], masks["TG"].copy(), masks["TB"]]
+    overlapping[1][0, 0] = False  # pixel (0, 0) is now unmasked in TR and TG
+
+    assert _channel_id_cutouts(overlapping, coords, _PEAK_IMAGE_FWHM) is None
+
+
+def test_channel_id_cutouts_none_when_a_mask_is_none(make_test_image, bayer_masks_rggb):
+    """A ``None`` (unmasked) channel falls back to the per-mask path."""
+    image, coords = _bright_neighbor_image(make_test_image)
+    masks = bayer_masks_rggb(image.shape)
+
+    assert (
+        _channel_id_cutouts([masks["TR"], None, masks["TB"]], coords, _PEAK_IMAGE_FWHM)
+        is None
+    )
 
 
 def test_precomputed_geometry_matches_internal_computation(make_test_image):

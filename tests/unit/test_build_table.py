@@ -384,6 +384,40 @@ class TestBuildPhotometryTable:
         assert img.peak_cutouts() is first
         np.testing.assert_array_equal(first, _peak_box_cutouts(image, coords, fwhm))
 
+    def test_channel_id_cutouts_cached_per_frame(
+        self, make_test_image, bayer_masks_rggb
+    ):
+        """``ImageData.channel_id_cutouts`` cuts once per mask set and caches it."""
+        image, coords, fwhm, _ = _single_source_photometry_inputs(make_test_image)
+        img = _make_image_data(_make_tan_wcs(image.shape), coords, None)
+        img.calibrated_data = image
+        img.fwhm = fwhm
+        masks = list(bayer_masks_rggb(image.shape).values())
+
+        first = img.channel_id_cutouts(masks)
+
+        assert first is not None
+        assert img.channel_id_cutouts(list(masks)) is first
+        # A different mask set must not be served the cached cutouts.
+        assert img.channel_id_cutouts([masks[0], None, masks[2]]) is None
+
+    def test_keep_cutouts_do_not_change_the_table(
+        self, make_test_image, bayer_masks_rggb
+    ):
+        """``build_photometry_table`` gives the same table with ``keep_cutouts``."""
+        image, coords, fwhm, _ = _single_source_photometry_inputs(make_test_image)
+        img = _make_image_data(_make_tan_wcs(image.shape), coords, None)
+        img.calibrated_data = image
+        img.fwhm = fwhm
+        masks = bayer_masks_rggb(image.shape)
+        id_cutouts = img.channel_id_cutouts(list(masks.values()))
+
+        for index, mask in enumerate(masks.values()):
+            plain = build_photometry_table(img, mask)
+            keep = build_photometry_table(img, mask, keep_cutouts=id_cutouts == index)
+            for col in plain.colnames:
+                np.testing.assert_array_equal(plain[col], keep[col])
+
     def test_aperture_geometry_cached_for_same_key(self, make_test_image):
         """The same resolved ``(radii, annulus)`` returns the cached geometry."""
         image, coords, fwhm, _ = _single_source_photometry_inputs(make_test_image)

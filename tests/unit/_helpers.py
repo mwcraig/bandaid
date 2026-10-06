@@ -123,7 +123,9 @@ def _bright_neighbor_image(make_test_image, fwhm=_PEAK_IMAGE_FWHM, sky=10.0):
     return image, coords
 
 
-def _peak_image_photometry(image, centroid_coords, mask, peak_cutouts=None):
+def _peak_image_photometry(
+    image, centroid_coords, mask, peak_cutouts=None, keep_cutouts=None
+):
     """
     Run ``measure_photometry`` on the bright-neighbor test image.
 
@@ -138,6 +140,9 @@ def _peak_image_photometry(image, centroid_coords, mask, peak_cutouts=None):
     peak_cutouts : numpy.ndarray or None, optional
         Precomputed peak-count box cutouts forwarded to
         ``measure_photometry``. By default None.
+    keep_cutouts : numpy.ndarray or None, optional
+        Precomputed boolean keep-cutouts forwarded to ``measure_photometry``.
+        By default None.
 
     Returns
     -------
@@ -153,6 +158,7 @@ def _peak_image_photometry(image, centroid_coords, mask, peak_cutouts=None):
         radii=(1.0,),
         annulus=(5.0, 8.0),
         peak_cutouts=peak_cutouts,
+        keep_cutouts=keep_cutouts,
     )
 
 
