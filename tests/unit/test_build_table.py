@@ -382,6 +382,69 @@ class TestBuildPhotometryTable:
                 np.asarray(without[col]), np.asarray(with_precomputed[col])
             )
 
+    def test_peak_cutouts_cached_per_frame(self, make_test_image):
+        """``ImageData.peak_cutouts`` computes once and returns the same object."""
+        image, coords, fwhm, _ = _single_source_photometry_inputs(make_test_image)
+        img = _make_image_data(_make_tan_wcs(image.shape), coords, None)
+        img.calibrated_data = image
+        img.fwhm = fwhm
+
+        first = img.peak_cutouts()
+
+        assert img.peak_cutouts() is first
+        np.testing.assert_array_equal(first, _peak_box_cutouts(image, coords, fwhm))
+
+    def test_aperture_geometry_cached_for_same_key(self, make_test_image):
+        """The same resolved ``(radii, annulus)`` returns the cached geometry."""
+        image, coords, fwhm, _ = _single_source_photometry_inputs(make_test_image)
+        img = _make_image_data(_make_tan_wcs(image.shape), coords, None)
+        img.fwhm = fwhm
+
+        first = img.aperture_geometry(RELATIVE_RADII, ANNULUS)
+
+        # The key is the values, not the container identity.
+        assert img.aperture_geometry(list(RELATIVE_RADII), tuple(ANNULUS)) is first
+        expected = _aperture_annulus_geometry(fwhm, RELATIVE_RADII, ANNULUS)
+        np.testing.assert_array_equal(first.apertures_radii_px, expected[0])
+        assert first.annulus_radii_px == expected[1]
+
+    def test_aperture_geometry_recomputed_on_key_mismatch(self, make_test_image):
+        """An override after the cache is warm gets its own geometry back."""
+        image, coords, fwhm, _ = _single_source_photometry_inputs(make_test_image)
+        img = _make_image_data(_make_tan_wcs(image.shape), coords, None)
+        img.fwhm = fwhm
+        default = img.aperture_geometry(RELATIVE_RADII, ANNULUS)
+
+        override = img.aperture_geometry([1.0, 2.0], (6, 10))
+
+        assert override is not default
+        np.testing.assert_allclose(
+            override.apertures_radii_px, np.array([1.0, 2.0]) * fwhm
+        )
+        assert override.annulus_radii_px[1] == pytest.approx(10 * fwhm)
+        # The one-slot cache now holds the override; asking for the defaults
+        # again recomputes them correctly rather than returning stale values.
+        again = img.aperture_geometry(RELATIVE_RADII, ANNULUS)
+        np.testing.assert_array_equal(
+            again.apertures_radii_px, default.apertures_radii_px
+        )
+
+    def test_override_through_warm_cache_reaches_output(self, make_test_image):
+        """Overrides reach the table even when the geometry cache is warm."""
+        radii = [1.0, 2.0]
+        annulus = (6, 10)
+        image, coords, fwhm, _ = _single_source_photometry_inputs(
+            make_test_image, annulus=annulus
+        )
+        img = _make_image_data(_make_tan_wcs(image.shape), coords, None)
+        img.calibrated_data = image
+        build_photometry_table(img, mask=None)  # warm the cache with defaults
+
+        table = build_photometry_table(img, mask=None, radii=radii, annulus=annulus)
+
+        assert table["fluxes"].shape == (len(coords), len(radii))
+        assert table.meta["aperture_radii"] == pytest.approx(radii[0] * fwhm)
+
 
 class TestCalculateL4Quantities:
     """Unit tests for the RGB->L4 combination ``calculate_l4_quantities``."""
