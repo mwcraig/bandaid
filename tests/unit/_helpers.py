@@ -387,7 +387,7 @@ def _patch_prep(mocker, *, metadata=None, radecs_mags=None, fwhm_pix=2.0):
     Patch the heavy ``prepare_batch`` externals; return the mocks plus the data.
 
     Patches ``scripts.calibration_sequence`` (to return the given/default
-    metadata, radecs/mags and fwhm), ``scripts.cached_gaia_radecs`` (to return
+    metadata, radecs/mags and fwhm), ``scripts.query_field_catalog`` (to return
     the given/default radecs/mags) and ``scripts._load_frame`` (via
     `_stub_load_frame`). Also relaxes ``N_GAIA_STARS_ALIGN_RETRY`` to 1, since
     these tests exercise the mag-cut/contamination plumbing with deliberately
@@ -402,7 +402,7 @@ def _patch_prep(mocker, *, metadata=None, radecs_mags=None, fwhm_pix=2.0):
         Metadata dict for the stubbed ``calibration_sequence`` to return.
         Defaults to `_batch_metadata`.
     radecs_mags : tuple, optional
-        ``(radecs, mags)`` for the stubbed ``cached_gaia_radecs`` to return.
+        ``(radecs, mags)`` for the stubbed ``query_field_catalog`` to return.
         Defaults to `_batch_radecs_mags`.
     fwhm_pix : float, optional
         FWHM (pixels) for the stubbed ``calibration_sequence`` to return.
@@ -411,7 +411,7 @@ def _patch_prep(mocker, *, metadata=None, radecs_mags=None, fwhm_pix=2.0):
     -------
     types.SimpleNamespace
         ``metadata``, ``radecs``, ``mags``, ``fwhm_pix`` (the resolved data),
-        plus the ``calibration_sequence`` and ``cached_gaia_radecs`` mocks so
+        plus the ``calibration_sequence`` and ``query_field_catalog`` mocks so
         callers can inspect ``.call_args`` for the ``cnn``/``profile``/
         ``frame`` and ``center``/``fov``/``obs_epoch`` arguments passed
         through.
@@ -434,8 +434,8 @@ def _patch_prep(mocker, *, metadata=None, radecs_mags=None, fwhm_pix=2.0):
             object(),
         ),
     )
-    cached_gaia_radecs = mocker.patch(
-        "bandaid.scripts.cached_gaia_radecs", return_value=(radecs, mags)
+    query_field_catalog = mocker.patch(
+        "bandaid.scripts.query_field_catalog", return_value=(radecs, mags)
     )
     _stub_load_frame(mocker)
     return SimpleNamespace(
@@ -444,7 +444,7 @@ def _patch_prep(mocker, *, metadata=None, radecs_mags=None, fwhm_pix=2.0):
         mags=mags,
         fwhm_pix=fwhm_pix,
         calibration_sequence=calibration_sequence,
-        cached_gaia_radecs=cached_gaia_radecs,
+        query_field_catalog=query_field_catalog,
     )
 
 

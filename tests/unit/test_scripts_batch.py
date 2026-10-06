@@ -12,6 +12,7 @@ from astropy.table import Table
 
 from bandaid import scripts
 from bandaid.exceptions import (
+    FrameError,
     TooFewStarsError,
     WCSSolveError,
 )
@@ -442,6 +443,50 @@ class TestProcessBatchToDisk:
         assert bad["status"].startswith("skipped")
         # A WCS solve failure is recorded as an explicit non-solve.
         assert bad["wcs_solved"] == "False"
+
+    def test_qa_manifest_records_pointing_offset(self, mocker, tmp_path, by_filter):
+        """
+        ``pointing_offset_deg`` is set for ok and processing-skipped frames only.
+
+        A frame rejected by ``check_frame_consistency`` never completed the
+        pointing comparison, so its offset is blank.
+        """
+        assert "pointing_offset_deg" in scripts.QA_MANIFEST_COLUMNS
+
+        def _consistency(file, _header, _prep):
+            if file == "rejected.fits":
+                msg = "frame pointing drifted"
+                raise FrameError(msg, file=file)
+            return 0.123456
+
+        mocker.patch(
+            "bandaid.scripts.check_frame_consistency", side_effect=_consistency
+        )
+        mocker.patch(
+            "bandaid.scripts.process_one_image",
+            side_effect=_raise_on(
+                "nosolve.fits",
+                WCSSolveError("twirl found no match", file="nosolve.fits"),
+                by_filter,
+            ),
+        )
+
+        scripts.process_batch(
+            ["good.fits", "nosolve.fits", "rejected.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+        )
+
+        by_file = {row["file"]: row for row in _read_manifest(tmp_path)}
+        assert float(by_file["good.fits"]["pointing_offset_deg"]) == pytest.approx(
+            0.1235
+        )
+        assert float(by_file["nosolve.fits"]["pointing_offset_deg"]) == pytest.approx(
+            0.1235
+        )
+        assert by_file["rejected.fits"]["status"].startswith("skipped")
+        assert by_file["rejected.fits"]["pointing_offset_deg"] == ""
 
     def test_qa_manifest_sky_median_is_median_of_bkgd_count(
         self, patched_process_one_image, tmp_path, by_filter

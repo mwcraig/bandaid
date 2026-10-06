@@ -25,7 +25,7 @@ import numpy as np
 from astropy.coordinates import SkyCoord
 
 from .ballet import Ballet
-from .catalog import cached_gaia_radecs
+from .catalog import query_field_catalog
 from .config import PhotometryConfig
 from .exceptions import (
     BatchPrepError,
@@ -42,6 +42,7 @@ from .photometry import (
     LoadedFrame,
     _load_frame,
     _parse_obs_time,
+    _solve_pool_near,
     calibration_sequence,
     estimate_center_from_header,
     good_star_mask,
@@ -63,6 +64,7 @@ QA_MANIFEST_COLUMNS = (
     "sky_median",
     "fwhm",
     "wcs_solved",
+    "pointing_offset_deg",
     "n_good_stars",
     "dropped_filters",
     "n_centroid_drift",
@@ -210,7 +212,9 @@ class BatchPrep:
         drifted off the field.
     fov_rad : float
         Field radius in degrees; the maximum allowed offset of a frame's
-        estimated center from ``center``.
+        estimated center from ``center``. The catalog covers this radius plus
+        the instrument's ``cone_radius_margin``, so a frame offset by more
+        than the margin is only partly covered (and warned about).
     shape : tuple of int
         Expected ``(height, width)`` of every frame.
     config : PhotometryConfig
@@ -311,6 +315,47 @@ def _resolve_batch_instrument(config, header):
         raise BatchPrepError(str(exc)) from exc
 
 
+def _check_solve_pool_floor(target_radecs, center, fov_rad, instrument, mag_limit):
+    """
+    Require enough target stars inside the first frame's solve pool.
+
+    Parameters
+    ----------
+    target_radecs : numpy.ndarray
+        Target RA/Dec in degrees, shape ``(N, 2)``.
+    center : tuple of float
+        ``(ra, dec)`` in degrees of the field center.
+    fov_rad : float
+        Field radius in degrees.
+    instrument : InstrumentProfile
+        Supplies ``solve_pool_radius_scale``.
+    mag_limit : float
+        The target magnitude limit, used in the error message.
+
+    Raises
+    ------
+    BatchPrepError
+        If fewer than the minimum number of stars lie in the pool.
+
+    Notes
+    -----
+    Only the stars inside the pool are counted: the widened cone also holds
+    edge stars that no frame's per-frame solve pool can use.
+    """
+    pool_radius = fov_rad * instrument.solve_pool_radius_scale
+    n_in_pool = int(
+        np.sum(_solve_pool_near(target_radecs, center[0], center[1], pool_radius))
+    )
+    if n_in_pool < N_GAIA_STARS_ALIGN_RETRY:
+        msg = (
+            f"Gaia returned only {n_in_pool} stars brighter than "
+            f"{mag_limit} within the first frame's solve pool radius "
+            f"({pool_radius:.3f} deg) for the field at {center}; need at least "
+            f"{N_GAIA_STARS_ALIGN_RETRY} to solve a WCS"
+        )
+        raise BatchPrepError(msg)
+
+
 def prepare_batch(
     first_file,
     *,
@@ -326,7 +371,10 @@ def prepare_batch(
     Runs a single detection pass on ``first_file`` (no WCS solve) to obtain the
     FWHM and image metadata, queries Gaia for the field (propagating the J2015.5
     DR2 positions to the frame's observation epoch via proper motions), drops
-    contaminated sources, and builds the Bayer masks.
+    contaminated sources, and builds the Bayer masks. The query cone is the
+    field radius widened by the instrument's ``cone_radius_margin``; it is
+    filtered to ``contaminant_mag_limit`` and carries a row limit with a
+    truncation check (`~bandaid.catalog.query_field_catalog`).
 
     Parameters
     ----------
@@ -374,7 +422,12 @@ def prepare_batch(
     ------
     BatchPrepError
         If too few stars are detected in ``first_file`` to measure an FWHM.
-        Also raised (original chained as ``__cause__``) if ``config.instrument``
+        Also raised if fewer than the minimum number of target stars lie within
+        the first frame's solve pool radius, if the Gaia query hit its row
+        limit before reaching the target magnitude limit (a
+        `~bandaid.exceptions.CatalogTruncationError`, raised unchanged), if
+        the Gaia query fails (original chained as ``__cause__``), and if
+        ``config.instrument``
         is None and the first frame's header does not resolve to exactly one
         instrument profile: `prepare_batch` is the one caller that treats that
         as fatal.
@@ -435,8 +488,9 @@ def prepare_batch(
     obs_epoch = _parse_obs_time(obs_time, file=first_file)
 
     # Center the Gaia cone on the header pointing converted to ICRS.
-    # fov_rad is a field *radius*; cached_gaia_radecs takes the full field and
-    # halves it internally (matching the established twirl.gaia_radecs usage).
+    # fov_rad is a field *radius*; query_field_catalog takes a radius too and
+    # widens it by the instrument's cone margin, so a frame that drifts a little
+    # from the first frame's pointing is still covered by the catalog.
     # estimate_center_from_header knows a bad pointing but not which file it came
     # from; attach first_file so the failure names the frame, like the obs_time/
     # metadata_from_header labelling above.
@@ -445,14 +499,28 @@ def prepare_batch(
     except FrameMetadataError as exc:
         exc.file = first_file
         raise
-    cone_margin = instrument.cone_radius_margin
     logger.info("field center from header pointing: %s", center)
+    # The target/contaminant magnitude limits bound the catalog query itself
+    # (see query_field_catalog) and are used again below to split the result.
+    # SourceSelectionConfig has already defaulted and finiteness-checked these.
+    gaia_mag_limit = config.source_selection.gaia_mag_limit
+    contaminant_mag_limit = config.source_selection.contaminant_mag_limit
     # A Gaia query failure (network/service error) is fatal for the whole batch;
     # surface it as a BatchPrepError instead of a raw astroquery/requests error.
+    # A BatchPrepError raised by the query itself (row-limit truncation) already
+    # carries a precise message and passes through unchanged.
     try:
-        radecs, mags = cached_gaia_radecs(
-            center, 2 * (metadata["fov_rad"] + cone_margin), obs_epoch=obs_epoch
+        radecs, mags = query_field_catalog(
+            center,
+            metadata["fov_rad"],
+            cone_margin=instrument.cone_radius_margin,
+            obs_epoch=obs_epoch,
+            gaia_mag_limit=gaia_mag_limit,
+            contaminant_mag_limit=contaminant_mag_limit,
+            row_limit=config.source_selection.gaia_row_limit,
         )
+    except BatchPrepError:
+        raise
     except Exception as exc:
         msg = f"could not query Gaia for the field at {center}"
         raise BatchPrepError(msg) from exc
@@ -461,9 +529,6 @@ def prepare_batch(
     # contaminant_mag_limit). A real star fainter than the photometry limit still
     # spills into a brighter target's aperture, so flagging runs against the
     # deeper list -- but only targets are ever flagged/dropped.
-    # SourceSelectionConfig has already defaulted and finiteness-checked these.
-    gaia_mag_limit = config.source_selection.gaia_mag_limit
-    contaminant_mag_limit = config.source_selection.contaminant_mag_limit
 
     target = mags <= gaia_mag_limit
     contaminant = mags <= contaminant_mag_limit
@@ -471,13 +536,9 @@ def prepare_batch(
 
     # Without enough reference stars no frame can solve a WCS, so fail the batch
     # now with a clear message rather than letting every frame fail later.
-    if len(target_radecs) < N_GAIA_STARS_ALIGN_RETRY:
-        msg = (
-            f"Gaia returned only {len(target_radecs)} stars brighter than "
-            f"{gaia_mag_limit} for the field at {center}; need at least "
-            f"{N_GAIA_STARS_ALIGN_RETRY} to solve a WCS"
-        )
-        raise BatchPrepError(msg)
+    _check_solve_pool_floor(
+        target_radecs, center, metadata["fov_rad"], instrument, gaia_mag_limit
+    )
 
     fwhm_arcsec = fwhm_pix * metadata["pixscale"]
     # The flag is computed once, from the first frame's FWHM, but applied to
@@ -681,7 +742,8 @@ def check_frame_consistency(file, header, prep):
     first frame and queries Gaia once for that field. A later frame that drifted
     off the field (a slew, a meridian flip, the wrong target) or has a different
     shape would be photometered against a catalog that no longer covers it,
-    producing silently wrong results -- so reject it instead.
+    producing silently wrong results -- so reject it instead. A frame whose
+    pointing drifted only partway off is kept but warned about.
 
     The batch-mixing guard (`_check_instrument_mixing`) runs first, needing
     only ``header`` and the batch instrument: a later frame whose header does
@@ -708,6 +770,12 @@ def check_frame_consistency(file, header, prep):
         ``header_match`` rules used for the batch-mixing guard; and whose
         ``instrument_auto_detected`` gates whether that guard is enforced.
 
+    Returns
+    -------
+    float
+        The offset in degrees of the frame's estimated center from
+        ``prep.center``.
+
     Raises
     ------
     FrameError
@@ -716,6 +784,16 @@ def check_frame_consistency(file, header, prep):
     FrameMetadataError
         If the header cannot be resolved into the metadata needed to perform
         the checks.
+
+    Notes
+    -----
+    The Gaia catalog covers the field radius plus the instrument's
+    ``cone_radius_margin``. An offset up to the margin keeps the whole frame
+    inside the catalog and is silent. An offset beyond the margin but within
+    the field radius leaves the frame's edge partly uncovered: the frame is
+    still processed, with a logged warning naming the offset and margin, since
+    the per-frame solve pool uses only the central part of the field. Beyond
+    the field radius the frame is rejected.
     """
     # Batch-mixing guard: needs only header and the batch instrument, so it
     # runs before the header is otherwise resolved; see
@@ -755,13 +833,24 @@ def check_frame_consistency(file, header, prep):
         raise
     frame_center = SkyCoord(frame_ra, frame_dec, unit="deg")
     center = SkyCoord(prep.center[0], prep.center[1], unit="deg")
-    offset = center.separation(frame_center).deg
+    offset = float(center.separation(frame_center).deg)
     if offset > prep.fov_rad:
         msg = (
             f"frame pointing drifted: its field center is {offset:.3f} deg from "
             f"the batch center, beyond the {prep.fov_rad:.3f} deg field radius"
         )
         raise FrameError(msg, file=file)
+    margin = batch_instrument.cone_radius_margin
+    if offset > margin:
+        logger.warning(
+            "%s: field center is %.3f deg from the batch center, beyond the "
+            "%.3f deg catalog margin; the frame is only partly covered by the "
+            "catalog",
+            file,
+            offset,
+            margin,
+        )
+    return offset
 
 
 def _dropped_filters(by_filter):
@@ -811,7 +900,7 @@ def _dropped_filters(by_filter):
     return "" if all_evaluable else None
 
 
-def _qa_record_ok(file, by_filter, *, forced_targets=None):
+def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None):
     """
     Build the QA manifest record for a frame that processed cleanly.
 
@@ -844,6 +933,10 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None):
     forced_targets : astropy.coordinates.SkyCoord or None, optional
         The batch's forced targets (`BatchPrep.forced_targets`), used only to
         compute ``n_forced_measured``. None (default) records it as blank.
+    pointing_offset : float or None, optional
+        The frame's header-center offset from the batch center in degrees, as
+        returned by `check_frame_consistency`. Recorded rounded to 4 decimals;
+        None (default) records it as blank.
 
     Returns
     -------
@@ -924,6 +1017,7 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None):
         "sky_median": sky_median,
         "fwhm": meta.get("fwhm"),
         "wcs_solved": True,
+        "pointing_offset_deg": _round_offset(pointing_offset),
         "n_good_stars": n_good_stars,
         "dropped_filters": dropped_filters_value,
         "n_centroid_drift": n_centroid_drift,
@@ -932,7 +1026,24 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None):
     }
 
 
-def _qa_record_failed(file, status, *, wcs_solved=None):
+def _round_offset(pointing_offset):
+    """
+    Round a pointing offset for the QA manifest, passing None through.
+
+    Parameters
+    ----------
+    pointing_offset : float or None
+        Offset in degrees, or None when the comparison was not reached.
+
+    Returns
+    -------
+    float or None
+        The offset rounded to 4 decimals, or None.
+    """
+    return None if pointing_offset is None else round(float(pointing_offset), 4)
+
+
+def _qa_record_failed(file, status, *, wcs_solved=None, pointing_offset=None):
     """
     Build the QA manifest record for a skipped or errored frame.
 
@@ -945,6 +1056,9 @@ def _qa_record_failed(file, status, *, wcs_solved=None):
     wcs_solved : bool or None, optional
         ``False`` for a WCS solve failure, otherwise ``None`` (the frame failed
         before -- or unrelated to -- the solve, so it is left blank).
+    pointing_offset : float or None, optional
+        The frame's header-center offset from the batch center in degrees, when
+        it got past the pointing comparison; None (default) leaves it blank.
 
     Returns
     -------
@@ -955,10 +1069,11 @@ def _qa_record_failed(file, status, *, wcs_solved=None):
     record["file"] = str(file)
     record["status"] = status
     record["wcs_solved"] = wcs_solved
+    record["pointing_offset_deg"] = _round_offset(pointing_offset)
     return record
 
 
-def _record_frame_skip(file, exc):
+def _record_frame_skip(file, exc, *, pointing_offset=None):
     """
     Log an expected per-frame failure and build its ``skipped`` manifest row.
 
@@ -974,6 +1089,9 @@ def _record_frame_skip(file, exc):
         The frame-quality error. Some raisers (``build_photometry_table``,
         ``eloy_to_starlist``) do not know the path, so it is attached here
         when missing.
+    pointing_offset : float or None, optional
+        The frame's header-center offset in degrees if it got past the
+        pointing comparison; None (default) leaves it blank.
 
     Returns
     -------
@@ -990,6 +1108,7 @@ def _record_frame_skip(file, exc):
         file,
         f"skipped: {type(exc).__name__}",
         wcs_solved=False if isinstance(exc, WCSSolveError) else None,
+        pointing_offset=pointing_offset,
     )
 
 
@@ -1228,6 +1347,8 @@ def process_batch(
         # NullHandler); `bandaid process --verbose` routes it to the terminal via
         # configure_logging, alongside the skip/error warnings logged below.
         logger.info("processing %d/%d: %s", idx, len(files), file)
+        # Stays None for a frame that fails before the pointing comparison.
+        pointing_offset = None
         try:
             # Reuse the caller's already-opened first frame when given, else
             # load it now -- exactly one open per frame for the whole run
@@ -1237,7 +1358,7 @@ def process_batch(
                 if idx == 1 and first_frame is not None
                 else _load_frame(file)
             )
-            check_frame_consistency(file, frame.header, prep)
+            pointing_offset = check_frame_consistency(file, frame.header, prep)
             by_filter = process_one_image(
                 file,
                 user_specific_metadata,
@@ -1254,7 +1375,9 @@ def process_batch(
             del frame
         except FrameError as exc:
             # Expected per-frame failure: skip the frame and keep going.
-            manifest_records.append(_record_frame_skip(file, exc))
+            manifest_records.append(
+                _record_frame_skip(file, exc, pointing_offset=pointing_offset)
+            )
             continue
         except Exception as exc:
             # Unexpected error (a bug, not a bad frame): surface it by default;
@@ -1263,7 +1386,11 @@ def process_batch(
                 raise
             logger.exception("unexpected error on %s", file)
             manifest_records.append(
-                _qa_record_failed(file, f"error: {type(exc).__name__}")
+                _qa_record_failed(
+                    file,
+                    f"error: {type(exc).__name__}",
+                    pointing_offset=pointing_offset,
+                )
             )
             continue
         else:
@@ -1278,7 +1405,12 @@ def process_batch(
             # split on exception type: a FrameError is this frame's problem
             # and is skipped like any other, everything else propagates.
             manifest_records.append(
-                _qa_record_ok(file, by_filter, forced_targets=prep.forced_targets)
+                _qa_record_ok(
+                    file,
+                    by_filter,
+                    forced_targets=prep.forced_targets,
+                    pointing_offset=pointing_offset,
+                )
             )
             if output_dir is not None:
                 try:
@@ -1286,7 +1418,9 @@ def process_batch(
                 except FrameError as exc:
                     # Replace the provisional ok record appended above with
                     # the skip, so the manifest keeps one row per frame.
-                    manifest_records[-1] = _record_frame_skip(file, exc)
+                    manifest_records[-1] = _record_frame_skip(
+                        file, exc, pointing_offset=pointing_offset
+                    )
             else:
                 results[file] = by_filter
 
