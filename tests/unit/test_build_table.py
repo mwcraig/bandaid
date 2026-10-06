@@ -19,6 +19,7 @@ from astropy.io import fits
 from astropy.table import Table
 from astropy.time import Time
 
+import bandaid.photometry as photometry_module
 from bandaid.config import InstrumentProfile, PhotometryConfig, SourceSelectionConfig
 from bandaid.photometry import (
     ANNULUS,
@@ -342,45 +343,34 @@ class TestBuildPhotometryTable:
         }
         assert set(l4.colnames) <= set(table.colnames)
 
-    # --- Hoisted peak-cutout extraction and aperture/annulus geometry ---
+    # --- Per-frame peak cutouts and aperture geometry cached on ImageData ---
 
-    @pytest.mark.parametrize(
-        ("kwarg", "precompute"),
-        [
-            ("peak_cutouts", _peak_box_cutouts),
-            (
-                "geometry",
-                lambda image, coords, fwhm: _aperture_annulus_geometry(
-                    fwhm, RELATIVE_RADII, ANNULUS
-                ),
-            ),
-        ],
-    )
-    def test_table_identical_with_and_without_precomputed(
-        self, make_test_image, kwarg, precompute
-    ):
-        """
-        ``build_photometry_table`` is identical with/without a precomputed hoist kwarg.
-
-        Covers both hoisted arguments -- ``peak_cutouts`` and ``geometry`` --
-        with the same body. Runs real (non-mocked) ``measure_photometry``
-        end-to-end so the actual hoist is exercised, not a stub.
-        """
-        image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+    @pytest.mark.parametrize("kwarg", ["peak_cutouts", "geometry"])
+    def test_precomputed_kwargs_no_longer_accepted(self, make_test_image, kwarg):
+        """``build_photometry_table`` takes no ``peak_cutouts``/``geometry`` kwargs."""
+        image, coords, _fwhm, mask = _single_source_photometry_inputs(make_test_image)
         img = _make_image_data(_make_tan_wcs(image.shape), coords, None)
         img.calibrated_data = image
 
-        without = build_photometry_table(img, mask=mask)
+        with pytest.raises(TypeError, match=kwarg):
+            build_photometry_table(img, mask=mask, **{kwarg: None})
 
-        with_precomputed = build_photometry_table(
-            img, mask=mask, **{kwarg: precompute(image, coords, fwhm)}
-        )
+    def test_cutouts_and_geometry_computed_once_across_channels(
+        self, make_test_image, mocker
+    ):
+        """Repeated calls on one frame reuse the cached cutouts and geometry."""
+        image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
+        img = _make_image_data(_make_tan_wcs(image.shape), coords, None)
+        img.calibrated_data = image
+        img.fwhm = fwhm
+        cutouts = mocker.spy(photometry_module, "_peak_box_cutouts")
+        geometry = mocker.spy(photometry_module, "_aperture_annulus_geometry")
 
-        assert without.colnames == with_precomputed.colnames
-        for col in without.colnames:
-            np.testing.assert_array_equal(
-                np.asarray(without[col]), np.asarray(with_precomputed[col])
-            )
+        build_photometry_table(img, mask=mask)
+        build_photometry_table(img, mask=None)
+
+        assert cutouts.call_count == 1
+        assert geometry.call_count == 1
 
     def test_peak_cutouts_cached_per_frame(self, make_test_image):
         """``ImageData.peak_cutouts`` computes once and returns the same object."""
