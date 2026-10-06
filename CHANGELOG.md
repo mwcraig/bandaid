@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `InstrumentProfile.wcs_pointing_tolerance` (degrees, default `0.25`, also set in
+- `InstrumentProfile.wcs_pointing_tolerance` (degrees, default `0.30`, also set in
     the Seestar50 profile): the largest separation allowed between a solved
     frame center and that frame's own header pointing (#135).
 - The QA manifest gains `wcs_pixscale` (solved plate scale, arcsec/px),
