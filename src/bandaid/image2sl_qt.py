@@ -33,7 +33,7 @@ import numpy as np
 from .exceptions import DegenerateBayerChannelError
 
 
-def generate_bayer_masks(shape, metadata, *, append_l4=True):
+def generate_bayer_masks(shape, metadata):
     """
     Generate mask for each color in a Bayer array.
 
@@ -43,16 +43,12 @@ def generate_bayer_masks(shape, metadata, *, append_l4=True):
         The (ny, nx) shape of the image data array.
     metadata : dict
         The image metadata dictionary
-    append_l4 : bool, optional
-        If True, add an "L4" key mapped to None to the returned dict. The None
-        mask signals a full-frame (unmasked) luminance channel. Default True.
 
     Returns
     -------
     dict
-        A dictionary mapping each color filter name to its corresponding mask.
-        For the optional "L4" luminance channel the value is None, signalling a
-        full-frame (unmasked) channel.
+        A dictionary mapping each color filter name (``"TR"``, ``"TB"``,
+        ``"TG"``) to its corresponding mask.
     """
     pattern = metadata["bayerpat"]
 
@@ -89,8 +85,6 @@ def generate_bayer_masks(shape, metadata, *, append_l4=True):
                 img_mask[slicer[0] :: 2, slicer[1] :: 2] = False
 
         bayer_info["T" + color] = img_mask
-    if append_l4:
-        bayer_info["L4"] = None
 
     return bayer_info
 

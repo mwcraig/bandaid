@@ -110,7 +110,7 @@ class TestProcessBatch:
             return_value={"TR": Table({"tot_count": [1.0]})},
         )
 
-        scripts.process_batch(["a.fits"], prep)
+        scripts.process_batch(["a.fits"], prep, user_specific_metadata={})
 
         assert process_one_image.call_args.kwargs["append_l4"] is append_l4
 

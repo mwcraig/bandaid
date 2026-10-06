@@ -3036,6 +3036,7 @@ def process_one_image(
     bayer_balance_detection=True,
     input_photometry_coords=None,
     frame=None,
+    append_l4=True,
 ):
     """
     Process a single image file and return one photometry table per input mask.
@@ -3055,9 +3056,7 @@ def process_one_image(
         Dictionary mapping each filter name to the Bayer mask to apply to the
         image. The filter name is stamped into each returned table's metadata so
         the results can be grouped by filter. Each Bayer mask should have the same
-        shape as the image data. To include the synthetic full-frame "L4"
-        luminance channel, map "L4" to None; it is built from the RGB channels
-        (TR/TG/TB) after they are photometered, wherever it sits in the dict.
+        shape as the image data; a mask of None measures the whole frame.
     config : PhotometryConfig or None, optional
         Photometry configuration threaded through to `prepare_image` and
         `build_photometry_table`. If None (default), a default
@@ -3073,20 +3072,26 @@ def process_one_image(
         sky coordinates in the output.
     frame : LoadedFrame or None, optional
         Pre-loaded frame; when None the file is opened once via the loader.
+    append_l4 : bool, optional
+        Whether to also build the synthetic full-frame "L4" luminance channel,
+        returned under the key "L4". It is built from the RGB channels
+        (TR/TG/TB) after they are photometered, so those three must be in
+        ``bayer_masks``. Default True.
 
     Returns
     -------
     dict of {str: Table}
         Dictionary mapping each filter name to the photometry table for that
-        filter. If the frame cannot be processed, the `FrameError` raised by
-        `prepare_image` (too few stars, unsolvable WCS, ...) propagates
-        unchanged; `process_batch` catches it, logs it, and skips the frame.
+        filter, plus "L4" when ``append_l4`` is true. If the frame cannot be
+        processed, the `FrameError` raised by `prepare_image` (too few stars,
+        unsolvable WCS, ...) propagates unchanged; `process_batch` catches it,
+        logs it, and skips the frame.
 
     Raises
     ------
     ValueError
-        If "L4" maps to anything but None, or the TR/TG/TB channels it is
-        built from are missing.
+        If ``append_l4`` is true and the TR/TG/TB channels L4 is built from
+        are missing from ``bayer_masks``.
     InstrumentDetectionError
         A `FrameMetadataError` subclass, raised with `file` attached when
         ``config.instrument`` is None and the frame's header matches zero or
@@ -3133,13 +3138,8 @@ def process_one_image(
     # Reject a malformed mask dict before any photometry: the dict is shared
     # across the batch loop, so a bad one would otherwise cost every frame a
     # full RGB pass before failing.
-    build_l4 = "L4" in bayer_masks
-    if build_l4:
-        if bayer_masks["L4"] is not None:
-            msg = "L4 does not take a mask; map it to None (see generate_bayer_masks)."
-            raise ValueError(msg)
-        if msg := _missing_rgb_channels(bayer_masks):
-            raise ValueError(msg)
+    if append_l4 and (msg := _missing_rgb_channels(bayer_masks)):
+        raise ValueError(msg)
 
     # Computed once per frame and reused across Bayer channels (see
     # _peak_box_cutouts's Notes).
@@ -3152,8 +3152,6 @@ def process_one_image(
 
     by_filter_data = {}
     for filter_name, mask in bayer_masks.items():
-        if filter_name == "L4":
-            continue
         data = build_photometry_table(
             img,
             mask,
@@ -3167,7 +3165,7 @@ def process_one_image(
 
     # L4 is a recombination of the RGB tables, so it is built once they all
     # exist; the caller's dict is read, never mutated.
-    if build_l4:
+    if append_l4:
         l4 = calculate_l4_quantities(by_filter_data, img.metadata["egain"])
         l4.meta["filter"] = "L4"
         l4.meta["full_image_meta"] = img.metadata

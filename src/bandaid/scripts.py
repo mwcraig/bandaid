@@ -239,6 +239,10 @@ class BatchPrep:
         header that positively identifies a *different* registered
         instrument, or is ambiguous between several, is rejected either way.
         An auto-detected batch is never exempt. Default False.
+    append_l4 : bool
+        Whether each frame also gets the full-frame "L4" luminance channel,
+        built from the TR/TG/TB tables; handed to ``process_one_image``.
+        Default True.
     """
 
     radecs: np.ndarray
@@ -251,6 +255,7 @@ class BatchPrep:
     config: PhotometryConfig
     forced_targets: SkyCoord | None = None
     instrument_auto_detected: bool = False
+    append_l4: bool = True
 
     def __post_init__(self) -> None:
         """
@@ -396,8 +401,8 @@ def prepare_batch(
         magnitude limits. If None (default), a default ``PhotometryConfig`` is
         used.
     append_l4 : bool, optional
-        Whether to add a full-frame "L4" luminance channel to the Bayer masks.
-        Default True.
+        Whether each frame also gets a full-frame "L4" luminance channel,
+        recorded on the returned `BatchPrep`. Default True.
     forced_targets : astropy.coordinates.SkyCoord or None, optional
         Extra sky positions to photometer that are absent from the Gaia
         catalog (e.g. a nova or supernova) -- appended to
@@ -609,7 +614,6 @@ def prepare_batch(
     bayer_masks = generate_bayer_masks(
         (metadata["height"], metadata["width"]),
         metadata,
-        append_l4=append_l4,
     )
 
     return BatchPrep(
@@ -623,6 +627,7 @@ def prepare_batch(
         config=config,
         forced_targets=forced_targets,
         instrument_auto_detected=instrument_auto_detected,
+        append_l4=append_l4,
     )
 
 
@@ -1375,6 +1380,7 @@ def process_batch(
                 config=prep.config,
                 input_photometry_coords=prep.photometry_coords,
                 frame=frame,
+                append_l4=prep.append_l4,
             )
             # The raw pixel array is not needed past this point; drop the
             # reference now so it does not stay alive through the write step
