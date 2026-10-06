@@ -65,12 +65,19 @@ QA_MANIFEST_COLUMNS = (
     "fwhm",
     "wcs_solved",
     "pointing_offset_deg",
+    "wcs_pixscale",
+    "solve_offset_deg",
     "n_good_stars",
+    "n_snr20",
     "dropped_filters",
     "n_centroid_drift",
     "n_drift_rejected",
     "n_forced_measured",
 )
+
+# SNR at or above which a star counts toward the manifest's ``n_snr20`` solve-quality
+# proxy (separates good, degraded and false plate solves).
+QA_SNR_THRESHOLD = 20
 
 logger = logging.getLogger(__name__)
 
@@ -965,6 +972,13 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
     and also None -- rather than a misleadingly precise 0 -- when the
     representative channel lacks the columns/bounds needed to evaluate
     `good_star_mask` in the first place.
+
+    ``wcs_pixscale`` (solved plate scale, arcsec/pixel) and ``solve_offset_deg``
+    (solved frame center to the frame's own header center, in degrees) are read
+    from the table ``meta`` that `process_one_image` stamps, rounded to 4
+    decimals; either is blank when absent. ``n_snr20`` counts the
+    representative channel's `good_star_mask`-passing rows with ``snr >= 20``,
+    and is blank under the same conditions as ``n_good_stars``.
     """
     if "L4" in by_filter:
         representative = by_filter["L4"]
@@ -987,6 +1001,7 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
         if len(finite):
             sky_median = float(np.median(finite))
     n_good_stars = None
+    n_snr20 = None
     has_phot_cols = {"tot_count", "count_err", "x", "y"} <= cols
     has_bounds = {"width", "height"} <= set(full_meta)
     good = None
@@ -997,6 +1012,9 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
         # written -- even for tables produced under a different config.
         good = good_star_mask(representative, full_meta, min_snr=meta.get("min_snr"))
         n_good_stars = int(np.sum(good))
+        if "snr" in cols:
+            snr = np.asarray(representative["snr"])
+            n_snr20 = int(np.sum(good & (snr >= QA_SNR_THRESHOLD)))
 
     dropped_filters_value = _dropped_filters(by_filter)
 
@@ -1029,7 +1047,10 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
         "fwhm": meta.get("fwhm"),
         "wcs_solved": True,
         "pointing_offset_deg": _round_offset(pointing_offset),
+        "wcs_pixscale": _round_offset(meta.get("wcs_pixscale")),
+        "solve_offset_deg": _round_offset(meta.get("solve_offset_deg")),
         "n_good_stars": n_good_stars,
+        "n_snr20": n_snr20,
         "dropped_filters": dropped_filters_value,
         "n_centroid_drift": n_centroid_drift,
         "n_drift_rejected": n_drift_rejected,

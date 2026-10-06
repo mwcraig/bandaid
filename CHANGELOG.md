@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The QA manifest gains `wcs_pixscale` (solved plate scale, arcsec/px),
+    `solve_offset_deg` (solved frame center to the frame's own header center, in
+    degrees) and `n_snr20` (good stars with SNR >= 20), so degraded and false
+    plate solves are visible without a rerun (#135).
 - `InstrumentProfile.solve_pool_radius_scale` (default `0.9`): each frame plate-solves
     against only the catalog stars within this fraction of `fov_rad` of its own
     header pointing, instead of the whole batch catalog (#133).

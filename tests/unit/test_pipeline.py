@@ -1817,7 +1817,7 @@ class TestProcessOneImage:
             fwhm=3.0,
             centroid_coords=centroid_coords,
             aligned_coords=centroid_coords,
-            wcs=None,
+            wcs=_make_tan_wcs(),
             header=header,
             metadata={"egain": 1.0},
         )

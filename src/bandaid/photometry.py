@@ -1468,6 +1468,10 @@ class ImageData:
     header: fits.Header
     input_photometry_coords: object = None
     metadata: dict = None
+    # Separation (deg) of the solved frame center from this frame's own header
+    # center -- the quantity the pointing check compares. None when no header
+    # center was available (a caller-supplied WCS skips the check).
+    solve_offset_deg: float | None = None
     # Populated lazily by the first `resolve_time_airmass` call for this frame
     # and reused by the later calls (one per RGB channel) that share this same
     # `ImageData`, so the obs_time parse and airmass derivation run once per
@@ -1596,6 +1600,30 @@ def _wcs_pixscale_arcsec(wcs):
     return float(np.mean(proj_plane_pixel_scales(wcs))) * 3600.0
 
 
+def _wcs_center_separation_deg(wcs, shape, expected_center):
+    """
+    Return the separation in degrees from the solved frame center to a sky location.
+
+    Parameters
+    ----------
+    wcs : astropy.wcs.WCS
+        Solved WCS.
+    shape : tuple of int
+        Image shape ``(height, width)`` defining the frame center.
+    expected_center : astropy.coordinates.SkyCoord
+        Sky location to measure from (the frame header's pointing).
+
+    Returns
+    -------
+    float
+        Angular separation in degrees; NaN when the frame center cannot be
+        projected.
+    """
+    height, width = shape
+    frame_center = wcs.pixel_to_world((width - 1) / 2, (height - 1) / 2)
+    return float(frame_center.separation(expected_center).deg)
+
+
 def _validate_solved_wcs(
     wcs, expected_pixscale, scale_tolerance, expected_center, shape
 ):
@@ -1648,8 +1676,7 @@ def _validate_solved_wcs(
             return None, measured, None
     if expected_center is not None and shape is not None:
         height, width = shape
-        frame_center = wcs.pixel_to_world((width - 1) / 2, (height - 1) / 2)
-        separation = frame_center.separation(expected_center).deg
+        separation = _wcs_center_separation_deg(wcs, shape, expected_center)
         # Field radius = half-diagonal at the solved scale (already vetted above
         # when expected_pixscale is given).
         limit = np.hypot(height - 1, width - 1) / 2 * _wcs_pixscale_arcsec(wcs) / 3600
@@ -2931,6 +2958,12 @@ def prepare_image(
 
     centroid_coords = centroid_stars(working_image, aligned_coords, cnn)
 
+    solve_offset_deg = (
+        _wcs_center_separation_deg(this_wcs, shape, expected_center)
+        if expected_center is not None and shape is not None
+        else None
+    )
+
     return ImageData(
         calibrated_data=calibrated_data,
         coords=coords,
@@ -2941,6 +2974,7 @@ def prepare_image(
         header=frame.header,
         input_photometry_coords=photometry_coords,
         metadata=metadata,
+        solve_offset_deg=solve_offset_deg,
     )
 
 
@@ -3231,11 +3265,17 @@ def process_one_image(
     if build_l4 and (msg := _missing_rgb_channels(bayer_masks)):
         raise ValueError(msg)
 
+    # Solve-quality numbers for the QA manifest, stamped on every table below
+    # (the manifest builder only sees the tables).
+    wcs_pixscale = _wcs_pixscale_arcsec(img.wcs)
+
     by_filter_data = {}
     for filter_name, mask in bayer_masks.items():
         data = build_photometry_table(img, mask, config=config)
         data.meta["filter"] = filter_name
         data.meta["full_image_meta"] = img.metadata
+        data.meta["wcs_pixscale"] = wcs_pixscale
+        data.meta["solve_offset_deg"] = img.solve_offset_deg
         by_filter_data[filter_name] = data
 
     # L4 is a recombination of the RGB tables, so it is built once they all
@@ -3244,6 +3284,8 @@ def process_one_image(
         l4 = calculate_l4_quantities(by_filter_data, img.metadata["egain"])
         l4.meta["filter"] = "L4"
         l4.meta["full_image_meta"] = img.metadata
+        l4.meta["wcs_pixscale"] = wcs_pixscale
+        l4.meta["solve_offset_deg"] = img.solve_offset_deg
         by_filter_data["L4"] = l4
 
     return by_filter_data
