@@ -2582,14 +2582,20 @@ def estimate_center_from_header(metadata, profile):
         f"header_map: ra={metadata.get('ra')!r}, dec={metadata.get('dec')!r}"
     )
     try:
-        ra = Longitude(float(metadata["ra"]), unit="deg")
-        # Latitude raises ValueError for a declination outside [-90, 90].
-        dec = Latitude(float(metadata["dec"]), unit="deg")
+        ra_deg = float(metadata["ra"])
+        dec_deg = float(metadata["dec"])
     except (KeyError, TypeError, ValueError) as exc:
         raise FrameMetadataError(msg) from exc
-    # Longitude and Latitude accept NaN, and Longitude wraps an infinite RA to NaN.
-    if not (np.isfinite(ra.deg) and np.isfinite(dec.deg)):
+    # Checked before astropy sees the values: Longitude and Latitude accept NaN,
+    # and Longitude wraps an infinite RA to NaN.
+    if not (np.isfinite(ra_deg) and np.isfinite(dec_deg)):
         raise FrameMetadataError(msg)
+    ra = Longitude(ra_deg, unit="deg")
+    try:
+        # Latitude raises ValueError for a declination outside [-90, 90].
+        dec = Latitude(dec_deg, unit="deg")
+    except ValueError as exc:
+        raise FrameMetadataError(msg) from exc
     if profile.header_frame == "icrs":
         return (float(ra.deg), float(dec.deg))
     if profile.header_equinox == "date":
