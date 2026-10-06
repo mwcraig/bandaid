@@ -2232,8 +2232,8 @@ def measure_photometry(
     egain,
     mask,
     *,
-    radii=RELATIVE_RADII,
-    annulus=ANNULUS,
+    radii=None,
+    annulus=None,
     peak_cutouts=None,
     geometry=None,
 ):
@@ -2255,19 +2255,20 @@ def measure_photometry(
         Bayer mask to apply to the image data.
     radii : array-like or float, optional
         Aperture radii in units of FWHM; multiplied by `fwhm` to get the actual
-        aperture sizes. A scalar is treated as a single radius. Defaults to the
-        module-level `RELATIVE_RADII`.
-    annulus : tuple of float, optional
+        aperture sizes. A scalar is treated as a single radius. If None
+        (default), the module-level `RELATIVE_RADII`.
+    annulus : tuple of float or None, optional
         Background annulus ``(inner, outer)`` radii in units of FWHM, with
-        ``outer > inner``. Defaults to the module-level `ANNULUS`.
+        ``outer > inner``. If None (default), the module-level `ANNULUS`.
     peak_cutouts : numpy.ndarray or None, optional
         Precomputed raw (unmasked) peak-count box cutouts for the
         finite-centroid rows, from `_peak_box_cutouts`. If None (default),
         computed internally.
     geometry : tuple or None, optional
         Precomputed ``(apertures_radii, annulus_radii)`` from
-        `_aperture_annulus_geometry`. When given, `radii`/`annulus` are
-        ignored. If None (default), computed from `radii`/`annulus`/`fwhm`.
+        `_aperture_annulus_geometry`, in pixels. It cannot be combined with
+        `radii`/`annulus`. If None (default), computed from
+        `radii`/`annulus`/`fwhm`.
 
     Returns
     -------
@@ -2278,7 +2279,8 @@ def measure_photometry(
     Raises
     ------
     ValueError
-        If `geometry` is not a 2-element ``(apertures_radii, annulus_radii)``
+        If `geometry` is given together with an explicit `radii` or `annulus`;
+        if `geometry` is not a 2-element ``(apertures_radii, annulus_radii)``
         sequence, its `annulus_radii` is not a 2-element ``(inner, outer)``
         sequence with ``outer > inner``, or the annulus is not usable after
         its inner radius is clamped to the largest aperture radius (see
@@ -2331,9 +2333,17 @@ def measure_photometry(
     pixels, so a saturated pixel is attributed to the channel it lives in and
     a bright neighbor outside the box cannot masquerade as the target's peak.
     """
+    if geometry is not None and (radii is not None or annulus is not None):
+        msg = (
+            "geometry already fixes the aperture and annulus radii (in pixels); "
+            "do not pass radii or annulus (in units of FWHM) with it."
+        )
+        raise ValueError(msg)
     if geometry is None:
         apertures_radii, annulus_radii = _aperture_annulus_geometry(
-            fwhm, radii, annulus
+            fwhm,
+            RELATIVE_RADII if radii is None else radii,
+            ANNULUS if annulus is None else annulus,
         )
     else:
         # `_coerce_geometry` unpacks, coerces, and validates `geometry` the
@@ -2968,8 +2978,6 @@ def build_photometry_table(
     annulus=None,
     drift_tolerance=None,
     drift_cap=None,
-    peak_cutouts=None,
-    geometry=None,
 ):
     """
     Run photometry with a given mask and build an output table.
@@ -3000,15 +3008,6 @@ def build_photometry_table(
         Absolute pixel cap on the allowed centroid drift, passed to
         `centroid_drift_flag`. If None (default), taken from
         ``config.drift.drift_cap_pix``.
-    peak_cutouts : numpy.ndarray or None, optional
-        Precomputed raw peak-count box cutouts, passed through to
-        `measure_photometry` (e.g. from `_peak_box_cutouts`). If None
-        (default), `measure_photometry` computes it internally.
-    geometry : tuple or None, optional
-        Precomputed ``(apertures_radii, annulus_radii)``, passed through to
-        `measure_photometry` (e.g. from `_aperture_annulus_geometry`). When
-        given, `radii`/`annulus` are ignored. If None (default),
-        `measure_photometry` computes it from `radii`/`annulus`.
 
     Returns
     -------
@@ -3025,6 +3024,13 @@ def build_photometry_table(
         ``img`` (see `ImageData.resolve_time_airmass`), which may raise
         `FrameMetadataError` if the image metadata has a missing or
         unparsable observation time (``obs_time``); that propagates unchanged.
+
+    Notes
+    -----
+    The raw peak-count cutouts and the pixel aperture/annulus geometry are
+    per-frame and channel-independent, so they are cached on ``img`` (see
+    `ImageData.peak_cutouts` and `ImageData.aperture_geometry`) and shared by
+    the calls for the RGB channels.
     """
     config = config or PhotometryConfig()
     if radii is None:
@@ -3041,10 +3047,8 @@ def build_photometry_table(
         img.fwhm,
         img.metadata["egain"],
         mask,
-        radii=radii,
-        annulus=annulus,
-        peak_cutouts=peak_cutouts,
-        geometry=geometry,
+        peak_cutouts=img.peak_cutouts(),
+        geometry=img.aperture_geometry(radii, annulus),
     )
     if img.input_photometry_coords is not None:
         # The caller supplied known sky coordinates; use them directly rather
@@ -3226,24 +3230,9 @@ def process_one_image(
     if build_l4 and (msg := _missing_rgb_channels(bayer_masks)):
         raise ValueError(msg)
 
-    # Computed once per frame and reused across Bayer channels (see
-    # _peak_box_cutouts's Notes).
-    peak_cutouts = _peak_box_cutouts(img.calibrated_data, img.centroid_coords, img.fwhm)
-    # Computed once per frame and reused across Bayer channels (see
-    # _aperture_annulus_geometry's Notes).
-    geometry = _aperture_annulus_geometry(
-        img.fwhm, config.apertures.radii, config.apertures.annulus
-    )
-
     by_filter_data = {}
     for filter_name, mask in bayer_masks.items():
-        data = build_photometry_table(
-            img,
-            mask,
-            config=config,
-            peak_cutouts=peak_cutouts,
-            geometry=geometry,
-        )
+        data = build_photometry_table(img, mask, config=config)
         data.meta["filter"] = filter_name
         data.meta["full_image_meta"] = img.metadata
         by_filter_data[filter_name] = data
