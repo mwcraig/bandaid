@@ -258,12 +258,13 @@ class InstrumentProfile(BaseModel, frozen=True):
     """
     A named telescope: detection/FWHM/PSF settings plus its FITS-header dialect.
 
-    The tuning defaults are the Seestar50 values; ``header_frame``,
-    ``header_equinox`` and ``header_match`` are not, and come from the bundled
-    profile. Change the tuning values only when pointing a different telescope
-    at the sky; they depend on the plate scale, the PSF, and the instrument's
-    sensitivity to contamination. A profile bundles the two
-    halves of "what a telescope is": the detection tuning knobs *and* the
+    The defaults are the Seestar50 values, except for ``header_frame``,
+    ``header_equinox`` and ``header_match``, which default to an ICRS header
+    and no detection rule; the Seestar50's values for those three are set only
+    in its bundled profile. Change the tuning values only when pointing a
+    different telescope at the sky; they depend on the plate scale, the PSF,
+    and the instrument's sensitivity to contamination. A profile bundles the
+    two halves of "what a telescope is": the detection tuning knobs *and* the
     ``header_map`` that resolves that telescope's per-frame FITS header into the
     metadata the pipeline needs. Named profiles live in
     :mod:`bandaid.instruments`; use :func:`~bandaid.instruments.load_instrument`
