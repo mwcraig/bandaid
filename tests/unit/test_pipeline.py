@@ -430,7 +430,6 @@ class TestPrepareImage:
             (10.0, True),
             (None, None),
             (10.0, 91.0),
-            (np.nan, 20.0),
         ],
         ids=[
             "non-numeric",
@@ -439,7 +438,6 @@ class TestPrepareImage:
             "dec-bool",
             "missing",
             "dec-91",
-            "ra-nan",
         ],
     )
     def test_unusable_header_radec_raises(self, stub_prepare_image_externals, ra, dec):

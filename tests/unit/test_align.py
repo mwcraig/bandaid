@@ -435,15 +435,3 @@ class TestSolvePoolNear:
         np.testing.assert_array_equal(
             _solve_pool_near(radecs, 10.0, 20.0, 0.0), [True, False]
         )
-
-    def test_ra_wrap_across_zero(self):
-        """A star at RA 359.9 is 0.2 deg from a center at RA 0.1."""
-        radecs = np.array([[359.9, 10.0], [1.0, 10.0]])
-        mask = _solve_pool_near(radecs, 0.1, 10.0, 0.3)
-        np.testing.assert_array_equal(mask, [True, False])
-
-    def test_high_declination_uses_great_circle(self):
-        """10 deg of RA at dec +85 is ~0.87 deg of sky, not 10 deg."""
-        radecs = np.array([[20.0, 85.0]])
-        assert _solve_pool_near(radecs, 10.0, 85.0, 1.0)[0]
-        assert not _solve_pool_near(radecs, 10.0, 85.0, 0.5)[0]

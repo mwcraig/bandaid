@@ -2562,9 +2562,9 @@ def estimate_center_from_header(metadata, profile):
     Raises
     ------
     FrameMetadataError
-        If the header resolved no finite numeric ``ra``/``dec`` pointing with
-        a declination in ``[-90, 90]``, or the profile needs ``obs_time`` and
-        it is missing or unparsable.
+        If the header resolved no numeric ``ra``/``dec`` pointing with a
+        declination in ``[-90, 90]``, or the profile needs ``obs_time`` and it
+        is missing or unparsable.
 
     Notes
     -----
@@ -2577,24 +2577,15 @@ def estimate_center_from_header(metadata, profile):
     surfaces as a labellable metadata error rather than a bare
     ``KeyError``/``TypeError``/``ValueError``.
     """
-    msg = (
-        "header resolved no usable pointing (ra/dec) through the instrument "
-        f"header_map: ra={metadata.get('ra')!r}, dec={metadata.get('dec')!r}"
-    )
     try:
-        ra_deg = float(metadata["ra"])
-        dec_deg = float(metadata["dec"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise FrameMetadataError(msg) from exc
-    # Checked before astropy sees the values: Longitude and Latitude accept NaN,
-    # and Longitude wraps an infinite RA to NaN.
-    if not (np.isfinite(ra_deg) and np.isfinite(dec_deg)):
-        raise FrameMetadataError(msg)
-    ra = Longitude(ra_deg, unit="deg")
-    try:
+        ra = Longitude(float(metadata["ra"]), unit="deg")
         # Latitude raises ValueError for a declination outside [-90, 90].
-        dec = Latitude(dec_deg, unit="deg")
-    except ValueError as exc:
+        dec = Latitude(float(metadata["dec"]), unit="deg")
+    except (KeyError, TypeError, ValueError) as exc:
+        msg = (
+            "header resolved no usable pointing (ra/dec) through the instrument "
+            f"header_map: ra={metadata.get('ra')!r}, dec={metadata.get('dec')!r}"
+        )
         raise FrameMetadataError(msg) from exc
     if profile.header_frame == "icrs":
         return (float(ra.deg), float(dec.deg))

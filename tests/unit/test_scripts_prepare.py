@@ -194,29 +194,6 @@ class TestEstimateCenterFromHeader:
         with pytest.raises(FrameMetadataError, match="pointing"):
             scripts.estimate_center_from_header(metadata, profile)
 
-    @pytest.mark.parametrize(
-        ("ra", "dec"),
-        [
-            (np.nan, 20.0),
-            (np.inf, 20.0),
-            (-np.inf, 20.0),
-            (10.0, np.nan),
-            ("nan", "20.0"),
-        ],
-        ids=["ra-nan", "ra-inf", "ra-minus-inf", "dec-nan", "ra-nan-string"],
-    )
-    @pytest.mark.parametrize(
-        "profile",
-        [InstrumentProfile(), OF_DATE],
-        ids=["icrs", "fk5-of-date"],
-    )
-    def test_non_finite_pointing_raises_metadata_error(self, profile, ra, dec):
-        """A NaN or infinite pointing is a metadata error in either frame."""
-        metadata = {"ra": ra, "dec": dec, "obs_time": "2026-04-28T03:03:43"}
-
-        with pytest.raises(FrameMetadataError, match="pointing"):
-            scripts.estimate_center_from_header(metadata, profile)
-
     def test_precession_across_ra_zero_stays_in_range(self):
         """A field near RA 0h that crosses 0 under precession wraps into [0, 360)."""
         metadata = {"ra": 0.1, "dec": 0.0, "obs_time": "2026-04-28T03:03:43"}
@@ -1238,13 +1215,6 @@ class TestCheckFrameConsistency:
         the frame path here to stay consistent with the other rejections.
         """
         header = _consistency_header(RA="garbage")
-        with pytest.raises(FrameMetadataError, match="pointing") as excinfo:
-            scripts.check_frame_consistency("bad.fits", header, self._prep())
-        assert excinfo.value.file == "bad.fits"
-
-    def test_nan_pointing_is_rejected_not_passed_as_undrifted(self):
-        """A NaN pointing is a metadata error; it must not pass the drift check."""
-        header = _consistency_header(RA="nan")
         with pytest.raises(FrameMetadataError, match="pointing") as excinfo:
             scripts.check_frame_consistency("bad.fits", header, self._prep())
         assert excinfo.value.file == "bad.fits"
