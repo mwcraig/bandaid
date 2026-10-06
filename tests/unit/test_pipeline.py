@@ -40,6 +40,7 @@ from bandaid.photometry import (
     LoadedFrame,
     _box_opening,
     _brightest_unsaturated,
+    _channel_id_image,
     _detect_stars,
     _fwhm_from_coords,
     build_photometry_table,
@@ -1699,6 +1700,44 @@ class TestProcessOneImage:
 
         n_rgb_channels = 3  # TR, TG, TB -- L4 must not reach measure_photometry.
         assert mp_spy.call_count == n_rgb_channels
+
+    def test_shared_channel_id_image_matches_per_mask_tables(self, l4_frame, mocker):
+        """
+        The shared channel-id cutout changes no table column.
+
+        Compares the default path (one id image, cut once) with overlapping
+        masks that force the per-mask fallback, built so that they keep exactly
+        the same pixels: pixel (0, 0) is also unmasked in TG, but no star's box
+        reaches it.
+        """
+        path, masks = l4_frame
+        shared = process_one_image(path, {}, _REF_RADECS, None, masks)
+        overlapping = {k: None if v is None else v.copy() for k, v in masks.items()}
+        overlapping["TG"][0, 0] = False
+        mp_spy = mocker.spy(photometry, "measure_photometry")
+
+        fallback = process_one_image(path, {}, _REF_RADECS, None, overlapping)
+
+        assert all(c.kwargs["keep_cutouts"] is None for c in mp_spy.call_args_list)
+        for name, table in shared.items():
+            for col in table.colnames:
+                np.testing.assert_array_equal(
+                    np.asarray(table[col]), np.asarray(fallback[name][col])
+                )
+
+    def test_precomputed_channel_id_image_is_used(self, l4_frame, mocker):
+        """A caller-supplied ``channel_id_image`` is used and not rebuilt."""
+        path, masks = l4_frame
+        rgb = [m for k, m in masks.items() if k != "L4"]
+        build_spy = mocker.spy(photometry, "_channel_id_image")
+        mp_spy = mocker.spy(photometry, "measure_photometry")
+
+        process_one_image(
+            path, {}, _REF_RADECS, None, masks, channel_id_image=_channel_id_image(rgb)
+        )
+
+        build_spy.assert_not_called()
+        assert all(c.kwargs["keep_cutouts"] is not None for c in mp_spy.call_args_list)
 
     def test_l4_copied_columns_match_a_full_frame_build(self, l4_frame, mocker):
         """

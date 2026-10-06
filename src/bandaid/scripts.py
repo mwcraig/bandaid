@@ -40,6 +40,7 @@ from .instruments import detect_instrument, resolve_config_instrument
 from .photometry import (
     N_GAIA_STARS_ALIGN_RETRY,
     LoadedFrame,
+    _channel_id_image,
     _load_frame,
     _parse_obs_time,
     _solve_pool_near,
@@ -243,6 +244,11 @@ class BatchPrep:
         Whether each frame also gets the full-frame "L4" luminance channel,
         built from the TR/TG/TB tables; handed to ``process_one_image``.
         Default True.
+    channel_id_image : numpy.ndarray or None
+        One float image holding the index of the channel that owns each pixel
+        of the masks in ``bayer_masks`` (see `process_one_image`), built
+        once per batch. None when those masks cannot share one image. Default
+        None.
     """
 
     radecs: np.ndarray
@@ -256,6 +262,7 @@ class BatchPrep:
     forced_targets: SkyCoord | None = None
     instrument_auto_detected: bool = False
     build_l4: bool = True
+    channel_id_image: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         """
@@ -628,6 +635,7 @@ def prepare_batch(
         forced_targets=forced_targets,
         instrument_auto_detected=instrument_auto_detected,
         build_l4=build_l4,
+        channel_id_image=_channel_id_image(list(bayer_masks.values())),
     )
 
 
@@ -1381,6 +1389,7 @@ def process_batch(
                 input_photometry_coords=prep.photometry_coords,
                 frame=frame,
                 build_l4=prep.build_l4,
+                channel_id_image=prep.channel_id_image,
             )
             # The raw pixel array is not needed past this point; drop the
             # reference now so it does not stay alive through the write step

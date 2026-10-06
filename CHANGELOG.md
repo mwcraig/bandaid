@@ -112,6 +112,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     differently named profile's rule (same keyword and value) raises
     `ValueError` at registration instead of surfacing later as an
     "ambiguous instrument" detection error on a real frame.
+- `measure_photometry` and `build_photometry_table` take a `keep_cutouts` keyword (a
+    boolean array shaped like the peak cutouts) that stands in for the channel mask
+    when picking the peak pixels, and `process_one_image` takes a `channel_id_image`
+    keyword. `BatchPrep.channel_id_image` carries the once-per-batch image of which
+    channel owns each pixel, so each frame cuts it once instead of cutting every
+    channel's mask on its own. Masks that overlap, or a `None` mask, fall back to the
+    per-mask path. Pipeline output is unchanged (#127).
 
 ### Changed
 

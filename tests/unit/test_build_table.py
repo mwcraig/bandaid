@@ -27,6 +27,7 @@ from bandaid.photometry import (
     _MASK_INDEPENDENT_COLUMNS,
     ImageData,
     _aperture_annulus_geometry,
+    _channel_id_image,
     _peak_box_cutouts,
     build_photometry_table,
     calculate_l4_quantities,
@@ -387,19 +388,21 @@ class TestBuildPhotometryTable:
     def test_channel_id_cutouts_cached_per_frame(
         self, make_test_image, bayer_masks_rggb
     ):
-        """``ImageData.channel_id_cutouts`` cuts once per mask set and caches it."""
+        """``ImageData.channel_id_cutouts`` cuts once per image and caches it."""
         image, coords, fwhm, _ = _single_source_photometry_inputs(make_test_image)
         img = _make_image_data(_make_tan_wcs(image.shape), coords, None)
         img.calibrated_data = image
         img.fwhm = fwhm
         masks = list(bayer_masks_rggb(image.shape).values())
 
-        first = img.channel_id_cutouts(masks)
+        channel_ids = _channel_id_image(masks)
+
+        first = img.channel_id_cutouts(channel_ids)
 
         assert first is not None
-        assert img.channel_id_cutouts(list(masks)) is first
-        # A different mask set must not be served the cached cutouts.
-        assert img.channel_id_cutouts([masks[0], None, masks[2]]) is None
+        assert img.channel_id_cutouts(channel_ids) is first
+        # A different image must not be served the cached cutouts.
+        assert img.channel_id_cutouts(None) is None
 
     def test_keep_cutouts_do_not_change_the_table(
         self, make_test_image, bayer_masks_rggb
@@ -410,7 +413,7 @@ class TestBuildPhotometryTable:
         img.calibrated_data = image
         img.fwhm = fwhm
         masks = bayer_masks_rggb(image.shape)
-        id_cutouts = img.channel_id_cutouts(list(masks.values()))
+        id_cutouts = img.channel_id_cutouts(_channel_id_image(list(masks.values())))
 
         for index, mask in enumerate(masks.values()):
             plain = build_photometry_table(img, mask)

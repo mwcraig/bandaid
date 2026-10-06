@@ -1455,6 +1455,134 @@ def good_star_mask(eloy_table, metadata, *, min_snr=None):
     return np.asarray(good)
 
 
+def _apply_keep_cutouts(peak_cutouts, keep_cutouts):
+    """
+    Blank the peak cutout pixels a caller-supplied keep-array excludes.
+
+    Parameters
+    ----------
+    peak_cutouts : numpy.ndarray
+        Float peak cutouts shaped ``(n_finite, box_side, box_side)``.
+    keep_cutouts : array-like
+        Caller-supplied keep-array, True where a pixel belongs to the channel.
+
+    Returns
+    -------
+    numpy.ndarray
+        `peak_cutouts` with every pixel that is not kept set to NaN.
+
+    Raises
+    ------
+    ValueError
+        If `keep_cutouts` does not have the shape of `peak_cutouts`.
+    """
+    keep_cutouts = np.asarray(keep_cutouts, dtype=bool)
+    if keep_cutouts.shape != peak_cutouts.shape:
+        msg = (
+            f"keep_cutouts has shape {keep_cutouts.shape} but "
+            f"{peak_cutouts.shape} (n_finite, box_side, box_side) is required; "
+            "it must be precomputed from the same centroid_coords and fwhm as "
+            "this call."
+        )
+        raise ValueError(msg)
+    return np.where(keep_cutouts, peak_cutouts, np.nan)
+
+
+def _channel_id_image(masks):
+    """
+    Build one float image holding the id of the channel that owns each pixel.
+
+    Parameters
+    ----------
+    masks : sequence of numpy.ndarray or None
+        The channel masks of one frame (True or non-zero means excluded), in
+        channel order. The index of a mask is its channel id.
+
+    Returns
+    -------
+    numpy.ndarray or None
+        Float image, the channel index where exactly one mask leaves the pixel
+        owned and NaN where none does. None if any mask is None, a pixel is
+        owned in more than one channel, or the masks differ in shape; the
+        caller then falls back to cutting each mask on its own.
+
+    Notes
+    -----
+    The masks of a batch are fixed, so this is built once per batch rather
+    than once per frame. The image is float because it is cut at the stars'
+    positions, and a boolean array cannot hold the NaN that pads out-of-frame
+    pixels.
+    """
+    if any(mask is None for mask in masks):
+        return None
+    owned = [np.asarray(mask) == 0 for mask in masks]
+    if len({pixels.shape for pixels in owned}) != 1:
+        return None
+    claims = np.zeros(owned[0].shape, dtype=np.uint8)
+    for pixels in owned:
+        claims += pixels
+    if claims.max() > 1:
+        return None
+    channel_ids = np.full(owned[0].shape, np.nan)
+    for index, pixels in enumerate(owned):
+        channel_ids[pixels] = index
+    return channel_ids
+
+
+def _cut_channel_ids(channel_id_image, centroid_coords, fwhm):
+    """
+    Cut a channel-id image at the peak-cutout coordinates.
+
+    Parameters
+    ----------
+    channel_id_image : numpy.ndarray or None
+        Image from `_channel_id_image`.
+    centroid_coords : numpy.ndarray
+        Centroided star coordinates.
+    fwhm : float
+        FWHM of the PSF in pixels, sizing the box as in `_peak_box_cutouts`.
+
+    Returns
+    -------
+    numpy.ndarray or None
+        Float cutouts shaped ``(n_finite, box_side, box_side)``, NaN for
+        out-of-frame padding, so ``id_cutouts == channel_index`` is the keep
+        array for that channel. None if `channel_id_image` is None or no row
+        has a finite centroid.
+    """
+    if channel_id_image is None:
+        return None
+    centroid_xy, finite_centroid = _finite_centroids(centroid_coords)
+    if not np.any(finite_centroid):
+        return None
+    box_side = _peak_box_side(fwhm)
+    return utils.cutout(
+        channel_id_image, centroid_xy[finite_centroid], (box_side, box_side)
+    )
+
+
+def _channel_id_cutouts(masks, centroid_coords, fwhm):
+    """
+    Cut one channel-id image of `masks` at the peak-cutout coordinates.
+
+    Parameters
+    ----------
+    masks : sequence of numpy.ndarray or None
+        The channel masks of one frame, in channel order.
+    centroid_coords : numpy.ndarray
+        Centroided star coordinates.
+    fwhm : float
+        FWHM of the PSF in pixels.
+
+    Returns
+    -------
+    numpy.ndarray or None
+        The cutouts of `_cut_channel_ids` for the image of `_channel_id_image`,
+        or None when either returns None.
+    """
+    return _cut_channel_ids(_channel_id_image(masks), centroid_coords, fwhm)
+
+
 @dataclass
 class ImageData:
     """Per-image detection, alignment, and centroiding results."""
@@ -1484,6 +1612,11 @@ class ImageData:
         default=None, repr=False, init=False, compare=False
     )
     _aperture_geometry_cache: tuple | None = field(
+        default=None, repr=False, init=False, compare=False
+    )
+    # Like the geometry, the channel-id cutouts depend on the channel-id image,
+    # so this holds one ``(image, value)`` pair matched on the image's identity.
+    _channel_id_cutouts_cache: tuple | None = field(
         default=None, repr=False, init=False, compare=False
     )
 
@@ -1540,6 +1673,35 @@ class ImageData:
                 self.calibrated_data, self.centroid_coords, self.fwhm
             )
         return self._peak_cutouts_cache
+
+    def channel_id_cutouts(self, channel_id_image):
+        """
+        Return and cache the channel-id cutouts for a channel-id image.
+
+        Parameters
+        ----------
+        channel_id_image : numpy.ndarray or None
+            Image from `_channel_id_image`, built from this frame's channel
+            masks.
+
+        Returns
+        -------
+        numpy.ndarray or None
+            The cutouts from `_cut_channel_ids` at this frame's peak-cutout
+            coordinates and box, or None when `channel_id_image` is None.
+
+        Notes
+        -----
+        One ``(image, value)`` pair is kept and matched on the identity of the
+        image, so every channel of a frame asking with the same image cuts once.
+        """
+        cache = self._channel_id_cutouts_cache
+        if cache is None or cache[0] is not channel_id_image:
+            self._channel_id_cutouts_cache = (
+                channel_id_image,
+                _cut_channel_ids(channel_id_image, self.centroid_coords, self.fwhm),
+            )
+        return self._channel_id_cutouts_cache[1]
 
     def aperture_geometry(self, radii, annulus):
         """
@@ -2236,6 +2398,7 @@ def measure_photometry(
     radii=None,
     annulus=None,
     peak_cutouts=None,
+    keep_cutouts=None,
     geometry=None,
 ):
     """
@@ -2265,6 +2428,13 @@ def measure_photometry(
         Precomputed raw (unmasked) peak-count box cutouts for the
         finite-centroid rows, from `_peak_box_cutouts`. If None (default),
         computed internally.
+    keep_cutouts : numpy.ndarray or None, optional
+        Precomputed boolean keep-array, True where a ``peak_cutouts`` pixel
+        belongs to this call's channel, shaped like `peak_cutouts`. It stands
+        in for `mask` when picking the peak pixels, so a caller measuring every
+        channel of a frame can cut one channel-id image once (see
+        `_channel_id_cutouts`) instead of once per mask. If None (default),
+        `mask` is cut internally.
     geometry : tuple or None, optional
         Precomputed ``(apertures_radii, annulus_radii)`` from
         `_aperture_annulus_geometry`, in pixels. It cannot be combined with
@@ -2289,7 +2459,8 @@ def measure_photometry(
         from `radii`/`annulus`/`fwhm` is malformed or not usable (see
         `_aperture_annulus_geometry`); or if a caller-supplied `peak_cutouts`
         does not have shape ``(n_finite, box_side, box_side)`` for this call's
-        `centroid_coords` and `fwhm`.
+        `centroid_coords` and `fwhm`; or if a caller-supplied `keep_cutouts`
+        does not have that same shape.
 
     Notes
     -----
@@ -2432,7 +2603,9 @@ def measure_photometry(
                     "centroid_coords and fwhm as this call."
                 )
                 raise ValueError(msg)
-        if mask is not None:
+        if keep_cutouts is not None:
+            peak_cutouts = _apply_keep_cutouts(peak_cutouts, keep_cutouts)
+        elif mask is not None:
             # Apply the channel mask at cutout scale rather than NaN-ing a
             # full-frame copy of the image. The mask is cut as float because a
             # boolean array cannot hold the NaN that pads out-of-frame pixels;
@@ -2979,6 +3152,7 @@ def build_photometry_table(
     annulus=None,
     drift_tolerance=None,
     drift_cap=None,
+    keep_cutouts=None,
 ):
     """
     Run photometry with a given mask and build an output table.
@@ -3009,6 +3183,10 @@ def build_photometry_table(
         Absolute pixel cap on the allowed centroid drift, passed to
         `centroid_drift_flag`. If None (default), taken from
         ``config.drift.drift_cap_pix``.
+    keep_cutouts : numpy.ndarray or None, optional
+        This channel's boolean keep-cutouts, ``img.channel_id_cutouts(masks) ==
+        channel_index``, forwarded to `measure_photometry` in place of
+        cutting `mask`. If None (default), `mask` is cut.
 
     Returns
     -------
@@ -3049,6 +3227,7 @@ def build_photometry_table(
         img.metadata["egain"],
         mask,
         peak_cutouts=img.peak_cutouts(),
+        keep_cutouts=keep_cutouts,
         geometry=img.aperture_geometry(radii, annulus),
     )
     if img.input_photometry_coords is not None:
@@ -3127,6 +3306,7 @@ def process_one_image(
     input_photometry_coords=None,
     frame=None,
     build_l4=True,
+    channel_id_image=None,
 ):
     """
     Process a single image file and return one photometry table per input mask.
@@ -3167,6 +3347,11 @@ def process_one_image(
         returned under the key "L4". It is built from the RGB channels
         (TR/TG/TB) after they are photometered, so those three must be in
         ``bayer_masks``. Default True.
+    channel_id_image : numpy.ndarray or None, optional
+        Precomputed `_channel_id_image` of the masks in `bayer_masks`,
+        so a batch builds it once rather than once per frame. If None
+        (default), built here from `bayer_masks`. It is ignored (the masks
+        are cut one by one) when the masks cannot share one image.
 
     Returns
     -------
@@ -3232,8 +3417,14 @@ def process_one_image(
         raise ValueError(msg)
 
     by_filter_data = {}
-    for filter_name, mask in bayer_masks.items():
-        data = build_photometry_table(img, mask, config=config)
+    # One channel-id cutout shared by every channel; None falls back to cutting
+    # each mask on its own.
+    if channel_id_image is None:
+        channel_id_image = _channel_id_image(list(bayer_masks.values()))
+    id_cutouts = img.channel_id_cutouts(channel_id_image)
+    for index, (filter_name, mask) in enumerate(bayer_masks.items()):
+        keep = None if id_cutouts is None else id_cutouts == index
+        data = build_photometry_table(img, mask, config=config, keep_cutouts=keep)
         data.meta["filter"] = filter_name
         data.meta["full_image_meta"] = img.metadata
         by_filter_data[filter_name] = data

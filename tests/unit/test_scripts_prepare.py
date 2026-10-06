@@ -238,6 +238,18 @@ class TestPrepareBatch:
 
         assert prep.build_l4 is True
 
+    def test_builds_the_channel_id_image_once(self, mocker):
+        """``prepare_batch`` carries one channel-id image of the RGB masks."""
+        _patch_prep(mocker)
+
+        prep = scripts.prepare_batch("frame1.fits", cnn=object())
+
+        rgb = [m for name, m in prep.bayer_masks.items() if name != "L4"]
+        expected = np.full(rgb[0].shape, np.nan)
+        for index, mask in enumerate(rgb):
+            expected[~mask] = index
+        np.testing.assert_array_equal(prep.channel_id_image, expected)
+
     def test_loads_first_frame_exactly_once(self, mocker):
         """Without a caller-provided frame, the first frame is loaded once (#44)."""
         _patch_prep(mocker)
