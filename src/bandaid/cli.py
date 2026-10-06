@@ -459,7 +459,7 @@ def main():
     "--append-l4/--no-append-l4",
     default=True,
     show_default=True,
-    help="Add a full-frame L4 luminance channel to the Bayer masks.",
+    help="Also produce the full-frame L4 luminance channel.",
 )
 @click.option(
     "--fail-fast/--no-fail-fast",
@@ -551,7 +551,7 @@ def process(
         degrees) of extra targets to photometer that are absent from the
         Gaia catalog.
     append_l4 : bool
-        Whether to add a full-frame L4 luminance channel to the Bayer masks.
+        Whether to also produce the full-frame L4 luminance channel.
     fail_fast : bool
         Whether to re-raise unexpected per-frame errors instead of skipping.
     output_format : str

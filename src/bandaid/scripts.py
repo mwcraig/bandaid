@@ -1494,7 +1494,7 @@ def photometer_frames(
         Per-frame user metadata recorded with each output. None (default) is an
         empty dict.
     append_l4 : bool, optional
-        Whether to add a full-frame L4 luminance channel to the Bayer masks.
+        Whether to also produce the full-frame L4 luminance channel.
         Default True.
     output_dir : str or pathlib.Path or None, optional
         Directory to write the per-frame ``.star`` files (and QA manifest) into.
