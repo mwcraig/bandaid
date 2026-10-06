@@ -267,11 +267,12 @@ copied as is. ICRS has no equinox, so setting `header_equinox` without
 been removed: a profile that still sets it to a value fails to load, while
 `null` is accepted and ignored.
 
-`cone_radius_margin` (degrees, default `0.0`; the bundled Seestar50 profile uses
-`0.4`) is extra radius added to `fov_rad` for the once-per-batch Gaia query. It is
-the amount of pointing drift between frames (relative to the first frame) that the
-batch catalog covers. Widening it does not hurt plate solving, because each
-frame's solve pool is cut per frame from that frame's own header pointing.
+`cone_radius_margin` (degrees, default `0.4`) is extra radius added to `fov_rad`
+for the once-per-batch Gaia query. It is the amount of pointing drift between
+frames (relative to the first frame) that the batch catalog covers; a frame that
+drifts further is still processed, with a warning that the catalog only partly
+covers it. Widening it does not hurt plate solving, because each frame's solve
+pool is cut per frame from that frame's own header pointing.
 
 `solve_pool_radius_scale` (default `0.9`, must be `> 0`) is the fraction of
 `fov_rad` used as the radius of each frame's plate-solve star pool, centered on

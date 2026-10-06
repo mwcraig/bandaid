@@ -1085,10 +1085,11 @@ class TestCheckFrameConsistency:
             scripts.check_frame_consistency("bad.fits", header, self._prep())
 
     def test_offfield_pointing_raises_frameerror(self):
-        """A frame pointing beyond the field radius is rejected."""
+        """A frame pointing beyond the field radius is rejected, carrying its offset."""
         header = _consistency_header(RA=12.0)
-        with pytest.raises(FrameError, match="pointing"):
+        with pytest.raises(FrameError, match="pointing") as exc_info:
             scripts.check_frame_consistency("bad.fits", header, self._prep())
+        assert exc_info.value.pointing_offset == pytest.approx(2.0)
 
     def test_drifted_frame_within_radius_accepted(self):
         """
@@ -1140,12 +1141,22 @@ class TestCheckFrameConsistency:
         assert "drift.fits" in message
 
     def test_zero_margin_offset_warns_instead_of_raising(self, caplog):
-        """With the default zero margin any drift inside the radius warns."""
+        """With a zero margin any drift inside the radius warns."""
         header = _consistency_header(RA=10.3)
         with caplog.at_level("WARNING", logger="bandaid.scripts"):
-            offset = scripts.check_frame_consistency("d.fits", header, self._prep())
+            offset = scripts.check_frame_consistency(
+                "d.fits", header, self._margin_prep(0.0)
+            )
         assert offset == pytest.approx(0.3)
         assert len(caplog.records) == 1
+
+    def test_default_margin_covers_pointing_jitter(self, caplog):
+        """The class-default margin keeps a small frame-to-frame offset silent."""
+        header = _consistency_header(RA=10.06)
+        with caplog.at_level("WARNING", logger="bandaid.scripts"):
+            offset = scripts.check_frame_consistency("d.fits", header, self._prep())
+        assert offset == pytest.approx(0.06)
+        assert not caplog.records
 
     def test_offset_beyond_field_radius_still_raises_with_margin(self):
         """The margin does not extend the hard rejection radius."""

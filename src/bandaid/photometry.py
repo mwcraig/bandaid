@@ -2486,26 +2486,13 @@ def _solve_pool_near(radecs, center_ra, center_dec, radius_deg):
     -------
     numpy.ndarray
         Boolean array of length ``N``, True for stars inside the cone.
-
-    Notes
-    -----
-    Uses the haversine great-circle separation in plain numpy because this runs
-    once per frame, where building a ``SkyCoord`` would be needlessly slow.
-    Haversine stays accurate for the small separations involved.
     """
-    ra = np.radians(radecs[:, 0])
-    dec = np.radians(radecs[:, 1])
-    c_ra = np.radians(center_ra)
-    c_dec = np.radians(center_dec)
-    half_chord = (
-        np.sin((dec - c_dec) / 2) ** 2
-        + np.cos(dec) * np.cos(c_dec) * np.sin((ra - c_ra) / 2) ** 2
-    )
-    separation = 2 * np.arcsin(np.sqrt(np.clip(half_chord, 0.0, 1.0)))
-    return np.degrees(separation) <= radius_deg
+    center = SkyCoord(center_ra, center_dec, unit="deg")
+    stars = SkyCoord(radecs[:, 0], radecs[:, 1], unit="deg")
+    return stars.separation(center).deg <= radius_deg
 
 
-def _frame_solve_pool(radecs, metadata, center, radius_scale):
+def _frame_solve_pool(radecs, metadata, center, radius_scale, *, file=None):
     """
     Cut the catalog to the stars near one frame's pointing.
 
@@ -2515,30 +2502,38 @@ def _frame_solve_pool(radecs, metadata, center, radius_scale):
         Catalog RA/Dec in degrees, shape ``(N, 2)``, brightest first.
     metadata : dict
         Frame metadata; ``fov_rad`` (field radius, degrees) sets the cone size.
-    center : astropy.coordinates.SkyCoord or None
-        The frame's pointing in ICRS, or None when it is unavailable.
+    center : astropy.coordinates.SkyCoord
+        The frame's pointing in ICRS.
     radius_scale : float
         Cone radius as a fraction of ``fov_rad``.
+    file : str or pathlib.Path or None, optional
+        The frame, attached to the error raised for an unusable ``fov_rad``.
 
     Returns
     -------
     solve_radecs : numpy.ndarray
-        The catalog stars inside the cone, in their original order; the full
-        ``radecs`` when ``center`` is None or ``fov_rad`` is not a finite
-        positive number.
-    pool_radius : float or None
-        The cone radius used in degrees, or None when no cut was made.
+        The catalog stars inside the cone, in their original order.
+    pool_radius : float
+        The cone radius used, in degrees.
+
+    Raises
+    ------
+    FrameMetadataError
+        If ``fov_rad`` is missing or is not a finite positive number.
     """
     fov_rad = metadata.get("fov_rad")
-    if (
-        center is None
-        or isinstance(fov_rad, bool)
-        or not isinstance(fov_rad, (int, float))
-        or not np.isfinite(fov_rad)
-        or fov_rad <= 0
-    ):
-        return radecs, None
-    pool_radius = fov_rad * radius_scale
+    # bool is excluded explicitly because float() would accept it.
+    try:
+        field_radius = np.nan if isinstance(fov_rad, bool) else float(fov_rad)
+    except (TypeError, ValueError):
+        field_radius = np.nan
+    if not np.isfinite(field_radius) or field_radius <= 0:
+        msg = (
+            "frame metadata has no usable positive 'fov_rad' "
+            f"(got {fov_rad!r}); cannot cut the plate-solve pool"
+        )
+        raise FrameMetadataError(msg, file=file)
+    pool_radius = field_radius * radius_scale
     mask = _solve_pool_near(radecs, center.ra.deg, center.dec.deg, pool_radius)
     return radecs[mask], pool_radius
 
@@ -2672,8 +2667,10 @@ def prepare_image(
         the frame; all three propagate unchanged.)
     FrameMetadataError
         If a WCS must be solved (``wcs`` is None) but the frame metadata has no
-        usable numeric ``pixscale`` to scale-check the solve against. The source
-        `file` is attached before it propagates.
+        usable numeric ``pixscale`` to scale-check the solve against, no header
+        pointing that converts to ICRS, or no finite positive ``fov_rad`` to
+        cut the solve pool with. The source `file` is attached before it
+        propagates.
     InstrumentDetectionError
         A `FrameMetadataError` subclass, raised with `file` attached when
         ``config.instrument`` is None and the frame's header matches zero or
@@ -2687,8 +2684,7 @@ def prepare_image(
     ``config.instrument.solve_pool_radius_scale`` degrees of its own header
     pointing before solving, keeping brightest-first order. A radius below the
     field radius keeps more of the brightest pool stars on the rectangular
-    frame. The cut is skipped (full catalog used) when the pointing or field
-    radius is unavailable or a WCS is supplied.
+    frame. The cut is skipped (full catalog used) only when a WCS is supplied.
     """
     # "calibrate" the data and get initial detections for WCS alignment and
     # FWHM estimation. calibration_sequence raises TooFewStarsError (a
@@ -2748,36 +2744,42 @@ def prepare_image(
                 f"(got {expected_pixscale!r}); cannot scale-check the solved WCS"
             )
             raise FrameMetadataError(msg, file=file)
-        # The Gaia catalog is queried at the header pointing converted to ICRS,
-        # so align can reject a solved WCS that puts that location off-frame.
-        # Unlike pixscale (instrument-profile-sourced), the pointing comes from
-        # the frame header, so a frame whose pointing is absent or cannot be
-        # converted just skips the check. bool is excluded explicitly because
-        # float() would accept it.
+        # The header pointing converted to ICRS is where the frame's solve pool
+        # is cut and where align checks the solved WCS lands, so a frame whose
+        # pointing is absent or cannot be converted cannot be solved. bool is
+        # excluded explicitly because float() would accept it.
         ra = metadata.get("ra")
         dec = metadata.get("dec")
         if isinstance(ra, bool) or isinstance(dec, bool):
-            expected_center = None
-        else:
-            try:
-                expected_center = SkyCoord(
-                    *estimate_center_from_header(metadata, instrument), unit="deg"
-                )
-            except FrameMetadataError:
-                expected_center = None
+            msg = (
+                "frame metadata has no usable numeric pointing "
+                f"(ra={ra!r}, dec={dec!r}); cannot cut the plate-solve pool"
+            )
+            raise FrameMetadataError(msg, file=file)
+        try:
+            expected_center = SkyCoord(
+                *estimate_center_from_header(metadata, instrument), unit="deg"
+            )
+        except FrameMetadataError as exc:
+            exc.file = file
+            raise
         shape = calibrated_data.shape
+        # Cut the catalog to this frame's own solve pool: the batch catalog can
+        # be wider than the frame, so only stars near the header pointing are
+        # offered to the plate solve.
+        solve_radecs, pool_radius = _frame_solve_pool(
+            radecs,
+            metadata,
+            expected_center,
+            instrument.solve_pool_radius_scale,
+            file=file,
+        )
     else:
         expected_pixscale = None
         expected_center = None
         shape = None
-
-    # Cut the catalog to this frame's own solve pool: the batch catalog can be
-    # wider than the frame, so only stars near the header pointing are offered
-    # to the plate solve. Without a pointing (or a usable field radius) the
-    # full catalog is used unchanged.
-    solve_radecs, pool_radius = _frame_solve_pool(
-        radecs, metadata, expected_center, instrument.solve_pool_radius_scale
-    )
+        solve_radecs = radecs
+        pool_radius = None
 
     try:
         aligned_coords, this_wcs = align(

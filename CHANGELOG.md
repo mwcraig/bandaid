@@ -9,23 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `InstrumentProfile.solve_pool_radius_scale` (default `0.9`, must be `> 0`): the
-    radius of each frame's plate-solve star pool as a fraction of `fov_rad`,
-    centered on that frame's own header pointing. `prepare_image` now hands
-    `align` only the catalog stars inside that pool instead of the whole batch
-    catalog (#133).
-- `SourceSelectionConfig.gaia_row_limit` (default `10000`): the base row limit of
-    the once-per-batch Gaia query, scaled with the cone area when
-    `cone_radius_margin` widens it. The query is filtered server-side to
-    `Gmag <= contaminant_mag_limit`, and a result that hits the limit is checked
-    for truncation: a new `CatalogTruncationError` (a `BatchPrepError`) when
-    photometry targets were lost, a warning when only contaminant-depth stars
-    were. `bandaid.catalog.query_field_catalog` wraps this; `cached_gaia_radecs`
-    gains an optional `mag_limit=` (#133).
-- The QA manifest gains a `pointing_offset_deg` column: each frame's header-center
-    offset from the batch center in degrees, as returned by
-    `check_frame_consistency` (blank for a frame rejected before the comparison)
-    (#133).
+- `InstrumentProfile.solve_pool_radius_scale` (default `0.9`): each frame plate-solves
+    against only the catalog stars within this fraction of `fov_rad` of its own
+    header pointing, instead of the whole batch catalog (#133).
+- `SourceSelectionConfig.gaia_row_limit` (default `10000`): the row limit of the
+    batch Gaia query, scaled with cone area. The query is filtered server-side to
+    `Gmag <= contaminant_mag_limit`; a result that hits the limit raises
+    `CatalogTruncationError` if targets were lost and warns if only contaminants
+    were (#133).
+- The QA manifest gains `pointing_offset_deg`, each frame's header-center offset
+    from the batch center in degrees (#133).
 - A `bandaid` command-line interface (`bandaid process`, `instrument`, `config`,
     `weights`) for running photometry on a night of frames and inspecting
     instruments/config without writing Python. See `docs/command_line.md`. The
@@ -122,15 +115,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The bundled Seestar50 profile sets `cone_radius_margin` to `0.4` deg (the class
-    default stays `0.0`), so the batch Gaia catalog covers that much pointing
-    drift between frames. Widening the cone no longer disturbs plate solving
-    because the solve pool is cut per frame (#133).
+- `InstrumentProfile.cone_radius_margin` now defaults to `0.4` deg (was `0.0`), so
+    the batch Gaia catalog covers that much pointing drift between frames.
+    Widening the cone no longer disturbs plate solving because the solve pool is
+    cut per frame (#133).
 - `check_frame_consistency` returns the frame's pointing offset and logs a
     warning when it exceeds `cone_radius_margin` but stays within `fov_rad` (the
     frame is processed but only partly covered by the catalog); beyond `fov_rad`
-    it still raises `FrameError`. `prepare_batch`'s minimum-reference-star check
-    now counts only the target stars inside the first frame's solve pool (#133).
+    it still raises `FrameError`, which now carries the offset as
+    `pointing_offset`. `prepare_batch`'s minimum-reference-star check now counts
+    only the target stars inside the first frame's solve pool (#133).
+- `prepare_image` raises `FrameMetadataError` when it has to solve a WCS for a
+    frame with no usable header pointing or `fov_rad`, instead of solving without
+    the pointing check (#133).
 - Output now enforces a minimum SNR of `2.0` by default (`good_star_mask`,
     `SourceSelectionConfig.min_snr`): a star that used to reach the output at
     any SNR is now dropped if its SNR falls below `2.0`. This is a deliberate
@@ -251,11 +248,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Frames that point away from the first frame no longer lose the Gaia targets
-    near their far edge: the batch catalog is queried over the field radius plus
-    `cone_radius_margin`, and each frame plate-solves against the stars near its
-    own header pointing. On LS Psc this recovers the G \<= 15 targets missing in
-    the corners of frames taken after the first-frame pointing settled (#133).
+- Frames that point away from the first frame no longer lose Gaia targets near
+    their far edge: the batch catalog is queried over `fov_rad + cone_radius_margin`
+    and each frame plate-solves against the stars near its own header pointing (#133).
 - The Gaia cone is now centered correctly at every RA. The fixed Seestar header
     offset was precession from equinox-of-date to J2000 and only matched fields
     near RA ~11.5 h; precession is now applied to each frame's pointing (#132).

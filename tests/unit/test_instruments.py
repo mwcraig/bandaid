@@ -23,7 +23,7 @@ from bandaid.instruments import (
     register_instrument,
 )
 
-SEESTAR_CONE_MARGIN = 0.4
+EXPECTED_CONE_MARGIN = 0.4
 EXPECTED_SOLVE_POOL_SCALE = 0.9
 
 
@@ -83,11 +83,12 @@ class TestLoadInstrument:
         assert profile.contamination_tolerance == default.contamination_tolerance
         assert profile.moffat_beta == default.moffat_beta
         assert profile.solve_pool_radius_scale == default.solve_pool_radius_scale
+        assert profile.cone_radius_margin == default.cone_radius_margin
 
-    def test_seestar_cone_margin_widened_but_class_default_is_not(self):
-        """The bundled Seestar50 covers 0.4 deg of drift; the class default does not."""
-        assert load_instrument("Seestar50").cone_radius_margin == SEESTAR_CONE_MARGIN
-        assert InstrumentProfile().cone_radius_margin == 0.0
+    def test_cone_radius_margin_default(self):
+        """The cone margin defaults to 0.4 deg, so small pointing jitter is covered."""
+        assert InstrumentProfile().cone_radius_margin == EXPECTED_CONE_MARGIN
+        assert load_instrument("Seestar50").cone_radius_margin == EXPECTED_CONE_MARGIN
 
     def test_solve_pool_radius_scale_default(self):
         """The solve-pool scale defaults to 0.9 and the bundle does not override it."""

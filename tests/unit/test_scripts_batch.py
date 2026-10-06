@@ -13,6 +13,7 @@ from astropy.table import Table
 from bandaid import scripts
 from bandaid.exceptions import (
     FrameError,
+    FrameMetadataError,
     TooFewStarsError,
     WCSSolveError,
 )
@@ -446,17 +447,22 @@ class TestProcessBatchToDisk:
 
     def test_qa_manifest_records_pointing_offset(self, mocker, tmp_path, by_filter):
         """
-        ``pointing_offset_deg`` is set for ok and processing-skipped frames only.
+        ``pointing_offset_deg`` is blank only when no offset was computed.
 
-        A frame rejected by ``check_frame_consistency`` never completed the
-        pointing comparison, so its offset is blank.
+        A drift rejection carries its offset on the ``FrameError``, so that
+        frame's row records it; a frame rejected before the pointing comparison
+        has no offset and stays blank.
         """
         assert "pointing_offset_deg" in scripts.QA_MANIFEST_COLUMNS
 
         def _consistency(file, _header, _prep):
-            if file == "rejected.fits":
-                msg = "frame pointing drifted"
-                raise FrameError(msg, file=file)
+            if file == "drifted.fits":
+                exc = FrameError("frame pointing drifted", file=file)
+                exc.pointing_offset = 1.234567
+                raise exc
+            if file == "nopointing.fits":
+                msg = "no usable pointing"
+                raise FrameMetadataError(msg, file=file)
             return 0.123456
 
         mocker.patch(
@@ -472,7 +478,7 @@ class TestProcessBatchToDisk:
         )
 
         scripts.process_batch(
-            ["good.fits", "nosolve.fits", "rejected.fits"],
+            ["good.fits", "nosolve.fits", "drifted.fits", "nopointing.fits"],
             _dummy_prep(),
             user_specific_metadata={},
             output_dir=tmp_path,
@@ -485,8 +491,12 @@ class TestProcessBatchToDisk:
         assert float(by_file["nosolve.fits"]["pointing_offset_deg"]) == pytest.approx(
             0.1235
         )
-        assert by_file["rejected.fits"]["status"].startswith("skipped")
-        assert by_file["rejected.fits"]["pointing_offset_deg"] == ""
+        assert by_file["drifted.fits"]["status"].startswith("skipped")
+        assert float(by_file["drifted.fits"]["pointing_offset_deg"]) == pytest.approx(
+            1.2346
+        )
+        assert by_file["nopointing.fits"]["status"].startswith("skipped")
+        assert by_file["nopointing.fits"]["pointing_offset_deg"] == ""
 
     def test_qa_manifest_sky_median_is_median_of_bkgd_count(
         self, patched_process_one_image, tmp_path, by_filter

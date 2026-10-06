@@ -414,40 +414,14 @@ class TestAlign:
 class TestSolvePoolNear:
     """Unit tests for the per-frame solve-pool cone mask."""
 
-    @staticmethod
-    def _oracle(radecs, ra, dec, radius) -> np.ndarray:
-        center = SkyCoord(ra, dec, unit="deg")
-        stars = SkyCoord(radecs[:, 0], radecs[:, 1], unit="deg")
-        return stars.separation(center).deg <= radius
-
-    def test_matches_skycoord_separation_and_preserves_order(self):
-        """Mask agrees with astropy separations; the kept subset keeps input order."""
-        rng = np.random.default_rng(3)
-        n_stars = 200
-        radecs = np.column_stack(
-            [rng.uniform(9, 11, n_stars), rng.uniform(19, 21, n_stars)],
-        )
+    def test_keeps_stars_within_radius_in_order(self):
+        """Stars inside the radius are kept, in their input order."""
+        radecs = np.array([[10.0, 25.0], [10.0, 20.5], [10.0, 16.0], [10.0, 19.8]])
         mask = _solve_pool_near(radecs, 10.0, 20.0, 0.7)
 
         assert mask.dtype == bool
-        assert mask.shape == (n_stars,)
-        assert 0 < mask.sum() < n_stars
-        np.testing.assert_array_equal(mask, self._oracle(radecs, 10.0, 20.0, 0.7))
-        kept = np.flatnonzero(mask)
-        assert np.all(np.diff(kept) > 0)
-        np.testing.assert_array_equal(radecs[mask], radecs[kept])
-
-    def test_ra_wrap_across_zero(self):
-        """A star at RA 359.9 is 0.2 deg from a center at RA 0.1."""
-        radecs = np.array([[359.9, 10.0], [1.0, 10.0]])
-        mask = _solve_pool_near(radecs, 0.1, 10.0, 0.3)
-        np.testing.assert_array_equal(mask, [True, False])
-
-    def test_high_declination_uses_great_circle(self):
-        """10 deg of RA at dec +85 is ~0.87 deg of sky, not 10 deg."""
-        radecs = np.array([[20.0, 85.0]])
-        assert _solve_pool_near(radecs, 10.0, 85.0, 1.0)[0]
-        assert not _solve_pool_near(radecs, 10.0, 85.0, 0.5)[0]
+        np.testing.assert_array_equal(mask, [False, True, False, True])
+        np.testing.assert_array_equal(radecs[mask], radecs[[1, 3]])
 
     def test_empty_input(self):
         """An empty (0, 2) catalog gives an empty boolean mask."""

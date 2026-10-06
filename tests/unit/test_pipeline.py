@@ -280,7 +280,13 @@ class TestPrepareImage:
         both arrive.
         """
         externals = stub_prepare_image_externals(
-            metadata={"creator": "spy", "pixscale": 2.4, "ra": 10.0, "dec": 20.0},
+            metadata={
+                "creator": "spy",
+                "pixscale": 2.4,
+                "ra": 10.0,
+                "dec": 20.0,
+                "fov_rad": 1.0,
+            },
             calibrated=np.zeros((10, 12)),
         )
 
@@ -298,24 +304,24 @@ class TestPrepareImage:
         assert center.dec.deg == pytest.approx(20.0)
         assert kwargs["shape"] == (10, 12)
 
-    def test_missing_header_radec_skips_center_check(
-        self, stub_prepare_image_externals
-    ):
+    def test_missing_header_radec_raises(self, stub_prepare_image_externals):
         """
-        A frame without usable header ra/dec skips the center check, not fails.
+        A frame without usable header ra/dec cannot be solved.
 
-        Unlike ``pixscale`` (instrument-profile-sourced, so missing means a
-        malformed profile), the pointing comes from the frame header; a frame
-        without it should still solve, just without the in-frame check.
+        The per-frame solve pool is cut around the header pointing; without one
+        the only alternative is the whole batch catalog, so the frame is
+        rejected with the file named instead.
         """
         # metadata deliberately omits "ra"/"dec".
         externals = stub_prepare_image_externals(
-            metadata={"creator": "spy", "pixscale": 2.4}
+            metadata={"creator": "spy", "pixscale": 2.4, "fov_rad": 1.0}
         )
 
-        prepare_image("unused.fits", np.zeros((5, 2)), None)
+        with pytest.raises(FrameMetadataError, match="pointing") as exc_info:
+            prepare_image("unused.fits", np.zeros((5, 2)), None)
 
-        assert externals.align.call_args.kwargs["expected_center"] is None
+        assert exc_info.value.file == "unused.fits"
+        externals.align.assert_not_called()
 
     def test_string_header_radec_still_reaches_alignment(
         self, stub_prepare_image_externals
@@ -330,7 +336,13 @@ class TestPrepareImage:
         """
         externals = stub_prepare_image_externals(
             # ra/dec as numeric strings, as they arrive from the FITS header.
-            metadata={"creator": "spy", "pixscale": 2.4, "ra": "10.0", "dec": "20.0"},
+            metadata={
+                "creator": "spy",
+                "pixscale": 2.4,
+                "ra": "10.0",
+                "dec": "20.0",
+                "fov_rad": 1.0,
+            },
         )
 
         prepare_image(
@@ -360,6 +372,7 @@ class TestPrepareImage:
             "pixscale": 2.4,
             "ra": 10.0,
             "dec": 20.0,
+            "fov_rad": 1.0,
             "obs_time": "2025-09-09T05:00:00",
         }
         profile = InstrumentProfile(header_frame="fk5", header_equinox="date")
@@ -379,51 +392,56 @@ class TestPrepareImage:
         # Precession over ~25 years moves the pointing by far more than this.
         assert center.ra.deg != pytest.approx(10.0, abs=0.1)
 
-    def test_equinox_of_date_without_obs_time_skips_center_check(
+    def test_equinox_of_date_without_obs_time_raises(
         self, stub_prepare_image_externals
     ):
-        """A pointing that cannot be converted to ICRS skips the check."""
+        """A pointing that cannot be converted to ICRS rejects the frame."""
         externals = stub_prepare_image_externals(
-            metadata={"creator": "spy", "pixscale": 2.4, "ra": 10.0, "dec": 20.0}
+            metadata={
+                "creator": "spy",
+                "pixscale": 2.4,
+                "ra": 10.0,
+                "dec": 20.0,
+                "fov_rad": 1.0,
+            }
         )
 
-        prepare_image(
-            "unused.fits",
-            np.zeros((5, 2)),
-            None,
-            config=PhotometryConfig(
-                instrument=InstrumentProfile(header_frame="fk5", header_equinox="date")
-            ),
-        )
+        with pytest.raises(FrameMetadataError, match="obs_time") as exc_info:
+            prepare_image(
+                "unused.fits",
+                np.zeros((5, 2)),
+                None,
+                config=PhotometryConfig(
+                    instrument=InstrumentProfile(
+                        header_frame="fk5", header_equinox="date"
+                    )
+                ),
+            )
 
-        assert externals.align.call_args.kwargs["expected_center"] is None
+        assert exc_info.value.file == "unused.fits"
+        externals.align.assert_not_called()
 
     @pytest.mark.parametrize(
-        ("ra", "dec"), [("N/A", "N/A"), (10.0, 91.0)], ids=["non-numeric", "dec-91"]
+        ("ra", "dec"),
+        [("N/A", "N/A"), (True, True), (None, None), (10.0, 91.0)],
+        ids=["non-numeric", "bool", "missing", "dec-91"],
     )
-    def test_unparsable_header_radec_skips_center_check(
-        self, stub_prepare_image_externals, ra, dec
-    ):
-        """
-        Non-numeric or out-of-range header ra/dec skip the check, not raise.
-
-        A frame whose pointing is not a usable sky position should still solve
-        (just without the pointing check), mirroring the missing-ra/dec path.
-        """
+    def test_unusable_header_radec_raises(self, stub_prepare_image_externals, ra, dec):
+        """Header ra/dec that are not a usable sky position reject the frame."""
         externals = stub_prepare_image_externals(
-            metadata={"creator": "spy", "pixscale": 2.4, "ra": ra, "dec": dec}
+            metadata={
+                "creator": "spy",
+                "pixscale": 2.4,
+                "ra": ra,
+                "dec": dec,
+                "fov_rad": 1.0,
+            }
         )
 
-        # An ICRS profile, so the pointing itself is what fails rather than a
-        # missing observation time.
-        prepare_image(
-            "unused.fits",
-            np.zeros((5, 2)),
-            None,
-            config=PhotometryConfig(instrument=InstrumentProfile()),
-        )
+        with pytest.raises(FrameMetadataError, match="pointing"):
+            prepare_image("unused.fits", np.zeros((5, 2)), None)
 
-        assert externals.align.call_args.kwargs["expected_center"] is None
+        externals.align.assert_not_called()
 
     @staticmethod
     def _pool_catalog(center, offsets_deg) -> np.ndarray:
@@ -497,25 +515,56 @@ class TestPrepareImage:
         )
         assert len(externals.align.call_args.args[1]) == len(radecs) - 1
 
-    def test_solve_pool_full_catalog_without_header_center(
-        self, stub_prepare_image_externals
+    @pytest.mark.parametrize(
+        "metadata_update",
+        [
+            {},
+            {"fov_rad": None},
+            {"fov_rad": "wide"},
+            {"fov_rad": True},
+            {"fov_rad": 0.0},
+            {"fov_rad": -1.0},
+            {"fov_rad": float("nan")},
+            {"fov_rad": float("inf")},
+        ],
+    )
+    def test_solve_pool_without_usable_fov_rad_raises(
+        self, stub_prepare_image_externals, metadata_update
     ):
-        """No usable header pointing means the full catalog reaches ``align``."""
+        """A missing or unusable ``fov_rad`` rejects the frame."""
         externals = stub_prepare_image_externals(
-            metadata={"creator": "spy", "pixscale": 2.4, "fov_rad": 1.0}
+            metadata={
+                "creator": "spy",
+                "pixscale": 2.4,
+                "ra": 10.0,
+                "dec": 20.0,
+                **metadata_update,
+            }
         )
         radecs = self._pool_catalog((10.0, 20.0), [5.0, 0.0, -4.0])
 
-        prepare_image("unused.fits", radecs, None)
+        with pytest.raises(FrameMetadataError, match="fov_rad") as exc_info:
+            prepare_image(
+                "unused.fits",
+                radecs,
+                None,
+                config=PhotometryConfig(instrument=InstrumentProfile()),
+            )
 
-        assert externals.align.call_args.args[1] is radecs
+        assert exc_info.value.file == "unused.fits"
+        externals.align.assert_not_called()
 
-    def test_solve_pool_full_catalog_without_usable_fov_rad(
-        self, stub_prepare_image_externals
-    ):
-        """A missing ``fov_rad`` falls back to the full catalog, not an error."""
+    @pytest.mark.parametrize("fov_rad", [np.float32(1.0), "1.0", 1])
+    def test_solve_pool_coerces_fov_rad(self, stub_prepare_image_externals, fov_rad):
+        """A numpy scalar, numeric string or int ``fov_rad`` still cuts the pool."""
         externals = stub_prepare_image_externals(
-            metadata={"creator": "spy", "pixscale": 2.4, "ra": 10.0, "dec": 20.0}
+            metadata={
+                "creator": "spy",
+                "pixscale": 2.4,
+                "ra": 10.0,
+                "dec": 20.0,
+                "fov_rad": fov_rad,
+            }
         )
         radecs = self._pool_catalog((10.0, 20.0), [5.0, 0.0, -4.0])
 
@@ -526,7 +575,7 @@ class TestPrepareImage:
             config=PhotometryConfig(instrument=InstrumentProfile()),
         )
 
-        assert externals.align.call_args.args[1] is radecs
+        np.testing.assert_array_equal(externals.align.call_args.args[1], radecs[[1]])
 
     def test_solve_pool_full_catalog_with_supplied_wcs(
         self, stub_prepare_image_externals

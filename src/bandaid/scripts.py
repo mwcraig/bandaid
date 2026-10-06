@@ -780,7 +780,8 @@ def check_frame_consistency(file, header, prep):
     ------
     FrameError
         If the frame's shape, pointing, or instrument is inconsistent with
-        the prep.
+        the prep. A pointing rejection carries the offset in degrees as
+        ``pointing_offset``.
     FrameMetadataError
         If the header cannot be resolved into the metadata needed to perform
         the checks.
@@ -839,7 +840,10 @@ def check_frame_consistency(file, header, prep):
             f"frame pointing drifted: its field center is {offset:.3f} deg from "
             f"the batch center, beyond the {prep.fov_rad:.3f} deg field radius"
         )
-        raise FrameError(msg, file=file)
+        exc = FrameError(msg, file=file)
+        # Carried to the QA manifest: this is the frame whose offset matters most.
+        exc.pointing_offset = offset
+        raise exc
     margin = batch_instrument.cone_radius_margin
     if offset > margin:
         logger.warning(
@@ -1091,7 +1095,8 @@ def _record_frame_skip(file, exc, *, pointing_offset=None):
         when missing.
     pointing_offset : float or None, optional
         The frame's header-center offset in degrees if it got past the
-        pointing comparison; None (default) leaves it blank.
+        pointing comparison; None (default) leaves it blank. An offset carried
+        by ``exc`` itself (a pointing-drift rejection) takes precedence.
 
     Returns
     -------
@@ -1108,7 +1113,7 @@ def _record_frame_skip(file, exc, *, pointing_offset=None):
         file,
         f"skipped: {type(exc).__name__}",
         wcs_solved=False if isinstance(exc, WCSSolveError) else None,
-        pointing_offset=pointing_offset,
+        pointing_offset=getattr(exc, "pointing_offset", pointing_offset),
     )
 
 
@@ -1347,7 +1352,7 @@ def process_batch(
         # NullHandler); `bandaid process --verbose` routes it to the terminal via
         # configure_logging, alongside the skip/error warnings logged below.
         logger.info("processing %d/%d: %s", idx, len(files), file)
-        # Stays None for a frame that fails before the pointing comparison.
+        # Stays None for a frame that fails before its pointing offset is known.
         pointing_offset = None
         try:
             # Reuse the caller's already-opened first frame when given, else

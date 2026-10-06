@@ -330,8 +330,9 @@ class InstrumentProfile(BaseModel, frozen=True):
     cone_radius_margin : float
         Extra radius in degrees added to ``fov_rad`` for the once-per-batch Gaia
         query. It is the amount of pointing drift (between any frame and the
-        first) that the batch catalogue covers. ``0.0`` (the class default)
-        queries exactly the first frame's field.
+        first) that the batch catalogue covers. ``0.0`` queries exactly the
+        first frame's field, which leaves every frame whose header pointing
+        differs at all from the first partly uncovered.
     solve_pool_radius_scale : float
         Fraction of ``fov_rad`` used as the radius of each frame's plate-solve
         star pool, centred on that frame's own header pointing. Must be ``> 0``.
@@ -381,8 +382,7 @@ class InstrumentProfile(BaseModel, frozen=True):
     wcs_scale_tolerance: Annotated[float, Field(gt=0)] = 0.05
     header_frame: Literal["icrs", "fk5"] = "icrs"
     header_equinox: str = "J2000"
-    # The bundled Seestar50 profile sets 0.4; the class default stays 0.0.
-    cone_radius_margin: Annotated[float, Field(ge=0)] = 0.0
+    cone_radius_margin: Annotated[float, Field(ge=0)] = 0.4
     solve_pool_radius_scale: Annotated[float, Field(gt=0)] = 0.9
     header_map: Mapping = Field(
         default_factory=_default_seestar_header_map, validate_default=True
