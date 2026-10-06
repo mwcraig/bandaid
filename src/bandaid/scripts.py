@@ -460,13 +460,15 @@ def prepare_batch(
         # in process_one_image (which detects on bayer-balanced data by default),
         # so the batch-gating FWHM is measured in the same detection regime as
         # the photometry it protects.
-        _, metadata, _, fwhm_pix, _ = calibration_sequence(
+        calibration = calibration_sequence(
             first_file,
             detect_on_bayer_balanced=True,
             cnn=cnn,
             profile=instrument,
             frame=frame,
         )
+        metadata = calibration.metadata
+        fwhm_pix = calibration.fwhm
     except TooFewStarsError as exc:
         msg = f"too few stars detected in {first_file!r} to prepare the batch"
         raise BatchPrepError(msg) from exc
