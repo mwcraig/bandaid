@@ -1946,12 +1946,15 @@ class TestSmokeRealFrame:
         data = fits.getdata(str(_REAL_FRAME))
         metadata = metadata_from_header(header)
 
-        # Center the stubbed WCS on the real field so the cosmetic ra/dec columns
-        # are plausible in a failure dump.
+        # Center the stubbed WCS on the frame's converted header pointing (the
+        # header RA/DEC is equinox-of-date), so it passes the pointing check and
+        # the cosmetic ra/dec columns are plausible in a failure dump.
         _stub_wcs_and_centroid(
             mocker,
             wcs_image_size=data.shape,
-            wcs_crval=(header["RA"], header["DEC"]),
+            wcs_crval=estimate_center_from_header(
+                metadata, InstrumentProfile(header_frame="fk5", header_equinox="date")
+            ),
         )
 
         masks = generate_bayer_masks(

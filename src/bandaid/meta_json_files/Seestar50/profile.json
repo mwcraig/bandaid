@@ -8,6 +8,7 @@
     "header_frame": "fk5",
     "header_equinox": "date",
     "cone_radius_margin": 0.4,
+    "wcs_pointing_tolerance": 0.25,
     "header_match": [{"keyword": "INSTRUME", "pattern": "Seestar S50"}],
     "header_map": {
         "_note": "Header map for the Seestar50, raw and stacked frames.",

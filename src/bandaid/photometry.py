@@ -150,6 +150,9 @@ _FWHM_N_STARS = _DEFAULT_INSTRUMENT.fwhm_n_stars
 # well above the correct-scale solve spread and far below twirl's wrong-scale
 # solves; the empirical basis for this value is in #83.
 WCS_SCALE_TOLERANCE = _DEFAULT_INSTRUMENT.wcs_scale_tolerance
+# Maximum separation (degrees) of a solved frame center from the frame's header
+# pointing before the WCS is rejected as a mispointed solve.
+WCS_POINTING_TOLERANCE = _DEFAULT_INSTRUMENT.wcs_pointing_tolerance
 
 # Minimum SNR a star must have to reach the output (see `good_star_mask`).
 MIN_SNR = _DEFAULT_SOURCE_SELECTION.min_snr
@@ -1625,7 +1628,7 @@ def _wcs_center_separation_deg(wcs, shape, expected_center):
 
 
 def _validate_solved_wcs(
-    wcs, expected_pixscale, scale_tolerance, expected_center, shape
+    wcs, expected_pixscale, scale_tolerance, expected_center, shape, pointing_tolerance
 ):
     """
     Validate a solved WCS against the expected plate scale and pointing.
@@ -1641,8 +1644,11 @@ def _validate_solved_wcs(
     expected_center : astropy.coordinates.SkyCoord or None
         Sky location the Gaia catalog was queried at; see :func:`align`.
     shape : tuple of int or None
-        Image shape ``(height, width)`` defining the frame center and field
-        radius for the pointing check.
+        Image shape ``(height, width)`` defining the frame center for the
+        pointing check.
+    pointing_tolerance : float
+        Maximum separation, in degrees, between the solved frame center and
+        ``expected_center``.
 
     Returns
     -------
@@ -1652,7 +1658,8 @@ def _validate_solved_wcs(
         The measured plate scale (arcsec/pixel) when the scale check failed.
     bad_center : tuple of float or None
         ``(separation_deg, limit_deg)`` between the solved frame center and
-        ``expected_center`` when the pointing check failed.
+        ``expected_center`` when the pointing check failed; ``limit_deg`` is
+        `pointing_tolerance`.
 
     Notes
     -----
@@ -1664,25 +1671,22 @@ def _validate_solved_wcs(
     is skipped when its expectation (`expected_pixscale`, or `expected_center`
     with `shape`) is None.
 
-    The pointing check tolerates up to one field radius (the frame
-    half-diagonal at the solved scale) between the solved frame center and
-    `expected_center` -- the header target can legitimately sit at, or drift a
-    few arcmin past, the frame edge, so demanding the queried center project
-    strictly on-frame rejects correct solves.
+    The pointing check holds the solved frame center to a fixed angle,
+    `pointing_tolerance`, from `expected_center`. That angle is the
+    header-pointing error plus the drift between the header and the solve, so
+    it is independent of the frame size: a false asterism match typically lands
+    a fraction of a field away, well inside a field-radius limit, and would pass
+    one.
     """
     if expected_pixscale is not None:
         measured = _wcs_pixscale_arcsec(wcs)
         if abs(measured - expected_pixscale) > (scale_tolerance * expected_pixscale):
             return None, measured, None
     if expected_center is not None and shape is not None:
-        height, width = shape
         separation = _wcs_center_separation_deg(wcs, shape, expected_center)
-        # Field radius = half-diagonal at the solved scale (already vetted above
-        # when expected_pixscale is given).
-        limit = np.hypot(height - 1, width - 1) / 2 * _wcs_pixscale_arcsec(wcs) / 3600
         # NaN comparisons are False, so an unprojectable frame center fails.
-        if not (separation <= limit):
-            return None, None, (float(separation), float(limit))
+        if not (separation <= pointing_tolerance):
+            return None, None, (float(separation), float(pointing_tolerance))
     return wcs, None, None
 
 
@@ -1693,6 +1697,7 @@ def _solve_wcs(
     scale_tolerance=WCS_SCALE_TOLERANCE,
     expected_center=None,
     shape=None,
+    pointing_tolerance=WCS_POINTING_TOLERANCE,
 ):
     """
     Solve a WCS from detections and Gaia references, with scale and pointing checks.
@@ -1718,8 +1723,12 @@ def _solve_wcs(
         pointing); see :func:`align`. By default None (check skipped).
     shape : tuple of int or None, optional
         Image shape ``(height, width)``; the solved frame center must lie
-        within one field radius of ``expected_center``. By default None
+        within `pointing_tolerance` of ``expected_center``. By default None
         (check skipped).
+    pointing_tolerance : float, optional
+        Maximum separation in degrees between the solved frame center and
+        ``expected_center`` before a solve is rejected as mispointed. Defaults to
+        the module-level ``WCS_POINTING_TOLERANCE``; see :func:`align`.
 
     Returns
     -------
@@ -1734,8 +1743,9 @@ def _solve_wcs(
         If every pool solves at a plate scale out of tolerance (a subclass of
         `WCSSolveError`).
     WCSPointingError
-        If every pool's solve puts the frame more than one field radius from
-        ``expected_center`` (a subclass of `WCSSolveError`).
+        If every pool's solve puts the frame center more than
+        `pointing_tolerance` from ``expected_center`` (a subclass of
+        `WCSSolveError`).
 
     Notes
     -----
@@ -1776,7 +1786,12 @@ def _solve_wcs(
         # correct match (see #83).
         if this_wcs is not None:
             this_wcs, last_bad_scale, last_bad_center = _validate_solved_wcs(
-                this_wcs, expected_pixscale, scale_tolerance, expected_center, shape
+                this_wcs,
+                expected_pixscale,
+                scale_tolerance,
+                expected_center,
+                shape,
+                pointing_tolerance,
             )
         if this_wcs is not None:
             return this_wcs
@@ -1793,9 +1808,9 @@ def _solve_wcs(
     if last_bad_center is not None:
         msg = (
             "twirl solved a WCS whose frame center is "
-            f"{last_bad_center[0]:.3g} deg from the queried Gaia field center "
-            f"(> the {last_bad_center[1]:.3g} deg field radius); rejected as a "
-            "mispointed solve"
+            f"{last_bad_center[0]:.3g} deg from the frame's header pointing "
+            f"(> the {last_bad_center[1]:.3g} deg pointing tolerance); rejected "
+            "as a mispointed solve"
         )
         raise WCSPointingError(msg)
     msg = "twirl produced no acceptable WCS for any Gaia pool"
@@ -1812,6 +1827,7 @@ def align(
     scale_tolerance=WCS_SCALE_TOLERANCE,
     expected_center=None,
     shape=None,
+    pointing_tolerance=WCS_POINTING_TOLERANCE,
 ):
     """
     Compute per-image WCS and align reference coordinates into pixel space.
@@ -1853,12 +1869,18 @@ def align(
     expected_center : astropy.coordinates.SkyCoord or None, optional
         Sky location the Gaia catalog was queried at (the frame header's
         pointing). When provided together with `shape`, a *computed* WCS whose
-        frame center lies more than one field radius (the frame half-diagonal)
-        from this location is rejected as a mispointed solve. None (default)
-        skips the check. A caller-supplied `wcs` is trusted and never checked.
+        frame center lies more than `pointing_tolerance` from this location is
+        rejected as a mispointed solve. None (default) skips the check. A
+        caller-supplied `wcs` is trusted and never checked.
     shape : tuple of int or None, optional
         Image shape ``(height, width)`` used with `expected_center` for the
         pointing check. None (default) skips the check.
+    pointing_tolerance : float, optional
+        Maximum separation in degrees between a computed WCS's frame center and
+        `expected_center` before the WCS is rejected. Defaults to the
+        module-level `WCS_POINTING_TOLERANCE`; the pipeline passes the batch
+        instrument's ``wcs_pointing_tolerance``. Ignored when `expected_center`
+        or `shape` is None or a `wcs` is supplied.
 
     Returns
     -------
@@ -1875,6 +1897,7 @@ def align(
             scale_tolerance,
             expected_center=expected_center,
             shape=shape,
+            pointing_tolerance=pointing_tolerance,
         )
         if wcs is None
         else wcs
@@ -2939,6 +2962,7 @@ def prepare_image(
             scale_tolerance=instrument.wcs_scale_tolerance,
             expected_center=expected_center,
             shape=shape,
+            pointing_tolerance=instrument.wcs_pointing_tolerance,
         )
     except WCSSolveError as exc:
         # align does not know the source file; attach it here so the batch

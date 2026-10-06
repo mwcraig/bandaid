@@ -5,7 +5,8 @@ the two telescope-specific things the pipeline needs:
 
 - the **detection / PSF tuning** knobs (`thresh`, `detection_opening`,
     `fwhm_cutout_half`, `fwhm_n_stars`, `contamination_tolerance`, `moffat_beta`,
-    `contamination_seeing_margin`, `wcs_scale_tolerance`), and
+    `contamination_seeing_margin`, `wcs_scale_tolerance`,
+    `wcs_pointing_tolerance`), and
 - the **field-center** settings (`header_frame`, `header_equinox`,
     `cone_radius_margin`, `solve_pool_radius_scale`), which say what coordinate
     frame the header pointing is written in, how wide the Gaia cone is, and how
@@ -233,6 +234,7 @@ A `my_scope.json` looks like:
     "moffat_beta": 3.0,
     "contamination_seeing_margin": 1.25,
     "wcs_scale_tolerance": 0.05,
+    "wcs_pointing_tolerance": 0.25,
     "header_match": [{"keyword": "INSTRUME", "pattern": "MyScope Model 1"}],
     "header_map": {
         "obs_time": "@DATE-OBS",
@@ -282,6 +284,14 @@ disk of the full field radius is about half off-frame, so a smaller disk puts mo
 of the brightest pool stars actually on the frame. `0.9` keeps the solve rate
 while eliminating false solves.
 
+`wcs_pointing_tolerance` (degrees, default `0.25`, must be `> 0`) is the largest
+separation allowed between a solved frame's center and that frame's own header
+pointing. A solve that lands farther away is rejected as mispointed and the
+deeper star pool is tried. It is a fixed angle, not a field radius: real solves
+sit within about 0.1 degree of the header pointing, so it only needs to cover
+the header's pointing error and the drift between the header and the solve.
+It is separate from `fov_rad`, which still sizes the Gaia query cone.
+
 `header_match` is optional — omit it (or leave it `[]`) and the profile is
 still fully usable via `--instrument`/`--profile`/`--config`, just never
 auto-selected from a bare `PhotometryConfig()`. Add it (as above) if you want
@@ -307,7 +317,8 @@ $ bandaid config validate my_config.json
 
 `InstrumentProfile.from_file` raises the same Pydantic errors directly. The common
 ones are out-of-range values — `thresh`, `contamination_tolerance`,
-`moffat_beta`, `wcs_scale_tolerance`, and `solve_pool_radius_scale` must be
+`moffat_beta`, `wcs_scale_tolerance`, `wcs_pointing_tolerance`, and
+`solve_pool_radius_scale` must be
 `> 0`; `detection_opening`,
 `fwhm_cutout_half`, and `fwhm_n_stars` must be `>= 1`;
 `contamination_seeing_margin` must be `>= 1`.
