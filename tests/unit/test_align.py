@@ -16,6 +16,7 @@ from bandaid.photometry import (
     N_GAIA_STARS_ALIGN_RETRY,
     N_IMAGE_STARS_ALIGN,
     WCS_MATCH_TOLERANCE,
+    _solve_pool_near,
     align,
 )
 
@@ -408,3 +409,29 @@ class TestAlign:
     def test_wcs_pointing_error_is_wcs_solve_error(self):
         """WCSPointingError is a WCSSolveError so the batch loop still skips."""
         assert issubclass(WCSPointingError, WCSSolveError)
+
+
+class TestSolvePoolNear:
+    """Unit tests for the per-frame solve-pool cone mask."""
+
+    def test_keeps_stars_within_radius_in_order(self):
+        """Stars inside the radius are kept, in their input order."""
+        radecs = np.array([[10.0, 25.0], [10.0, 20.5], [10.0, 16.0], [10.0, 19.8]])
+        mask = _solve_pool_near(radecs, 10.0, 20.0, 0.7)
+
+        assert mask.dtype == bool
+        np.testing.assert_array_equal(mask, [False, True, False, True])
+        np.testing.assert_array_equal(radecs[mask], radecs[[1, 3]])
+
+    def test_empty_input(self):
+        """An empty (0, 2) catalog gives an empty boolean mask."""
+        mask = _solve_pool_near(np.empty((0, 2)), 10.0, 20.0, 1.0)
+        assert mask.dtype == bool
+        assert mask.shape == (0,)
+
+    def test_zero_radius_keeps_only_coincident_star(self):
+        """Radius zero keeps only an exactly coincident star."""
+        radecs = np.array([[10.0, 20.0], [10.0, 20.001]])
+        np.testing.assert_array_equal(
+            _solve_pool_near(radecs, 10.0, 20.0, 0.0), [True, False]
+        )

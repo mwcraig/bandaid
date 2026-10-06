@@ -13,13 +13,22 @@ sort. Recorded calls are inspected via the mock's ``call_args`` rather than any
 side-effect state.
 """
 
+import logging
+import math
+
 import astropy.units as u
 import numpy as np
 import pytest
 from astropy.coordinates import SkyCoord
 from astropy.time import Time
 
-from bandaid.catalog import GAIA_DR2_EPOCH, GAIA_DR2_VIZIER_CATALOG, cached_gaia_radecs
+from bandaid.catalog import (
+    GAIA_DR2_EPOCH,
+    GAIA_DR2_VIZIER_CATALOG,
+    cached_gaia_radecs,
+    query_field_catalog,
+)
+from bandaid.exceptions import BatchPrepError, CatalogTruncationError
 
 # Arbitrary row limit used to assert it is forwarded to Vizier unchanged.
 ROW_LIMIT_PROBE = 1234
@@ -176,3 +185,136 @@ def test_empty_result_returns_shaped_empties(fake_vizier, center):
     assert radecs.shape == (0, 2)
     assert mags.shape == (0,)
     assert cached_gaia_radecs(center, 0.2, magnitude=False).shape == (0, 2)
+
+
+def test_mag_limit_adds_vizier_column_filter(fake_vizier, center):
+    """A mag_limit is forwarded to Vizier as a Gmag column filter."""
+    cached_gaia_radecs(center, 0.2, mag_limit=17.5)
+
+    assert fake_vizier.call_args.kwargs["column_filters"] == {"Gmag": "<=17.5"}
+
+
+def test_no_mag_limit_passes_no_column_filter(fake_vizier, center):
+    """Without mag_limit the Vizier call has no column_filters kwarg at all."""
+    cached_gaia_radecs(center, 0.2)
+
+    assert "column_filters" not in fake_vizier.call_args.kwargs
+
+
+# Field geometry and magnitude limits used by the field-catalog tests.
+FOV_RAD = 0.74
+CONE_MARGIN = 0.4
+GAIA_LIMIT = 15.0
+CONTAMINANT_LIMIT = 18.0
+ROW_LIMIT = 10000
+# Equals math.ceil(10000 * ((0.74 + 0.4) / 0.74) ** 2).
+SCALED_ROW_LIMIT = 23733
+
+
+class TestQueryFieldCatalog:
+    """``query_field_catalog`` scales the row limit and checks for truncation."""
+
+    @staticmethod
+    def _patch(mocker, mags) -> object:
+        mags = np.asarray(mags, dtype=float)
+        radecs = np.zeros((len(mags), 2))
+        return mocker.patch(
+            "bandaid.catalog.cached_gaia_radecs", return_value=(radecs, mags)
+        )
+
+    @staticmethod
+    def _query(center, **kwargs: object) -> tuple:
+        defaults = {
+            "gaia_mag_limit": GAIA_LIMIT,
+            "contaminant_mag_limit": CONTAMINANT_LIMIT,
+            "row_limit": ROW_LIMIT,
+        }
+        defaults.update(kwargs)
+        return query_field_catalog(center, FOV_RAD, **defaults)
+
+    def test_zero_margin_keeps_row_limit(self, mocker, center):
+        """With no margin the row limit and cone are unchanged."""
+        mock = self._patch(mocker, [10.0])
+        self._query(center)
+
+        args, kwargs = mock.call_args
+        assert args == (center, 2 * FOV_RAD)
+        assert kwargs["limit"] == ROW_LIMIT
+        assert kwargs["mag_limit"] == CONTAMINANT_LIMIT
+
+    def test_margin_scales_limit_with_cone_area(self, mocker, center):
+        """The row limit grows with the cone area; the cone is widened."""
+        mock = self._patch(mocker, [10.0])
+        self._query(center, cone_margin=CONE_MARGIN)
+
+        args, kwargs = mock.call_args
+        assert args[1] == pytest.approx(2 * (FOV_RAD + CONE_MARGIN))
+        assert kwargs["limit"] == SCALED_ROW_LIMIT
+        assert kwargs["limit"] == math.ceil(ROW_LIMIT * (1.14 / 0.74) ** 2)
+
+    def test_obs_epoch_forwarded(self, mocker, center):
+        """obs_epoch is passed through to the cached query."""
+        mock = self._patch(mocker, [10.0])
+        epoch = Time("2026-01-01")
+        self._query(center, obs_epoch=epoch)
+
+        assert mock.call_args.kwargs["obs_epoch"] == epoch
+
+    def test_returns_radecs_and_mags(self, mocker, center):
+        """The query result is returned unchanged."""
+        self._patch(mocker, [10.0, 11.0])
+        radecs, mags = self._query(center)
+
+        assert radecs.shape == (2, 2)
+        np.testing.assert_allclose(mags, [10.0, 11.0])
+
+    def test_nonpositive_fov_raises(self, center):
+        """fov_rad must be positive."""
+        with pytest.raises(ValueError, match="fov_rad"):
+            query_field_catalog(
+                center,
+                0.0,
+                gaia_mag_limit=GAIA_LIMIT,
+                contaminant_mag_limit=CONTAMINANT_LIMIT,
+            )
+
+    def test_truncation_inside_target_range_raises(self, mocker, center):
+        """Truncation brighter than the target limit loses targets and is fatal."""
+        self._patch(mocker, np.linspace(9.0, GAIA_LIMIT, ROW_LIMIT))
+        with pytest.raises(CatalogTruncationError, match="targets") as excinfo:
+            self._query(center)
+
+        assert isinstance(excinfo.value, BatchPrepError)
+
+    def test_truncation_in_contaminant_range_warns(self, mocker, center, caplog):
+        """Truncation between the two limits only warns."""
+        self._patch(mocker, np.linspace(9.0, 16.5, ROW_LIMIT))
+        with caplog.at_level(logging.WARNING, logger="bandaid.catalog"):
+            self._query(center)
+
+        assert any("incomplete" in r.getMessage() for r in caplog.records)
+
+    def test_truncation_at_contaminant_limit_is_silent(self, mocker, center, caplog):
+        """Reaching the contaminant limit exactly at the row limit is fine."""
+        self._patch(mocker, np.linspace(9.0, CONTAMINANT_LIMIT, ROW_LIMIT))
+        with caplog.at_level(logging.WARNING, logger="bandaid.catalog"):
+            self._query(center)
+
+        assert not caplog.records
+
+    def test_below_row_limit_is_silent(self, mocker, center, caplog):
+        """No truncation check when fewer rows than the limit came back."""
+        self._patch(mocker, np.linspace(9.0, 12.0, ROW_LIMIT - 1))
+        with caplog.at_level(logging.WARNING, logger="bandaid.catalog"):
+            self._query(center)
+
+        assert not caplog.records
+
+    def test_empty_result_is_silent(self, mocker, center, caplog):
+        """An empty catalog neither raises nor warns."""
+        self._patch(mocker, [])
+        with caplog.at_level(logging.WARNING, logger="bandaid.catalog"):
+            _, mags = self._query(center)
+
+        assert len(mags) == 0
+        assert not caplog.records

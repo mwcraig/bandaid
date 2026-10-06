@@ -29,6 +29,7 @@ from bandaid.config import (
 )
 from bandaid.exceptions import (
     BatchPrepError,
+    CatalogTruncationError,
     FrameError,
     FrameMetadataError,
     InstrumentDetectionError,
@@ -44,6 +45,9 @@ from bandaid.photometry import (
 # precession moves a pointing by about a third of a degree.
 FRAME_TIE_ARCSEC = 0.1
 PRECESSION_MIN_DEG = 0.3
+ROW_LIMIT = 1234
+N_POOL_STARS = 20
+N_EDGE_STARS = 5
 
 
 class TestEstimateCenterFromHeader:
@@ -372,35 +376,45 @@ class TestPrepareBatch:
         assert captured.get("fwhm_n_stars") is None
         assert captured["profile"].fwhm_n_stars == fwhm_n_stars
 
-    def test_gaia_queried_at_resolved_center_over_unwidened_field(self, mocker):
+    def test_gaia_queried_at_resolved_center_with_cone_margin(self, mocker):
         """
-        Gaia is queried at the ICRS field center over the (unwidened) field.
+        Gaia is queried at the ICRS field center with the instrument's margin.
 
         The Seestar header pointing is in the equinox of date, so the cone is
         centered on that pointing converted to ICRS (not the raw header). The
-        cone is NOT widened: the default margin is 0.0 because a live-DR2 A/B
-        found widening reshuffles the plate-solver asterisms and loses frames
-        (issue #83).
+        field radius, cone margin, magnitude limits and row limit all come from
+        the instrument and config.
         """
         prep_data = _patch_prep(mocker)
-        scripts.prepare_batch("frame1.fits", cnn=object())
+        instrument = load_instrument("Seestar50").model_copy(
+            update={"cone_radius_margin": 0.25}
+        )
+        config = PhotometryConfig(
+            instrument=instrument,
+            source_selection=SourceSelectionConfig(
+                gaia_mag_limit=14.5,
+                contaminant_mag_offset=2.0,
+                gaia_row_limit=ROW_LIMIT,
+            ),
+        )
+        scripts.prepare_batch("frame1.fits", cnn=object(), config=config)
 
-        instrument = load_instrument("Seestar50")
         expected_center = scripts.estimate_center_from_header(
             prep_data.metadata, instrument
         )
-        center, fov = prep_data.cached_gaia_radecs.call_args.args
+        call = prep_data.query_field_catalog.call_args
+        center, fov_rad = call.args
         assert center == pytest.approx(expected_center)
         # The precession since J2000 is about a third of a degree, so the raw
         # header pointing would not satisfy the assertion above.
         raw = SkyCoord(prep_data.metadata["ra"], prep_data.metadata["dec"], unit="deg")
         assert SkyCoord(*center, unit="deg").separation(raw).deg > PRECESSION_MIN_DEG
-        # fov_rad is a field *radius*; with the default 0.0 margin the query takes
-        # exactly the full field (2 * radius), with no widening.
-        assert instrument.cone_radius_margin == 0.0
-        assert fov == pytest.approx(
-            2 * (prep_data.metadata["fov_rad"] + instrument.cone_radius_margin)
-        )
+        assert fov_rad == pytest.approx(prep_data.metadata["fov_rad"])
+        assert call.kwargs["cone_margin"] == pytest.approx(0.25)
+        assert call.kwargs["gaia_mag_limit"] == pytest.approx(14.5)
+        assert call.kwargs["contaminant_mag_limit"] == pytest.approx(16.5)
+        assert call.kwargs["row_limit"] == ROW_LIMIT
+        assert call.kwargs["obs_epoch"] is not None
 
     def test_batchprep_center_is_resolved_field_center(self, mocker):
         """``BatchPrep.center`` stores the ICRS field center, not the header."""
@@ -424,7 +438,7 @@ class TestPrepareBatch:
             config=PhotometryConfig(instrument=instrument),
         )
 
-        center, _fov = prep_data.cached_gaia_radecs.call_args.args
+        center, _fov = prep_data.query_field_catalog.call_args.args
         assert center == pytest.approx(
             (prep_data.metadata["ra"], prep_data.metadata["dec"])
         )
@@ -439,7 +453,7 @@ class TestPrepareBatch:
         scripts.prepare_batch("frame1.fits", cnn=object())
 
         from_name.assert_not_called()
-        center, _fov = prep_data.cached_gaia_radecs.call_args.args
+        center, _fov = prep_data.query_field_catalog.call_args.args
         assert center == pytest.approx(
             scripts.estimate_center_from_header(metadata, load_instrument("Seestar50"))
         )
@@ -448,7 +462,7 @@ class TestPrepareBatch:
         """
         The first frame's ``obs_time`` is forwarded to Gaia as ``obs_epoch``.
 
-        Gaia DR2 positions are J2015.5; without the epoch, ``cached_gaia_radecs``
+        Gaia DR2 positions are J2015.5; without the epoch, ``query_field_catalog``
         returns catalog-epoch positions and every high-proper-motion star is
         mis-placed in the forced-photometry target list. Fixes
         https://github.com/mwcraig/bandaid/issues/56.
@@ -457,7 +471,7 @@ class TestPrepareBatch:
 
         scripts.prepare_batch("frame1.fits", cnn=object())
 
-        obs_epoch = prep_data.cached_gaia_radecs.call_args.kwargs["obs_epoch"]
+        obs_epoch = prep_data.query_field_catalog.call_args.kwargs["obs_epoch"]
         assert obs_epoch == Time(parser.parse(prep_data.metadata["obs_time"]))
 
     def test_non_iso_obs_time_parsed_with_dateutil(self, mocker):
@@ -474,7 +488,7 @@ class TestPrepareBatch:
 
         scripts.prepare_batch("frame1.fits", cnn=object())
 
-        obs_epoch = prep_data.cached_gaia_radecs.call_args.kwargs["obs_epoch"]
+        obs_epoch = prep_data.query_field_catalog.call_args.kwargs["obs_epoch"]
         assert obs_epoch == Time("2026-04-28T03:03:43")
 
     @pytest.mark.parametrize(
@@ -528,7 +542,7 @@ class TestPrepareBatch:
         """
         End to end, a high-PM star lands at its observation-epoch position.
 
-        Runs the *real* ``cached_gaia_radecs`` with only ``catalog.Vizier``
+        Runs the *real* ``query_field_catalog`` with only ``catalog.Vizier``
         patched (network-free). The brightest fixture star is given an extreme
         proper motion (1000 mas/yr, ~10.9 arcsec over 2015.5 -> 2026.3) and the
         faintest a *masked* one. The prep's positions must match an independent
@@ -807,7 +821,54 @@ class TestPrepareBatch:
         radecs = np.column_stack([np.linspace(9.0, 11.0, 5), np.zeros(5)])
         _patch_prep(mocker, radecs_mags=(radecs, np.full(5, 12.0)))
         mocker.patch("bandaid.scripts.N_GAIA_STARS_ALIGN_RETRY", 20)
-        with pytest.raises(BatchPrepError, match="Gaia returned only 5"):
+        with pytest.raises(BatchPrepError, match="Gaia returned only 2"):
+            scripts.prepare_batch("frame1.fits", cnn=object())
+
+    @staticmethod
+    def _stars_in_and_out_of_pool(mocker, n_in, n_out) -> None:
+        """
+        Patch a prep whose catalog has ``n_in`` stars in the pool, ``n_out`` outside.
+
+        The stars sit due north of the field center, inside or just beyond
+        ``solve_pool_radius_scale`` times the field radius, all inside the
+        field radius itself (as with a cone widened by the margin).
+        """
+        metadata = _batch_metadata()
+        instrument = load_instrument("Seestar50")
+        ra0, dec0 = scripts.estimate_center_from_header(metadata, instrument)
+        pool = metadata["fov_rad"] * instrument.solve_pool_radius_scale
+        offsets = np.concatenate(
+            [np.linspace(0.0, 0.8 * pool, n_in), np.full(n_out, 1.05 * pool)]
+        )
+        radecs = np.column_stack([np.full(n_in + n_out, ra0), dec0 + offsets])
+        _patch_prep(
+            mocker,
+            metadata=metadata,
+            radecs_mags=(radecs, np.full(n_in + n_out, 12.0)),
+        )
+        # Use the real floor, not _patch_prep's relaxed one, for the guard.
+        mocker.patch("bandaid.scripts.N_GAIA_STARS_ALIGN_RETRY", 20)
+
+    def test_floor_counts_only_stars_inside_solve_pool(self, mocker):
+        """Stars in the widened cone but outside the solve pool do not count."""
+        self._stars_in_and_out_of_pool(mocker, n_in=12, n_out=13)
+        with pytest.raises(BatchPrepError, match="solve pool"):
+            scripts.prepare_batch("frame1.fits", cnn=object())
+
+    def test_floor_met_when_stars_inside_solve_pool(self, mocker):
+        """Enough stars inside the solve pool passes; the full list is kept."""
+        self._stars_in_and_out_of_pool(mocker, n_in=N_POOL_STARS, n_out=N_EDGE_STARS)
+        prep = scripts.prepare_batch("frame1.fits", cnn=object())
+        assert len(prep.radecs) == N_POOL_STARS + N_EDGE_STARS
+
+    def test_catalog_truncation_error_propagates_unwrapped(self, mocker):
+        """A CatalogTruncationError is not re-wrapped as a failed Gaia query."""
+        _patch_prep(mocker)
+        mocker.patch(
+            "bandaid.scripts.query_field_catalog",
+            side_effect=CatalogTruncationError("row limit hit"),
+        )
+        with pytest.raises(CatalogTruncationError, match="row limit hit"):
             scripts.prepare_batch("frame1.fits", cnn=object())
 
     def test_gaia_network_error_raises_batchpreperror(self, mocker):
@@ -828,7 +889,7 @@ class TestPrepareBatch:
             msg = "no network"
             raise ConnectionError(msg)
 
-        mocker.patch("bandaid.scripts.cached_gaia_radecs", side_effect=_boom)
+        mocker.patch("bandaid.scripts.query_field_catalog", side_effect=_boom)
         with pytest.raises(BatchPrepError, match="could not query Gaia"):
             scripts.prepare_batch("frame1.fits", cnn=object())
 
@@ -1024,10 +1085,11 @@ class TestCheckFrameConsistency:
             scripts.check_frame_consistency("bad.fits", header, self._prep())
 
     def test_offfield_pointing_raises_frameerror(self):
-        """A frame pointing beyond the field radius is rejected."""
+        """A frame pointing beyond the field radius is rejected, carrying its offset."""
         header = _consistency_header(RA=12.0)
-        with pytest.raises(FrameError, match="pointing"):
+        with pytest.raises(FrameError, match="pointing") as exc_info:
             scripts.check_frame_consistency("bad.fits", header, self._prep())
+        assert exc_info.value.pointing_offset == pytest.approx(2.0)
 
     def test_drifted_frame_within_radius_accepted(self):
         """
@@ -1039,6 +1101,68 @@ class TestCheckFrameConsistency:
         # RA=10.5 is 0.5 deg from STABLE_CENTER under the ICRS-header profile.
         header = _consistency_header(RA=10.5)
         scripts.check_frame_consistency("ok.fits", header, self._prep())
+
+    @staticmethod
+    def _margin_prep(margin) -> scripts.BatchPrep:
+        """A prep whose instrument carries the given cone margin."""
+        return TestCheckFrameConsistency._prep(
+            config=PhotometryConfig(
+                instrument=InstrumentProfile(cone_radius_margin=margin)
+            )
+        )
+
+    def test_returns_offset_from_batch_center(self):
+        """The offset (degrees) of the frame's center is returned."""
+        header = _consistency_header(RA=10.0)
+        offset = scripts.check_frame_consistency("ok.fits", header, self._prep())
+        assert offset == pytest.approx(0.0, abs=1e-9)
+
+    def test_offset_within_margin_is_silent(self, caplog):
+        """A drift fully covered by the cone margin logs nothing."""
+        header = _consistency_header(RA=10.2)
+        with caplog.at_level("WARNING", logger="bandaid.scripts"):
+            offset = scripts.check_frame_consistency(
+                "ok.fits", header, self._margin_prep(0.4)
+            )
+        assert offset == pytest.approx(0.2)
+        assert not caplog.records
+
+    def test_offset_between_margin_and_field_radius_warns(self, caplog):
+        """A partly covered drift warns with offset, margin and file; no raise."""
+        header = _consistency_header(RA=10.5)
+        with caplog.at_level("WARNING", logger="bandaid.scripts"):
+            offset = scripts.check_frame_consistency(
+                "drift.fits", header, self._margin_prep(0.4)
+            )
+        assert offset == pytest.approx(0.5)
+        message = " ".join(r.getMessage() for r in caplog.records)
+        assert "0.500" in message
+        assert "0.400" in message
+        assert "drift.fits" in message
+
+    def test_zero_margin_offset_warns_instead_of_raising(self, caplog):
+        """With a zero margin any drift inside the radius warns."""
+        header = _consistency_header(RA=10.3)
+        with caplog.at_level("WARNING", logger="bandaid.scripts"):
+            offset = scripts.check_frame_consistency(
+                "d.fits", header, self._margin_prep(0.0)
+            )
+        assert offset == pytest.approx(0.3)
+        assert len(caplog.records) == 1
+
+    def test_default_margin_covers_pointing_jitter(self, caplog):
+        """The class-default margin keeps a small frame-to-frame offset silent."""
+        header = _consistency_header(RA=10.06)
+        with caplog.at_level("WARNING", logger="bandaid.scripts"):
+            offset = scripts.check_frame_consistency("d.fits", header, self._prep())
+        assert offset == pytest.approx(0.06)
+        assert not caplog.records
+
+    def test_offset_beyond_field_radius_still_raises_with_margin(self):
+        """The margin does not extend the hard rejection radius."""
+        header = _consistency_header(RA=12.0)
+        with pytest.raises(FrameError, match="pointing"):
+            scripts.check_frame_consistency("bad.fits", header, self._margin_prep(0.4))
 
     def test_fk5_of_date_frame_compared_in_icrs(self):
         """With an fk5/"date" profile the frame's converted center is compared."""

@@ -19,12 +19,19 @@ manual proper-motion correction, propagation to an observation epoch is done wit
 astropy's :meth:`~astropy.coordinates.SkyCoord.apply_space_motion`.
 """
 
+import logging
+import math
+
 import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy.table import MaskedColumn
 from astropy.time import Time
 from astroquery.vizier import Vizier
+
+from bandaid.exceptions import CatalogTruncationError
+
+logger = logging.getLogger(__name__)
 
 # Gaia DR2 in VizieR and the reference epoch (Julian year) of its positions.
 GAIA_DR2_VIZIER_CATALOG = "I/345/gaia2"
@@ -94,7 +101,9 @@ def _pm_or_zero(column):
     return np.where(np.isfinite(values), values, 0.0) * column.unit
 
 
-def cached_gaia_radecs(center, fov, *, limit=10000, magnitude=True, obs_epoch=None):
+def cached_gaia_radecs(
+    center, fov, *, limit=10000, magnitude=True, obs_epoch=None, mag_limit=None
+):
     """
     Return Gaia DR2 RA/Dec (and magnitudes) in a field, cached via VizieR.
 
@@ -119,6 +128,10 @@ def cached_gaia_radecs(center, fov, *, limit=10000, magnitude=True, obs_epoch=No
         :meth:`~astropy.coordinates.SkyCoord.apply_space_motion`. If ``None``
         (default), positions are returned at the catalog epoch with no
         proper-motion correction (matching the notebook's current behavior).
+    mag_limit : float, optional
+        If given, ask VizieR to return only sources with ``Gmag <= mag_limit``.
+        If ``None`` (default) no filter is sent, so the query (and its cache
+        entry) is identical to an unfiltered one.
 
     Returns
     -------
@@ -136,9 +149,13 @@ def cached_gaia_radecs(center, fov, *, limit=10000, magnitude=True, obs_epoch=No
     # "+Gmag" asks VizieR to sort ascending (brightest first); combined with
     # row_limit this returns the N brightest sources in the cone, matching
     # twirl's "SELECT top N ... ORDER BY phot_g_mean_mag".
+    vizier_kwargs = {}
+    if mag_limit is not None:
+        vizier_kwargs["column_filters"] = {_MAG_COL: f"<={mag_limit}"}
     vizier = Vizier(
         columns=["+" + _MAG_COL, _RA_COL, _DEC_COL, _PMRA_COL, _PMDEC_COL],
         row_limit=limit,
+        **vizier_kwargs,
     )
     result = vizier.query_region(
         center, radius=radius * u.deg, catalog=GAIA_DR2_VIZIER_CATALOG
@@ -187,3 +204,95 @@ def cached_gaia_radecs(center, fov, *, limit=10000, magnitude=True, obs_epoch=No
         mags = np.asarray(table[_MAG_COL].value, dtype=float)
         return radecs, mags
     return radecs
+
+
+def query_field_catalog(
+    center,
+    fov_rad,
+    *,
+    cone_margin=0.0,
+    obs_epoch=None,
+    gaia_mag_limit,
+    contaminant_mag_limit,
+    row_limit=10000,
+):
+    """
+    Return Gaia (radecs, mags) for a field, with a row-limit truncation check.
+
+    Parameters
+    ----------
+    center : astropy.coordinates.SkyCoord or tuple
+        Center of the field. A tuple is interpreted as ``(ra, dec)`` in degrees.
+    fov_rad : float
+        Field radius in degrees. Must be positive.
+    cone_margin : float, optional
+        Extra radius in degrees added to ``fov_rad`` for the cone search.
+    obs_epoch : astropy.time.Time or str, optional
+        Epoch to propagate positions to; see `cached_gaia_radecs`.
+    gaia_mag_limit : float
+        Faintest G magnitude of photometry targets.
+    contaminant_mag_limit : float
+        Faintest G magnitude of contaminant stars; the catalog is filtered to
+        ``Gmag <= contaminant_mag_limit``.
+    row_limit : int, optional
+        Row limit for a cone of radius ``fov_rad``; scaled up with the cone
+        area when ``cone_margin`` is non-zero. Default 10000.
+
+    Returns
+    -------
+    radecs : numpy.ndarray
+        An ``(n, 2)`` array of RA/Dec in degrees, brightest first.
+    mags : numpy.ndarray
+        Length-``n`` array of Gaia G magnitudes.
+
+    Raises
+    ------
+    ValueError
+        If ``fov_rad`` is not positive.
+    CatalogTruncationError
+        If the query returned exactly the scaled row limit and its faintest
+        source is no fainter than ``gaia_mag_limit``, so targets were lost.
+
+    Notes
+    -----
+    The VizieR magnitude filter returns the same rows in the same order as an
+    unfiltered query cut at the same G, but moves 3-4 times less data. The row
+    limit is scaled with the cone area so the per-area depth stays constant
+    when the cone is widened. Dense fields can legitimately truncate inside the
+    contaminant range; that case only logs a warning, whereas truncation inside
+    the target range is an error.
+    """
+    if not fov_rad > 0:
+        msg = f"fov_rad must be positive, got {fov_rad}"
+        raise ValueError(msg)
+
+    radius = fov_rad + cone_margin
+    scaled_limit = math.ceil(row_limit * (radius / fov_rad) ** 2)
+
+    radecs, mags = cached_gaia_radecs(
+        center,
+        2 * radius,
+        obs_epoch=obs_epoch,
+        mag_limit=contaminant_mag_limit,
+        limit=scaled_limit,
+    )
+
+    if len(mags) == scaled_limit:
+        faintest = mags.max()
+        if faintest <= gaia_mag_limit:
+            msg = (
+                f"Gaia query hit its row limit ({scaled_limit}) with the faintest "
+                f"returned source at G={faintest:.2f}; photometry targets brighter "
+                f"than gaia_mag_limit={gaia_mag_limit} were lost."
+            )
+            raise CatalogTruncationError(msg)
+        if faintest < contaminant_mag_limit:
+            logger.warning(
+                "Gaia query hit its row limit (%d); the contaminant catalog is "
+                "incomplete below G=%.2f (contaminant_mag_limit=%s).",
+                scaled_limit,
+                faintest,
+                contaminant_mag_limit,
+            )
+
+    return radecs, mags

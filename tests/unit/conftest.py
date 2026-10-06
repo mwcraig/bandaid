@@ -57,7 +57,14 @@ def stub_prepare_image_externals(mocker):
 
     def _stub(*, metadata=None, coords=None, calibrated=None, fwhm=2.0):
         if metadata is None:
-            metadata = {"creator": "spy", "pixscale": 2.4}
+            metadata = {
+                "creator": "spy",
+                "pixscale": 2.4,
+                "ra": 10.0,
+                "dec": 20.0,
+                "fov_rad": 1.0,
+                "obs_time": "2025-09-09T05:00:00",
+            }
         if coords is None:
             coords = np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]])
         if calibrated is None:

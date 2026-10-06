@@ -16,6 +16,7 @@ propagate, so it is not silently swallowed as a "bad frame".
 __all__ = [
     "BandaidError",
     "BatchPrepError",
+    "CatalogTruncationError",
     "DegenerateBayerChannelError",
     "FrameError",
     "FrameMetadataError",
@@ -134,6 +135,15 @@ class BatchPrepError(BandaidError):
 
     Raised by `prepare_batch` -- not a `FrameError`, so it is not caught by the
     per-frame loop and instead aborts the whole batch.
+    """
+
+
+class CatalogTruncationError(BatchPrepError):
+    """
+    The Gaia query hit its row limit before reaching the target magnitude limit.
+
+    Photometry targets brighter than ``gaia_mag_limit`` were dropped, so the
+    batch cannot be trusted.
     """
 
 
