@@ -13,6 +13,7 @@ import io
 import logging
 import warnings
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 import astropy.units as u
 import numpy as np
@@ -1474,6 +1475,17 @@ class ImageData:
     _time_airmass_cache: tuple | None = field(
         default=None, repr=False, init=False, compare=False
     )
+    # Per-frame, channel-independent values shared by the RGB channel loop,
+    # populated lazily like `_time_airmass_cache`. The peak cutouts depend only
+    # on fields fixed for the frame; the geometry also depends on the requested
+    # radii/annulus, so it holds one ``(key, value)`` pair and is recomputed
+    # when the key changes.
+    _peak_cutouts_cache: np.ndarray | None = field(
+        default=None, repr=False, init=False, compare=False
+    )
+    _aperture_geometry_cache: tuple | None = field(
+        default=None, repr=False, init=False, compare=False
+    )
 
     def resolve_time_airmass(self):
         """
@@ -1510,6 +1522,67 @@ class ImageData:
             airmass = _airmass_from_metadata(metadata, obs_datetime=obs_datetime)
             self._time_airmass_cache = (start_jd, airmass)
         return self._time_airmass_cache
+
+    def peak_cutouts(self):
+        """
+        Return and cache this frame's raw peak-count box cutouts.
+
+        Returns
+        -------
+        numpy.ndarray
+            The unmasked cutouts from `_peak_box_cutouts`, computed once per
+            frame and reused by every `build_photometry_table` call for this
+            image (one per RGB channel).
+        """
+        if self._peak_cutouts_cache is None:
+            self._peak_cutouts_cache = _peak_box_cutouts(
+                self.calibrated_data, self.centroid_coords, self.fwhm
+            )
+        return self._peak_cutouts_cache
+
+    def aperture_geometry(self, radii, annulus):
+        """
+        Return and cache this frame's pixel aperture and annulus geometry.
+
+        Parameters
+        ----------
+        radii : array-like or float
+            Aperture radii in units of FWHM.
+        annulus : tuple of float
+            Background annulus ``(inner, outer)`` radii in units of FWHM.
+
+        Returns
+        -------
+        ApertureGeometry
+            The geometry from `_aperture_annulus_geometry` for this frame's
+            FWHM.
+
+        Notes
+        -----
+        A malformed `radii` or `annulus`, or one that leaves no usable annulus,
+        raises the ``ValueError`` of `_aperture_annulus_geometry`.
+
+        One ``(key, value)`` pair is kept, keyed on the plain-float values of
+        `radii` and `annulus`, and recomputed whenever a call asks for
+        different values. The usual case, every channel of a frame asking for
+        the configured radii and annulus, computes once.
+        """
+        try:
+            key = (
+                tuple(np.atleast_1d(radii).astype(float).tolist()),
+                tuple(float(a) for a in annulus),
+            )
+        except (TypeError, ValueError):
+            # Malformed input: the computation below raises the actionable error.
+            return _aperture_annulus_geometry(self.fwhm, radii, annulus)
+        if self._aperture_geometry_cache is None or (
+            self._aperture_geometry_cache[0] != key
+        ):
+            self._aperture_geometry_cache = (
+                key,
+                _aperture_annulus_geometry(self.fwhm, radii, annulus),
+            )
+        return self._aperture_geometry_cache[1]
 
 
 def _wcs_pixscale_arcsec(wcs):
@@ -2090,6 +2163,18 @@ def _coerce_geometry(geometry):
     return apertures_radii, annulus_radii
 
 
+class ApertureGeometry(NamedTuple):
+    """
+    Pixel-unit aperture and background annulus radii for one frame.
+
+    Only `_aperture_annulus_geometry` produces these, so the field names
+    document that the radii are in pixels, not in units of FWHM.
+    """
+
+    apertures_radii_px: np.ndarray
+    annulus_radii_px: tuple
+
+
 def _aperture_annulus_geometry(fwhm, radii, annulus):
     """
     Compute the fwhm-scaled aperture radii and background annulus radii.
@@ -2107,11 +2192,11 @@ def _aperture_annulus_geometry(fwhm, radii, annulus):
 
     Returns
     -------
-    apertures_radii : numpy.ndarray
-        The fwhm-scaled aperture radii, at least 1D.
-    annulus_radii : tuple of float
-        The ``(r_in, r_out)`` background annulus radii in pixels, with
-        ``r_in`` pushed out to at least the largest aperture radius.
+    ApertureGeometry
+        ``apertures_radii_px``, the fwhm-scaled aperture radii as an at least
+        1D array, and ``annulus_radii_px``, the ``(r_in, r_out)`` background
+        annulus radii in pixels, with ``r_in`` pushed out to at least the
+        largest aperture radius.
 
     Notes
     -----
@@ -2137,7 +2222,7 @@ def _aperture_annulus_geometry(fwhm, radii, annulus):
     annulus_radii = _clamp_annulus_to_apertures(
         apertures_radii, (inner * fwhm, outer * fwhm)
     )
-    return apertures_radii, annulus_radii
+    return ApertureGeometry(apertures_radii, annulus_radii)
 
 
 def measure_photometry(
