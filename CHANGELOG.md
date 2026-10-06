@@ -115,6 +115,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Breaking: `build_photometry_table` no longer accepts `peak_cutouts=` or
+    `geometry=`; the per-frame peak cutouts and pixel aperture/annulus geometry are
+    cached on `ImageData` (`peak_cutouts()` and `aperture_geometry(radii, annulus)`)
+    and computed once per frame. `measure_photometry` now raises `ValueError` when
+    `geometry` is passed together with an explicit `radii` or `annulus` (its
+    `radii`/`annulus` defaults are now `None`, meaning the module defaults), and
+    `_aperture_annulus_geometry` returns an `ApertureGeometry` named tuple whose
+    field names carry the pixel units. Pipeline output is unchanged (#126).
 - `InstrumentProfile.cone_radius_margin` now defaults to `0.4` deg (was `0.0`), so
     the batch Gaia catalog covers that much pointing drift between frames.
     Widening the cone no longer disturbs plate solving because the solve pool is
