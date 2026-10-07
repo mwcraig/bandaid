@@ -829,7 +829,7 @@ class TestPrepareImage:
     def test_policy_receives_cut_gaia_g_cut_and_config(
         self, stub_prepare_image_externals, mocker
     ):
-        """The centroid policy gets G cut with the coordinates, plus the cut and config."""
+        """The centroid policy gets the cut G, the magnitude cut and the config."""
         aligned = np.array(
             [[50.0, 50.0], [-50.0, 5.0], [60.0, 70.0], [200.0, 5.0], [3.0, 50.0]]
         )

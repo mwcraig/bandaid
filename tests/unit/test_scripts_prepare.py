@@ -985,17 +985,15 @@ class TestPrepareBatch:
         A bright star well outside the circle of the frame's area does not
         count, and a class larger than the stars available leaves no cut.
         """
-        radecs, mags = _batch_radecs_mags()
-        # A mag-6 star ~0.9 deg from the field center, beyond the ~0.54 deg
-        # radius of a circle with the area of a 1080 x 1920 frame at 2.4"/pix.
-        radecs = np.vstack([radecs, [10.0, 0.9]])
-        mags = np.append(mags, 6.0)
+        # The header pointing is shifted by precession to about RA 9.66, Dec -0.14. The
+        # mag-6 star is ~1 deg from it, beyond the ~0.54 deg radius of a circle
+        # with the area of a 1080 x 1920 frame at 2.4"/pix.
+        radecs = np.array([[9.66, 0.0], [9.66, 0.2], [9.66, 0.9]])
+        mags = np.array([10.0, 11.0, 6.0])
         _patch_prep(mocker, radecs_mags=(radecs, mags))
         config = PhotometryConfig(centroid=CentroidConfig(cnn_class_size=class_size))
 
-        prep = scripts.prepare_batch(
-            "frame1.fits", cnn=object(), config=config
-        )
+        prep = scripts.prepare_batch("frame1.fits", cnn=object(), config=config)
 
         assert prep.g_cut == expected_cut
 

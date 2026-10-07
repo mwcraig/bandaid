@@ -251,6 +251,15 @@ class BatchPrep:
         Whether each frame also gets the full-frame "L4" luminance channel,
         built from the TR/TG/TB tables; handed to ``process_one_image``.
         Default True.
+    gaia_g : numpy.ndarray or None
+        Gaia G magnitude of each row of ``photometry_coords``, in the same
+        order (NaN for a forced target, which has none). None when the batch
+        was built without magnitudes. Default None.
+    g_cut : float or None
+        The batch's CNN-class magnitude cut: a star with ``G <= g_cut`` keeps
+        its CNN centroid on every frame (see `~bandaid.photometry.centroid_with_prior`).
+        ``inf`` when the field has fewer than ``cnn_class_size`` targets in the
+        cut circle; None when the policy is off. Default None.
     """
 
     radecs: np.ndarray
@@ -264,6 +273,8 @@ class BatchPrep:
     forced_targets: SkyCoord | None = None
     instrument_auto_detected: bool = False
     build_l4: bool = True
+    gaia_g: np.ndarray | None = None
+    g_cut: float | None = None
 
     def __post_init__(self) -> None:
         """
@@ -286,6 +297,114 @@ class BatchPrep:
                 "construct BatchPrep via prepare_batch"
             )
             raise ValueError(msg)
+
+
+def _with_forced_target_g(gaia_g, forced_targets):
+    """
+    Extend the targets' Gaia G with a NaN for each forced target.
+
+    Parameters
+    ----------
+    gaia_g : numpy.ndarray
+        Gaia G of the contamination-filtered targets.
+    forced_targets : astropy.coordinates.SkyCoord or None
+        The forced targets appended after those targets, or None.
+
+    Returns
+    -------
+    numpy.ndarray
+        `gaia_g` followed by one NaN per forced target: a forced target is
+        absent from Gaia, so it has no magnitude.
+    """
+    if forced_targets is None:
+        return gaia_g
+    return np.concatenate([gaia_g, np.full(len(forced_targets), np.nan)])
+
+
+def _cnn_class_g_cut(coords, gaia_g, center, shape, pixscale, class_size):
+    """
+    Return the Gaia G at or brighter than which a target is CNN-class.
+
+    Parameters
+    ----------
+    coords : astropy.coordinates.SkyCoord
+        Sky positions of the targets.
+    gaia_g : numpy.ndarray
+        Gaia G of each of `coords`; NaN rows (forced targets) are ignored.
+    center : tuple of float
+        ``(ra, dec)`` of the batch center, in degrees.
+    shape : tuple of int
+        ``(height, width)`` of the frame, in pixels.
+    pixscale : float
+        Plate scale, in arcseconds per pixel.
+    class_size : int
+        Number of targets that are CNN-class.
+
+    Returns
+    -------
+    float
+        The G of the `class_size`-th brightest target inside the circle, or
+        ``inf`` when the circle holds fewer than `class_size` targets.
+
+    Notes
+    -----
+    The circle is centred on `center` and has the area of the frame, so it
+    holds about as many targets as a frame does and does not depend on where
+    the frame's edges fall. The cut is a property of the catalog and the
+    field, never of one frame, so a star's class is the same on every frame.
+    """
+    height, width = shape
+    radius_deg = np.sqrt(height * width / np.pi) * pixscale / 3600.0
+    ra, dec = center
+    inside = coords.separation(SkyCoord(ra * u.deg, dec * u.deg)).deg <= radius_deg
+    g_inside = np.sort(gaia_g[inside & np.isfinite(gaia_g)])
+    if len(g_inside) < class_size:
+        return float("inf")
+    return float(g_inside[class_size - 1])
+
+
+def _batch_g_cut(centroid_config, coords, gaia_g, center, shape, pixscale):
+    """
+    Compute and log the batch's CNN-class magnitude cut, or None if the policy is off.
+
+    Parameters
+    ----------
+    centroid_config : `~bandaid.config.CentroidConfig`
+        The centroid policy settings.
+    coords : astropy.coordinates.SkyCoord
+        Sky positions of the catalog targets.
+    gaia_g : numpy.ndarray
+        Gaia G of each of `coords`.
+    center : tuple of float
+        ``(ra, dec)`` of the batch center, in degrees.
+    shape : tuple of int
+        ``(height, width)`` of the frame, in pixels.
+    pixscale : float
+        Plate scale, in arcseconds per pixel.
+
+    Returns
+    -------
+    float or None
+        The cut from `_cnn_class_g_cut`, or None when the policy is off.
+    """
+    if not centroid_config.gaia_prior:
+        return None
+    g_cut = _cnn_class_g_cut(
+        coords, gaia_g, center, shape, pixscale, centroid_config.cnn_class_size
+    )
+    if np.isfinite(g_cut):
+        logger.info(
+            "CNN-class magnitude cut: G <= %.2f (%d targets)",
+            g_cut,
+            centroid_config.cnn_class_size,
+        )
+    else:
+        logger.warning(
+            "fewer than %d catalog targets within the frame-area circle: "
+            "every star is CNN-class and the Gaia-prior plane is not used",
+            centroid_config.cnn_class_size,
+        )
+    return g_cut
 
 
 def _check_edge_margin_fits_frame(edge_margin_px, metadata):
@@ -614,7 +733,6 @@ def prepare_batch(
     )
     flagged_target = flagged[target[contaminant]]
     photometry_coords = SkyCoord(target_radecs[~flagged_target], unit="deg")
-
     # Forced targets (novae/supernovae -- absent from Gaia) go into
     # photometry_coords only, never radecs: they aren't astrometric
     # references for the WCS solve. Two deliberate properties follow, and
@@ -656,6 +774,8 @@ def prepare_batch(
             len(forced_targets),
         )
 
+    gaia_g = _with_forced_target_g(mags[target][~flagged_target], forced_targets)
+
     bayer_masks = generate_bayer_masks(
         (metadata["height"], metadata["width"]),
         metadata,
@@ -673,6 +793,15 @@ def prepare_batch(
         forced_targets=forced_targets,
         instrument_auto_detected=instrument_auto_detected,
         build_l4=build_l4,
+        gaia_g=gaia_g,
+        g_cut=_batch_g_cut(
+            config.centroid,
+            photometry_coords,
+            gaia_g,
+            center,
+            (metadata["height"], metadata["width"]),
+            metadata["pixscale"],
+        ),
     )
 
 
@@ -1452,6 +1581,8 @@ def process_batch(
                 prep.bayer_masks,
                 config=prep.config,
                 input_photometry_coords=prep.photometry_coords,
+                input_gaia_g=prep.gaia_g,
+                g_cut=prep.g_cut,
                 frame=frame,
                 build_l4=prep.build_l4,
             )

@@ -2850,6 +2850,7 @@ def _drop_edge_catalog_stars(
     file,
     *,
     edge_margin_px,
+    gaia_g=None,
 ):
     """
     Drop catalog stars projected within a margin of a frame edge or off the frame.
@@ -2869,6 +2870,9 @@ def _drop_edge_catalog_stars(
     edge_margin_px : float
         Minimum distance, in pixels, from every frame edge for a catalog star
         to be kept.
+    gaia_g : numpy.ndarray or None, optional
+        Gaia G magnitude of each row of `aligned_coords`. Cut with the
+        coordinates so it stays row-aligned. By default None.
 
     Returns
     -------
@@ -2878,6 +2882,8 @@ def _drop_edge_catalog_stars(
     astropy.coordinates.SkyCoord or None
         `photometry_coords`, reduced to the same rows (unchanged if already
         None).
+    numpy.ndarray or None
+        `gaia_g`, reduced to the same rows (None if `gaia_g` is None).
     int
         Number of catalog stars removed that lie within `edge_margin_px` of a
         frame edge, on either side of it (inside the frame or outside it).
@@ -2916,7 +2922,7 @@ def _drop_edge_catalog_stars(
     arguments are returned unchanged.
     """
     if photometry_coords is None:
-        return aligned_coords, photometry_coords, 0
+        return aligned_coords, photometry_coords, gaia_g, 0
     height, width = shape
     x, y = aligned_coords[:, 0], aligned_coords[:, 1]
     margin = edge_margin_px
@@ -2937,7 +2943,12 @@ def _drop_edge_catalog_stars(
         margin,
         n_edge_dropped,
     )
-    return aligned_coords[keep], photometry_coords[keep], n_edge_dropped
+    return (
+        aligned_coords[keep],
+        photometry_coords[keep],
+        None if gaia_g is None else np.asarray(gaia_g)[keep],
+        n_edge_dropped,
+    )
 
 
 def _parse_obs_time(obs_time, *, file=None):
@@ -3124,6 +3135,8 @@ def prepare_image(
     user_specific_metadata=None,
     wcs=None,
     frame=None,
+    gaia_g=None,
+    g_cut=None,
 ):
     """
     Detect sources, align, and centroid for a single image.
@@ -3157,6 +3170,12 @@ def prepare_image(
         through to `align`. By default None.
     frame : LoadedFrame or None, optional
         Pre-loaded frame; when None the file is opened once via the loader.
+    gaia_g : numpy.ndarray or None, optional
+        Gaia G magnitude of each row of `photometry_coords` (NaN for a forced
+        target, which has none). With `g_cut` it selects the stars that keep a
+        CNN centroid; see `centroid_with_prior`. By default None.
+    g_cut : float or None, optional
+        The batch's CNN-class magnitude cut. By default None (no policy).
 
     Returns
     -------
@@ -3319,21 +3338,33 @@ def prepare_image(
 
     # Drop catalog stars projected within the edge margin or off-frame, before
     # centroiding/photometry.
-    aligned_coords, photometry_coords, n_edge_dropped = _drop_edge_catalog_stars(
-        aligned_coords,
-        photometry_coords,
-        calibrated_data.shape,
-        file,
-        edge_margin_px=config.edge_margin_px,
+    aligned_coords, photometry_coords, gaia_g, n_edge_dropped = (
+        _drop_edge_catalog_stars(
+            aligned_coords,
+            photometry_coords,
+            calibrated_data.shape,
+            file,
+            edge_margin_px=config.edge_margin_px,
+            gaia_g=gaia_g,
+        )
     )
 
-    centroid_coords = centroid_stars(working_image, aligned_coords, cnn)
+    # Without a catalog the aligned coordinates are detections, not projected
+    # catalog positions, so there is no Gaia prior to apply.
+    centroided = centroid_with_prior(
+        working_image,
+        aligned_coords,
+        cnn,
+        gaia_g=None if photometry_coords is None else gaia_g,
+        g_cut=g_cut,
+        config=config.centroid,
+    )
 
     return ImageData(
         calibrated_data=calibrated_data,
         coords=coords,
         fwhm=fwhm,
-        centroid_coords=centroid_coords,
+        centroid_coords=centroided.coords,
         aligned_coords=aligned_coords,
         wcs=this_wcs,
         header=frame.header,
@@ -3528,6 +3559,8 @@ def process_one_image(
     input_photometry_coords=None,
     frame=None,
     build_l4=True,
+    input_gaia_g=None,
+    g_cut=None,
 ):
     """
     Process a single image file and return one photometry table per input mask.
@@ -3568,6 +3601,12 @@ def process_one_image(
         returned under the key "L4". It is built from the RGB channels
         (TR/TG/TB) after they are photometered, so those three must be in
         ``bayer_masks``. Default True.
+    input_gaia_g : numpy.ndarray or None, optional
+        Gaia G magnitude of each row of `input_photometry_coords` (NaN for a
+        forced target). By default None.
+    g_cut : float or None, optional
+        The batch's CNN-class magnitude cut, handed to `prepare_image`. By
+        default None.
 
     Returns
     -------
@@ -3627,6 +3666,8 @@ def process_one_image(
         photometry_coords=input_photometry_coords,
         user_specific_metadata=user_specific_metadata,
         frame=frame,
+        gaia_g=input_gaia_g,
+        g_cut=g_cut,
     )
 
     # Reject a malformed mask dict before any photometry: the dict is shared
