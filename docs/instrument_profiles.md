@@ -292,11 +292,13 @@ example above stands for such a measured value.
 
 To measure `pixscale`, process a night of frames and take the median of the
 `wcs_pixscale` column of `qa_manifest.csv`. A frame whose solve is rejected for
-its scale still has its measured scale recorded there, so the column is
-populated even when the nominal value rejects every frame. If you prefer to
-take the median over accepted solves only, first run once with a temporarily
-wide `wcs_scale_tolerance` (for example `0.1`) and keep the rows with
-`wcs_solved` true. Once `pixscale` is set, tighten `wcs_scale_tolerance` to
+its scale still has a measured scale recorded there, so the column is
+populated even when the nominal value rejects every frame. That value is the
+scale of the last candidate solve tried for the frame, which is occasionally a
+wrong-scale false solve rather than the good solve that failed the check, so
+take the median rather than the mean. If you prefer to use accepted solves
+only, first run once with a temporarily wide `wcs_scale_tolerance` (for
+example `0.1`) and keep the rows with `wcs_solved` true. Once `pixscale` is set, tighten `wcs_scale_tolerance` to
 the spread of the good solves.
 
 `wcs_pointing_tolerance` (degrees, default none, must be `> 0` when set) is the

@@ -11,6 +11,7 @@ from bandaid.exceptions import (
     WCSScaleError,
     WCSSolveError,
 )
+from bandaid.instruments import load_instrument
 from bandaid.photometry import (
     N_GAIA_STARS_ALIGN,
     N_GAIA_STARS_ALIGN_RETRY,
@@ -482,6 +483,34 @@ class TestAlign:
 
         with pytest.raises(WCSPointingError, match="center"):
             align(coords, coords.copy(), pointing_tolerance=0.30, **kwargs)
+
+    def test_seestar_tolerance_accepts_largest_measured_offset(self, mocker):
+        """
+        The Seestar50 pointing tolerance accepts a 0.29 deg re-acquisition offset.
+
+        0.29 deg is the largest legitimate header-to-solve offset seen across
+        the six Seestar S50 fields the tolerance was tuned on. It is wider
+        than a 500-px frame's half-diagonal (about 0.23 deg), so the
+        field-radius default rejects it while the bundled profile's fixed
+        tolerance accepts it.
+        """
+        solved_wcs = _make_tan_wcs(crval=(10.0, 20.0))
+        mocker.patch("bandaid.photometry.compute_wcs", return_value=solved_wcs)
+        coords = align_coords(N_IMAGE_STARS_ALIGN)
+        kwargs = {
+            "photometry_coords": None,
+            "expected_center": SkyCoord(10.0, 20.29, unit="deg"),
+            "shape": (500, 500),
+        }
+        seestar_tolerance = load_instrument("Seestar50").wcs_pointing_tolerance
+
+        with pytest.raises(WCSPointingError, match="center"):
+            align(coords, coords.copy(), **kwargs)
+
+        _, returned_wcs, _ = align(
+            coords, coords.copy(), pointing_tolerance=seestar_tolerance, **kwargs
+        )
+        assert returned_wcs is solved_wcs
 
     def test_supplied_wcs_center_not_checked(self):
         """A caller-supplied WCS is trusted and not center-checked."""
