@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from bandaid.config import (
     ApertureConfig,
+    CentroidConfig,
     DriftConfig,
     HeaderMatchRule,
     InstrumentProfile,
@@ -54,6 +55,12 @@ EXPECTED_GAIA_ROW_LIMIT = 10000
 # centroiding CNN's 15x15 fill-padded cutout (half-size 7 px).
 EXPECTED_EDGE_MARGIN_PX = 10.0
 
+# Centroid policy settings: a new section, so there is no legacy constant.
+EXPECTED_CNN_CLASS_SIZE = 30
+EXPECTED_FIT_N_STARS = 30
+EXPECTED_MIN_FIT_STARS = 12
+EXPECTED_CLIP_SIGMA = 3.0
+
 
 class TestDefaultsMatchLegacyConstants:
     """A default config reproduces the current module-level constants."""
@@ -83,6 +90,15 @@ class TestDefaultsMatchLegacyConstants:
         cfg = DriftConfig()
         assert cfg.drift_tolerance_fwhm == EXPECTED_DRIFT_TOLERANCE_FWHM
         assert cfg.drift_cap_pix == EXPECTED_DRIFT_CAP_PIX
+
+    def test_centroid(self):
+        """The centroid policy defaults to on, with the validated plane-fit settings."""
+        cfg = CentroidConfig()
+        assert cfg.gaia_prior is True
+        assert cfg.cnn_class_size == EXPECTED_CNN_CLASS_SIZE
+        assert cfg.fit_n_stars == EXPECTED_FIT_N_STARS
+        assert cfg.min_fit_stars == EXPECTED_MIN_FIT_STARS
+        assert cfg.clip_sigma == EXPECTED_CLIP_SIGMA
 
     def test_instrument(self):
         """Detection/FWHM/PSF settings default to the legacy literal values."""
@@ -147,6 +163,7 @@ class TestDefaultsMatchLegacyConstants:
         assert isinstance(cfg.apertures, ApertureConfig)
         assert isinstance(cfg.source_selection, SourceSelectionConfig)
         assert isinstance(cfg.drift, DriftConfig)
+        assert isinstance(cfg.centroid, CentroidConfig)
         # None means "resolve from the frame header" -- see detect_instrument.
         assert cfg.instrument is None
 
@@ -395,6 +412,29 @@ class TestValidators:
         with pytest.raises(ValidationError):
             DriftConfig(drift_cap_pix=-1.0)
 
+    @pytest.mark.parametrize("min_fit_stars", [0, 1, 2])
+    def test_too_few_min_fit_stars_rejected(self, min_fit_stars):
+        """A plane has three parameters, so fewer than three fit stars is rejected."""
+        with pytest.raises(ValidationError):
+            CentroidConfig(min_fit_stars=min_fit_stars)
+
+    def test_fit_set_smaller_than_minimum_rejected(self):
+        """A fit set that cannot reach the minimum surviving count is rejected."""
+        with pytest.raises(ValidationError, match="fit_n_stars"):
+            CentroidConfig(fit_n_stars=10, min_fit_stars=12)
+
+    @pytest.mark.parametrize("cnn_class_size", [0, -1])
+    def test_empty_cnn_class_rejected(self, cnn_class_size):
+        """A CNN class with no members is rejected."""
+        with pytest.raises(ValidationError):
+            CentroidConfig(cnn_class_size=cnn_class_size)
+
+    @pytest.mark.parametrize("clip_sigma", [0.0, -3.0, float("nan")])
+    def test_non_positive_clip_sigma_rejected(self, clip_sigma):
+        """A non-positive or non-finite clipping threshold is rejected."""
+        with pytest.raises(ValidationError):
+            CentroidConfig(clip_sigma=clip_sigma)
+
     def test_non_finite_min_snr_rejected(self):
         """A non-finite minimum SNR floor is rejected with a clear message."""
         with pytest.raises(ValidationError, match="min_snr"):
@@ -444,6 +484,12 @@ class TestOverrides:
         """A custom edge margin is preserved."""
         margin = 4.5
         assert PhotometryConfig(edge_margin_px=margin).edge_margin_px == margin
+
+    def test_centroid_override(self):
+        """A custom class size and the off switch are preserved."""
+        cfg = PhotometryConfig(centroid=CentroidConfig(gaia_prior=False, cnn_class_size=20))
+        assert cfg.centroid.gaia_prior is False
+        assert cfg.centroid.cnn_class_size == 20
 
     def test_source_selection_override(self):
         """A custom min_snr is preserved on the nested config."""
