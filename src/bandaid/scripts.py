@@ -73,6 +73,17 @@ QA_MANIFEST_COLUMNS = (
     "n_centroid_drift",
     "n_drift_rejected",
     "n_forced_measured",
+    "n_edge_prior",
+    "plane_fallback",
+    "plane_n_used",
+    "plane_n_clipped",
+    "plane_rms",
+    "plane_dx_center",
+    "plane_dy_center",
+    "plane_dx_slope_x",
+    "plane_dx_slope_y",
+    "plane_dy_slope_x",
+    "plane_dy_slope_y",
 )
 
 # SNR at or above which a star counts toward the manifest's ``n_snr20`` solve-quality
@@ -1083,6 +1094,32 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
         "n_centroid_drift": n_centroid_drift,
         "n_drift_rejected": n_drift_rejected,
         "n_forced_measured": n_forced_measured,
+        **_centroid_prior_record(meta.get("centroid_prior")),
+    }
+
+
+def _centroid_prior_record(summary):
+    """
+    Build the edge-band-prior columns of a QA manifest row.
+
+    Parameters
+    ----------
+    summary : dict or None
+        The frame's plane summary from `centroid_with_prior`, as stamped on its
+        tables, or None when the rule did not run.
+
+    Returns
+    -------
+    dict
+        The manifest columns from ``n_edge_prior`` on, floats rounded to 4
+        decimals and every value None (blank) when there is no summary.
+    """
+    summary = summary or {}
+    first = QA_MANIFEST_COLUMNS.index("n_edge_prior")
+    record = {column: summary.get(column) for column in QA_MANIFEST_COLUMNS[first:]}
+    return {
+        column: _round_or_none(value) if isinstance(value, float) else value
+        for column, value in record.items()
     }
 
 

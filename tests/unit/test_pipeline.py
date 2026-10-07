@@ -734,7 +734,7 @@ class TestPrepareImage:
         mocker.patch(
             "bandaid.photometry.centroid_with_prior",
             return_value=photometry.CentroidResult(
-                coords=aligned, method=method, plane=None, fallback=False, active=True
+                coords=aligned, method=method, plane=None, fallback=True, active=True
             ),
         )
 

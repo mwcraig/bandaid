@@ -1474,6 +1474,12 @@ class ImageData:
     # validation. The offset is None when no header center was available.
     wcs_pixscale: float | None = None
     solve_offset_deg: float | None = None
+    # How each centroid row was obtained ("cnn", "edge_plane" or
+    # "edge_projected"; None means every row came from the CNN) and the frame's
+    # offset-plane summary for the QA manifest (None when the edge-band rule did
+    # not run).
+    centroid_method: np.ndarray | None = None
+    centroid_prior: dict | None = None
     # Populated lazily by the first `resolve_time_airmass` call for this frame
     # and reused by the later calls (one per RGB channel) that share this same
     # `ImageData`, so the obs_time parse and airmass derivation run once per
@@ -2120,12 +2126,16 @@ class CentroidResult:
     fallback : bool
         Whether an edge-band row had to take the bare projected position
         because the frame had no plane.
+    active : bool
+        Whether the edge-band rule ran for this frame (it needs Gaia G and is
+        switchable in the config).
     """
 
     coords: np.ndarray
     method: np.ndarray
     plane: object
     fallback: bool
+    active: bool = False
 
 
 def _edge_distance(xy, shape):
@@ -2150,6 +2160,52 @@ def _edge_distance(xy, shape):
     return np.minimum.reduce(
         [xy[:, 0], width - 0.5 - xy[:, 0], xy[:, 1], height - 0.5 - xy[:, 1]]
     )
+
+
+def _centroid_prior_diagnostics(result):
+    """
+    Summarise a frame's edge-band rule and offset plane for the QA manifest.
+
+    Parameters
+    ----------
+    result : CentroidResult
+        The frame's `centroid_with_prior` result.
+
+    Returns
+    -------
+    dict or None
+        None when the rule did not run. Otherwise the number of edge-band
+        stars, whether the no-plane fallback fired, and the plane's star
+        counts, rms, centre offset and slopes (None where there is no plane).
+        The slopes are the change in offset from the frame centre to the
+        right-hand (``slope_x``) and top (``slope_y``) edges, in pixels.
+    """
+    if not result.active:
+        return None
+    plane = result.plane
+    diagnostics = {
+        "n_edge_prior": int(np.char.startswith(result.method, "edge").sum()),
+        "plane_fallback": result.fallback,
+        "plane_n_used": 0 if plane is None else plane.n_used,
+        "plane_n_clipped": 0 if plane is None else plane.n_clipped,
+    }
+    names = (
+        "plane_rms",
+        "plane_dx_center",
+        "plane_dx_slope_x",
+        "plane_dx_slope_y",
+        "plane_dy_center",
+        "plane_dy_slope_x",
+        "plane_dy_slope_y",
+    )
+    values = (
+        (None,) * len(names)
+        if plane is None
+        else (plane.rms, *plane.coeffs_x, *plane.coeffs_y)
+    )
+    for name, value in zip(names, values, strict=True):
+        diagnostics[name] = None if value is None else float(value)
+    return diagnostics
 
 
 def centroid_with_prior(
@@ -2232,6 +2288,7 @@ def centroid_with_prior(
         method=method,
         plane=plane,
         fallback=plane is None and bool(in_band.any()),
+        active=True,
     )
 
 
@@ -3318,6 +3375,8 @@ def prepare_image(
         metadata=metadata,
         wcs_pixscale=measured.pixscale,
         solve_offset_deg=measured.offset_deg,
+        centroid_method=centroided.method,
+        centroid_prior=_centroid_prior_diagnostics(centroided),
     )
 
 
@@ -3333,6 +3392,7 @@ _MASK_INDEPENDENT_COLUMNS = (
     "x",
     "y",
     "centroid_drift",
+    "centroid_method",
 )
 
 
@@ -3483,6 +3543,11 @@ def build_photometry_table(
         tolerance=drift_tolerance,
         cap=drift_cap,
     )
+    data["centroid_method"] = (
+        np.full(len(img.centroid_coords), "cnn")
+        if img.centroid_method is None
+        else img.centroid_method
+    )
     data["aperture_area"] = phot["aperture_area"]
     data.meta["fwhm"] = float(img.fwhm)
     data.meta["aperture_radii"] = phot["aperture_radii"]
@@ -3622,6 +3687,7 @@ def process_one_image(
         data.meta["full_image_meta"] = img.metadata
         data.meta["wcs_pixscale"] = img.wcs_pixscale
         data.meta["solve_offset_deg"] = img.solve_offset_deg
+        data.meta["centroid_prior"] = img.centroid_prior
         by_filter_data[filter_name] = data
 
     # L4 is a recombination of the RGB tables, so it is built once they all
@@ -3632,6 +3698,7 @@ def process_one_image(
         l4.meta["full_image_meta"] = img.metadata
         l4.meta["wcs_pixscale"] = img.wcs_pixscale
         l4.meta["solve_offset_deg"] = img.solve_offset_deg
+        l4.meta["centroid_prior"] = img.centroid_prior
         by_filter_data["L4"] = l4
 
     return by_filter_data
