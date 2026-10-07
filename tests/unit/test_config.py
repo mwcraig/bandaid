@@ -50,8 +50,8 @@ EXPECTED_MIN_SNR = 2.0
 
 EXPECTED_GAIA_ROW_LIMIT = 10000
 
-# Not a legacy constant: the edge-margin cut is new. 10 px keeps a star's
-# background annulus (inner radius about 5 FWHM) mostly on the frame.
+# Not a legacy constant: the edge-margin cut is new. 10 px covers the
+# centroiding CNN's 15x15 fill-padded cutout (half-size 7 px).
 EXPECTED_EDGE_MARGIN_PX = 10.0
 
 

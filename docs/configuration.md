@@ -151,12 +151,21 @@ so they remain locked module constants in `bandaid.photometry`.
 A catalog star whose projected position (where the plate solution puts it,
 before centroiding) is within `edge_margin_px` of any frame edge, or off the
 frame, is dropped before centroiding and photometry, so it has no row in the
-output. Near an edge the background annulus is truncated and the centroiding
-CNN's fill-padded cutout is unreliable, so such a star is not measured. The
-frame spans `[0, width - 0.5]` by `[0, height - 0.5]`. Forced targets are exempt:
-they are kept while within 8 px outside the frame, as before. The number of
-catalog stars removed this way is recorded per frame in the QA manifest column
-`n_edge_dropped`.
+output. The default 10 px covers the centroiding CNN's 15x15 cutout (half-size
+7 px), which is fill-padded where it overlaps an edge and then gives an
+unreliable centroid. The same rule applies to every position, forced targets
+included. The frame spans `[0, width - 0.5)` by `[0, height - 0.5)`, the same
+span `good_star_mask` uses, shrunk by the margin on every side.
+
+The margin does not change background-annulus handling. With the default
+apertures the annulus spans about 15 to 24 px at a 3 px FWHM, so stars 10 to
+24 px from an edge still have a truncated annulus, as before; photutils
+measures their background from the on-frame annulus pixels.
+
+The number of catalog stars dropped within `edge_margin_px` of a frame edge,
+inside or outside it, is recorded per frame in the QA manifest column
+`n_edge_dropped`. A margin of half the smaller frame side or more is rejected
+when the batch is prepared.
 
 ## Validation
 
