@@ -519,6 +519,7 @@ def _run_policy(projected, gaia_g, *, config=None, g_cut=G_CUT):
     )
 
 
+@pytest.mark.usefixtures("cnn_calls")
 class TestCentroidWithPrior:
     """The batch-fixed CNN class keeps its centroid; the rest take the plane."""
 
@@ -556,7 +557,7 @@ class TestCentroidWithPrior:
         np.testing.assert_array_equal(result.coords, _measured(projected))
         assert not result.active
 
-    def test_class_stars_keep_their_cnn_centroid(self, cnn_calls):
+    def test_class_stars_keep_their_cnn_centroid(self):
         """A star at or brighter than the cut keeps exactly its CNN position."""
         projected = _fit_stars(N_CATALOG)
 
@@ -568,7 +569,7 @@ class TestCentroidWithPrior:
         )
         assert (result.method[cnn_class] == "cnn").all()
 
-    def test_a_star_at_the_cut_is_in_the_class_and_one_fainter_is_not(self, cnn_calls):
+    def test_a_star_at_the_cut_is_in_the_class_and_one_fainter_is_not(self):
         """The class is G <= cut: row 9 (G = 17) is in, row 10 (G = 18) is out."""
         projected = _fit_stars(N_CATALOG)
 
@@ -577,7 +578,7 @@ class TestCentroidWithPrior:
         assert result.method[N_CNN_CLASS - 1] == "cnn"
         assert result.method[N_CNN_CLASS] == "plane"
 
-    def test_other_stars_take_the_projected_position_plus_the_plane(self, cnn_calls):
+    def test_other_stars_take_the_projected_position_plus_the_plane(self):
         """Stars outside the class sit on projected plus the fitted plane."""
         projected = _fit_stars(N_CATALOG)
 
@@ -601,7 +602,7 @@ class TestCentroidWithPrior:
         fit_n_stars = CentroidConfig().fit_n_stars
         np.testing.assert_array_equal(cnn_calls[0], projected[:fit_n_stars])
 
-    def test_fit_stars_outside_the_class_are_output_at_the_plane(self, cnn_calls):
+    def test_fit_stars_outside_the_class_are_output_at_the_plane(self):
         """A fit-set star that is not CNN-class is measured but not output."""
         projected = _fit_stars(N_CATALOG)
 
@@ -618,7 +619,9 @@ class TestCentroidWithPrior:
         config = CentroidConfig(fit_n_stars=12, min_fit_stars=12)
         big_class_cut = 8.0 + 19  # twenty class stars
 
-        result = _run_policy(projected, _catalog_g(), config=config, g_cut=big_class_cut)
+        result = _run_policy(
+            projected, _catalog_g(), config=config, g_cut=big_class_cut
+        )
 
         n_class = 20
         np.testing.assert_array_equal(cnn_calls[0], projected[:n_class])
@@ -654,7 +657,7 @@ class TestCentroidWithPrior:
             np.sort(cnn_calls[0][:, 0]), np.sort(projected[:fit_n_stars, 0])
         )
 
-    def test_row_order_and_shape_are_preserved(self, cnn_calls):
+    def test_row_order_and_shape_are_preserved(self):
         """The result is row-aligned with the input."""
         projected = _fit_stars(N_CATALOG)
 
@@ -664,7 +667,7 @@ class TestCentroidWithPrior:
         assert result.method.shape == (N_CATALOG,)
         assert result.expected.shape == projected.shape
 
-    def test_expected_positions_are_projected_plus_the_plane(self, cnn_calls):
+    def test_expected_positions_are_projected_plus_the_plane(self):
         """The drift reference is the plane position for every row."""
         projected = _fit_stars(N_CATALOG)
 
@@ -674,7 +677,7 @@ class TestCentroidWithPrior:
             result.expected, projected + result.plane.offsets(projected)
         )
 
-    def test_too_few_fit_stars_gives_the_all_cnn_frame(self, cnn_calls):
+    def test_too_few_fit_stars_gives_the_all_cnn_frame(self):
         """Under 12 fit stars the whole frame is centroided by the CNN."""
         n_stars = 11
         projected = _fit_stars(n_stars)

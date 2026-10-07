@@ -2106,6 +2106,146 @@ def _fit_offset_plane(
     )
 
 
+@dataclass(frozen=True)
+class CentroidResult:
+    """
+    Positions for one frame plus how each was obtained.
+
+    Attributes
+    ----------
+    coords : numpy.ndarray
+        ``(N, 2)`` pixel positions, row-aligned with the input coordinates.
+    method : numpy.ndarray
+        ``(N,)`` array of strings naming how each row's position was obtained:
+        ``"cnn"`` (the CNN centroid of a CNN-class star, or of any star when the
+        policy did not run), ``"plane"`` (projected position plus the frame's
+        offset plane) or ``"fallback_cnn"`` (a star outside the CNN class that
+        took its CNN centroid because the frame had no plane).
+    expected : numpy.ndarray
+        ``(N, 2)`` positions a CNN centroid is expected at: the projected
+        position plus the offset plane, or the projected position alone when the
+        frame has no plane or the policy did not run.
+    plane : OffsetPlane or None
+        The offset plane fitted for this frame, or None when there was none.
+    fallback : bool
+        Whether the policy ran but the frame had no plane, so it was centroided
+        entirely by the CNN.
+    active : bool
+        Whether the policy ran for this frame (it needs Gaia G and a batch cut,
+        and is switchable in the config).
+    """
+
+    coords: np.ndarray
+    method: np.ndarray
+    expected: np.ndarray
+    plane: OffsetPlane | None = None
+    fallback: bool = False
+    active: bool = False
+
+
+def centroid_with_prior(
+    calibrated_data, aligned_coords, cnn, *, gaia_g=None, g_cut=None, config=None
+):
+    """
+    Centroid stars, using the Gaia-prior plane for those outside the CNN class.
+
+    Parameters
+    ----------
+    calibrated_data : numpy.ndarray
+        Calibrated image data.
+    aligned_coords : numpy.ndarray
+        ``(N, 2)`` WCS-projected catalog pixel coordinates.
+    cnn : object
+        Centroiding CNN model, as for `centroid_stars`.
+    gaia_g : numpy.ndarray or None, optional
+        Gaia G magnitude of each row, ``(N,)``, NaN where a row has none (a
+        forced target). When None the policy does not run and every star is
+        sent to the CNN.
+    g_cut : float or None, optional
+        The batch's CNN-class magnitude cut: a star with ``G <= g_cut`` is
+        CNN-class. When None the policy does not run.
+    config : `~bandaid.config.CentroidConfig` or None, optional
+        Policy settings; None uses the defaults.
+
+    Returns
+    -------
+    CentroidResult
+        The positions, row-aligned with `aligned_coords`, and how each was
+        obtained.
+
+    Notes
+    -----
+    A star is CNN-class when its Gaia G is at or brighter than `g_cut`, or it
+    has no G (a forced target). The class is decided from the catalog alone, so
+    it is the same on every frame of a batch. A CNN-class star keeps its CNN
+    centroid.
+
+    The offset plane is fitted to the CNN centroids of the
+    ``config.fit_n_stars`` brightest stars with a G on this frame, whether or
+    not they are CNN-class (see `_fit_offset_plane`). A fit star outside the
+    class is centroided only to define the plane and is output at the plane
+    position, as is every other star outside the class. The CNN is called once,
+    through `centroid_stars`, on the class and the fit set together, and never
+    with an empty array.
+
+    A frame whose fit leaves fewer than ``config.min_fit_stars`` stars has no
+    plane: every star is then centroided by the CNN, and the result records
+    the fallback.
+    """
+    config = config or _DEFAULT_CENTROID
+    projected = np.asarray(aligned_coords, dtype=float)
+    if gaia_g is None or g_cut is None or not config.gaia_prior:
+        coords = centroid_stars(calibrated_data, aligned_coords, cnn)
+        return CentroidResult(
+            coords=coords,
+            method=np.full(len(coords), "cnn"),
+            expected=projected,
+        )
+
+    gaia_g = np.asarray(gaia_g, dtype=float)
+    # `nan > g_cut` is False, so a row without a G lands in the class.
+    cnn_class = ~(gaia_g > g_cut)
+    with_g = np.flatnonzero(np.isfinite(gaia_g))
+    fit_rows = with_g[np.argsort(gaia_g[with_g], kind="stable")[: config.fit_n_stars]]
+    fit_mask = np.zeros(len(projected), dtype=bool)
+    fit_mask[fit_rows] = True
+
+    measured_rows = cnn_class | fit_mask
+    measured = np.full(projected.shape, np.nan)
+    measured[measured_rows] = centroid_stars(
+        calibrated_data, projected[measured_rows], cnn
+    )
+    plane = _fit_offset_plane(
+        projected[fit_rows],
+        measured[fit_rows],
+        calibrated_data.shape[:2],
+        min_fit_stars=config.min_fit_stars,
+        clip_sigma=config.clip_sigma,
+    )
+
+    coords = projected.copy()
+    if plane is None:
+        coords[measured_rows] = measured[measured_rows]
+        rest = ~measured_rows
+        if rest.any():
+            coords[rest] = centroid_stars(calibrated_data, projected[rest], cnn)
+        method = np.where(cnn_class, "cnn", "fallback_cnn")
+        expected = projected
+    else:
+        expected = projected + plane.offsets(projected)
+        coords = expected.copy()
+        coords[cnn_class] = measured[cnn_class]
+        method = np.where(cnn_class, "cnn", "plane")
+    return CentroidResult(
+        coords=coords,
+        method=method,
+        expected=expected,
+        plane=plane,
+        fallback=plane is None,
+        active=True,
+    )
+
+
 def annulus_sigma_clip_stats(data, coords, r_in, r_out, input_mask=None, sigma=3):
     """
     Compute the sigma-clipped median and standard deviation in an annulus.
