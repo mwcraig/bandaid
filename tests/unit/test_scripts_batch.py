@@ -102,6 +102,19 @@ class TestProcessBatch:
             assert masks is prep.bayer_masks
             assert call.kwargs["input_photometry_coords"] is prep.photometry_coords
 
+    def test_passes_the_preps_forced_rows(self, mocker):
+        """``process_one_image`` receives the prep's row-aligned forced mask."""
+        forced_rows = np.array([False, True])
+        prep = dataclasses.replace(_dummy_prep(), forced_rows=forced_rows)
+        process_one_image = mocker.patch(
+            "bandaid.scripts.process_one_image",
+            return_value={"TR": Table({"tot_count": [1.0]})},
+        )
+
+        scripts.process_batch(["a.fits"], prep, user_specific_metadata={})
+
+        assert process_one_image.call_args.kwargs["forced_rows"] is forced_rows
+
     @pytest.mark.parametrize("build_l4", [True, False])
     def test_passes_the_preps_build_l4_flag(self, mocker, build_l4):
         """``process_one_image`` receives the flag the prep carries."""

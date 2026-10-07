@@ -831,6 +831,30 @@ class TestPrepareImage:
         # Dropped catalog stars that the bare 8 px pad would have kept: rows 1 and 5.
         assert n_dropped == len([1, 5])
 
+    def test_forced_target_inside_the_margin_is_kept(
+        self, stub_prepare_image_externals, mocker
+    ):
+        """A forced target 3 px inside an edge is measured; a catalog star there is not."""
+        aligned = np.array([[50.0, 50.0], [3.0, 50.0], [3.0, 60.0]])
+        stub_prepare_image_externals(coords=aligned, calibrated=np.zeros((100, 100)))
+        mocker.patch("bandaid.photometry.centroid_stars", new=real_centroid_stars)
+        ballet_centroid = mocker.patch(
+            "bandaid.photometry.centroid.ballet_centroid",
+            side_effect=lambda _data, coords, _cnn: coords,
+        )
+        photometry_coords = SkyCoord(ra=[1.0, 2.0, 3.0], dec=[0.0] * 3, unit="deg")
+
+        img = prepare_image(
+            "unused.fits",
+            np.zeros((5, 2)),
+            None,
+            photometry_coords=photometry_coords,
+            forced_rows=np.array([False, False, True]),
+        )
+
+        assert np.array_equal(ballet_centroid.call_args[0][1], aligned[[0, 2]])
+        assert np.array_equal(img.input_photometry_coords.ra.deg, [1.0, 3.0])
+
     def test_all_stars_inside_the_margin_raises(self, stub_prepare_image_externals):
         """With every star inside the margin, NoUsableStarsError names the file."""
         aligned = np.array([[3.0, 50.0], [50.0, 97.0]])
@@ -1829,6 +1853,21 @@ class TestProcessOneImage:
                 SEESTAR_PIXSCALE, rel=1e-3
             )
             assert 0 <= table.meta["solve_offset_deg"] < 1
+
+    def test_forced_rows_reach_prepare_image(self, l4_frame, mocker):
+        """``process_one_image`` hands its ``forced_rows`` to ``prepare_image``."""
+        path, masks = l4_frame
+        spy = mocker.patch(
+            "bandaid.photometry.prepare_image", side_effect=NoUsableStarsError("x")
+        )
+        forced_rows = np.array([False, True])
+
+        with pytest.raises(NoUsableStarsError):
+            process_one_image(
+                path, {}, _REF_RADECS, None, masks, forced_rows=forced_rows
+            )
+
+        assert spy.call_args.kwargs["forced_rows"] is forced_rows
 
     def test_l4_channel_skips_the_full_frame_photometry_pass(self, l4_frame, mocker):
         """

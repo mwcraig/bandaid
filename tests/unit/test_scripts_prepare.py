@@ -921,6 +921,29 @@ class TestPrepareBatch:
         np.testing.assert_allclose(prep.photometry_coords.ra.deg, expected_ra)
         np.testing.assert_allclose(prep.photometry_coords.dec.deg, expected_dec)
 
+    def test_forced_rows_mark_the_appended_targets(self, mocker):
+        """``forced_rows`` is True exactly on the rows appended for forced targets."""
+        radecs, mags = _batch_radecs_mags()
+        _patch_prep(mocker, radecs_mags=(radecs, mags))
+        forced = SkyCoord([20.0, 21.0] * u.deg, [5.0, 6.0] * u.deg)
+
+        prep = scripts.prepare_batch("frame1.fits", cnn=object(), forced_targets=forced)
+
+        assert prep.forced_rows.dtype == bool
+        np.testing.assert_array_equal(
+            prep.forced_rows, [False, False, True, True]
+        )
+        assert len(prep.forced_rows) == len(prep.photometry_coords)
+
+    def test_forced_rows_none_without_forced_targets(self, mocker):
+        """A batch with no forced targets carries no ``forced_rows``."""
+        radecs, mags = _batch_radecs_mags()
+        _patch_prep(mocker, radecs_mags=(radecs, mags))
+
+        prep = scripts.prepare_batch("frame1.fits", cnn=object())
+
+        assert prep.forced_rows is None
+
     def test_forced_targets_bypass_contamination_flagging(self, mocker):
         """A forced target near a bright star still reaches ``photometry_coords``."""
         # A mag-8 star and a forced target ~1 arcsec away -- well inside the
