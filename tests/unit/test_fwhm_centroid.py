@@ -9,6 +9,7 @@ from astropy.table import Table
 
 from bandaid.photometry import (
     _brightest_unsaturated,
+    _fit_offset_plane,
     _fwhm_from_coords,
     calibration_sequence,
     centroid_drift_flag,
@@ -319,6 +320,138 @@ class TestCentroidDriftFlag:
         flag = centroid_drift_flag(centroid, aligned, fwhm=2.3)
         assert flag[0]
         assert not flag[1]
+
+
+FRAME_SHAPE = (200, 300)  # (height, width)
+MIN_FIT_STARS = 12
+FIT_NOISE_PIX = 0.05
+
+
+def _fit_stars(n, *, seed=SEED):
+    """Scatter ``n`` projected star positions well inside ``FRAME_SHAPE``."""
+    rng = np.random.default_rng(seed)
+    height, width = FRAME_SHAPE
+    return np.column_stack(
+        [rng.uniform(20, width - 20, n), rng.uniform(20, height - 20, n)]
+    )
+
+
+def _affine_offset(xy):
+    """Return a known per-star CNN-minus-projected offset, linear in position."""
+    height, width = FRAME_SHAPE
+    nx = (xy[:, 0] - width / 2) / (width / 2)
+    ny = (xy[:, 1] - height / 2) / (height / 2)
+    return np.column_stack(
+        [0.30 + 0.10 * nx - 0.05 * ny, -0.20 + 0.04 * nx + 0.08 * ny]
+    )
+
+
+def _noisy_measurements(projected, *, seed=SEED):
+    """Return CNN-like positions: projected plus the affine offset plus noise."""
+    rng = np.random.default_rng(seed + 1)
+    return (
+        projected
+        + _affine_offset(projected)
+        + rng.normal(0, FIT_NOISE_PIX, projected.shape)
+    )
+
+
+class TestFitOffsetPlane:
+    """The per-frame plane fitted to (CNN - projected) offsets of bright stars."""
+
+    def test_recovers_a_known_affine_offset(self):
+        """A linear offset field is recovered across the whole frame to < 0.05 px."""
+        projected = _fit_stars(40)
+        measured = _noisy_measurements(projected)
+
+        plane = _fit_offset_plane(projected, measured, FRAME_SHAPE)
+
+        height, width = FRAME_SHAPE
+        grid = np.array(
+            [[2.0, 2.0], [width - 2.0, 2.0], [2.0, height - 2.0], [150.0, 100.0]]
+        )
+        max_error = 0.05
+        assert np.abs(plane.offsets(grid) - _affine_offset(grid)).max() < max_error
+
+    def test_reports_the_fit_diagnostics(self):
+        """Centre offset, rms and star counts describe the fit."""
+        projected = _fit_stars(40)
+        measured = _noisy_measurements(projected)
+
+        plane = _fit_offset_plane(projected, measured, FRAME_SHAPE)
+
+        centre = _affine_offset(np.array([[150.0, 100.0]]))[0]
+        np.testing.assert_allclose(
+            [plane.coeffs_x[0], plane.coeffs_y[0]], centre, atol=0.05
+        )
+        assert plane.n_used + plane.n_clipped == len(projected)
+        # Radial rms of two independent axes with 0.05 px noise each.
+        assert plane.rms == pytest.approx(FIT_NOISE_PIX * np.sqrt(2), rel=0.3)
+
+    def test_one_gross_outlier_is_clipped(self):
+        """A star the CNN got badly wrong is clipped and does not tilt the plane."""
+        projected = _fit_stars(30)
+        measured = _noisy_measurements(projected)
+        measured[3] += [5.0, -5.0]
+
+        plane = _fit_offset_plane(projected, measured, FRAME_SHAPE)
+
+        assert plane.n_clipped == 1
+        assert plane.n_used == len(projected) - 1
+        grid = np.array([[2.0, 2.0], [297.0, 197.0]])
+        max_error = 0.1
+        assert np.abs(plane.offsets(grid) - _affine_offset(grid)).max() < max_error
+
+    def test_rows_returned_exactly_at_the_input_are_excluded(self):
+        """A CNN result equal to its input is a failed fallback, not a measurement."""
+        projected = _fit_stars(40)
+        measured = _noisy_measurements(projected)
+        failed = np.arange(8)
+        measured[failed] = projected[failed]
+
+        plane = _fit_offset_plane(projected, measured, FRAME_SHAPE)
+
+        # Counting the failed rows would drag the fitted offset toward zero.
+        assert plane.n_used + plane.n_clipped == len(projected) - len(failed)
+        centre = _affine_offset(np.array([[150.0, 100.0]]))[0]
+        np.testing.assert_allclose(
+            [plane.coeffs_x[0], plane.coeffs_y[0]], centre, atol=0.05
+        )
+
+    def test_non_finite_rows_are_excluded(self):
+        """A NaN CNN result does not poison the fit."""
+        projected = _fit_stars(40)
+        measured = _noisy_measurements(projected)
+        measured[[0, 1]] = np.nan
+
+        plane = _fit_offset_plane(projected, measured, FRAME_SHAPE)
+
+        assert plane.n_used + plane.n_clipped == len(projected) - 2
+        assert np.isfinite(plane.coeffs_x).all()
+
+    def test_fewer_than_the_minimum_gives_no_plane(self):
+        """Eleven usable stars give no plane; twelve do."""
+        projected = _fit_stars(MIN_FIT_STARS)
+        measured = _noisy_measurements(projected)
+
+        assert _fit_offset_plane(projected[:-1], measured[:-1], FRAME_SHAPE) is None
+        assert _fit_offset_plane(projected, measured, FRAME_SHAPE) is not None
+
+    def test_minimum_applies_after_dropping_failed_rows(self):
+        """Rows excluded as failed do not count toward the minimum."""
+        projected = _fit_stars(MIN_FIT_STARS + 2)
+        measured = _noisy_measurements(projected)
+        measured[[0, 1, 2]] = projected[[0, 1, 2]]
+
+        assert _fit_offset_plane(projected, measured, FRAME_SHAPE) is None
+
+    def test_minimum_applies_after_clipping(self):
+        """A fit that clipping reduces below the minimum gives no plane."""
+        projected = _fit_stars(MIN_FIT_STARS)
+        measured = _noisy_measurements(projected)
+        measured[0] += [8.0, 8.0]
+
+        assert _fit_offset_plane(projected, measured, FRAME_SHAPE) is None
 
 
 def test_centroid_stars_delegates_to_ballet(mocker):
