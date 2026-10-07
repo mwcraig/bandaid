@@ -24,7 +24,12 @@ from skimage.morphology import binary_opening
 
 from bandaid import instruments, photometry
 from bandaid.ballet import NumpyBallet
-from bandaid.config import HeaderMatchRule, InstrumentProfile, PhotometryConfig
+from bandaid.config import (
+    CentroidConfig,
+    HeaderMatchRule,
+    InstrumentProfile,
+    PhotometryConfig,
+)
 from bandaid.exceptions import (
     DegenerateBayerChannelError,
     FrameMetadataError,
@@ -60,6 +65,36 @@ from bandaid.photometry import (
     centroid_stars as real_centroid_stars,
 )
 from bandaid.scripts import estimate_center_from_header
+
+
+def _prepare_without_model(file, radecs, cnn, **kwargs):  # noqa: ANN003
+    """
+    Call `prepare_image` with the measured-versus-modelled policy switched off.
+
+    The edge-margin tests care about which catalog stars are kept, not about
+    how the survivors are centroided, so they need not supply Gaia G.
+
+    Parameters
+    ----------
+    file : str or Path
+        Path to the FITS file.
+    radecs : numpy.ndarray
+        Gaia reference sky coordinates used for WCS alignment.
+    cnn : object
+        Centroiding CNN model.
+    **kwargs
+        Passed to `prepare_image`; a ``config`` defaults to one with
+        ``model_faint_positions=False``.
+
+    Returns
+    -------
+    ImageData
+        The result of `prepare_image`.
+    """
+    kwargs.setdefault(
+        "config", PhotometryConfig(centroid=CentroidConfig(model_faint_positions=False))
+    )
+    return prepare_image(file, radecs, cnn, **kwargs)
 
 
 class TestPrepareImage:
@@ -680,7 +715,7 @@ class TestPrepareImage:
             ra=[1.0, 2.0, 3.0, 4.0], dec=[0.0, 0.0, 0.0, 0.0], unit="deg"
         )
 
-        img = prepare_image(
+        img = _prepare_without_model(
             "unused.fits",
             np.zeros((5, 2)),
             None,
@@ -708,7 +743,7 @@ class TestPrepareImage:
         )
         photometry_coords = SkyCoord(ra=[1.0, 2.0], dec=[0.0, 0.0], unit="deg")
 
-        prepare_image(
+        _prepare_without_model(
             "unused.fits",
             np.zeros((5, 2)),
             None,
@@ -744,7 +779,7 @@ class TestPrepareImage:
             ra=np.arange(8, dtype=float), dec=np.zeros(8), unit="deg"
         )
 
-        prepare_image(
+        _prepare_without_model(
             "unused.fits",
             np.zeros((5, 2)),
             None,
@@ -762,15 +797,18 @@ class TestPrepareImage:
             coords=aligned, calibrated=np.zeros((100, 100))
         )
 
-        prepare_image(
+        _prepare_without_model(
             "unused.fits", np.zeros((5, 2)), None, photometry_coords=photometry_coords
         )
         default_kept = externals.centroid_stars.call_args[0][1]
-        prepare_image(
+        _prepare_without_model(
             "unused.fits",
             np.zeros((5, 2)),
             None,
-            config=PhotometryConfig(edge_margin_px=4.0),
+            config=PhotometryConfig(
+                edge_margin_px=4.0,
+                centroid=CentroidConfig(model_faint_positions=False),
+            ),
             photometry_coords=photometry_coords,
         )
         narrow_kept = externals.centroid_stars.call_args[0][1]
@@ -791,7 +829,7 @@ class TestPrepareImage:
         )
         photometry_coords = SkyCoord(ra=[1.0, 2.0], dec=[0.0, 0.0], unit="deg")
 
-        img = prepare_image(
+        img = _prepare_without_model(
             "unused.fits", np.zeros((5, 2)), None, photometry_coords=photometry_coords
         )
 
@@ -939,6 +977,47 @@ class TestPrepareImage:
 
         assert _centroid_model_summary(result, None) is None
 
+    @pytest.mark.parametrize(
+        ("gaia_g", "g_cut"),
+        [(None, 9.5), (np.array([8.0, 9.0]), None), (None, None)],
+        ids=["no-gaia_g", "no-g_cut", "neither"],
+    )
+    def test_policy_on_without_its_inputs_raises(
+        self, stub_prepare_image_externals, gaia_g, g_cut
+    ):
+        """A catalog run with the policy on needs both Gaia G and the cut."""
+        stub_prepare_image_externals(coords=np.array([[50.0, 50.0], [60.0, 70.0]]))
+        photometry_coords = SkyCoord(ra=[1.0, 2.0], dec=[0.0, 0.0], unit="deg")
+
+        with pytest.raises(ValueError, match=r"gaia_g.*g_cut.*model_faint_positions"):
+            prepare_image(
+                "unused.fits",
+                np.zeros((5, 2)),
+                None,
+                photometry_coords=photometry_coords,
+                gaia_g=gaia_g,
+                g_cut=g_cut,
+            )
+
+    def test_policy_off_needs_no_gaia_g(self, stub_prepare_image_externals):
+        """With the policy switched off the inputs are not required."""
+        stub_prepare_image_externals(
+            coords=np.array([[50.0, 50.0], [60.0, 70.0]]),
+            calibrated=np.zeros((100, 100)),
+        )
+        photometry_coords = SkyCoord(ra=[1.0, 2.0], dec=[0.0, 0.0], unit="deg")
+        config = PhotometryConfig(centroid=CentroidConfig(model_faint_positions=False))
+
+        img = prepare_image(
+            "unused.fits",
+            np.zeros((5, 2)),
+            None,
+            config=config,
+            photometry_coords=photometry_coords,
+        )
+
+        assert len(img.centroid_coords) == len(photometry_coords)
+
     def test_policy_gets_no_gaia_g_without_a_catalog(
         self, stub_prepare_image_externals, mocker
     ):
@@ -969,7 +1048,7 @@ class TestPrepareImage:
         )
         photometry_coords = SkyCoord(ra=[1.0, 2.0, 3.0], dec=[0.0] * 3, unit="deg")
 
-        img = prepare_image(
+        img = _prepare_without_model(
             "unused.fits", np.zeros((5, 2)), None, photometry_coords=photometry_coords
         )
 
@@ -982,7 +1061,7 @@ class TestPrepareImage:
         stub_prepare_image_externals(coords=aligned, calibrated=np.zeros((100, 100)))
         photometry_coords = SkyCoord(ra=[1.0, 2.0, 3.0, 4.0], dec=[0.0] * 4, unit="deg")
 
-        img = prepare_image(
+        img = _prepare_without_model(
             "unused.fits", np.zeros((5, 2)), None, photometry_coords=photometry_coords
         )
 
@@ -999,7 +1078,7 @@ class TestPrepareImage:
         stub_prepare_image_externals(coords=aligned, calibrated=np.zeros((100, 100)))
         photometry_coords = SkyCoord(ra=np.arange(5.0), dec=np.zeros(5), unit="deg")
 
-        img = prepare_image(
+        img = _prepare_without_model(
             "unused.fits", np.zeros((5, 2)), None, photometry_coords=photometry_coords
         )
 
@@ -1012,7 +1091,7 @@ class TestPrepareImage:
         photometry_coords = SkyCoord(ra=[1.0, 2.0], dec=[0.0, 0.0], unit="deg")
 
         with pytest.raises(NoUsableStarsError) as exc_info:
-            prepare_image(
+            _prepare_without_model(
                 "unused.fits",
                 np.zeros((5, 2)),
                 None,
@@ -1043,7 +1122,7 @@ class TestPrepareImage:
         path = "unused.fits"
 
         with pytest.raises(NoUsableStarsError) as exc_info:
-            prepare_image(
+            _prepare_without_model(
                 path, np.zeros((5, 2)), None, photometry_coords=photometry_coords
             )
 
@@ -2024,6 +2103,21 @@ class TestProcessOneImage:
         assert set(result) == {"TR", "TG", "TB", "L4"}
         for table in result.values():
             assert table.meta["centroid_model"] == summary
+
+    def test_policy_on_without_its_inputs_raises(self, l4_frame):
+        """``process_one_image`` raises the same error through ``prepare_image``."""
+        path, masks = l4_frame
+        photometry_coords = SkyCoord(ra=[1.0, 2.0], dec=[0.0, 0.0], unit="deg")
+
+        with pytest.raises(ValueError, match="model_faint_positions"):
+            process_one_image(
+                path,
+                {},
+                _REF_RADECS,
+                None,
+                masks,
+                input_photometry_coords=photometry_coords,
+            )
 
     def test_gaia_g_and_cut_reach_prepare_image(self, l4_frame, mocker):
         """``process_one_image`` hands ``input_gaia_g`` and ``g_cut`` on."""

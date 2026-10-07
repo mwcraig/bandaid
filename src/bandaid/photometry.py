@@ -3257,6 +3257,40 @@ def estimate_center_from_header(metadata, profile):
     return (float(icrs.ra.deg), float(icrs.dec.deg))
 
 
+def _require_model_inputs(centroid_config, photometry_coords, gaia_g, g_cut):
+    """
+    Raise if the catalog position policy is on but its inputs are missing.
+
+    Parameters
+    ----------
+    centroid_config : `~bandaid.config.CentroidConfig`
+        The centroid policy settings.
+    photometry_coords : astropy.coordinates.SkyCoord or None
+        The catalog coordinates being measured, or None when detected
+        coordinates are measured instead.
+    gaia_g : numpy.ndarray or None
+        Gaia G magnitude of each catalog coordinate.
+    g_cut : float or None
+        The batch's CNN-class magnitude cut.
+
+    Raises
+    ------
+    ValueError
+        If a catalog is measured with ``model_faint_positions`` on and `gaia_g`
+        or `g_cut` is None.
+    """
+    if (
+        photometry_coords is not None
+        and centroid_config.model_faint_positions
+        and (gaia_g is None or g_cut is None)
+    ):
+        msg = (
+            "config.centroid.model_faint_positions is True, which needs both "
+            "gaia_g and g_cut: pass them, or set model_faint_positions=False"
+        )
+        raise ValueError(msg)
+
+
 def prepare_image(
     file,
     radecs,
@@ -3306,9 +3340,12 @@ def prepare_image(
     gaia_g : numpy.ndarray or None, optional
         Gaia G magnitude of each row of `photometry_coords` (NaN for a forced
         target, which has none). With `g_cut` it selects the stars that keep a
-        CNN centroid; see `centroid_with_catalog_model`. By default None.
+        CNN centroid; see `centroid_with_catalog_model`. Required, with
+        `g_cut`, when `photometry_coords` is given and
+        ``config.centroid.model_faint_positions`` is True. By default None.
     g_cut : float or None, optional
-        The batch's CNN-class magnitude cut. By default None (no policy).
+        The batch's CNN-class magnitude cut. Required under the same
+        conditions as `gaia_g`. By default None.
 
     Returns
     -------
@@ -3350,6 +3387,11 @@ def prepare_image(
 
     Every input position, including any target the caller appended to
     `photometry_coords`, is subject to ``config.edge_margin_px``.
+
+    A `ValueError` is raised before any work when `photometry_coords` is given,
+    ``config.centroid.model_faint_positions`` is True and `gaia_g` or `g_cut`
+    is None: without them the policy cannot tell which stars keep a CNN
+    centroid and would silently not run.
     """
     # "calibrate" the data and get initial detections for WCS alignment and
     # FWHM estimation. calibration_sequence raises TooFewStarsError (a
@@ -3375,6 +3417,7 @@ def prepare_image(
         exc.file = file
         raise
     instrument = config.instrument
+    _require_model_inputs(config.centroid, photometry_coords, gaia_g, g_cut)
     calibration = calibration_sequence(
         file,
         detect_on_bayer_balanced=detect_on_bayer_balanced,
@@ -3384,8 +3427,7 @@ def prepare_image(
     )
     calibrated_data = calibration.calibrated_data
     metadata = calibration.metadata
-    coords = calibration.coords
-    fwhm = calibration.fwhm
+    coords, fwhm = calibration.coords, calibration.fwhm
 
     if user_specific_metadata is not None:
         metadata.update(user_specific_metadata)
@@ -3745,10 +3787,12 @@ def process_one_image(
         ``bayer_masks``. Default True.
     input_gaia_g : numpy.ndarray or None, optional
         Gaia G magnitude of each row of `input_photometry_coords` (NaN for a
-        forced target). By default None.
+        forced target). Required, with `g_cut`, when `input_photometry_coords`
+        is given and ``config.centroid.model_faint_positions`` is True.
+        By default None.
     g_cut : float or None, optional
-        The batch's CNN-class magnitude cut, handed to `prepare_image`. By
-        default None.
+        The batch's CNN-class magnitude cut, handed to `prepare_image`.
+        Required under the same conditions as `input_gaia_g`. By default None.
 
     Returns
     -------
@@ -3763,7 +3807,10 @@ def process_one_image(
     ------
     ValueError
         If ``build_l4`` is true and the TR/TG/TB channels L4 is built from
-        are missing from ``bayer_masks``.
+        are missing from ``bayer_masks``, or (from `prepare_image`) if
+        `input_photometry_coords` is given with
+        ``config.centroid.model_faint_positions`` True but `input_gaia_g` or
+        `g_cut` is None.
     InstrumentDetectionError
         A `FrameMetadataError` subclass, raised with `file` attached when
         ``config.instrument`` is None and the frame's header matches zero or

@@ -219,7 +219,11 @@ class CentroidConfig(BaseModel, frozen=True, protected_namespaces=()):
     model_faint_positions : bool
         Whether stars outside the CNN class take the WCS-projected catalog
         position plus a per-frame offset plane instead of a CNN centroid. On by
-        default; when False every star is centroided by the CNN.
+        default; when False every star is centroided by the CNN. When True and a
+        catalog is measured, `~bandaid.photometry.prepare_image` and
+        `~bandaid.photometry.process_one_image` require both the catalog's Gaia
+        G and the batch's magnitude cut, and raise `ValueError` without them;
+        `~bandaid.scripts.prepare_batch` supplies both.
     cnn_class_size : int
         Number of catalog targets, brightest by Gaia G inside a circle of the
         frame's area centred on the batch centre, that keep their CNN centroid.
