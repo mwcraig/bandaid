@@ -366,7 +366,7 @@ def prepare_batch(
     *,
     cnn,
     config=None,
-    append_l4=True,
+    build_l4=True,
     forced_targets=None,
     frame=None,
 ):
@@ -400,7 +400,7 @@ def prepare_batch(
         ``source_selection`` settings supply the Gaia target/contaminant
         magnitude limits. If None (default), a default ``PhotometryConfig`` is
         used.
-    append_l4 : bool, optional
+    build_l4 : bool, optional
         Whether each frame also gets a full-frame "L4" luminance channel,
         recorded on the returned `BatchPrep`. Default True.
     forced_targets : astropy.coordinates.SkyCoord or None, optional
@@ -627,7 +627,7 @@ def prepare_batch(
         config=config,
         forced_targets=forced_targets,
         instrument_auto_detected=instrument_auto_detected,
-        build_l4=append_l4,
+        build_l4=build_l4,
     )
 
 
@@ -1452,7 +1452,7 @@ def photometer_frames(
     cnn=None,
     weights=None,
     user_specific_metadata=None,
-    append_l4=True,
+    build_l4=True,
     output_dir=".",
     output_suffix=".star",
     write_frame=write_starlist_set,
@@ -1493,7 +1493,7 @@ def photometer_frames(
     user_specific_metadata : dict or None, optional
         Per-frame user metadata recorded with each output. None (default) is an
         empty dict.
-    append_l4 : bool, optional
+    build_l4 : bool, optional
         Whether to also produce the full-frame L4 luminance channel.
         Default True.
     output_dir : str or pathlib.Path or None, optional
@@ -1552,7 +1552,7 @@ def photometer_frames(
             frames[0],
             cnn=cnn,
             config=config,
-            append_l4=append_l4,
+            build_l4=build_l4,
             forced_targets=forced_targets,
             frame=first_frame,
         )

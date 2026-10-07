@@ -220,20 +220,18 @@ class TestPrepareBatch:
         assert prep.cnn is cnn
         assert set(prep.bayer_masks) == {"TR", "TB", "TG"}
 
-    @pytest.mark.parametrize("append_l4", [True, False])
-    def test_append_l4_is_carried_as_build_l4_not_planted_in_the_masks(
-        self, mocker, append_l4
-    ):
-        """``append_l4`` rides on the bundle; the masks never carry an "L4" entry."""
+    @pytest.mark.parametrize("build_l4", [True, False])
+    def test_build_l4_is_carried_not_planted_in_the_masks(self, mocker, build_l4):
+        """``build_l4`` rides on the bundle; the masks never carry an "L4" entry."""
         _patch_prep(mocker)
 
-        prep = scripts.prepare_batch("frame1.fits", cnn=object(), append_l4=append_l4)
+        prep = scripts.prepare_batch("frame1.fits", cnn=object(), build_l4=build_l4)
 
-        assert prep.build_l4 is append_l4
+        assert prep.build_l4 is build_l4
         assert set(prep.bayer_masks) == {"TR", "TB", "TG"}
 
-    def test_append_l4_true_by_default(self, mocker):
-        """Omitting ``append_l4`` requests the L4 channel (issue #61)."""
+    def test_build_l4_true_by_default(self, mocker):
+        """Omitting ``build_l4`` requests the L4 channel (issue #61)."""
         _patch_prep(mocker)
 
         prep = scripts.prepare_batch("frame1.fits", cnn=object())

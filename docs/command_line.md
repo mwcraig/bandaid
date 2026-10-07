@@ -55,7 +55,7 @@ with a numeric suffix on the subdirectory).
 | `--weights PATH`                   | downloads        | Ballet centroider weights; omit to download the defaults from HuggingFace.                                                              |
 | `--user-metadata FILE`             | `{}`             | A JSON object of per-frame user-specific metadata to record.                                                                            |
 | `--forced-targets FILE`            | —                | A CSV/ECSV table (`ra`, `dec` in ICRS degrees; optional `name`, ignored) of extra targets absent from Gaia (e.g. a nova) to photometer. |
-| `--append-l4 / --no-append-l4`     | on               | Also produce the full-frame L4 luminance channel.                                                                                       |
+| `--build-l4 / --no-build-l4`       | on               | Also produce the full-frame L4 luminance channel.                                                                                       |
 | `--fail-fast / --no-fail-fast`     | `--no-fail-fast` | Re-raise unexpected per-frame errors instead of skipping the frame.                                                                     |
 | `--output-format NAME`             | `starlist`       | A registered output writer (see [Understanding the output](outputs.md)).                                                                |
 | `--output-suffix SUFFIX`           | `.star`          | Suffix for the per-frame output files.                                                                                                  |
