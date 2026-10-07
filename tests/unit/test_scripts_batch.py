@@ -526,6 +526,30 @@ class TestProcessBatchToDisk:
         assert by_file["nopointing.fits"]["status"].startswith("skipped")
         assert by_file["nopointing.fits"]["pointing_offset_deg"] == ""
 
+    def test_qa_manifest_records_edge_dropped(self, mocker, tmp_path, by_filter):
+        """The manifest carries the per-frame edge-drop count from the table meta."""
+        assert "n_edge_dropped" in scripts.QA_MANIFEST_COLUMNS
+
+        def _process(file, *_args: object, **_kwargs: object):
+            result = by_filter()
+            if file == "edge.fits":
+                for table in result.values():
+                    table.meta["n_edge_dropped"] = 17
+            return result
+
+        mocker.patch("bandaid.scripts.process_one_image", side_effect=_process)
+
+        scripts.process_batch(
+            ["edge.fits", "unstamped.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+        )
+
+        by_file = {row["file"]: row for row in _read_manifest(tmp_path)}
+        assert by_file["edge.fits"]["n_edge_dropped"] == "17"
+        assert by_file["unstamped.fits"]["n_edge_dropped"] == ""
+
     def test_qa_manifest_records_solve_quality(self, mocker, tmp_path, by_filter):
         """
         The manifest carries the solved scale, solve offset and SNR >= 20 count.

@@ -855,6 +855,21 @@ class TestPrepareImage:
         assert np.array_equal(ballet_centroid.call_args[0][1], aligned[[0, 2]])
         assert np.array_equal(img.input_photometry_coords.ra.deg, [1.0, 3.0])
 
+    def test_image_data_records_the_edge_drop_count(
+        self, stub_prepare_image_externals
+    ):
+        """``ImageData.n_edge_dropped`` is the number of stars the margin removed."""
+        aligned = np.array([[50.0, 50.0], [3.0, 50.0], [60.0, 97.0], [-50.0, 5.0]])
+        stub_prepare_image_externals(coords=aligned, calibrated=np.zeros((100, 100)))
+        photometry_coords = SkyCoord(ra=[1.0, 2.0, 3.0, 4.0], dec=[0.0] * 4, unit="deg")
+
+        img = prepare_image(
+            "unused.fits", np.zeros((5, 2)), None, photometry_coords=photometry_coords
+        )
+
+        # Two stars sit inside the margin; the far off-frame one is not an edge drop.
+        assert img.n_edge_dropped == len([1, 2])
+
     def test_all_stars_inside_the_margin_raises(self, stub_prepare_image_externals):
         """With every star inside the margin, NoUsableStarsError names the file."""
         aligned = np.array([[3.0, 50.0], [50.0, 97.0]])
@@ -1868,6 +1883,25 @@ class TestProcessOneImage:
             )
 
         assert spy.call_args.kwargs["forced_rows"] is forced_rows
+
+    def test_edge_drop_count_is_stamped_on_every_table(self, l4_frame, mocker):
+        """Each table, L4 included, carries the frame's ``n_edge_dropped`` in its meta."""
+        path, masks = l4_frame
+        real_prepare = prepare_image
+        edge_dropped = 11
+
+        def _with_count(*args: object, **kwargs: object):
+            img = real_prepare(*args, **kwargs)
+            img.n_edge_dropped = edge_dropped
+            return img
+
+        mocker.patch("bandaid.photometry.prepare_image", side_effect=_with_count)
+
+        result = process_one_image(path, {}, _REF_RADECS, None, masks)
+
+        assert set(result) >= {"TR", "TG", "TB", "L4"}
+        for table in result.values():
+            assert table.meta["n_edge_dropped"] == edge_dropped
 
     def test_l4_channel_skips_the_full_frame_photometry_pass(self, l4_frame, mocker):
         """
