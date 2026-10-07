@@ -69,6 +69,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "CalibrationResult",
     "ImageData",
+    "WCSMeasurement",
     "align",
     "annulus_sigma_clip_stats",
     "build_photometry_table",
@@ -1466,9 +1467,10 @@ class ImageData:
     header: fits.Header
     input_photometry_coords: object = None
     metadata: dict = None
-    # Separation (deg) of the solved frame center from this frame's own header
-    # center -- the quantity the pointing check compares. None when no header
-    # center was available (a caller-supplied WCS skips the check).
+    # Plate scale (arcsec/px) of the solved WCS and separation (deg) of its frame
+    # center from this frame's own header center, as measured by the solve
+    # validation. The offset is None when no header center was available.
+    wcs_pixscale: float | None = None
     solve_offset_deg: float | None = None
     # Populated lazily by the first `resolve_time_airmass` call for this frame
     # and reused by the later calls (one per RGB channel) that share this same
@@ -1598,28 +1600,49 @@ def _wcs_pixscale_arcsec(wcs):
     return float(np.mean(proj_plane_pixel_scales(wcs))) * 3600.0
 
 
-def _wcs_center_separation_deg(wcs, shape, expected_center):
+class WCSMeasurement(NamedTuple):
     """
-    Return the separation in degrees from the solved frame center to a sky location.
+    Plate scale and header-pointing offset measured on a solved WCS.
+
+    Attributes
+    ----------
+    pixscale : float
+        Mean plate scale in arcsec/pixel.
+    offset_deg : float or None
+        Separation in degrees from the solved frame center to the expected
+        center (NaN when the frame center cannot be projected); None when no
+        expected center or image shape was given.
+    """
+
+    pixscale: float
+    offset_deg: float | None
+
+
+def _measure_wcs(wcs, shape, expected_center):
+    """
+    Measure a WCS's plate scale and frame-center offset from an expected center.
 
     Parameters
     ----------
     wcs : astropy.wcs.WCS
         Solved WCS.
-    shape : tuple of int
+    shape : tuple of int or None
         Image shape ``(height, width)`` defining the frame center.
-    expected_center : astropy.coordinates.SkyCoord
+    expected_center : astropy.coordinates.SkyCoord or None
         Sky location to measure from (the frame header's pointing).
 
     Returns
     -------
-    float
-        Angular separation in degrees; NaN when the frame center cannot be
-        projected.
+    WCSMeasurement
+        The plate scale and, when `shape` and `expected_center` are given, the
+        offset of the frame center from `expected_center`.
     """
-    height, width = shape
-    frame_center = wcs.pixel_to_world((width - 1) / 2, (height - 1) / 2)
-    return float(frame_center.separation(expected_center).deg)
+    offset_deg = None
+    if expected_center is not None and shape is not None:
+        height, width = shape
+        frame_center = wcs.pixel_to_world((width - 1) / 2, (height - 1) / 2)
+        offset_deg = float(frame_center.separation(expected_center).deg)
+    return WCSMeasurement(_wcs_pixscale_arcsec(wcs), offset_deg)
 
 
 def _validate_solved_wcs(
@@ -1655,6 +1678,9 @@ def _validate_solved_wcs(
         ``(separation_deg, limit_deg)`` between the solved frame center and
         ``expected_center`` when the pointing check failed; ``limit_deg`` is
         `pointing_tolerance`, or the field radius when that is None.
+    measured : WCSMeasurement
+        The plate scale and center offset measured on the candidate, whether or
+        not it passed.
 
     Notes
     -----
@@ -1676,22 +1702,20 @@ def _validate_solved_wcs(
     at, or drift a few arcmin past, the frame edge, so demanding the queried
     center project strictly on-frame rejects correct solves.
     """
-    if expected_pixscale is not None:
-        measured = _wcs_pixscale_arcsec(wcs)
-        if abs(measured - expected_pixscale) > (scale_tolerance * expected_pixscale):
-            return None, measured, None
-    if expected_center is not None and shape is not None:
-        separation = _wcs_center_separation_deg(wcs, shape, expected_center)
+    measured = _measure_wcs(wcs, shape, expected_center)
+    if expected_pixscale is not None and abs(measured.pixscale - expected_pixscale) > (
+        scale_tolerance * expected_pixscale
+    ):
+        return None, measured.pixscale, None, measured
+    if measured.offset_deg is not None:
         limit = pointing_tolerance
         if limit is None:
             height, width = shape
-            limit = (
-                np.hypot(height - 1, width - 1) / 2 * _wcs_pixscale_arcsec(wcs) / 3600
-            )
+            limit = np.hypot(height - 1, width - 1) / 2 * measured.pixscale / 3600
         # NaN comparisons are False, so an unprojectable frame center fails.
-        if not (separation <= limit):
-            return None, None, (float(separation), float(limit))
-    return wcs, None, None
+        if not (measured.offset_deg <= limit):
+            return None, None, (measured.offset_deg, float(limit)), measured
+    return wcs, None, None, measured
 
 
 def _solve_wcs(
@@ -1736,8 +1760,10 @@ def _solve_wcs(
 
     Returns
     -------
-    astropy.wcs.WCS
+    wcs : astropy.wcs.WCS
         The solved, validated WCS.
+    measured : WCSMeasurement
+        The plate scale and center offset the validation measured on it.
 
     Raises
     ------
@@ -1789,7 +1815,7 @@ def _solve_wcs(
         # the loop retries the deeper Gaia pool, which usually recovers the
         # correct match (see #83).
         if this_wcs is not None:
-            this_wcs, last_bad_scale, last_bad_center = _validate_solved_wcs(
+            this_wcs, last_bad_scale, last_bad_center, measured = _validate_solved_wcs(
                 this_wcs,
                 expected_pixscale,
                 scale_tolerance,
@@ -1798,7 +1824,7 @@ def _solve_wcs(
                 pointing_tolerance,
             )
         if this_wcs is not None:
-            return this_wcs
+            return this_wcs, measured
     if last_exc is not None:
         msg = "twirl raised while solving the WCS"
         raise WCSSolveError(msg) from last_exc
@@ -1892,9 +1918,12 @@ def align(
         Aligned star coordinates in pixel space.
     this_wcs : astropy.wcs.WCS
         World Coordinate System for the image.
+    measured : WCSMeasurement
+        The plate scale and header-pointing offset of `this_wcs`, as measured
+        by the validation for a solved WCS (and directly for a supplied one).
     """
-    this_wcs = (
-        _solve_wcs(
+    if wcs is None:
+        this_wcs, measured = _solve_wcs(
             coords,
             radecs,
             expected_pixscale,
@@ -1903,9 +1932,9 @@ def align(
             shape=shape,
             pointing_tolerance=pointing_tolerance,
         )
-        if wcs is None
-        else wcs
-    )
+    else:
+        this_wcs = wcs
+        measured = _measure_wcs(wcs, shape, expected_center)
 
     if photometry_coords is not None:
         aligned_coords = this_wcs.world_to_pixel(photometry_coords)
@@ -1913,7 +1942,7 @@ def align(
     else:
         aligned_coords = coords
 
-    return aligned_coords, this_wcs
+    return aligned_coords, this_wcs, measured
 
 
 def centroid_stars(calibrated_data, aligned_coords, cnn):
@@ -2957,7 +2986,7 @@ def prepare_image(
         pool_radius = None
 
     try:
-        aligned_coords, this_wcs = align(
+        aligned_coords, this_wcs, measured = align(
             coords,
             solve_radecs,
             photometry_coords=photometry_coords,
@@ -2986,12 +3015,6 @@ def prepare_image(
 
     centroid_coords = centroid_stars(working_image, aligned_coords, cnn)
 
-    solve_offset_deg = (
-        _wcs_center_separation_deg(this_wcs, shape, expected_center)
-        if expected_center is not None and shape is not None
-        else None
-    )
-
     return ImageData(
         calibrated_data=calibrated_data,
         coords=coords,
@@ -3002,7 +3025,8 @@ def prepare_image(
         header=frame.header,
         input_photometry_coords=photometry_coords,
         metadata=metadata,
-        solve_offset_deg=solve_offset_deg,
+        wcs_pixscale=measured.pixscale,
+        solve_offset_deg=measured.offset_deg,
     )
 
 
@@ -3295,14 +3319,12 @@ def process_one_image(
 
     # Solve-quality numbers for the QA manifest, stamped on every table below
     # (the manifest builder only sees the tables).
-    wcs_pixscale = _wcs_pixscale_arcsec(img.wcs)
-
     by_filter_data = {}
     for filter_name, mask in bayer_masks.items():
         data = build_photometry_table(img, mask, config=config)
         data.meta["filter"] = filter_name
         data.meta["full_image_meta"] = img.metadata
-        data.meta["wcs_pixscale"] = wcs_pixscale
+        data.meta["wcs_pixscale"] = img.wcs_pixscale
         data.meta["solve_offset_deg"] = img.solve_offset_deg
         by_filter_data[filter_name] = data
 
@@ -3312,7 +3334,7 @@ def process_one_image(
         l4 = calculate_l4_quantities(by_filter_data, img.metadata["egain"])
         l4.meta["filter"] = "L4"
         l4.meta["full_image_meta"] = img.metadata
-        l4.meta["wcs_pixscale"] = wcs_pixscale
+        l4.meta["wcs_pixscale"] = img.wcs_pixscale
         l4.meta["solve_offset_deg"] = img.solve_offset_deg
         by_filter_data["L4"] = l4
 

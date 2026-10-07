@@ -33,7 +33,7 @@ class TestAlign:
         sky = SkyCoord(ra=[10.0, 10.01] * u.deg, dec=[20.0, 20.01] * u.deg)
         coords = np.array([[250.0, 250.0], [260.0, 260.0]])
 
-        aligned, returned_wcs = align(
+        aligned, returned_wcs, _ = align(
             coords, radecs=None, photometry_coords=sky, wcs=wcs
         )
 
@@ -68,7 +68,7 @@ class TestAlign:
         coords = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
         radecs = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
 
-        aligned, returned_wcs = align(coords, radecs, photometry_coords=None)
+        aligned, returned_wcs, _ = align(coords, radecs, photometry_coords=None)
 
         assert returned_wcs is sentinel_wcs
         # The two lists are sliced by their own caps, independently.
@@ -100,7 +100,7 @@ class TestAlign:
         coords = align_coords(N_IMAGE_STARS_ALIGN)
         radecs = coords.copy()
 
-        _, returned_wcs = align(coords, radecs, photometry_coords=None)
+        _, returned_wcs, _ = align(coords, radecs, photometry_coords=None)
 
         assert returned_wcs is sentinel_wcs
         assert capsys.readouterr().out == ""
@@ -173,7 +173,7 @@ class TestAlign:
         coords = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
         radecs = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
 
-        _, returned_wcs = align(coords, radecs, photometry_coords=None)
+        _, returned_wcs, _ = align(coords, radecs, photometry_coords=None)
 
         assert returned_wcs is sentinel_wcs
         # Shallow pool tried first, then the deeper retry pool -- in that order.
@@ -228,7 +228,7 @@ class TestAlign:
                 )
             return
 
-        _, returned_wcs = align(
+        _, returned_wcs, _ = align(
             coords,
             coords.copy(),
             photometry_coords=None,
@@ -273,7 +273,9 @@ class TestAlign:
         coords = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
         radecs = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
 
-        _, returned_wcs = align(coords, radecs, photometry_coords=None, **align_kwargs)
+        _, returned_wcs, _ = align(
+            coords, radecs, photometry_coords=None, **align_kwargs
+        )
 
         assert returned_wcs is good_wcs
         pool_sizes = [len(call.args[1]) for call in compute_wcs.call_args_list]
@@ -284,7 +286,9 @@ class TestAlign:
         bad_wcs = _make_tan_wcs(pixscale=4.2)
         coords = np.array([[250.0, 250.0], [260.0, 260.0]])
 
-        _, returned_wcs = align(coords, radecs=None, wcs=bad_wcs, expected_pixscale=2.4)
+        _, returned_wcs, _ = align(
+            coords, radecs=None, wcs=bad_wcs, expected_pixscale=2.4
+        )
 
         assert returned_wcs is bad_wcs
 
@@ -300,7 +304,7 @@ class TestAlign:
         mocker.patch("bandaid.photometry.compute_wcs", return_value=wcs_10pct_off)
         coords = align_coords(N_IMAGE_STARS_ALIGN)
 
-        _, returned_wcs = align(
+        _, returned_wcs, _ = align(
             coords,
             coords.copy(),
             photometry_coords=None,
@@ -340,6 +344,33 @@ class TestAlign:
                 scale_tolerance=tolerance,
             )
         assert excinfo.value.measured_scale == pytest.approx(4.2)
+
+    def test_returns_the_measured_scale_and_center_offset(self, mocker):
+        """
+        ``align`` returns the plate scale and center offset of the accepted WCS.
+
+        The values are the ones the validation compared against its limits, so
+        the QA manifest cannot disagree with the gate. The offset is None when
+        no expected center was given, and a supplied WCS is measured too.
+        """
+        solved_wcs = _make_tan_wcs(pixscale=2.38, crval=(10.0, 20.0))
+        mocker.patch("bandaid.photometry.compute_wcs", return_value=solved_wcs)
+        coords = align_coords(N_IMAGE_STARS_ALIGN)
+        kwargs = {
+            "photometry_coords": None,
+            "expected_center": SkyCoord(10.0, 20.1, unit="deg"),
+            "shape": (500, 500),
+        }
+
+        _, _, measured = align(coords, coords.copy(), **kwargs)
+        assert measured.pixscale == pytest.approx(2.38, rel=1e-4)
+        assert measured.offset_deg == pytest.approx(0.1, abs=1e-3)
+
+        _, _, no_center = align(coords, coords.copy(), photometry_coords=None)
+        assert no_center.offset_deg is None
+
+        _, _, supplied = align(coords, None, wcs=solved_wcs, **kwargs)
+        assert supplied == measured
 
     def test_wcs_scale_error_is_wcs_solve_error(self):
         """WCSScaleError is a WCSSolveError so the batch loop still skips the frame."""
@@ -396,7 +427,7 @@ class TestAlign:
                 )
             return
 
-        _, returned_wcs = align(
+        _, returned_wcs, _ = align(
             coords,
             coords.copy(),
             photometry_coords=None,
@@ -422,7 +453,7 @@ class TestAlign:
             "shape": (500, 500),
         }
 
-        _, returned_wcs = align(coords, coords.copy(), **kwargs)
+        _, returned_wcs, _ = align(coords, coords.copy(), **kwargs)
         assert returned_wcs is solved_wcs
 
         with pytest.raises(WCSPointingError, match=r"0\.1 deg"):
@@ -457,7 +488,7 @@ class TestAlign:
         mispointed_wcs = _make_tan_wcs(crval=(15.0, 20.0))
         coords = np.array([[250.0, 250.0], [260.0, 260.0]])
 
-        _, returned_wcs = align(
+        _, returned_wcs, _ = align(
             coords,
             radecs=None,
             wcs=mispointed_wcs,

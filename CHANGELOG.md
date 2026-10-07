@@ -125,6 +125,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `geometry=`; both are cached per frame on `ImageData`. `measure_photometry`
     raises `ValueError` when `geometry` is combined with an explicit `radii` or
     `annulus`. Pipeline output is unchanged (#126).
+- Breaking: `align` returns a third value, a `WCSMeasurement` holding the plate
+    scale and header-pointing offset that the solve validation measured, so the
+    QA manifest reports the numbers the gate used.
 - The Seestar50 profile now sets `wcs_scale_tolerance` to `0.005`,
     `wcs_pointing_tolerance` to `0.30` and `pixscale` to the measured `2.376`
     (was `2.4`). A profile that tightens the scale tolerance needs a measured
