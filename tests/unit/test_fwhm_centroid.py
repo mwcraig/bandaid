@@ -15,7 +15,7 @@ from bandaid.photometry import (
     calibration_sequence,
     centroid_drift_flag,
     centroid_stars,
-    centroid_with_prior,
+    centroid_with_catalog_model,
 )
 
 
@@ -508,8 +508,8 @@ def cnn_calls(mocker):
 
 
 def _run_policy(projected, gaia_g, *, config=None, g_cut=G_CUT):
-    """Run `centroid_with_prior` on a blank frame of ``FRAME_SHAPE``."""
-    return centroid_with_prior(
+    """Run `centroid_with_catalog_model` on a blank frame of ``FRAME_SHAPE``."""
+    return centroid_with_catalog_model(
         np.zeros(FRAME_SHAPE),
         projected,
         None,
@@ -520,14 +520,14 @@ def _run_policy(projected, gaia_g, *, config=None, g_cut=G_CUT):
 
 
 @pytest.mark.usefixtures("cnn_calls")
-class TestCentroidWithPrior:
+class TestCentroidWithCatalogModel:
     """The batch-fixed CNN class keeps its centroid; the rest take the plane."""
 
     def test_without_gaia_g_every_star_goes_to_the_cnn(self, cnn_calls):
         """With no magnitudes there is no policy: one CNN call on every star."""
         projected = _fit_stars(N_CATALOG)
 
-        result = centroid_with_prior(np.zeros(FRAME_SHAPE), projected, None)
+        result = centroid_with_catalog_model(np.zeros(FRAME_SHAPE), projected, None)
 
         assert len(cnn_calls) == 1
         np.testing.assert_array_equal(cnn_calls[0], projected)
@@ -546,11 +546,11 @@ class TestCentroidWithPrior:
         assert not result.active
 
     def test_switched_off_every_star_goes_to_the_cnn(self, cnn_calls):
-        """``gaia_prior=False`` gives the plain all-CNN result."""
+        """``model_faint_positions=False`` gives the plain all-CNN result."""
         projected = _fit_stars(N_CATALOG)
 
         result = _run_policy(
-            projected, _catalog_g(), config=CentroidConfig(gaia_prior=False)
+            projected, _catalog_g(), config=CentroidConfig(model_faint_positions=False)
         )
 
         assert len(cnn_calls) == 1

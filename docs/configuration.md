@@ -55,7 +55,7 @@ These are ordinary analysis choices and are safe to set for any run.
 | `drift`            | `drift_tolerance_fwhm`   | `1.0`    | Max centroid drift, in FWHM                                                        |
 | `drift`            | `drift_cap_pix`          | `4.0`    | Absolute pixel cap on centroid drift                                               |
 | (top level)        | `edge_margin_px`         | `10.0`   | Catalog stars projected within this many pixels of an edge are not measured        |
-| `centroid`         | `gaia_prior`             | `True`   | Faint stars take the projected position plus a per-frame plane, not a CNN centroid |
+| `centroid`         | `model_faint_positions`  | `True`   | Faint stars take the projected position plus a per-frame plane, not a CNN centroid |
 | `centroid`         | `cnn_class_size`         | `30`     | Number of brightest catalog targets that keep their CNN centroid                   |
 | `centroid`         | `fit_n_stars`            | `30`     | Brightest stars per frame whose CNN centroids define the plane                     |
 | `centroid`         | `min_fit_stars`          | `12`     | Fewest stars that must survive the clip for a frame to use a plane                 |
@@ -178,7 +178,7 @@ By default only the brightest catalog stars keep their CNN centroid; every other
 star is output at its projected position plus a per-frame plane fitted to the
 brightest stars. See [Measured versus modelled positions](measured_vs_modelled_positions.md)
 for the rule, the magnitude cut `cnn_class_size` sets, and the output columns that
-record the choice. `gaia_prior=False` switches the policy off and centroids every
+record the choice. `model_faint_positions=False` switches the policy off and centroids every
 star with the CNN.
 
 ## Validation

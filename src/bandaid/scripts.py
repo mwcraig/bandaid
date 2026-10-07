@@ -269,7 +269,8 @@ class BatchPrep:
         was built without magnitudes. Default None.
     g_cut : float or None
         The batch's CNN-class magnitude cut: a star with ``G <= g_cut`` keeps
-        its CNN centroid on every frame (see `~bandaid.photometry.centroid_with_prior`).
+        its CNN centroid on every frame (see
+        `~bandaid.photometry.centroid_with_catalog_model`).
         ``inf`` when the field has fewer than ``cnn_class_size`` targets in the
         cut circle; None when the policy is off. Default None.
     """
@@ -399,7 +400,7 @@ def _batch_g_cut(centroid_config, coords, gaia_g, center, shape, pixscale):
     float or None
         The cut from `_cnn_class_g_cut`, or None when the policy is off.
     """
-    if not centroid_config.gaia_prior:
+    if not centroid_config.model_faint_positions:
         return None
     g_cut = _cnn_class_g_cut(
         coords, gaia_g, center, shape, pixscale, centroid_config.cnn_class_size
@@ -1162,7 +1163,7 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
     ``wcs_pixscale``; blank when absent.
 
     ``g_cut`` and the ``n_cnn_class`` and ``plane_*`` columns summarise the
-    centroid policy (see `~bandaid.photometry.centroid_with_prior`) for the
+    centroid policy (see `~bandaid.photometry.centroid_with_catalog_model`) for the
     frame: the batch's magnitude cut, the number of CNN-class stars, whether the
     no-plane fallback fired, and the fitted plane's star counts, rms, centre
     offset and slopes in pixels. They are blank when the policy did not run
@@ -1244,18 +1245,18 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
         "n_drift_rejected": n_drift_rejected,
         "n_forced_measured": n_forced_measured,
         "n_edge_dropped": meta.get("n_edge_dropped"),
-        **_centroid_prior_record(meta.get("centroid_prior")),
+        **_centroid_model_record(meta.get("centroid_model")),
     }
 
 
-def _centroid_prior_record(summary):
+def _centroid_model_record(summary):
     """
     Build the centroid-policy columns of a QA manifest row.
 
     Parameters
     ----------
     summary : dict or None
-        The frame's plane summary from `centroid_with_prior`, as stamped on its
+        The frame's plane summary from `centroid_with_catalog_model`, as stamped on its
         tables, or None when the policy did not run.
 
     Returns

@@ -209,13 +209,14 @@ class DriftConfig(BaseModel, frozen=True):
     drift_cap_pix: Annotated[float, Field(gt=0)] = 4.0
 
 
-class CentroidConfig(BaseModel, frozen=True):
+# ``model_faint_positions`` starts with pydantic's protected ``model_`` prefix.
+class CentroidConfig(BaseModel, frozen=True, protected_namespaces=()):
     """
-    Settings for the Gaia-prior position policy of the centroiding step.
+    Settings for the measured-versus-modelled position policy of the centroiding step.
 
     Attributes
     ----------
-    gaia_prior : bool
+    model_faint_positions : bool
         Whether stars outside the CNN class take the WCS-projected catalog
         position plus a per-frame offset plane instead of a CNN centroid. On by
         default; when False every star is centroided by the CNN.
@@ -240,7 +241,7 @@ class CentroidConfig(BaseModel, frozen=True):
     catalog positions. It is unweighted and of first order in each axis.
     """
 
-    gaia_prior: bool = True
+    model_faint_positions: bool = True
     # About 25-30 stars keeps the bright target and comparison stars on their
     # own measured centroids while the fainter, noisier ones take the plane.
     cnn_class_size: Annotated[int, Field(ge=1)] = 30
@@ -692,7 +693,7 @@ class PhotometryConfig(BaseModel, frozen=True):
     drift : DriftConfig
         Centroid-drift cuts.
     centroid : CentroidConfig
-        The Gaia-prior position policy of the centroiding step.
+        The measured-versus-modelled position policy of the centroiding step.
     edge_margin_px : float
         Catalog stars whose projected position lies within this many pixels of
         a frame edge, or off the frame, are not measured. Must be positive and

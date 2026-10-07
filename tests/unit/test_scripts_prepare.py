@@ -1010,7 +1010,7 @@ class TestPrepareBatch:
     def test_no_g_cut_when_the_policy_is_off(self, mocker):
         """With the policy off no cut is computed."""
         _patch_prep(mocker)
-        config = PhotometryConfig(centroid=CentroidConfig(gaia_prior=False))
+        config = PhotometryConfig(centroid=CentroidConfig(model_faint_positions=False))
 
         prep = scripts.prepare_batch("frame1.fits", cnn=object(), config=config)
 

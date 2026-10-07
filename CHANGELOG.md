@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `CentroidConfig` (on `PhotometryConfig.centroid`) holds the settings of the new
-    Gaia-prior centroid policy: `gaia_prior` (on by default), `cnn_class_size`,
+    measured-versus-modelled centroid policy: `model_faint_positions` (on by default), `cnn_class_size`,
     `fit_n_stars`, `min_fit_stars` and `clip_sigma`. See
     `docs/measured_vs_modelled_positions.md` (#131, #106).
 - The eloy table gets a per-row `centroid_method` column (`cnn`, `plane` or
@@ -140,7 +140,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     fluxes rise by a few percent to about 12 % below SNR 5 and their light curves
     tighten, so more stars clear `min_snr`; the brightest stars are unchanged. A
     frame with fewer than 12 usable fit stars is centroided entirely by the CNN. Set
-    `PhotometryConfig(centroid=CentroidConfig(gaia_prior=False))` for the previous
+    `PhotometryConfig(centroid=CentroidConfig(model_faint_positions=False))` for the previous
     behavior (#131, #106).
 - `centroid_drift` is now measured from the plane position, not the bare projected
     position, and only for CNN-measured stars; counts in `n_centroid_drift` from

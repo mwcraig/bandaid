@@ -553,7 +553,7 @@ class TestProcessBatchToDisk:
         assert by_file["edge.fits"]["n_edge_dropped"] == "17"
         assert by_file["unstamped.fits"]["n_edge_dropped"] == ""
 
-    def test_qa_manifest_records_centroid_prior_diagnostics(
+    def test_qa_manifest_records_centroid_model_diagnostics(
         self, patched_process_one_image, tmp_path, by_filter
     ):
         """The plane summary stamped on the tables lands in the manifest row."""
@@ -575,7 +575,7 @@ class TestProcessBatchToDisk:
             assert column in scripts.QA_MANIFEST_COLUMNS
         result = by_filter()
         for table in result.values():
-            table.meta["centroid_prior"] = summary
+            table.meta["centroid_model"] = summary
         patched_process_one_image(result)
 
         scripts.process_batch(
@@ -597,7 +597,7 @@ class TestProcessBatchToDisk:
         assert float(row["plane_dx_slope_x"]) == pytest.approx(0.1012)
         assert float(row["plane_dy_slope_y"]) == pytest.approx(0.0812)
 
-    def test_qa_manifest_centroid_prior_blank_without_a_summary(
+    def test_qa_manifest_centroid_model_blank_without_a_summary(
         self, patched_process_one_image, tmp_path, by_filter
     ):
         """A frame the policy did not run on records the plane columns blank."""

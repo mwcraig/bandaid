@@ -1482,7 +1482,7 @@ class ImageData:
     # QA manifest (None when the centroid policy did not run).
     centroid_method: np.ndarray | None = None
     centroid_expected: np.ndarray | None = None
-    centroid_prior: dict | None = None
+    centroid_model: dict | None = None
     # Populated lazily by the first `resolve_time_airmass` call for this frame
     # and reused by the later calls (one per RGB channel) that share this same
     # `ImageData`, so the obs_time parse and airmass derivation run once per
@@ -2150,11 +2150,11 @@ class CentroidResult:
     active: bool = False
 
 
-def centroid_with_prior(
+def centroid_with_catalog_model(
     calibrated_data, aligned_coords, cnn, *, gaia_g=None, g_cut=None, config=None
 ):
     """
-    Centroid stars, using the Gaia-prior plane for those outside the CNN class.
+    Centroid stars, using the modelled-position plane for those outside the CNN class.
 
     Parameters
     ----------
@@ -2201,7 +2201,7 @@ def centroid_with_prior(
     """
     config = config or _DEFAULT_CENTROID
     projected = np.asarray(aligned_coords, dtype=float)
-    if gaia_g is None or g_cut is None or not config.gaia_prior:
+    if gaia_g is None or g_cut is None or not config.model_faint_positions:
         coords = centroid_stars(calibrated_data, aligned_coords, cnn)
         return CentroidResult(
             coords=coords,
@@ -2253,14 +2253,14 @@ def centroid_with_prior(
     )
 
 
-def _centroid_prior_summary(result, g_cut):
+def _centroid_model_summary(result, g_cut):
     """
     Summarise a frame's centroid policy and offset plane for the QA manifest.
 
     Parameters
     ----------
     result : CentroidResult
-        The frame's `centroid_with_prior` result.
+        The frame's `centroid_with_catalog_model` result.
     g_cut : float or None
         The batch's CNN-class magnitude cut.
 
@@ -3229,7 +3229,7 @@ def prepare_image(
     gaia_g : numpy.ndarray or None, optional
         Gaia G magnitude of each row of `photometry_coords` (NaN for a forced
         target, which has none). With `g_cut` it selects the stars that keep a
-        CNN centroid; see `centroid_with_prior`. By default None.
+        CNN centroid; see `centroid_with_catalog_model`. By default None.
     g_cut : float or None, optional
         The batch's CNN-class magnitude cut. By default None (no policy).
 
@@ -3406,8 +3406,8 @@ def prepare_image(
     )
 
     # Without a catalog the aligned coordinates are detections, not projected
-    # catalog positions, so there is no Gaia prior to apply.
-    centroided = centroid_with_prior(
+    # catalog positions, so there is no modelled position to apply.
+    centroided = centroid_with_catalog_model(
         working_image,
         aligned_coords,
         cnn,
@@ -3431,7 +3431,7 @@ def prepare_image(
         n_edge_dropped=n_edge_dropped,
         centroid_method=centroided.method,
         centroid_expected=centroided.expected,
-        centroid_prior=_centroid_prior_summary(centroided, g_cut),
+        centroid_model=_centroid_model_summary(centroided, g_cut),
     )
 
 
@@ -3751,7 +3751,7 @@ def process_one_image(
         data.meta["wcs_pixscale"] = img.wcs_pixscale
         data.meta["solve_offset_deg"] = img.solve_offset_deg
         data.meta["n_edge_dropped"] = img.n_edge_dropped
-        data.meta["centroid_prior"] = img.centroid_prior
+        data.meta["centroid_model"] = img.centroid_model
         by_filter_data[filter_name] = data
 
     # L4 is a recombination of the RGB tables, so it is built once they all
@@ -3763,7 +3763,7 @@ def process_one_image(
         l4.meta["wcs_pixscale"] = img.wcs_pixscale
         l4.meta["solve_offset_deg"] = img.solve_offset_deg
         l4.meta["n_edge_dropped"] = img.n_edge_dropped
-        l4.meta["centroid_prior"] = img.centroid_prior
+        l4.meta["centroid_model"] = img.centroid_model
         by_filter_data["L4"] = l4
 
     return by_filter_data

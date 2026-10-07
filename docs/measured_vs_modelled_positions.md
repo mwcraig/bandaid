@@ -40,7 +40,7 @@ below it, a star's position comes from the model.
 
 ## The policy
 
-The policy is on by default (`PhotometryConfig.centroid.gaia_prior`).
+The policy is on by default (`PhotometryConfig.centroid.model_faint_positions`).
 
 1. **The CNN class.** A catalog star is *CNN-class* if its Gaia G is at or
     brighter than the batch's magnitude cut `G_cut`, or if it is a forced target
@@ -103,10 +103,10 @@ were tried on three fields and were worse as often as they were better.
 ```python
 from bandaid import CentroidConfig, PhotometryConfig
 
-config = PhotometryConfig(centroid=CentroidConfig(gaia_prior=False))
+config = PhotometryConfig(centroid=CentroidConfig(model_faint_positions=False))
 ```
 
-With `gaia_prior=False` every star is centroided by the CNN, and the output is
+With `model_faint_positions=False` every star is centroided by the CNN, and the output is
 identical to a run that never had the policy. The manifest's plane columns are
 blank and `centroid_method` is `cnn` throughout.
 

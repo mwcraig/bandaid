@@ -94,7 +94,7 @@ class TestDefaultsMatchLegacyConstants:
     def test_centroid(self):
         """The centroid policy defaults to on, with the validated plane-fit settings."""
         cfg = CentroidConfig()
-        assert cfg.gaia_prior is True
+        assert cfg.model_faint_positions is True
         assert cfg.cnn_class_size == EXPECTED_CNN_CLASS_SIZE
         assert cfg.fit_n_stars == EXPECTED_FIT_N_STARS
         assert cfg.min_fit_stars == EXPECTED_MIN_FIT_STARS
@@ -489,9 +489,11 @@ class TestOverrides:
         """A custom class size and the off switch are preserved."""
         class_size = 20
         cfg = PhotometryConfig(
-            centroid=CentroidConfig(gaia_prior=False, cnn_class_size=class_size)
+            centroid=CentroidConfig(
+                model_faint_positions=False, cnn_class_size=class_size
+            )
         )
-        assert cfg.centroid.gaia_prior is False
+        assert cfg.centroid.model_faint_positions is False
         assert cfg.centroid.cnn_class_size == class_size
 
     def test_source_selection_override(self):
