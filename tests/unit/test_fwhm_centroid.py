@@ -34,11 +34,29 @@ def _grid_star_image(make_test_image, fwhm, *, jitter=1.0, seed=SEED):
     - this lays down a dense grid of identical stars at deliberate sub-pixel
       offsets so a stable ePSF can be median-stacked.
 
-    Returns ``(image, true_coords_xy, jittered_coords_xy)``. ``true_coords_xy`` are
-    the exact (sub-pixel) star centers; ``jittered_coords_xy`` are those centers
-    displaced by up to ``jitter`` px, standing in for an imperfect detection centroid
-    that smears a position-stacked PSF. Together they let the registration test prove
-    the effective PSF survives centroid error.
+    Parameters
+    ----------
+    make_test_image : callable
+        The conftest image factory.
+    fwhm : float
+        FWHM of the injected stars, in pixels.
+    jitter : float, optional
+        Largest displacement, in pixels, of a jittered coordinate from the true
+        one. By default 1.0.
+    seed : int, optional
+        Seed for the star offsets, the jitter and the image noise.
+
+    Returns
+    -------
+    image : numpy.ndarray
+        The noisy image.
+    true_coords : numpy.ndarray
+        ``(N, 2)`` exact (sub-pixel) star centers.
+    jittered_coords : numpy.ndarray
+        ``(N, 2)`` `true_coords` displaced by up to `jitter` px, standing in for
+        an imperfect detection centroid that smears a position-stacked PSF.
+        Together they let the registration test prove the effective PSF
+        survives centroid error.
     """
     rng = np.random.default_rng(seed)
     img_size = (300, 300)
@@ -330,7 +348,21 @@ FIT_NOISE_PIX = 0.05
 
 
 def _fit_stars(n, *, seed=SEED):
-    """Scatter ``n`` projected star positions well inside ``FRAME_SHAPE``."""
+    """
+    Scatter projected star positions well inside ``FRAME_SHAPE``.
+
+    Parameters
+    ----------
+    n : int
+        Number of stars.
+    seed : int, optional
+        Seed for the positions.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(n, 2)`` pixel positions, at least 20 px from every edge.
+    """
     rng = np.random.default_rng(seed)
     height, width = FRAME_SHAPE
     return np.column_stack(
@@ -339,7 +371,20 @@ def _fit_stars(n, *, seed=SEED):
 
 
 def _affine_offset(xy):
-    """Return a known per-star CNN-minus-projected offset, linear in position."""
+    """
+    Return a known CNN-minus-projected offset, linear in position.
+
+    Parameters
+    ----------
+    xy : numpy.ndarray
+        ``(N, 2)`` pixel positions.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(N, 2)`` offsets in pixels: a constant plus a term linear in each
+        frame-normalised coordinate.
+    """
     height, width = FRAME_SHAPE
     nx = (xy[:, 0] - width / 2) / (width / 2)
     ny = (xy[:, 1] - height / 2) / (height / 2)
@@ -349,7 +394,21 @@ def _affine_offset(xy):
 
 
 def _noisy_measurements(projected, *, seed=SEED):
-    """Return CNN-like positions: projected plus the affine offset plus noise."""
+    """
+    Return CNN-like positions: projected plus the affine offset plus noise.
+
+    Parameters
+    ----------
+    projected : numpy.ndarray
+        ``(N, 2)`` projected catalog positions.
+    seed : int, optional
+        Seed for the noise.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(N, 2)`` positions with `FIT_NOISE_PIX` Gaussian noise on each axis.
+    """
     rng = np.random.default_rng(seed + 1)
     return (
         projected
@@ -508,12 +567,36 @@ PLANE_TOLERANCE_PIX = 0.15
 
 
 def _catalog_g(n=N_CATALOG):
-    """Return Gaia G values that increase with row number, one magnitude apart."""
+    """
+    Return Gaia G values that increase with row number, one magnitude apart.
+
+    Parameters
+    ----------
+    n : int, optional
+        Number of catalog rows. By default `N_CATALOG`.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(n,)`` magnitudes ``8, 9, 10, ...``.
+    """
     return 8.0 + np.arange(n)
 
 
 def _measured(coords):
-    """Return CNN-like positions: input plus the affine offset plus a small ripple."""
+    """
+    Return CNN-like positions: input plus the affine offset plus a small ripple.
+
+    Parameters
+    ----------
+    coords : numpy.ndarray
+        ``(N, 2)`` input pixel positions.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(N, 2)`` positions, a deterministic function of `coords`.
+    """
     ripple = 0.05 * np.column_stack(
         [np.sin(7.3 * coords[:, 0]), np.cos(5.1 * coords[:, 1])]
     )
@@ -522,10 +605,39 @@ def _measured(coords):
 
 @pytest.fixture
 def cnn_calls(mocker):
-    """Patch ``centroid_stars`` with `_measured`; return the list of coordinate sets."""
+    """
+    Patch ``centroid_stars`` with `_measured` and record what it was given.
+
+    Parameters
+    ----------
+    mocker : pytest_mock.MockerFixture
+        The pytest-mock fixture used to patch ``centroid_stars``.
+
+    Returns
+    -------
+    list of numpy.ndarray
+        One ``(N, 2)`` coordinate array per call of the patched function.
+    """
     calls = []
 
     def fake(_data, coords, _cnn):
+        """
+        Stand in for ``centroid_stars``.
+
+        Parameters
+        ----------
+        _data : numpy.ndarray
+            The image data, ignored.
+        coords : numpy.ndarray
+            ``(N, 2)`` positions to centroid; a copy is appended to ``calls``.
+        _cnn : object
+            The CNN model, ignored.
+
+        Returns
+        -------
+        numpy.ndarray
+            ``_measured(coords)``.
+        """
         calls.append(np.array(coords))
         return _measured(coords)
 
@@ -534,7 +646,25 @@ def cnn_calls(mocker):
 
 
 def _run_policy(projected, gaia_g, *, config=None, g_cut=G_CUT):
-    """Run `centroid_with_catalog_model` on a blank frame of ``FRAME_SHAPE``."""
+    """
+    Run `centroid_with_catalog_model` on a blank frame of ``FRAME_SHAPE``.
+
+    Parameters
+    ----------
+    projected : numpy.ndarray
+        ``(N, 2)`` projected catalog positions.
+    gaia_g : numpy.ndarray or None
+        Gaia G of each row.
+    config : `~bandaid.config.CentroidConfig` or None, optional
+        Policy settings. By default None (the defaults).
+    g_cut : float or None, optional
+        The CNN-class magnitude cut. By default `G_CUT`.
+
+    Returns
+    -------
+    `~bandaid.photometry.CentroidResult`
+        The policy result.
+    """
     return centroid_with_catalog_model(
         np.zeros(FRAME_SHAPE),
         projected,
