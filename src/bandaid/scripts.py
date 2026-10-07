@@ -74,6 +74,18 @@ QA_MANIFEST_COLUMNS = (
     "n_drift_rejected",
     "n_forced_measured",
     "n_edge_dropped",
+    "g_cut",
+    "n_cnn_class",
+    "plane_fallback",
+    "plane_n_used",
+    "plane_n_clipped",
+    "plane_rms",
+    "plane_dx_center",
+    "plane_dy_center",
+    "plane_dx_slope_x",
+    "plane_dx_slope_y",
+    "plane_dy_slope_x",
+    "plane_dy_slope_y",
 )
 
 # SNR at or above which a star counts toward the manifest's ``n_snr20`` solve-quality
@@ -1150,6 +1162,13 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
     ``n_edge_dropped`` is the number of catalog stars the frame's edge margin
     removed before measurement, read from the table ``meta`` like
     ``wcs_pixscale``; blank when absent.
+
+    ``g_cut`` and the ``n_cnn_class`` and ``plane_*`` columns summarise the
+    centroid policy (see `~bandaid.photometry.centroid_with_prior`) for the
+    frame: the batch's magnitude cut, the number of CNN-class stars, whether the
+    no-plane fallback fired, and the fitted plane's star counts, rms, centre
+    offset and slopes in pixels. They are blank when the policy did not run
+    and the ``plane_*`` columns are blank when the frame had no plane.
     """
     if "L4" in by_filter:
         representative = by_filter["L4"]
@@ -1227,6 +1246,32 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
         "n_drift_rejected": n_drift_rejected,
         "n_forced_measured": n_forced_measured,
         "n_edge_dropped": meta.get("n_edge_dropped"),
+        **_centroid_prior_record(meta.get("centroid_prior")),
+    }
+
+
+def _centroid_prior_record(summary):
+    """
+    Build the centroid-policy columns of a QA manifest row.
+
+    Parameters
+    ----------
+    summary : dict or None
+        The frame's plane summary from `centroid_with_prior`, as stamped on its
+        tables, or None when the policy did not run.
+
+    Returns
+    -------
+    dict
+        The manifest columns from ``g_cut`` on, floats rounded to 4 decimals
+        and every value None (blank) when there is no summary.
+    """
+    summary = summary or {}
+    first = QA_MANIFEST_COLUMNS.index("g_cut")
+    record = {column: summary.get(column) for column in QA_MANIFEST_COLUMNS[first:]}
+    return {
+        column: _round_or_none(value) if isinstance(value, float) else value
+        for column, value in record.items()
     }
 
 

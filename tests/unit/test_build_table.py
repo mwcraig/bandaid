@@ -232,8 +232,8 @@ class TestBuildPhotometryTable:
         aligned_coords = np.full((n_stars, 2), 250.0)
         # A plane offset of 5 px puts the expected position beyond the 2.3 px
         # threshold from the projected one.
-        expected = aligned_coords + [5.0, 0.0]
-        centroid_coords = expected + [[0.5, 0.0], [5.0, 0.0], [0.0, 0.0]]
+        expected = aligned_coords + np.array([5.0, 0.0])
+        centroid_coords = expected + np.array([[0.5, 0.0], [5.0, 0.0], [0.0, 0.0]])
         img = _make_image_data(
             _make_tan_wcs(),
             centroid_coords,
