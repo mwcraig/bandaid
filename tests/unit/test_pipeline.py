@@ -724,6 +724,32 @@ class TestPrepareImage:
 
         np.testing.assert_array_equal(spy.call_args.kwargs["gaia_g"], gaia_g[[0, 2]])
 
+    def test_image_data_records_how_each_star_was_centroided(
+        self, stub_prepare_image_externals, mocker
+    ):
+        """``ImageData`` carries the per-row method and the plane summary."""
+        aligned = np.array([[5.0, 5.0], [9.0, 9.0]])
+        stub_prepare_image_externals(coords=aligned)
+        method = np.array(["cnn", "edge_plane"])
+        mocker.patch(
+            "bandaid.photometry.centroid_with_prior",
+            return_value=photometry.CentroidResult(
+                coords=aligned, method=method, plane=None, fallback=False, active=True
+            ),
+        )
+
+        img = prepare_image(
+            "unused.fits",
+            np.zeros((5, 2)),
+            None,
+            photometry_coords=SkyCoord(ra=[1.0, 2.0], dec=[0.0, 0.0], unit="deg"),
+            gaia_g=np.array([8.0, 9.0]),
+        )
+
+        np.testing.assert_array_equal(img.centroid_method, method)
+        assert img.centroid_prior["n_edge_prior"] == 1
+        assert img.centroid_prior["plane_fallback"] is True
+
     def test_gaia_g_is_ignored_without_a_catalog(
         self, stub_prepare_image_externals, mocker
     ):
@@ -1731,6 +1757,27 @@ class TestProcessOneImage:
         image = _detectable_image(make_test_image)
         path = _write_seestar_fits(tmp_path / "frame.fits", image)
         return path, bayer_masks_rggb(image.shape)
+
+    def test_centroid_prior_summary_is_stamped_on_every_table(self, l4_frame, mocker):
+        """The frame's plane summary rides along in each table's meta, L4 included."""
+        path, masks = l4_frame
+        real_prepare_image = photometry.prepare_image
+        summary = {"plane_n_used": 7, "plane_fallback": False}
+
+        def _prepare_with_summary(file, radecs, cnn, **kwargs: object):
+            img = real_prepare_image(file, radecs, cnn, **kwargs)
+            img.centroid_prior = summary
+            return img
+
+        mocker.patch(
+            "bandaid.photometry.prepare_image", side_effect=_prepare_with_summary
+        )
+
+        result = process_one_image(path, {}, _REF_RADECS, None, masks)
+
+        assert set(result) == {"TR", "TG", "TB", "L4"}
+        for table in result.values():
+            assert table.meta["centroid_prior"] == summary
 
     def test_gaia_g_is_forwarded_to_prepare_image(self, l4_frame, mocker):
         """``input_gaia_g`` reaches ``prepare_image`` as ``gaia_g``."""

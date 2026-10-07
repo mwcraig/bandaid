@@ -285,6 +285,7 @@ def filter_table(tot, area, bkgd, bkgd_std, peak):
         t[col] = np.arange(n, dtype=float)
     t["stars_in_exp"] = n
     t["centroid_drift"] = np.zeros(n, dtype=bool)
+    t["centroid_method"] = np.full(n, "cnn")
     t.meta.update(
         {
             "fwhm": 3.0,

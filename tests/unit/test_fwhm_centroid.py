@@ -10,6 +10,7 @@ from astropy.table import Table
 from bandaid.config import CentroidConfig
 from bandaid.photometry import (
     _brightest_unsaturated,
+    _centroid_prior_diagnostics,
     _fit_offset_plane,
     _fwhm_from_coords,
     calibration_sequence,
@@ -776,6 +777,65 @@ class TestCentroidWithPrior:
         cnn_mock.assert_called_once()
         np.testing.assert_array_equal(cnn_mock.call_args.args[1], projected)
         assert (result.method == "cnn").all()
+
+
+class TestCentroidPriorDiagnostics:
+    """The per-frame plane summary recorded in the QA manifest."""
+
+    def test_summarises_the_plane_and_the_band(self, make_test_image, mocker):
+        """Centre offset, slopes, rms, counts and the edge-star count are reported."""
+        image, projected, gaia_g, is_edge = _prior_frame(make_test_image)
+        _fake_cnn(mocker)
+        result = centroid_with_prior(image, projected, object(), gaia_g=gaia_g)
+
+        diagnostics = _centroid_prior_diagnostics(result)
+
+        plane = result.plane
+        assert diagnostics["n_edge_prior"] == is_edge.sum()
+        assert diagnostics["plane_fallback"] is False
+        assert diagnostics["plane_n_used"] == plane.n_used
+        assert diagnostics["plane_n_clipped"] == plane.n_clipped
+        assert diagnostics["plane_rms"] == pytest.approx(plane.rms)
+        assert diagnostics["plane_dx_center"] == pytest.approx(plane.coeffs_x[0])
+        assert diagnostics["plane_dy_center"] == pytest.approx(plane.coeffs_y[0])
+        assert diagnostics["plane_dx_slope_x"] == pytest.approx(plane.coeffs_x[1])
+        assert diagnostics["plane_dx_slope_y"] == pytest.approx(plane.coeffs_x[2])
+        assert diagnostics["plane_dy_slope_x"] == pytest.approx(plane.coeffs_y[1])
+        assert diagnostics["plane_dy_slope_y"] == pytest.approx(plane.coeffs_y[2])
+
+    def test_a_frame_without_a_plane_reports_the_fallback(
+        self, make_test_image, mocker
+    ):
+        """No plane: zero stars used, no plane numbers, and the fallback flag set."""
+        image, projected, gaia_g, is_edge = _prior_frame(
+            make_test_image, n_bright=5, n_faint=0
+        )
+        _fake_cnn(mocker)
+        result = centroid_with_prior(image, projected, object(), gaia_g=gaia_g)
+
+        diagnostics = _centroid_prior_diagnostics(result)
+
+        assert diagnostics["plane_fallback"] is True
+        assert diagnostics["plane_n_used"] == 0
+        assert diagnostics["n_edge_prior"] == is_edge.sum()
+        assert diagnostics["plane_rms"] is None
+        assert diagnostics["plane_dx_center"] is None
+
+    def test_nothing_is_reported_when_the_rule_did_not_run(
+        self, make_test_image, mocker
+    ):
+        """With the rule off there is no plane to describe."""
+        image, projected, gaia_g, _ = _prior_frame(make_test_image)
+        _fake_cnn(mocker)
+        result = centroid_with_prior(
+            image,
+            projected,
+            object(),
+            gaia_g=gaia_g,
+            config=CentroidConfig(edge_band_prior=False),
+        )
+
+        assert _centroid_prior_diagnostics(result) is None
 
 
 def test_centroid_stars_delegates_to_ballet(mocker):
