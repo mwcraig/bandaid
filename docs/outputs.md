@@ -44,7 +44,7 @@ The per-star fields in each `staritems` row:
 | `count_err`  | Uncertainty on `tot_count` from the noise model.                                                                                                                                                               |
 | `bkgd_count` | Background counts under the star.                                                                                                                                                                              |
 | `peak_count` | Peak pixel value in the star's own channel, within ~2 FWHM of the measured centroid — useful for spotting near-saturated stars. For the synthetic `L4` list this is the maximum of the three channels' values. |
-| `x`, `y`     | Measured centroid position in pixels.                                                                                                                                                                          |
+| `x`, `y`     | Centroid position in pixels: measured by the CNN for the brightest stars, projected plus a fitted plane for the rest (see [Measured versus modelled positions](measured_vs_modelled_positions.md)).            |
 | `ra`, `dec`  | Sky position (degrees) of the measured star.                                                                                                                                                                   |
 
 Per-frame, per-filter quantities such as the measured `fwhm` live on the
@@ -184,6 +184,13 @@ bad frames in a night without opening every `.star` file.
 | `n_centroid_drift`    | Stars with the `centroid_drift` flag set (see below) — a frame-health signal on its own.                                                                                                                                                                                                                                                                                                                                           |
 | `n_drift_rejected`    | The subset of `n_centroid_drift` that also passes `good_star_mask` — the stars a future gate on this flag would actually remove, since most drifted stars are already dropped by the existing flux/error/bounds cuts.                                                                                                                                                                                                              |
 | `n_edge_dropped`      | Catalog stars dropped before measurement because their projected position was within `edge_margin_px` of a frame edge, inside or outside the frame (see [Configuration](configuration.md#frame-edge-margin)). An upper bound on the rows lost relative to a run without the margin, not the number lost: most stars projected outside the frame rarely produced an output row before. Blank if the frame failed before photometry. |
+| `g_cut`                                                                        | The batch's CNN-class Gaia G cut (the same on every frame); blank when the centroid policy is off. See [Measured versus modelled positions](measured_vs_modelled_positions.md).                                                                                                                                                   |
+| `n_cnn_class`                                                                  | Stars on the frame that keep a CNN centroid (those at or brighter than `g_cut`, plus forced targets); blank when the policy is off.                                                                                                                                                                                               |
+| `plane_fallback`                                                               | `True` when the frame had fewer than `min_fit_stars` usable fit stars, so it had no plane and every star was centroided by the CNN; blank when the policy is off.                                                                                                                                                                 |
+| `plane_n_used`, `plane_n_clipped`                                              | Stars that defined the frame's offset plane after clipping, and stars the clip removed; `0` and `0` on a fallback frame.                                                                                                                                                                                                          |
+| `plane_rms`                                                                    | Radial rms of the plane's fit residuals over the stars used, in pixels; blank without a plane.                                                                                                                                                                                                                                    |
+| `plane_dx_center`, `plane_dy_center`                                           | The plane's offset (CNN minus projected) at the frame center, in pixels.                                                                                                                                                                                                                                                          |
+| `plane_dx_slope_x`, `plane_dx_slope_y`, `plane_dy_slope_x`, `plane_dy_slope_y` | The change in the plane's x or y offset from the frame center to the right-hand edge (`slope_x`) or the top edge (`slope_y`), in pixels.                                                                                                                                                                                          |
 | `n_forced_measured`   | Forced targets (see [Command-line usage](command_line.md)) with a good, output-surviving measurement in the frame's representative channel, matched by sky position — answers "was my nova actually measured in this frame" without float-matching `ra`/`dec` across `.star` files. Blank when no forced targets were configured.                                                                                                  |
 
 `n_good_stars` is a single-channel count, not a per-filter tally: the SNR floor
@@ -202,6 +209,10 @@ blank), so the manifest accounts for **every** input frame, not just the
 successful ones. `status` values other than `ok` map directly to the entries in
 [Troubleshooting](troubleshooting.md).
 
+The plane columns are blank for a frame the centroid policy did not run on, and
+`plane_fallback` is `True` with the other plane columns blank or zero on a frame
+that had no plane.
+
 `n_centroid_drift` and `n_drift_rejected` are diagnostic counts only, not a
 filter: the flag does not remove any rows (see `centroid_drift` below), and
 manifest data produced before the proper-motion fix (#56) overcounts both
@@ -215,8 +226,8 @@ exactly what each quality check does.
 
 ### `centroid_drift` — flagged, never dropped, not in the `.star` file
 
-When a star's measured centroid wanders too far from its expected (aligned)
-position — a bad WCS, a too-faint star, or an obstruction — bandaid sets a
+When a star's CNN centroid wanders too far from its expected position (the
+aligned position plus the frame's fitted offset plane) — a bad WCS, a too-faint star, or an obstruction — bandaid sets a
 `centroid_drift` flag for that star. **No rows are dropped on this flag.** It is
 also **not part of the `.star` schema**, so it is not written to disk; to see it,
 use the in-memory mode above (the `centroid_drift` column on the returned table).
