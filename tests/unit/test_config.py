@@ -16,12 +16,14 @@ from pydantic import ValidationError
 
 from bandaid.config import (
     ApertureConfig,
+    CentroidConfig,
     DriftConfig,
     HeaderMatchRule,
     InstrumentProfile,
     PhotometryConfig,
     SourceSelectionConfig,
 )
+from bandaid.photometry import CENTROID_PAD_PIX
 
 # Legacy module-level constants the config defaults must reproduce. Pinned as
 # explicit literals (rather than read back off the config-derived photometry.*
@@ -49,6 +51,14 @@ EXPECTED_MIN_SNR = 2.0
 
 
 EXPECTED_GAIA_ROW_LIMIT = 10000
+
+# Centroid prior settings: a new section, so there is no legacy constant; the
+# edge margin equals the pre-existing `CENTROID_PAD_PIX` (eloy's 15x15 cutout
+# half-width plus one pixel).
+EXPECTED_EDGE_MARGIN_PIX = 8.0
+EXPECTED_FIT_N_STARS = 30
+EXPECTED_MIN_FIT_STARS = 12
+EXPECTED_CLIP_SIGMA = 3.0
 
 
 class TestDefaultsMatchLegacyConstants:
@@ -79,6 +89,19 @@ class TestDefaultsMatchLegacyConstants:
         cfg = DriftConfig()
         assert cfg.drift_tolerance_fwhm == EXPECTED_DRIFT_TOLERANCE_FWHM
         assert cfg.drift_cap_pix == EXPECTED_DRIFT_CAP_PIX
+
+    def test_centroid(self):
+        """The centroid prior defaults to on, with the validated plane-fit settings."""
+        cfg = CentroidConfig()
+        assert cfg.edge_band_prior is True
+        assert cfg.edge_margin_px == EXPECTED_EDGE_MARGIN_PIX
+        assert cfg.fit_n_stars == EXPECTED_FIT_N_STARS
+        assert cfg.min_fit_stars == EXPECTED_MIN_FIT_STARS
+        assert cfg.clip_sigma == EXPECTED_CLIP_SIGMA
+
+    def test_centroid_pad_constant_follows_config(self):
+        """The module's `CENTROID_PAD_PIX` is the config's edge margin."""
+        assert CentroidConfig().edge_margin_px == CENTROID_PAD_PIX
 
     def test_instrument(self):
         """Detection/FWHM/PSF settings default to the legacy literal values."""
@@ -143,6 +166,7 @@ class TestDefaultsMatchLegacyConstants:
         assert isinstance(cfg.apertures, ApertureConfig)
         assert isinstance(cfg.source_selection, SourceSelectionConfig)
         assert isinstance(cfg.drift, DriftConfig)
+        assert isinstance(cfg.centroid, CentroidConfig)
         # None means "resolve from the frame header" -- see detect_instrument.
         assert cfg.instrument is None
 
@@ -380,6 +404,29 @@ class TestValidators:
         """A negative pixel cap on centroid drift is rejected."""
         with pytest.raises(ValidationError):
             DriftConfig(drift_cap_pix=-1.0)
+
+    @pytest.mark.parametrize("edge_margin_px", [0.0, -1.0, float("nan")])
+    def test_non_positive_edge_margin_rejected(self, edge_margin_px):
+        """An edge margin that is not a positive number of pixels is rejected."""
+        with pytest.raises(ValidationError):
+            CentroidConfig(edge_margin_px=edge_margin_px)
+
+    @pytest.mark.parametrize("min_fit_stars", [0, 1, 2])
+    def test_too_few_min_fit_stars_rejected(self, min_fit_stars):
+        """A plane has three parameters, so fewer than three fit stars is rejected."""
+        with pytest.raises(ValidationError):
+            CentroidConfig(min_fit_stars=min_fit_stars)
+
+    def test_fit_set_smaller_than_minimum_rejected(self):
+        """A fit set that cannot reach the minimum surviving count is rejected."""
+        with pytest.raises(ValidationError, match="fit_n_stars"):
+            CentroidConfig(fit_n_stars=10, min_fit_stars=12)
+
+    @pytest.mark.parametrize("clip_sigma", [0.0, -3.0])
+    def test_non_positive_clip_sigma_rejected(self, clip_sigma):
+        """A non-positive clipping threshold is rejected."""
+        with pytest.raises(ValidationError):
+            CentroidConfig(clip_sigma=clip_sigma)
 
     def test_non_finite_min_snr_rejected(self):
         """A non-finite minimum SNR floor is rejected with a clear message."""
