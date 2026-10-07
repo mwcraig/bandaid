@@ -639,7 +639,8 @@ class PhotometryConfig(BaseModel, frozen=True):
     edge_margin_px : float
         Catalog stars whose projected position lies within this many pixels of
         a frame edge, or off the frame, are not measured. Must be positive and
-        finite. Forced targets are exempt (see `~bandaid.photometry.prepare_image`).
+        finite. The rule applies to every input position, including forced
+        targets (see `~bandaid.photometry.prepare_image`).
     instrument : InstrumentProfile or None
         The named telescope: detection, FWHM, PSF, and contamination settings
         plus the per-frame FITS-header dialect. ``None`` (the default) means
