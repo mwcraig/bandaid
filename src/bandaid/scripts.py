@@ -250,6 +250,10 @@ class BatchPrep:
         Whether each frame also gets the full-frame "L4" luminance channel,
         built from the TR/TG/TB tables; handed to ``process_one_image``.
         Default True.
+    gaia_g : numpy.ndarray or None
+        Gaia G magnitude of each row of ``photometry_coords``, in the same
+        order (NaN for a forced target, which has none). None when the batch
+        was built without magnitudes. Default None.
     """
 
     radecs: np.ndarray
@@ -263,6 +267,7 @@ class BatchPrep:
     forced_targets: SkyCoord | None = None
     instrument_auto_detected: bool = False
     build_l4: bool = True
+    gaia_g: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         """
@@ -285,6 +290,28 @@ class BatchPrep:
                 "construct BatchPrep via prepare_batch"
             )
             raise ValueError(msg)
+
+
+def _with_forced_target_g(gaia_g, forced_targets):
+    """
+    Extend the targets' Gaia G with a NaN for each forced target.
+
+    Parameters
+    ----------
+    gaia_g : numpy.ndarray
+        Gaia G of the contamination-filtered targets.
+    forced_targets : astropy.coordinates.SkyCoord or None
+        The forced targets appended after those targets, or None.
+
+    Returns
+    -------
+    numpy.ndarray
+        `gaia_g` followed by one NaN per forced target: a forced target is
+        absent from Gaia, so it has no magnitude.
+    """
+    if forced_targets is None:
+        return gaia_g
+    return np.concatenate([gaia_g, np.full(len(forced_targets), np.nan)])
 
 
 def _resolve_batch_instrument(config, header):
@@ -635,6 +662,7 @@ def prepare_batch(
         forced_targets=forced_targets,
         instrument_auto_detected=instrument_auto_detected,
         build_l4=build_l4,
+        gaia_g=_with_forced_target_g(mags[target][~flagged_target], forced_targets),
     )
 
 
@@ -1409,6 +1437,7 @@ def process_batch(
                 prep.bayer_masks,
                 config=prep.config,
                 input_photometry_coords=prep.photometry_coords,
+                input_gaia_g=prep.gaia_g,
                 frame=frame,
                 build_l4=prep.build_l4,
             )

@@ -1969,6 +1969,61 @@ def centroid_stars(calibrated_data, aligned_coords, cnn):
     return centroid.ballet_centroid(calibrated_data, aligned_coords, cnn)
 
 
+@dataclass(frozen=True)
+class CentroidResult:
+    """
+    Positions for one frame plus how each was obtained.
+
+    Attributes
+    ----------
+    coords : numpy.ndarray
+        ``(N, 2)`` pixel positions, row-aligned with the input coordinates.
+    method : numpy.ndarray
+        ``(N,)`` array of strings naming how each row's position was obtained.
+    plane : object or None
+        The offset plane fitted for this frame, or None when there was none.
+    fallback : bool
+        Whether an edge-band row had to take the bare projected position
+        because the frame had no plane.
+    """
+
+    coords: np.ndarray
+    method: np.ndarray
+    plane: object
+    fallback: bool
+
+
+def centroid_with_prior(
+    calibrated_data, aligned_coords, cnn, *, gaia_g=None, config=None
+):
+    """
+    Centroid stars, using the Gaia prior where the CNN is unreliable.
+
+    Parameters
+    ----------
+    calibrated_data : numpy.ndarray
+        Calibrated image data.
+    aligned_coords : numpy.ndarray
+        ``(N, 2)`` projected catalog pixel coordinates.
+    cnn : object
+        Centroiding CNN model, as for `centroid_stars`.
+    gaia_g : numpy.ndarray or None, optional
+        Gaia G of each row. By default None.
+    config : CentroidConfig or None, optional
+        Prior settings; None uses the defaults.
+
+    Returns
+    -------
+    CentroidResult
+        The positions and how each was obtained.
+    """
+    del gaia_g, config
+    coords = centroid_stars(calibrated_data, aligned_coords, cnn)
+    return CentroidResult(
+        coords=coords, method=np.full(len(coords), "cnn"), plane=None, fallback=False
+    )
+
+
 def annulus_sigma_clip_stats(data, coords, r_in, r_out, input_mask=None, sigma=3):
     """
     Compute the sigma-clipped median and standard deviation in an annulus.
@@ -2566,7 +2621,9 @@ def measure_photometry(
     }
 
 
-def _drop_off_frame_catalog_stars(aligned_coords, photometry_coords, shape, file):
+def _drop_off_frame_catalog_stars(
+    aligned_coords, photometry_coords, shape, file, gaia_g=None
+):
     """
     Drop catalog stars whose aligned projection falls outside the frame.
 
@@ -2584,7 +2641,7 @@ def _drop_off_frame_catalog_stars(aligned_coords, photometry_coords, shape, file
 
     When `photometry_coords` is None, `aligned_coords` are the detected
     coordinates themselves rather than catalog projections, and must stay
-    one-to-one with the image's own `coords`; the cut is skipped and both
+    one-to-one with the image's own `coords`; the cut is skipped and the
     arguments are returned unchanged.
 
     Parameters
@@ -2599,6 +2656,9 @@ def _drop_off_frame_catalog_stars(aligned_coords, photometry_coords, shape, file
         ``(height, width)`` of the calibrated frame, i.e. `numpy.ndarray.shape`.
     file : str or pathlib.Path
         Source frame, named in the raised error and the debug log.
+    gaia_g : numpy.ndarray or None, optional
+        Gaia G magnitude of each row, aligned one-to-one with `aligned_coords`.
+        Cut with the coordinates so it stays row-aligned. By default None.
 
     Returns
     -------
@@ -2608,6 +2668,8 @@ def _drop_off_frame_catalog_stars(aligned_coords, photometry_coords, shape, file
     astropy.coordinates.SkyCoord or None
         `photometry_coords`, reduced to the same in-frame rows (unchanged if
         already None).
+    numpy.ndarray or None
+        `gaia_g`, reduced to the same in-frame rows (None if `gaia_g` is None).
 
     Raises
     ------
@@ -2616,7 +2678,7 @@ def _drop_off_frame_catalog_stars(aligned_coords, photometry_coords, shape, file
         source `file` is attached.
     """
     if photometry_coords is None:
-        return aligned_coords, photometry_coords
+        return aligned_coords, photometry_coords, gaia_g
     height, width = shape
     keep = _within_frame(
         aligned_coords[:, 0], aligned_coords[:, 1], width, height, pad=CENTROID_PAD_PIX
@@ -2634,7 +2696,11 @@ def _drop_off_frame_catalog_stars(aligned_coords, photometry_coords, shape, file
         len(keep),
         CENTROID_PAD_PIX,
     )
-    return aligned_coords[keep], photometry_coords[keep]
+    return (
+        aligned_coords[keep],
+        photometry_coords[keep],
+        None if gaia_g is None else gaia_g[keep],
+    )
 
 
 def _parse_obs_time(obs_time, *, file=None):
@@ -2818,6 +2884,7 @@ def prepare_image(
     config=None,
     detect_on_bayer_balanced=False,
     photometry_coords=None,
+    gaia_g=None,
     user_specific_metadata=None,
     wcs=None,
     frame=None,
@@ -2847,6 +2914,9 @@ def prepare_image(
         detected in this image. This allows for centroiding on a different set of
         coordinates than those used for WCS alignment. By default None (centroiding is
         done on detected coords).
+    gaia_g : numpy.ndarray or None, optional
+        Gaia G magnitude of each row of `photometry_coords` (NaN where a row has
+        none, as for a forced target). By default None.
     user_specific_metadata : dict or None, optional
         User-specific metadata to include in the output. By default None.
     wcs : `astropy.wcs.WCS` or None, optional
@@ -3011,17 +3081,19 @@ def prepare_image(
         raise
 
     # Drop catalog stars that projected off-frame, before centroiding/photometry.
-    aligned_coords, photometry_coords = _drop_off_frame_catalog_stars(
-        aligned_coords, photometry_coords, calibrated_data.shape, file
+    aligned_coords, photometry_coords, gaia_g = _drop_off_frame_catalog_stars(
+        aligned_coords, photometry_coords, calibrated_data.shape, file, gaia_g
     )
 
-    centroid_coords = centroid_stars(working_image, aligned_coords, cnn)
+    centroided = centroid_with_prior(
+        working_image, aligned_coords, cnn, gaia_g=gaia_g, config=config.centroid
+    )
 
     return ImageData(
         calibrated_data=calibrated_data,
         coords=coords,
         fwhm=fwhm,
-        centroid_coords=centroid_coords,
+        centroid_coords=centroided.coords,
         aligned_coords=aligned_coords,
         wcs=this_wcs,
         header=frame.header,
@@ -3213,6 +3285,7 @@ def process_one_image(
     config=None,
     bayer_balance_detection=True,
     input_photometry_coords=None,
+    input_gaia_g=None,
     frame=None,
     build_l4=True,
 ):
@@ -3248,6 +3321,9 @@ def process_one_image(
         If provided, these sky coordinates are used for centroiding instead of those
         detected in this image. The sky coordinates passed in are recorded as the
         sky coordinates in the output.
+    input_gaia_g : numpy.ndarray or None, optional
+        Gaia G magnitude of each row of `input_photometry_coords`, used to pick
+        the stars that define the frame's centroid offset plane.
     frame : LoadedFrame or None, optional
         Pre-loaded frame; when None the file is opened once via the loader.
     build_l4 : bool, optional
@@ -3309,6 +3385,7 @@ def process_one_image(
         config=config,
         detect_on_bayer_balanced=bayer_balance_detection,
         photometry_coords=input_photometry_coords,
+        gaia_g=input_gaia_g,
         user_specific_metadata=user_specific_metadata,
         frame=frame,
     )
