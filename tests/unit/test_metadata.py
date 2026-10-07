@@ -119,26 +119,21 @@ class TestAirmassFromMetadata:
         assert header_airmass == pytest.approx(self._kasten_young(89.0), rel=1e-6)
 
     @pytest.fixture
-    def _fresh_iers_table(self, monkeypatch):
+    def _fresh_iers_table(self, mocker):
         """Drop the cached IERS tables for the test and restore them afterwards."""
-        monkeypatch.setattr(iers.IERS_Auto, "iers_table", None)
-        monkeypatch.setattr(iers.earth_orientation_table, "_value", None)
+        mocker.patch.object(iers.IERS_Auto, "iers_table", None)
+        mocker.patch.object(iers.earth_orientation_table, "_value", None)
 
     @pytest.mark.usefixtures("_fresh_iers_table")
-    def test_derivation_makes_no_iers_download(self, monkeypatch):
+    def test_derivation_makes_no_iers_download(self, mocker):
         """Deriving airmass never attempts an IERS download, whatever the config."""
         # Building the metadata runs its own transform, which loads the tables.
         metadata = self._metadata_pointing_at_altitude(89.0)
         iers.IERS_Auto.close()
-        monkeypatch.setattr(iers.earth_orientation_table, "_value", None)
-        attempts = []
-
-        def record_download(*args: object, **_kwargs: object) -> None:
-            attempts.append(args)
-            msg = "no network in tests"
-            raise OSError(msg)
-
-        monkeypatch.setattr(iers.iers, "download_file", record_download)
+        mocker.patch.object(iers.earth_orientation_table, "_value", None)
+        download = mocker.patch.object(
+            iers.iers, "download_file", side_effect=OSError("no network in tests")
+        )
 
         # The session fixture turns auto_download off; put astropy's default back
         # so only the code under test can keep downloads from being attempted.
@@ -147,18 +142,21 @@ class TestAirmassFromMetadata:
             airmass = _airmass_from_metadata(metadata)
 
         assert np.isfinite(airmass)
-        assert attempts == []
+        download.assert_not_called()
 
     @pytest.mark.usefixtures("_fresh_iers_table")
-    def test_recent_frame_with_stale_predictions_is_finite(self, monkeypatch):
+    def test_recent_frame_with_stale_predictions_is_finite(self, mocker):
         """A frame in the bundled predictive region still gets an airmass."""
         obs_time = "2026-10-05T07:00:00"
         # The helper's own transform needs the same allowance the code under test has.
         with iers.conf.set_temp("auto_max_age", value=None):
             ra, dec = self._pointing_at_altitude(89.0, obstime=obs_time)
         # Pretend the bundled predictions are stale, whatever data is installed.
-        monkeypatch.setattr(
-            iers.IERS_Auto, "time_now", property(lambda self: Time("2027-01-01"))
+        mocker.patch.object(
+            iers.IERS_Auto,
+            "time_now",
+            new_callable=mocker.PropertyMock,
+            return_value=Time("2027-01-01"),
         )
 
         airmass = _airmass_from_metadata(
