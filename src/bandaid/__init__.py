@@ -63,6 +63,7 @@ from .instruments import (
 )
 from .logging_setup import configure_logging
 from .photometry import (
+    CalibrationResult,
     ImageData,
     align,
     build_photometry_table,

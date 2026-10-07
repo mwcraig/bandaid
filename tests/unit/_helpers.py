@@ -18,7 +18,13 @@ from astropy.wcs import WCS
 from bandaid import measure_photometry, scripts
 from bandaid.config import InstrumentProfile, PhotometryConfig
 from bandaid.instruments import load_instrument
-from bandaid.photometry import ANNULUS, RELATIVE_RADII, ImageData, LoadedFrame
+from bandaid.photometry import (
+    ANNULUS,
+    RELATIVE_RADII,
+    CalibrationResult,
+    ImageData,
+    LoadedFrame,
+)
 
 # The bundled Seestar50 auto-detection rule, so tests that mean "the Seestar
 # rule" follow profile.json instead of restating its literal.
@@ -426,12 +432,13 @@ def _patch_prep(mocker, *, metadata=None, radecs_mags=None, fwhm_pix=2.0):
 
     calibration_sequence = mocker.patch(
         "bandaid.scripts.calibration_sequence",
-        return_value=(
-            np.zeros((4, 4)),
-            metadata,
-            np.zeros((3, 2)),
-            fwhm_pix,
-            object(),
+        return_value=CalibrationResult(
+            calibrated_data=np.zeros((4, 4)),
+            metadata=metadata,
+            coords=np.zeros((3, 2)),
+            fwhm=fwhm_pix,
+            regions=object(),
+            detection_image=np.zeros((4, 4)),
         ),
     )
     query_field_catalog = mocker.patch(

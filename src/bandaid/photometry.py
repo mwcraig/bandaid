@@ -65,6 +65,7 @@ from .instruments import resolve_config_instrument, resolve_profile
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "CalibrationResult",
     "ImageData",
     "align",
     "annulus_sigma_clip_stats",
@@ -887,6 +888,20 @@ def _resolve_detection_defaults(
     )
 
 
+# eq=False for the same reason as LoadedFrame: the array fields make the
+# generated __eq__/__hash__ unusable.
+@dataclass(frozen=True, eq=False)
+class CalibrationResult:
+    """What `calibration_sequence` found in one frame."""
+
+    calibrated_data: np.ndarray
+    metadata: dict
+    coords: np.ndarray
+    fwhm: float
+    regions: list
+    detection_image: np.ndarray
+
+
 def calibration_sequence(
     file,
     threshold=None,
@@ -898,8 +913,7 @@ def calibration_sequence(
     fwhm_n_stars=None,
     profile=None,
     frame=None,
-    detection_image_out=None,
-) -> tuple:
+) -> CalibrationResult:
     """
     Find sources and compute FWHM for an image.
 
@@ -907,10 +921,10 @@ def calibration_sequence(
     Bayer-balanced *copy* of ``calibrated_data`` (which stays unbalanced for
     photometry). `prepare_image` needs that same balanced array for centroiding,
     so rather than paying for a second `bayer_balance_image` call on a fresh
-    copy it takes this one back through ``detection_image_out`` (PR #119).
-    Nothing downstream of detection mutates the array, so sharing the reference
-    is safe. A `DegenerateBayerChannelError` raised by that single balance call
-    is labelled with ``file`` here, which is the whole of issue #61's contract
+    copy it takes the result's ``detection_image``. Nothing downstream of
+    detection mutates the array, so sharing the reference is safe. A
+    `DegenerateBayerChannelError` raised by that single balance call is
+    labelled with ``file`` here, which is the whole of issue #61's contract
     now that no second call site exists.
 
     Parameters
@@ -954,17 +968,14 @@ def calibration_sequence(
         (the default) means "resolve from the header"; see Notes.
     frame : LoadedFrame or None, optional
         Pre-loaded frame; when None the file is opened once via the loader.
-    detection_image_out : dict or None, optional
-        When given, receives the array detection actually used, under the key
-        ``"detection_image"`` -- balanced when ``detect_on_bayer_balanced`` is
-        True, the unbalanced ``calibrated_data`` otherwise. Default None does
-        not populate anything.
 
     Returns
     -------
-    tuple
-        A tuple containing the calibrated data, metadata, region coordinates,
-        FWHM, and regions.
+    CalibrationResult
+        The calibrated data, metadata, region coordinates, FWHM, regions, and
+        the array detection actually used (``detection_image``: balanced when
+        ``detect_on_bayer_balanced`` is True, the ``calibrated_data`` object
+        itself otherwise).
 
     Raises
     ------
@@ -1038,9 +1049,6 @@ def calibration_sequence(
     else:
         detection_image = calibrated_data
 
-    if detection_image_out is not None:
-        detection_image_out["detection_image"] = detection_image
-
     regions = _detect_stars(detection_image, threshold=threshold, opening=opening)
 
     # in case we detect fewer than the minimum number of stars
@@ -1064,7 +1072,14 @@ def calibration_sequence(
         msg = "all detected sources are saturated"
         raise TooFewStarsError(msg, file=file)
 
-    return calibrated_data, metadata, region_coords_xy, fwhm, regions
+    return CalibrationResult(
+        calibrated_data=calibrated_data,
+        metadata=metadata,
+        coords=region_coords_xy,
+        fwhm=fwhm,
+        regions=regions,
+        detection_image=detection_image,
+    )
 
 
 def _airmass_from_metadata(metadata, *, obs_datetime=None):
@@ -2710,24 +2725,24 @@ def prepare_image(
         exc.file = file
         raise
     instrument = config.instrument
-    # Receives calibration_sequence's own detection-time array (see its
-    # docstring) so centroiding reuses it instead of balancing a second copy.
-    detection_image_out = {}
-    calibrated_data, metadata, coords, fwhm, _ = calibration_sequence(
+    calibration = calibration_sequence(
         file,
         detect_on_bayer_balanced=detect_on_bayer_balanced,
         cnn=cnn,
         profile=instrument,
         frame=frame,
-        detection_image_out=detection_image_out,
     )
+    calibrated_data = calibration.calibrated_data
+    metadata = calibration.metadata
+    coords = calibration.coords
+    fwhm = calibration.fwhm
 
     if user_specific_metadata is not None:
         metadata.update(user_specific_metadata)
 
-    # Balanced or not per detect_on_bayer_balanced; calibration_sequence
-    # always populates the key when handed a dict.
-    working_image = detection_image_out["detection_image"]
+    # Balanced or not per detect_on_bayer_balanced; reusing calibration_sequence's
+    # own detection-time array avoids balancing a second copy.
+    working_image = calibration.detection_image
 
     # pixscale drives align's wrong-scale WCS rejection and is populated for
     # every frame by metadata_from_header from the instrument profile, so a

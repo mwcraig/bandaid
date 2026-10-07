@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from _helpers import _CONSISTENT_HEADER, _make_tan_wcs
 
-from bandaid.photometry import LoadedFrame
+from bandaid.photometry import CalibrationResult, LoadedFrame
 
 
 @pytest.fixture
@@ -32,9 +32,8 @@ def stub_prepare_image_externals(mocker):
     Factory patching the four externals ``prepare_image`` reaches, via ``mocker``.
 
     Patches ``calibration_sequence`` (returns a configurable
-    ``(calibrated, metadata, coords, fwhm, None)`` 5-tuple and, like the real
-    function, stores ``calibrated`` in any ``detection_image_out`` dict it is
-    handed), ``align`` (returns
+    ``CalibrationResult`` whose ``detection_image`` is ``calibrated``),
+    ``align`` (returns
     ``(coords, wcs)``), ``centroid_stars`` (identity) and ``_load_frame``
     (returns a ``LoadedFrame`` with header ``{"creator": "spy", "INSTRUME":
     "Seestar S50"}`` -- the ``INSTRUME`` lets a default (``instrument=None``)
@@ -70,16 +69,16 @@ def stub_prepare_image_externals(mocker):
         if calibrated is None:
             calibrated = np.zeros((10, 10))
 
-        def _calibration_sequence(
-            *_args: object, detection_image_out: dict | None = None, **_kwargs: object
-        ):
-            if detection_image_out is not None:
-                detection_image_out["detection_image"] = calibrated
-            return (calibrated, metadata, coords, fwhm, None)
-
         calibration_sequence = mocker.patch(
             "bandaid.photometry.calibration_sequence",
-            side_effect=_calibration_sequence,
+            return_value=CalibrationResult(
+                calibrated_data=calibrated,
+                metadata=metadata,
+                coords=coords,
+                fwhm=fwhm,
+                regions=None,
+                detection_image=calibrated,
+            ),
         )
         align = mocker.patch(
             "bandaid.photometry.align",
