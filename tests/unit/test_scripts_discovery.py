@@ -155,7 +155,7 @@ class TestPhotometerFrames:
             config=config,
             weights=str(weights),
             user_specific_metadata={"observer": "MWC"},
-            append_l4=True,
+            build_l4=True,
             output_dir=str(tmp_path / "out"),
             output_suffix=".sl",
             fail_fast=True,
@@ -169,7 +169,7 @@ class TestPhotometerFrames:
             expected[0],
             cnn=cnn_sentinel,
             config=config,
-            append_l4=True,
+            build_l4=True,
             forced_targets=None,
             frame=frame_sentinel,
         )
@@ -194,7 +194,7 @@ class TestPhotometerFrames:
         with pytest.raises(ValueError, match="no FITS"):
             scripts.photometer_frames([str(empty)])
 
-    def test_defaults_download_weights_and_append_l4(self, mocker, tmp_path):
+    def test_defaults_download_weights_and_build_l4(self, mocker, tmp_path):
         """Omitting options downloads weights, appends L4, and uses robust defaults."""
         frame = tmp_path / "a.fit"
         frame.write_bytes(b"")
@@ -210,7 +210,7 @@ class TestPhotometerFrames:
 
         ballet.assert_called_once_with(model_file=None)
         prepare_kwargs = prepare_batch.call_args.kwargs
-        assert prepare_kwargs["append_l4"] is True
+        assert prepare_kwargs["build_l4"] is True
         assert isinstance(prepare_kwargs["config"], PhotometryConfig)
         kwargs = process_batch.call_args.kwargs
         assert kwargs["user_specific_metadata"] == {}

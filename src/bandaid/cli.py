@@ -456,10 +456,10 @@ def main():
     ),
 )
 @click.option(
-    "--append-l4/--no-append-l4",
+    "--build-l4/--no-build-l4",
     default=True,
     show_default=True,
-    help="Add a full-frame L4 luminance channel to the Bayer masks.",
+    help="Also produce the full-frame L4 luminance channel.",
 )
 @click.option(
     "--fail-fast/--no-fail-fast",
@@ -509,7 +509,7 @@ def process(
     weights,
     metadata_file,
     forced_targets_file,
-    append_l4,
+    build_l4,
     fail_fast,
     output_format,
     output_suffix,
@@ -550,8 +550,8 @@ def process(
         Path to a CSV/ECSV table (columns ``name``, ``ra``, ``dec`` in
         degrees) of extra targets to photometer that are absent from the
         Gaia catalog.
-    append_l4 : bool
-        Whether to add a full-frame L4 luminance channel to the Bayer masks.
+    build_l4 : bool
+        Whether to also produce the full-frame L4 luminance channel.
     fail_fast : bool
         Whether to re-raise unexpected per-frame errors instead of skipping.
     output_format : str
@@ -615,7 +615,7 @@ def process(
             config=config,
             weights=weights,
             user_specific_metadata=metadata,
-            append_l4=append_l4,
+            build_l4=build_l4,
             output_dir=output_dir,
             output_suffix=output_suffix,
             write_frame=write_frame,

@@ -104,7 +104,7 @@ def test_process_forwards_every_flag(runner, patched_photometer, tmp_path):
             str(meta),
             "--output-dir",
             str(out_dir),
-            "--no-append-l4",
+            "--no-build-l4",
             "--fail-fast",
             "--output-format",
             "starlist",
@@ -123,7 +123,7 @@ def test_process_forwards_every_flag(runner, patched_photometer, tmp_path):
     assert call_kwargs["weights"] == str(weights)
     assert call_kwargs["user_specific_metadata"] == {"observer": "MWC"}
     assert call_kwargs["output_dir"] == str(out_dir)
-    assert call_kwargs["append_l4"] is False
+    assert call_kwargs["build_l4"] is False
     assert call_kwargs["fail_fast"] is True
     # --output-format resolves to the registered writer callable, not the name.
     assert call_kwargs["write_frame"] is write_starlist_set
@@ -319,8 +319,8 @@ def test_process_uses_robust_defaults(runner, patched_photometer, tmp_path):
     call_kwargs = patched_photometer.call_args.kwargs
     assert call_kwargs["weights"] is None
     assert call_kwargs["user_specific_metadata"] == {}
-    # append_l4 now defaults ON.
-    assert call_kwargs["append_l4"] is True
+    # build_l4 now defaults ON.
+    assert call_kwargs["build_l4"] is True
     assert call_kwargs["fail_fast"] is False
     assert call_kwargs["write_qa_manifest"] is True
 

@@ -70,7 +70,7 @@ You get **one `.star` file per frame** that processed cleanly, plus one
 `qa_manifest.csv` for the run. Each `.star` file is a JSON document holding a
 separate star list for each Bayer filter — red (`TR`), green (`TG`), blue
 (`TB`), and a full-frame luminance channel (`L4`) unless you pass
-`--no-append-l4`. The per-star fields are covered in
+`--no-build-l4`. The per-star fields are covered in
 [Understanding the output](outputs.md).
 
 ## Read the QA manifest

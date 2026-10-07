@@ -200,15 +200,14 @@ def bayer_masks_rggb():
     Returns
     -------
     callable
-        ``_make(shape, *, append_l4=False)`` -> the ``{channel: mask}`` mapping
-        from ``generate_bayer_masks``.
+        ``_make(shape)`` -> the ``{channel: mask}`` mapping from
+        ``generate_bayer_masks``.
     """
 
-    def _make(shape, *, append_l4=False):
+    def _make(shape):
         return generate_bayer_masks(
             shape,
             {"bayerpat": "RGGB", "roworder": "top-down", "ybayroff": 0},
-            append_l4=append_l4,
         )
 
     return _make

@@ -18,7 +18,7 @@ There is **one `.star` file per frame**, named after the input frame
 [`StarListSet`](https://github.com/mwcraig/aavso-starlist-schema) JSON document
 that bundles **one star list per Bayer filter** — red (`TR`), green (`TG`), blue
 (`TB`), and a full-frame luminance channel (`L4`) unless you pass
-`--no-append-l4`. So the per-filter split lives *inside* the file, not across
+`--no-build-l4`. So the per-filter split lives *inside* the file, not across
 several files.
 
 The shape of one file:
