@@ -2128,6 +2128,30 @@ class CentroidResult:
     fallback: bool
 
 
+def _edge_distance(xy, shape):
+    """
+    Distance from each position to the nearest frame edge, negative off-frame.
+
+    Parameters
+    ----------
+    xy : numpy.ndarray
+        ``(N, 2)`` pixel coordinates.
+    shape : tuple of int
+        ``(height, width)`` of the frame.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(N,)`` distances in pixels, using the same bounds as
+        `good_star_mask`: the frame spans ``[0, width - 0.5]`` in x and
+        ``[0, height - 0.5]`` in y.
+    """
+    height, width = shape
+    return np.minimum.reduce(
+        [xy[:, 0], width - 0.5 - xy[:, 0], xy[:, 1], height - 0.5 - xy[:, 1]]
+    )
+
+
 def centroid_with_prior(
     calibrated_data, aligned_coords, cnn, *, gaia_g=None, config=None
 ):
@@ -2139,23 +2163,75 @@ def centroid_with_prior(
     calibrated_data : numpy.ndarray
         Calibrated image data.
     aligned_coords : numpy.ndarray
-        ``(N, 2)`` projected catalog pixel coordinates.
+        ``(N, 2)`` WCS-projected catalog pixel coordinates.
     cnn : object
         Centroiding CNN model, as for `centroid_stars`.
     gaia_g : numpy.ndarray or None, optional
-        Gaia G of each row. By default None.
-    config : CentroidConfig or None, optional
+        Gaia G magnitude of each row, ``(N,)``, NaN where a row has none. When
+        None the prior is not applied and every star is sent to the CNN.
+    config : `~bandaid.config.CentroidConfig` or None, optional
         Prior settings; None uses the defaults.
 
     Returns
     -------
     CentroidResult
-        The positions and how each was obtained.
+        The positions, row-aligned with `aligned_coords`, and how each was
+        obtained.
+
+    Notes
+    -----
+    A star whose cutout would be partly outside the frame (closer than
+    ``config.edge_margin_px`` to an edge, or past it) is never sent to the
+    CNN, which returns arbitrary positions for a fill-padded cutout. It takes
+    its projected position plus the frame's offset plane.
+
+    The plane is fitted to the CNN centroids of the ``config.fit_n_stars``
+    brightest stars (by `gaia_g`) outside the band, so it describes how the
+    CNN's centroids differ from the projected positions on this frame; see
+    `_fit_offset_plane`. Every star outside the band is still centroided by
+    the CNN and keeps that position. When the frame has no plane (too few fit
+    stars), edge-band stars take the bare projected position, and the result
+    records that. The CNN is called through `centroid_stars` on the stars
+    outside the band only, never with an empty array.
     """
-    del gaia_g, config
-    coords = centroid_stars(calibrated_data, aligned_coords, cnn)
+    config = config or _DEFAULT_CENTROID
+    if gaia_g is None or not config.edge_band_prior:
+        coords = centroid_stars(calibrated_data, aligned_coords, cnn)
+        return CentroidResult(
+            coords=coords,
+            method=np.full(len(coords), "cnn"),
+            plane=None,
+            fallback=False,
+        )
+
+    shape = calibrated_data.shape[:2]
+    projected = np.asarray(aligned_coords, dtype=float)
+    in_band = _edge_distance(projected, shape) < config.edge_margin_px
+    coords = projected.copy()
+    method = np.where(in_band, "edge_projected", "cnn")
+    interior = np.flatnonzero(~in_band)
+    plane = None
+    if len(interior):
+        coords[interior] = centroid_stars(calibrated_data, projected[interior], cnn)
+        with_g = interior[np.isfinite(gaia_g[interior])]
+        fit_rows = with_g[
+            np.argsort(gaia_g[with_g], kind="stable")[: config.fit_n_stars]
+        ]
+        plane = _fit_offset_plane(
+            projected[fit_rows],
+            coords[fit_rows],
+            shape,
+            min_fit_stars=config.min_fit_stars,
+            clip_sigma=config.clip_sigma,
+        )
+    if plane is not None:
+        coords[in_band] += plane.offsets(projected[in_band])
+        method[in_band] = "edge_plane"
     return CentroidResult(
-        coords=coords, method=np.full(len(coords), "cnn"), plane=None, fallback=False
+        coords=coords,
+        method=method,
+        plane=plane,
+        fallback=plane is None and bool(in_band.any()),
     )
 
 
@@ -3220,8 +3296,14 @@ def prepare_image(
         aligned_coords, photometry_coords, calibrated_data.shape, file, gaia_g
     )
 
+    # Without a catalog the aligned coordinates are detections, not projected
+    # catalog positions, so there is no Gaia prior to apply.
     centroided = centroid_with_prior(
-        working_image, aligned_coords, cnn, gaia_g=gaia_g, config=config.centroid
+        working_image,
+        aligned_coords,
+        cnn,
+        gaia_g=None if photometry_coords is None else gaia_g,
+        config=config.centroid,
     )
 
     return ImageData(
