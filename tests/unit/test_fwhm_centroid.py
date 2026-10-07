@@ -406,6 +406,19 @@ class TestFitOffsetPlane:
         max_error = 0.1
         assert np.abs(plane.offsets(grid) - _affine_offset(grid)).max() < max_error
 
+    @pytest.mark.parametrize(
+        "shift", [[6.0, 0.0], [0.0, 6.0]], ids=["x-only", "y-only"]
+    )
+    def test_an_outlier_on_one_axis_is_clipped(self, shift):
+        """A star that is off on either axis alone is clipped."""
+        projected = _fit_stars(30)
+        measured = _noisy_measurements(projected)
+        measured[3] += shift
+
+        plane = _fit_offset_plane(projected, measured, FRAME_SHAPE)
+
+        assert plane.n_clipped == 1
+
     def test_rows_returned_exactly_at_the_input_are_excluded(self):
         """A CNN result equal to its input is a failed fallback, not a measurement."""
         projected = _fit_stars(40)
