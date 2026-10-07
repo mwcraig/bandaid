@@ -1757,12 +1757,12 @@ class TestProcessOneImage:
 
         assert build_spy.call_count == 0
 
-    def test_append_l4_false_returns_only_the_given_masks(self, l4_frame):
-        """With ``append_l4=False`` no L4 is built and TR/TG/TB are not required."""
+    def test_build_l4_false_returns_only_the_given_masks(self, l4_frame):
+        """With ``build_l4=False`` no L4 is built and TR/TG/TB are not required."""
         path, masks = l4_frame
         masks.pop("TB")
 
-        result = process_one_image(path, {}, _REF_RADECS, None, masks, append_l4=False)
+        result = process_one_image(path, {}, _REF_RADECS, None, masks, build_l4=False)
 
         assert set(result) == {"TR", "TG"}
 
@@ -1819,7 +1819,7 @@ class TestProcessOneImage:
             None,
             {"TR": None},
             config=PhotometryConfig(),
-            append_l4=False,
+            build_l4=False,
         )
 
         resolved_config = build_table_mock.call_args.kwargs["config"]

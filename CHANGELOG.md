@@ -191,10 +191,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `calibration_sequence` returns a `CalibrationResult` instead of a 5-tuple, and
     its `detection_image_out` parameter is removed; read `result.detection_image`
     for the array detection ran on. Pipeline output is unchanged (#123).
-- `process_one_image` takes an `append_l4` keyword (default `True`) instead of
+- `process_one_image` takes a `build_l4` keyword (default `True`) instead of
     an `"L4": None` entry in `bayer_masks`; `generate_bayer_masks` no longer adds
     that entry and `BatchPrep` carries the flag. Callers that planted `"L4": None`
-    must pass `append_l4=True` instead. The CLI is unchanged (#125).
+    must pass `build_l4=True` instead. The CLI is unchanged (#125).
 - `InstrumentProfile.header_center_offset` is replaced by `header_frame` and
     `header_equinox`, which declare the frame of the header RA/DEC; the Seestar50
     profile uses `"fk5"`/`"date"`. A profile that still sets the old key to

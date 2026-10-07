@@ -239,7 +239,7 @@ class BatchPrep:
         header that positively identifies a *different* registered
         instrument, or is ambiguous between several, is rejected either way.
         An auto-detected batch is never exempt. Default False.
-    append_l4 : bool
+    build_l4 : bool
         Whether each frame also gets the full-frame "L4" luminance channel,
         built from the TR/TG/TB tables; handed to ``process_one_image``.
         Default True.
@@ -255,7 +255,7 @@ class BatchPrep:
     config: PhotometryConfig
     forced_targets: SkyCoord | None = None
     instrument_auto_detected: bool = False
-    append_l4: bool = True
+    build_l4: bool = True
 
     def __post_init__(self) -> None:
         """
@@ -627,7 +627,7 @@ def prepare_batch(
         config=config,
         forced_targets=forced_targets,
         instrument_auto_detected=instrument_auto_detected,
-        append_l4=append_l4,
+        build_l4=append_l4,
     )
 
 
@@ -1380,7 +1380,7 @@ def process_batch(
                 config=prep.config,
                 input_photometry_coords=prep.photometry_coords,
                 frame=frame,
-                append_l4=prep.append_l4,
+                build_l4=prep.build_l4,
             )
             # The raw pixel array is not needed past this point; drop the
             # reference now so it does not stay alive through the write step

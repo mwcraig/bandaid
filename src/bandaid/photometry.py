@@ -3036,7 +3036,7 @@ def process_one_image(
     bayer_balance_detection=True,
     input_photometry_coords=None,
     frame=None,
-    append_l4=True,
+    build_l4=True,
 ):
     """
     Process a single image file and return one photometry table per input mask.
@@ -3072,7 +3072,7 @@ def process_one_image(
         sky coordinates in the output.
     frame : LoadedFrame or None, optional
         Pre-loaded frame; when None the file is opened once via the loader.
-    append_l4 : bool, optional
+    build_l4 : bool, optional
         Whether to also build the synthetic full-frame "L4" luminance channel,
         returned under the key "L4". It is built from the RGB channels
         (TR/TG/TB) after they are photometered, so those three must be in
@@ -3082,7 +3082,7 @@ def process_one_image(
     -------
     dict of {str: Table}
         Dictionary mapping each filter name to the photometry table for that
-        filter, plus "L4" when ``append_l4`` is true. If the frame cannot be
+        filter, plus "L4" when ``build_l4`` is true. If the frame cannot be
         processed, the `FrameError` raised by `prepare_image` (too few stars,
         unsolvable WCS, ...) propagates unchanged; `process_batch` catches it,
         logs it, and skips the frame.
@@ -3090,7 +3090,7 @@ def process_one_image(
     Raises
     ------
     ValueError
-        If ``append_l4`` is true and the TR/TG/TB channels L4 is built from
+        If ``build_l4`` is true and the TR/TG/TB channels L4 is built from
         are missing from ``bayer_masks``.
     InstrumentDetectionError
         A `FrameMetadataError` subclass, raised with `file` attached when
@@ -3138,7 +3138,7 @@ def process_one_image(
     # Reject a malformed mask dict before any photometry: the dict is shared
     # across the batch loop, so a bad one would otherwise cost every frame a
     # full RGB pass before failing.
-    if append_l4 and (msg := _missing_rgb_channels(bayer_masks)):
+    if build_l4 and (msg := _missing_rgb_channels(bayer_masks)):
         raise ValueError(msg)
 
     # Computed once per frame and reused across Bayer channels (see
@@ -3165,7 +3165,7 @@ def process_one_image(
 
     # L4 is a recombination of the RGB tables, so it is built once they all
     # exist; the caller's dict is read, never mutated.
-    if append_l4:
+    if build_l4:
         l4 = calculate_l4_quantities(by_filter_data, img.metadata["egain"])
         l4.meta["filter"] = "L4"
         l4.meta["full_image_meta"] = img.metadata

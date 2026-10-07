@@ -101,10 +101,10 @@ class TestProcessBatch:
             assert masks is prep.bayer_masks
             assert call.kwargs["input_photometry_coords"] is prep.photometry_coords
 
-    @pytest.mark.parametrize("append_l4", [True, False])
-    def test_passes_the_preps_append_l4_flag(self, mocker, append_l4):
+    @pytest.mark.parametrize("build_l4", [True, False])
+    def test_passes_the_preps_build_l4_flag(self, mocker, build_l4):
         """``process_one_image`` receives the flag the prep carries."""
-        prep = dataclasses.replace(_dummy_prep(), append_l4=append_l4)
+        prep = dataclasses.replace(_dummy_prep(), build_l4=build_l4)
         process_one_image = mocker.patch(
             "bandaid.scripts.process_one_image",
             return_value={"TR": Table({"tot_count": [1.0]})},
@@ -112,7 +112,7 @@ class TestProcessBatch:
 
         scripts.process_batch(["a.fits"], prep, user_specific_metadata={})
 
-        assert process_one_image.call_args.kwargs["append_l4"] is append_l4
+        assert process_one_image.call_args.kwargs["build_l4"] is build_l4
 
     def test_emits_progress_log_per_frame(self, patched_process_one_image, caplog):
         """Each frame logs a ``processing i/N: name`` line at INFO for --verbose."""
