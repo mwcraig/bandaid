@@ -525,27 +525,20 @@ def test_precomputed_geometry_matches_internal_computation(make_test_image):
     assert without["annulus_radii"] == with_precomputed["annulus_radii"]
 
 
-def test_geometry_kwarg_ignores_radii_and_annulus_overrides(make_test_image):
-    """When ``geometry`` is given, ``radii``/``annulus`` are ignored."""
+@pytest.mark.parametrize(
+    "override", [{"radii": [20.0]}, {"annulus": (5, 8)}], ids=["radii", "annulus"]
+)
+def test_geometry_kwarg_with_radii_or_annulus_override_raises(
+    make_test_image, override
+):
+    """Passing ``geometry`` together with an explicit ``radii``/``annulus`` raises."""
     image, coords, fwhm, mask = _single_source_photometry_inputs(make_test_image)
-    egain = 0.3
-
     geometry = _aperture_annulus_geometry(fwhm, RELATIVE_RADII, ANNULUS)
-    # Deliberately wrong radii/annulus that would raise if actually used
-    # (aperture larger than the annulus); geometry must win.
-    photom = measure_photometry(
-        image,
-        coords,
-        fwhm,
-        egain,
-        mask,
-        radii=[20.0],
-        annulus=(5, 8),
-        geometry=geometry,
-    )
 
-    assert photom["aperture_radii"] == geometry[0][0]
-    assert photom["annulus_radii"] == geometry[1]
+    with pytest.raises(ValueError, match="geometry"):
+        measure_photometry(
+            image, coords, fwhm, 0.3, mask, geometry=geometry, **override
+        )
 
 
 @pytest.mark.parametrize(("fwhm", "expected"), [(0.5, 2), (2.6, 6)])
