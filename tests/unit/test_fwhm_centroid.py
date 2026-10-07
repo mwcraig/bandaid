@@ -404,6 +404,32 @@ class TestFitOffsetPlane:
         max_error = 0.1
         assert np.abs(plane.offsets(grid) - _affine_offset(grid)).max() < max_error
 
+    def test_several_gross_outliers_are_all_clipped(self):
+        """Four stars 5 px off do not inflate the clip scale enough to hide."""
+        projected = _fit_stars(30)
+        measured = _noisy_measurements(projected)
+        outliers = [3, 8, 14, 21]
+        measured[outliers] += [5.0, 5.0]
+
+        plane = _fit_offset_plane(projected, measured, FRAME_SHAPE)
+
+        assert plane.n_clipped == len(outliers)
+        grid = np.array([[2.0, 2.0], [297.0, 197.0], [150.0, 100.0]])
+        max_error = 0.1
+        assert np.abs(plane.offsets(grid) - _affine_offset(grid)).max() < max_error
+
+    def test_an_exact_plane_clips_nothing(self):
+        """Residuals at round-off level give a zero scale: no star is clipped."""
+        projected = _fit_stars(30)
+        measured = projected + _affine_offset(projected)
+
+        plane = _fit_offset_plane(projected, measured, FRAME_SHAPE)
+
+        assert plane.n_clipped == 0
+        assert plane.n_used == len(projected)
+        round_off_pix = 1e-6
+        assert plane.rms < round_off_pix
+
     @pytest.mark.parametrize(
         "shift", [[6.0, 0.0], [0.0, 6.0]], ids=["x-only", "y-only"]
     )
@@ -568,6 +594,27 @@ class TestCentroidWithCatalogModel:
             result.coords[cnn_class], _measured(projected[cnn_class])
         )
         assert (result.method[cnn_class] == "cnn").all()
+
+    def test_a_class_star_the_cnn_could_not_measure_is_modelled(self, mocker):
+        """A class star whose CNN result is its input is output at the plane."""
+        projected = _fit_stars(N_CATALOG)
+        failed = 2
+
+        def fake(_data, coords, _cnn):
+            out = _measured(coords)
+            out[failed] = coords[failed]
+            return out
+
+        mocker.patch("bandaid.photometry.centroid_stars", side_effect=fake)
+
+        result = _run_policy(projected, _catalog_g())
+
+        assert result.method[failed] == "plane"
+        np.testing.assert_allclose(
+            result.coords[failed],
+            projected[failed] + result.plane.offsets(projected[failed : failed + 1])[0],
+        )
+        assert (result.method[:failed] == "cnn").all()
 
     def test_a_star_at_the_cut_is_in_the_class_and_one_fainter_is_not(self):
         """The class is G <= cut: row 9 (G = 17) is in, row 10 (G = 18) is out."""

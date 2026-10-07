@@ -28,7 +28,8 @@ from astropy.coordinates import (
     search_around_sky,
 )
 from astropy.io import fits
-from astropy.stats import SigmaClip
+from astropy.modeling import fitting, models
+from astropy.stats import SigmaClip, mad_std, sigma_clip
 from astropy.table import Table
 from astropy.time import Time
 from astropy.utils import iers
@@ -124,6 +125,8 @@ MIN_STARS_FOR_PAIRS = 2
 # config object is the single source of truth for these values.
 _DEFAULT_APERTURES = ApertureConfig()
 _DEFAULT_CENTROID = CentroidConfig()
+# Residuals with a robust scale below this, in pixels, are round-off, not noise.
+_MIN_CLIP_SCALE_PIX = 1e-6
 _DEFAULT_DRIFT = DriftConfig()
 _DEFAULT_INSTRUMENT = InstrumentProfile()
 _DEFAULT_SOURCE_SELECTION = SourceSelectionConfig()
@@ -1978,9 +1981,9 @@ def centroid_stars(calibrated_data, aligned_coords, cnn):
     return centroid.ballet_centroid(calibrated_data, aligned_coords, cnn)
 
 
-def _plane_design(xy, shape):
+def _normalised_xy(xy, shape):
     """
-    Design matrix of the offset plane: a constant and frame-normalised x and y.
+    Scale pixel coordinates so each runs from -1 to 1 across the frame.
 
     Parameters
     ----------
@@ -1992,13 +1995,15 @@ def _plane_design(xy, shape):
     Returns
     -------
     numpy.ndarray
-        ``(N, 3)`` array with columns ``1``, ``(x - w/2) / (w/2)`` and
-        ``(y - h/2) / (h/2)``.
+        ``(2, N)`` array: ``(x - w/2) / (w/2)`` then ``(y - h/2) / (h/2)``.
     """
     height, width = shape
-    nx = (xy[:, 0] - width / 2.0) / (width / 2.0)
-    ny = (xy[:, 1] - height / 2.0) / (height / 2.0)
-    return np.column_stack([np.ones(len(xy)), nx, ny])
+    return np.array(
+        [
+            (xy[:, 0] - width / 2.0) / (width / 2.0),
+            (xy[:, 1] - height / 2.0) / (height / 2.0),
+        ]
+    )
 
 
 @dataclass(frozen=True)
@@ -2045,8 +2050,61 @@ class OffsetPlane:
         numpy.ndarray
             ``(N, 2)`` offsets to add to `xy`.
         """
-        design = _plane_design(np.asarray(xy, dtype=float), self.shape)
-        return np.column_stack([design @ self.coeffs_x, design @ self.coeffs_y])
+        nx, ny = _normalised_xy(np.asarray(xy, dtype=float), self.shape)
+        return np.column_stack(
+            [
+                self.coeffs_x[0] + self.coeffs_x[1] * nx + self.coeffs_x[2] * ny,
+                self.coeffs_y[0] + self.coeffs_y[1] * nx + self.coeffs_y[2] * ny,
+            ]
+        )
+
+
+def _fit_plane_models(nx, ny, delta):
+    """
+    Fit the x and y offsets as a two-model first-order polynomial set.
+
+    Parameters
+    ----------
+    nx : numpy.ndarray
+        ``(N,)`` frame-normalised x coordinates of the stars.
+    ny : numpy.ndarray
+        ``(N,)`` frame-normalised y coordinates of the stars.
+    delta : numpy.ndarray
+        ``(2, N)`` CNN-minus-projected offsets, x row then y row.
+
+    Returns
+    -------
+    fitted : `~astropy.modeling.polynomial.Polynomial2D`
+        The fitted two-model set.
+    resid : numpy.ndarray
+        ``(2, N)`` residuals of the fit.
+    """
+    fitted = fitting.LinearLSQFitter()(
+        models.Polynomial2D(degree=1, n_models=2), nx, ny, delta
+    )
+    # A model set evaluates one input row per model.
+    return fitted, delta - fitted(np.tile(nx, (2, 1)), np.tile(ny, (2, 1)))
+
+
+def _robust_scale(values, axis=None):
+    """
+    Return the robust standard deviation, or infinity where it is round-off.
+
+    Parameters
+    ----------
+    values : numpy.ndarray
+        Residuals to measure.
+    axis : int or None, optional
+        Axis along which to measure. By default None (all values).
+
+    Returns
+    -------
+    float or numpy.ndarray
+        1.4826 times the median absolute deviation, replaced by infinity where
+        it is below `_MIN_CLIP_SCALE_PIX` so that nothing is clipped there.
+    """
+    scale = mad_std(values, axis=axis)
+    return np.where(scale > _MIN_CLIP_SCALE_PIX, scale, np.inf)
 
 
 def _fit_offset_plane(
@@ -2071,7 +2129,8 @@ def _fit_offset_plane(
     min_fit_stars : int, optional
         Fewest stars that may define the fit, before and after clipping.
     clip_sigma : float, optional
-        Per-axis clipping threshold, in standard deviations of the residuals.
+        Clipping threshold, in robust standard deviations (1.4826 times the
+        median absolute deviation) of the residuals about their median.
 
     Returns
     -------
@@ -2081,35 +2140,46 @@ def _fit_offset_plane(
 
     Notes
     -----
-    Each axis is fitted by unweighted least squares to a constant plus a term
-    linear in each frame coordinate. Stars whose CNN result is not finite, or
-    equals the input position exactly (the CNN's fallback when a cutout is
-    unusable), are not measurements and are left out. The fit is then clipped
-    once: a star is dropped if either axis's residual exceeds `clip_sigma`
-    standard deviations of that axis's residuals, and the plane is refitted on
-    the rest.
+    The x and y offsets are fitted together as a two-model set of first-order
+    `~astropy.modeling.polynomial.Polynomial2D` by unweighted linear least
+    squares, in coordinates scaled to run from -1 to 1 across the frame. Stars
+    whose CNN result is not finite, or equals the input position exactly (the
+    CNN's fallback when a cutout is unusable), are not measurements and are
+    left out. The fit is then clipped once: a star is dropped if either axis's
+    residual lies more than `clip_sigma` robust standard deviations from that
+    axis's median residual, and the plane is refitted on the rest. A robust
+    scale is used because with the plain standard deviation a few gross
+    outliers inflate it enough to hide themselves. An axis whose residuals are
+    at round-off level (a robust scale below `_MIN_CLIP_SCALE_PIX`) clips
+    nothing.
     """
     projected = np.asarray(projected, dtype=float)
     measured = np.asarray(measured, dtype=float)
     usable = np.isfinite(measured).all(axis=1) & (measured != projected).any(axis=1)
     if usable.sum() < min_fit_stars:
         return None
-    design = _plane_design(projected[usable], shape)
-    delta = measured[usable] - projected[usable]
-    coeffs = np.linalg.lstsq(design, delta, rcond=None)[0]
-    resid = delta - design @ coeffs
-    keep = (np.abs(resid) <= clip_sigma * resid.std(axis=0)).all(axis=1)
+    nx, ny = _normalised_xy(projected[usable], shape)
+    delta = (measured[usable] - projected[usable]).T
+    _, resid = _fit_plane_models(nx, ny, delta)
+    clipped = sigma_clip(
+        resid,
+        sigma=clip_sigma,
+        maxiters=1,
+        cenfunc="median",
+        stdfunc=_robust_scale,
+        axis=1,
+    )
+    keep = ~np.ma.getmaskarray(clipped).any(axis=0)
     if keep.sum() < min_fit_stars:
         return None
-    coeffs = np.linalg.lstsq(design[keep], delta[keep], rcond=None)[0]
-    resid = delta[keep] - design[keep] @ coeffs
+    fitted, resid = _fit_plane_models(nx[keep], ny[keep], delta[:, keep])
     return OffsetPlane(
-        coeffs_x=coeffs[:, 0],
-        coeffs_y=coeffs[:, 1],
+        coeffs_x=np.array([fitted.c0_0[0], fitted.c1_0[0], fitted.c0_1[0]]),
+        coeffs_y=np.array([fitted.c0_0[1], fitted.c1_0[1], fitted.c0_1[1]]),
         shape=tuple(shape),
         n_used=int(keep.sum()),
         n_clipped=int(len(keep) - keep.sum()),
-        rms=float(np.sqrt((resid**2).sum(axis=1).mean())),
+        rms=float(np.sqrt((resid**2).sum(axis=0).mean())),
     )
 
 
@@ -2126,7 +2196,8 @@ class CentroidResult:
         ``(N,)`` array of strings naming how each row's position was obtained:
         ``"cnn"`` (the CNN centroid of a CNN-class star, or of any star when the
         policy did not run), ``"plane"`` (projected position plus the frame's
-        offset plane) or ``"fallback_cnn"`` (a star outside the CNN class that
+        offset plane, for a star outside the CNN class or a class star the CNN
+        could not measure) or ``"fallback_cnn"`` (a star outside the CNN class that
         took its CNN centroid because the frame had no plane).
     expected : numpy.ndarray
         ``(N, 2)`` positions a CNN centroid is expected at: the projected
@@ -2185,7 +2256,9 @@ def centroid_with_catalog_model(
     A star is CNN-class when its Gaia G is at or brighter than `g_cut`, or it
     has no G (a forced target). The class is decided from the catalog alone, so
     it is the same on every frame of a batch. A CNN-class star keeps its CNN
-    centroid.
+    centroid, unless the CNN returned its input position exactly (its fallback
+    for an unusable cutout), in which case the star is output at the plane
+    position like the stars outside the class.
 
     The offset plane is fitted to the CNN centroids of the
     ``config.fit_n_stars`` brightest stars with a G on this frame, whether or
@@ -2241,8 +2314,12 @@ def centroid_with_catalog_model(
     else:
         expected = projected + plane.offsets(projected)
         coords = expected.copy()
-        coords[cnn_class] = measured[cnn_class]
-        method = np.where(cnn_class, "cnn", "plane")
+        # A CNN result equal to its input is the network's unusable-cutout
+        # fallback, not a measurement: such a star is modelled like the rest.
+        unmeasured = (measured == projected).all(axis=1)
+        keeps_cnn = cnn_class & ~unmeasured
+        coords[keeps_cnn] = measured[keeps_cnn]
+        method = np.where(keeps_cnn, "cnn", "plane")
     return CentroidResult(
         coords=coords,
         method=method,

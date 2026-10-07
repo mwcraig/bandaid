@@ -231,8 +231,9 @@ class CentroidConfig(BaseModel, frozen=True, protected_namespaces=()):
         Minimum number of stars that must survive clipping for the plane to be
         used; below it the frame is centroided entirely by the CNN.
     clip_sigma : float
-        Per-axis clipping threshold, in standard deviations, for the one clip
-        and refit of the plane.
+        Per-axis clipping threshold, in robust standard deviations (1.4826
+        times the median absolute deviation), for the one clip and refit of
+        the plane.
 
     Notes
     -----
