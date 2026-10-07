@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `CentroidConfig` (`PhotometryConfig.centroid`): stars within `edge_margin_px`
+    (default 8) of a frame edge are no longer sent to the Ballet CNN, whose 15x15
+    cutout is fill-padded there and returned positions more than 3 px off for 14-55%
+    of such stars. They take their WCS-projected Gaia position plus a per-frame
+    offset plane fitted to the CNN centroids of the 30 brightest non-edge stars;
+    a frame with fewer than 12 usable fit stars uses the bare projected position.
+    On by default; `edge_band_prior=False` restores the old behaviour (#129).
+- A `centroid_method` column on the in-memory photometry tables (`cnn`,
+    `edge_plane` or `edge_projected`; also on L4, not in `.star` files), and QA
+    manifest columns `n_edge_prior`, `plane_fallback`, `plane_n_used`,
+    `plane_n_clipped`, `plane_rms` and the plane's centre offset and slopes
+    (#129).
+- `BatchPrep.gaia_g`, the Gaia G magnitude of each photometry target (NaN for
+    forced targets), kept row-aligned with `photometry_coords` through the
+    per-frame off-frame cut.
 - `InstrumentProfile.wcs_pointing_tolerance` (degrees, default none): the largest
     separation allowed between a solved frame center and its header pointing,
     instead of one field radius.
@@ -121,6 +136,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Positions, and so fluxes, of catalog stars within 8 px of a frame edge (or just
+    past it) change: they are placed from the Gaia prior instead of the CNN (see
+    `CentroidConfig`). Every star farther from the edge is unchanged (#129).
 - Breaking: `build_photometry_table` no longer accepts `peak_cutouts=` or
     `geometry=`; both are cached per frame on `ImageData`. `measure_photometry`
     raises `ValueError` when `geometry` is combined with an explicit `radii` or

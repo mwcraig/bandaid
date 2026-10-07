@@ -43,17 +43,43 @@ The knobs fall into three groups by how safe they are to change.
 
 These are ordinary analysis choices and are safe to set for any run.
 
-| Sub-config         | Field                    | Default  | Meaning                                                             |
-| ------------------ | ------------------------ | -------- | ------------------------------------------------------------------- |
-| `apertures`        | `radii`                  | `(1.0,)` | Aperture radii, in units of FWHM                                    |
-| `apertures`        | `gap`                    | `4.0`    | FWHM gap between largest aperture and annulus                       |
-| `apertures`        | `annulus_width`          | `3.0`    | Radial width of the background annulus, in FWHM                     |
-| `source_selection` | `gaia_mag_limit`         | `15.0`   | Magnitude limit for the photometry targets                          |
-| `source_selection` | `contaminant_mag_offset` | `3.0`    | Contaminant-catalog depth below `gaia_mag_limit`                    |
-| `source_selection` | `min_snr`                | `2.0`    | Minimum SNR a star must have to reach the output                    |
-| `source_selection` | `gaia_row_limit`         | `10000`  | Base maximum rows the Gaia query may return (scaled with cone area) |
-| `drift`            | `drift_tolerance_fwhm`   | `1.0`    | Max centroid drift, in FWHM                                         |
-| `drift`            | `drift_cap_pix`          | `4.0`    | Absolute pixel cap on centroid drift                                |
+| Sub-config         | Field                    | Default  | Meaning                                                              |
+| ------------------ | ------------------------ | -------- | -------------------------------------------------------------------- |
+| `apertures`        | `radii`                  | `(1.0,)` | Aperture radii, in units of FWHM                                     |
+| `apertures`        | `gap`                    | `4.0`    | FWHM gap between largest aperture and annulus                        |
+| `apertures`        | `annulus_width`          | `3.0`    | Radial width of the background annulus, in FWHM                      |
+| `source_selection` | `gaia_mag_limit`         | `15.0`   | Magnitude limit for the photometry targets                           |
+| `source_selection` | `contaminant_mag_offset` | `3.0`    | Contaminant-catalog depth below `gaia_mag_limit`                     |
+| `source_selection` | `min_snr`                | `2.0`    | Minimum SNR a star must have to reach the output                     |
+| `source_selection` | `gaia_row_limit`         | `10000`  | Base maximum rows the Gaia query may return (scaled with cone area)  |
+| `drift`            | `drift_tolerance_fwhm`   | `1.0`    | Max centroid drift, in FWHM                                          |
+| `drift`            | `drift_cap_pix`          | `4.0`    | Absolute pixel cap on centroid drift                                 |
+| `centroid`         | `edge_band_prior`        | `True`   | Use the Gaia prior position for stars in the frame-edge band         |
+| `centroid`         | `edge_margin_px`         | `8.0`    | Width of the frame-edge band, in pixels                              |
+| `centroid`         | `fit_n_stars`            | `30`     | Brightest non-edge stars that define the per-frame offset plane      |
+| `centroid`         | `min_fit_stars`          | `12`     | Fewest stars that may define the plane; below it the frame has none  |
+| `centroid`         | `clip_sigma`             | `3.0`    | Per-axis clipping threshold of the plane fit, in standard deviations |
+
+#### Stars near the frame edge
+
+The CNN centroider works on a 15x15 pixel cutout, which is partly padded with a
+constant where a star is closer than about 7 pixels to a frame edge; there it
+returns arbitrary positions, often several pixels off, with a normal-looking flux
+and SNR. With `centroid.edge_band_prior` on (the default), a star closer than
+`edge_margin_px` to any edge, or just past one, is not sent to the CNN. It takes
+its WCS-projected Gaia position plus a per-frame offset plane instead.
+
+The plane is the smooth difference between the CNN's centroids and the projected
+positions on that frame. It is fitted, without weights, to the `fit_n_stars`
+brightest stars (by Gaia G) that are on the frame and outside the band, using one
+clip at `clip_sigma` and a refit. A frame where fewer than `min_fit_stars` stars
+survive has no plane; its edge-band stars then take the bare projected position,
+and the QA manifest records that. Stars outside the band, and forced targets
+anywhere outside it, are centroided by the CNN exactly as before.
+
+Each row of the in-memory table carries a `centroid_method` column: `cnn`,
+`edge_plane` or `edge_projected`. It is not part of the `.star` schema. Setting
+`edge_band_prior=False` restores CNN centroids everywhere.
 
 ### Tier 2 — Instrument / per-telescope (advanced)
 
