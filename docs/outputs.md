@@ -56,6 +56,12 @@ its centroid lands in-bounds, and its SNR meets the `source_selection.min_snr`
 floor (`2.0` by default). Stars that fail (saturated, off the chip, no usable
 flux, too faint) are simply absent — there is no row for them.
 
+Stars close to a frame edge are never measured either: a catalog star whose
+projected position is within `edge_margin_px` (10 px by default) of any edge has
+no row, because its background annulus would be cut off by the frame and the
+centroiding network is unreliable there. See
+[Frame-edge margin](configuration.md#frame-edge-margin).
+
 The cut is per star *and per filter*: because SNR is color-dependent, a star can
 survive in one filter and fall below the floor in another, so a
 color-disadvantaged channel (say, `TB` on a red-star field) can hold fewer
@@ -178,6 +184,7 @@ bad frames in a night without opening every `.star` file.
 | `dropped_filters`     | Semicolon-joined names of filters dropped from the `.star` output because no star survived filtering (e.g. `TB` or `TR;TB`), or empty for a frame where every filter kept at least one star. See below.                                                                                                                           |
 | `n_centroid_drift`    | Stars with the `centroid_drift` flag set (see below) — a frame-health signal on its own.                                                                                                                                                                                                                                          |
 | `n_drift_rejected`    | The subset of `n_centroid_drift` that also passes `good_star_mask` — the stars a future gate on this flag would actually remove, since most drifted stars are already dropped by the existing flux/error/bounds cuts.                                                                                                             |
+| `n_edge_dropped`      | Catalog stars removed before measurement because their projected position was within `edge_margin_px` of a frame edge (see [Configuration](configuration.md#frame-edge-margin)); stars far off the frame are not counted. Blank if the frame failed before photometry.                                                            |
 | `n_forced_measured`   | Forced targets (see [Command-line usage](command_line.md)) with a good, output-surviving measurement in the frame's representative channel, matched by sky position — answers "was my nova actually measured in this frame" without float-matching `ra`/`dec` across `.star` files. Blank when no forced targets were configured. |
 
 `n_good_stars` is a single-channel count, not a per-filter tally: the SNR floor
