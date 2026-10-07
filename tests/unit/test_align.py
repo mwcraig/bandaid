@@ -318,6 +318,28 @@ class TestAlign:
                 scale_tolerance=0.05,
             )
 
+    @pytest.mark.parametrize(
+        ("tolerance", "expected_text"),
+        [(0.0025, "> 0.25% off"), (0.0004, "> 0.04% off"), (0.05, "> 5% off")],
+    )
+    def test_scale_error_states_the_tolerance_exactly(
+        self, mocker, tolerance, expected_text
+    ):
+        """The wrong-scale message prints the tolerance without rounding it away."""
+        mocker.patch(
+            "bandaid.photometry.compute_wcs", return_value=_make_tan_wcs(pixscale=4.2)
+        )
+        coords = align_coords(N_IMAGE_STARS_ALIGN)
+
+        with pytest.raises(WCSScaleError, match=expected_text):
+            align(
+                coords,
+                coords.copy(),
+                photometry_coords=None,
+                expected_pixscale=2.4,
+                scale_tolerance=tolerance,
+            )
+
     def test_wcs_scale_error_is_wcs_solve_error(self):
         """WCSScaleError is a WCSSolveError so the batch loop still skips the frame."""
         assert issubclass(WCSScaleError, WCSSolveError)

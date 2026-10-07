@@ -1806,7 +1806,7 @@ def _solve_wcs(
         msg = (
             f"twirl solved a WCS at {last_bad_scale:.3g} arcsec/px, far from the "
             f"expected {expected_pixscale:.3g} arcsec/px "
-            f"(> {scale_tolerance:.1%} off); rejected as a wrong-scale solve"
+            f"(> {scale_tolerance * 100:g}% off); rejected as a wrong-scale solve"
         )
         raise WCSScaleError(msg)
     if last_bad_center is not None:
