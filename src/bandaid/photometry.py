@@ -2823,11 +2823,9 @@ def prepare_image(
     )
 
 
-# How the columns `build_photometry_table` produces map onto the L4 channel
-# (see `calculate_l4_quantities`): copied from TR, recombined from TR/TG/TB, or
-# omitted. A column added to `build_photometry_table` must be sorted into
-# exactly one tuple, or TR/TG/TB get a column L4 lacks (pinned by a test in
-# test_build_table.py).
+# Columns `calculate_l4_quantities` copies from TR; the rest of its output is
+# recombined from TR/TG/TB. A test in test_build_table.py pins that L4 lacks
+# only the columns that cannot be recombined.
 _MASK_INDEPENDENT_COLUMNS = (
     "time",
     "airmass",
@@ -2838,15 +2836,6 @@ _MASK_INDEPENDENT_COLUMNS = (
     "y",
     "centroid_drift",
 )
-_L4_RECOMBINED_COLUMNS = (
-    "tot_count",
-    "aperture_area",
-    "bkgd_count",
-    "peak_count",
-    "count_err",
-    "snr",
-)
-_L4_OMITTED_COLUMNS = ("fluxes", "total_bkg", "bkgd_std")
 
 
 def _missing_rgb_channels(channels):
@@ -3178,7 +3167,7 @@ def calculate_l4_quantities(by_filter_data, egain):
     -------
     astropy.table.Table
         The L4 table: `_MASK_INDEPENDENT_COLUMNS` and the whole ``meta`` copied
-        from TR, `_L4_RECOMBINED_COLUMNS` computed from TR/TG/TB.
+        from TR, plus the columns recombined from TR/TG/TB.
 
     Raises
     ------
@@ -3190,9 +3179,10 @@ def calculate_l4_quantities(by_filter_data, egain):
     -----
     L4 has no full-frame photometry pass of its own: every phot-derived column
     is the TR/TG/TB recombination below, and the columns that cannot be
-    recombined (`_L4_OMITTED_COLUMNS`) are simply not present (issue #21). The
-    copied columns and meta derive only from the shared `ImageData`/config,
-    never from the mask, so taking them from TR is exact, not approximate.
+    recombined (``fluxes``, ``total_bkg`` and ``bkgd_std``) are simply not
+    present (issue #21). The copied columns and meta derive only from the
+    shared `ImageData`/config, never from the mask, so taking them from TR is
+    exact, not approximate.
     Copying the meta wholesale also means a key stamped on TR by a caller
     (`process_one_image`'s "filter", say) comes across and is the caller's to
     overwrite.
