@@ -1529,10 +1529,11 @@ class ImageData:
 
         Returns
         -------
-        numpy.ndarray
-            The unmasked cutouts from `_peak_box_cutouts`, computed once per
-            frame and reused by every `build_photometry_table` call for this
-            image (one per RGB channel).
+        numpy.ndarray or None
+            The unmasked cutouts from `_peak_box_cutouts`, computed at most once
+            per frame and reused by every `build_photometry_table` call for this
+            image (one per RGB channel). None when no centroid is finite; that
+            case is re-checked on each call, which costs one ``isfinite`` pass.
         """
         if self._peak_cutouts_cache is None:
             self._peak_cutouts_cache = _peak_box_cutouts(
