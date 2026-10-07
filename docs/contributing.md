@@ -54,7 +54,7 @@ To bundle a telescope:
             "roworder": "top-down",
             "xbayroff": 0,
             "ybayroff": 0,
-            "pixscale": 2.8,
+            "pixscale": 2.813,
             "fov_rad": 1.7,
             "egain": 0.31,
             "largest_usable_adu_value": 60000,
@@ -63,6 +63,10 @@ To bundle a telescope:
         }
     }
     ```
+
+    The `pixscale` should be a measured value, not the nominal one; see
+    [Instrument profiles](instrument_profiles.md#adding-a-telescope) for how to
+    measure it.
 
 1. Update the bundled-set test in `tests/unit/test_instruments.py`
     (`test_lists_exactly_the_bundled_profiles`) to include the new name. That test

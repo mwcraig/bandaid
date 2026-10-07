@@ -20,6 +20,9 @@ from bandaid.photometry import (
     align,
 )
 
+# The Seestar50 profile's scale tolerance; the class default is looser.
+TIGHT_SCALE_TOLERANCE = 0.005
+
 
 class TestAlign:
     """Unit tests for the WCS-solve/projection helper ``align``."""
@@ -206,8 +209,8 @@ class TestAlign:
         twirl-returns-a-self-consistent-but-wrong-scale case, ~4.2 vs the true
         ~2.4 arcsec/px) raises WCSScaleError rather than photometering at the
         wrong pixel positions; and expected_pixscale=None skips the check
-        entirely (back-compat), trusting even a wrong-scale WCS. The default
-        window is +/-0.5%: a degraded solve 0.7% off the profile scale is
+        entirely (back-compat), trusting even a wrong-scale WCS. With a 0.5%
+        ``scale_tolerance`` a degraded solve 0.7% off the profile scale is
         rejected, while the 0.2-0.3% spread of good solves is accepted.
         """
         solved_wcs = _make_tan_wcs(pixscale=pixscale)
@@ -221,6 +224,7 @@ class TestAlign:
                     coords.copy(),
                     photometry_coords=None,
                     expected_pixscale=expected_pixscale,
+                    scale_tolerance=TIGHT_SCALE_TOLERANCE,
                 )
             return
 
@@ -229,6 +233,7 @@ class TestAlign:
             coords.copy(),
             photometry_coords=None,
             expected_pixscale=expected_pixscale,
+            scale_tolerance=TIGHT_SCALE_TOLERANCE,
         )
         assert returned_wcs is solved_wcs
 
@@ -323,14 +328,12 @@ class TestAlign:
             ((10.0, 20.0), (10.0, 20.0), None),
             ((15.0, 20.0), (10.0, 20.0), WCSPointingError),
             ((10.0, 20.0), (10.0, 20.2), None),
-            ((10.0, 20.0), (10.0, 20.29), None),
             ((15.0, 20.0), None, None),
         ],
         ids=[
             "center-in-frame-accepted",
             "far-from-center-rejected",
             "slightly-off-frame-accepted",
-            "largest-measured-legitimate-offset-accepted",
             "no-expected-center-skips-check",
         ],
     )
@@ -383,10 +386,9 @@ class TestAlign:
         """
         ``pointing_tolerance`` (degrees) sets how far the solved center may sit.
 
-        The limit is a fixed angle, independent of the frame size: a solve 0.2
-        deg from the header center passes the default tolerance but is rejected
-        as mispointed once the tolerance drops to 0.1 deg, and the error says
-        which limit was exceeded.
+        A solve 0.2 deg from the header center passes the default (field-radius)
+        limit but is rejected as mispointed once the tolerance drops to 0.1 deg,
+        and the error says which limit was exceeded.
         """
         solved_wcs = _make_tan_wcs(crval=(10.0, 20.0))
         mocker.patch("bandaid.photometry.compute_wcs", return_value=solved_wcs)
@@ -403,28 +405,29 @@ class TestAlign:
         with pytest.raises(WCSPointingError, match=r"0\.1 deg"):
             align(coords, coords.copy(), pointing_tolerance=0.1, **kwargs)
 
-    def test_pointing_limit_does_not_scale_with_frame_size(self, mocker):
+    def test_pointing_tolerance_is_independent_of_frame_size(self, mocker):
         """
-        A larger frame does not widen the pointing limit.
+        A fixed ``pointing_tolerance`` replaces the field-radius limit.
 
         A solve 0.4 deg from the header center sits inside the half-diagonal of
-        a 1000-px frame at 2.4 arcsec/px (about 0.47 deg) but is beyond the
-        default pointing tolerance, so it is rejected.
+        a 1000-px frame at 2.376 arcsec/px (about 0.47 deg), so the default
+        accepts it; a fixed 0.3 deg tolerance rejects it regardless of frame size.
         """
         mocker.patch(
             "bandaid.photometry.compute_wcs",
             return_value=_make_tan_wcs((1000, 1000), crval=(10.0, 20.0)),
         )
         coords = align_coords(N_IMAGE_STARS_ALIGN)
+        kwargs = {
+            "photometry_coords": None,
+            "expected_center": SkyCoord(10.0, 20.4, unit="deg"),
+            "shape": (1000, 1000),
+        }
+
+        align(coords, coords.copy(), **kwargs)
 
         with pytest.raises(WCSPointingError, match="center"):
-            align(
-                coords,
-                coords.copy(),
-                photometry_coords=None,
-                expected_center=SkyCoord(10.0, 20.4, unit="deg"),
-                shape=(1000, 1000),
-            )
+            align(coords, coords.copy(), pointing_tolerance=0.30, **kwargs)
 
     def test_supplied_wcs_center_not_checked(self):
         """A caller-supplied WCS is trusted and not center-checked."""

@@ -8,6 +8,7 @@
     "header_frame": "fk5",
     "header_equinox": "date",
     "cone_radius_margin": 0.4,
+    "wcs_scale_tolerance": 0.005,
     "wcs_pointing_tolerance": 0.30,
     "header_match": [{"keyword": "INSTRUME", "pattern": "Seestar S50"}],
     "header_map": {

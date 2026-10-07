@@ -146,16 +146,8 @@ _FWHM_CUTOUT_HALF = _DEFAULT_INSTRUMENT.fwhm_cutout_half
 # the FWHM (faint sources are mis-centroided, smearing the stacked PSF).
 _FWHM_N_STARS = _DEFAULT_INSTRUMENT.fwhm_n_stars
 # Maximum fractional deviation of a solved plate scale from the instrument's
-# expected pixscale before the WCS is rejected as a wrong-scale solve. Across
-# six Seestar S50 fields the good solves span -0.23% to +0.29% of the profile
-# scale, while degraded solves sit near -0.7% and wrong-scale solves are far
-# beyond; 0.5% separates them. It only makes sense against a measured profile
-# pixscale, not the nominal one.
+# expected pixscale before the WCS is rejected as a wrong-scale solve.
 WCS_SCALE_TOLERANCE = _DEFAULT_INSTRUMENT.wcs_scale_tolerance
-# Maximum separation (degrees) of a solved frame center from the frame's header
-# pointing before the WCS is rejected as a mispointed solve. The largest
-# legitimate offset measured on six Seestar S50 fields is 0.29 degrees.
-WCS_POINTING_TOLERANCE = _DEFAULT_INSTRUMENT.wcs_pointing_tolerance
 
 # Minimum SNR a star must have to reach the output (see `good_star_mask`).
 MIN_SNR = _DEFAULT_SOURCE_SELECTION.min_snr
@@ -1649,9 +1641,9 @@ def _validate_solved_wcs(
     shape : tuple of int or None
         Image shape ``(height, width)`` defining the frame center for the
         pointing check.
-    pointing_tolerance : float
+    pointing_tolerance : float or None
         Maximum separation, in degrees, between the solved frame center and
-        ``expected_center``.
+        ``expected_center``; None allows one field radius.
 
     Returns
     -------
@@ -1662,7 +1654,7 @@ def _validate_solved_wcs(
     bad_center : tuple of float or None
         ``(separation_deg, limit_deg)`` between the solved frame center and
         ``expected_center`` when the pointing check failed; ``limit_deg`` is
-        `pointing_tolerance`.
+        `pointing_tolerance`, or the field radius when that is None.
 
     Notes
     -----
@@ -1674,12 +1666,15 @@ def _validate_solved_wcs(
     is skipped when its expectation (`expected_pixscale`, or `expected_center`
     with `shape`) is None.
 
-    The pointing check holds the solved frame center to a fixed angle,
-    `pointing_tolerance`, from `expected_center`. That angle is the
-    header-pointing error plus the drift between the header and the solve, so
-    it is independent of the frame size: a false asterism match typically lands
-    a fraction of a field away, well inside a field-radius limit, and would pass
-    one.
+    The pointing check holds the solved frame center to `pointing_tolerance`
+    degrees from `expected_center`. That angle is the header-pointing error plus
+    the drift between the header and the solve, so it is independent of the
+    frame size; a false asterism match typically lands a fraction of a field
+    away, well inside a field-radius limit, and would pass one. When
+    `pointing_tolerance` is None the limit is one field radius (the frame
+    half-diagonal at the solved scale): the header target can legitimately sit
+    at, or drift a few arcmin past, the frame edge, so demanding the queried
+    center project strictly on-frame rejects correct solves.
     """
     if expected_pixscale is not None:
         measured = _wcs_pixscale_arcsec(wcs)
@@ -1687,9 +1682,15 @@ def _validate_solved_wcs(
             return None, measured, None
     if expected_center is not None and shape is not None:
         separation = _wcs_center_separation_deg(wcs, shape, expected_center)
+        limit = pointing_tolerance
+        if limit is None:
+            height, width = shape
+            limit = (
+                np.hypot(height - 1, width - 1) / 2 * _wcs_pixscale_arcsec(wcs) / 3600
+            )
         # NaN comparisons are False, so an unprojectable frame center fails.
-        if not (separation <= pointing_tolerance):
-            return None, None, (float(separation), float(pointing_tolerance))
+        if not (separation <= limit):
+            return None, None, (float(separation), float(limit))
     return wcs, None, None
 
 
@@ -1700,7 +1701,7 @@ def _solve_wcs(
     scale_tolerance=WCS_SCALE_TOLERANCE,
     expected_center=None,
     shape=None,
-    pointing_tolerance=WCS_POINTING_TOLERANCE,
+    pointing_tolerance=None,
 ):
     """
     Solve a WCS from detections and Gaia references, with scale and pointing checks.
@@ -1728,10 +1729,10 @@ def _solve_wcs(
         Image shape ``(height, width)``; the solved frame center must lie
         within `pointing_tolerance` of ``expected_center``. By default None
         (check skipped).
-    pointing_tolerance : float, optional
+    pointing_tolerance : float or None, optional
         Maximum separation in degrees between the solved frame center and
-        ``expected_center`` before a solve is rejected as mispointed. Defaults to
-        the module-level ``WCS_POINTING_TOLERANCE``; see :func:`align`.
+        ``expected_center`` before a solve is rejected as mispointed; None (the
+        default) allows one field radius. See :func:`align`.
 
     Returns
     -------
@@ -1830,7 +1831,7 @@ def align(
     scale_tolerance=WCS_SCALE_TOLERANCE,
     expected_center=None,
     shape=None,
-    pointing_tolerance=WCS_POINTING_TOLERANCE,
+    pointing_tolerance=None,
 ):
     """
     Compute per-image WCS and align reference coordinates into pixel space.
@@ -1878,12 +1879,12 @@ def align(
     shape : tuple of int or None, optional
         Image shape ``(height, width)`` used with `expected_center` for the
         pointing check. None (default) skips the check.
-    pointing_tolerance : float, optional
+    pointing_tolerance : float or None, optional
         Maximum separation in degrees between a computed WCS's frame center and
-        `expected_center` before the WCS is rejected. Defaults to the
-        module-level `WCS_POINTING_TOLERANCE`; the pipeline passes the batch
-        instrument's ``wcs_pointing_tolerance``. Ignored when `expected_center`
-        or `shape` is None or a `wcs` is supplied.
+        `expected_center` before the WCS is rejected. None (default) allows one
+        field radius (the frame half-diagonal at the solved scale); the pipeline
+        passes the batch instrument's ``wcs_pointing_tolerance``. Ignored when
+        `expected_center` or `shape` is None or a `wcs` is supplied.
 
     Returns
     -------

@@ -143,7 +143,7 @@ resolves the directives against a frame's FITS header.
 | ---------------- | ----------------------------------- | -------------------------------------------------------------------------------------------- |
 | `"@KEY"`         | `"obs_time": "@DATE-OBS"`           | Take the value of FITS header keyword `KEY`. Falls back to a `#`-default (below) if missing. |
 | `"!KEY index N"` | `"tel_manufac": "!CREATOR index 0"` | Split header keyword `KEY` on whitespace and take the `N`-th token (0-based).                |
-| literal          | `"pixscale": 2.4`                   | Use the literal value as-is. Used for hardware constants the header does not carry.          |
+| literal          | `"egain": 0.3116`                   | Use the literal value as-is. Used for hardware constants the header does not carry.          |
 | `"#key": value`  | `"#stack": 1`                       | A **fallback** for `key`: used only when the `@` lookup for `key` finds nothing.             |
 | `"_anything"`    | `"_note": "..."`                    | A comment. Ignored entirely.                                                                 |
 
@@ -233,8 +233,7 @@ A `my_scope.json` looks like:
     "contamination_tolerance": 0.01,
     "moffat_beta": 3.0,
     "contamination_seeing_margin": 1.25,
-    "wcs_scale_tolerance": 0.005,
-    "wcs_pointing_tolerance": 0.30,
+    "wcs_scale_tolerance": 0.05,
     "header_match": [{"keyword": "INSTRUME", "pattern": "MyScope Model 1"}],
     "header_map": {
         "obs_time": "@DATE-OBS",
@@ -245,7 +244,7 @@ A `my_scope.json` looks like:
         "roworder": "top-down",
         "xbayroff": 0,
         "ybayroff": 0,
-        "pixscale": 2.8,
+        "pixscale": 2.813,
         "fov_rad": 1.7,
         "egain": 0.31,
         "largest_usable_adu_value": 60000,
@@ -284,23 +283,40 @@ disk of the full field radius is about half off-frame, so a smaller disk puts mo
 of the brightest pool stars actually on the frame. `0.9` keeps the solve rate
 while eliminating false solves.
 
-`wcs_scale_tolerance` (default `0.005`, i.e. 0.5%, must be `> 0`) is the largest
+`wcs_scale_tolerance` (default `0.05`, i.e. 5%, must be `> 0`) is the largest
 fractional difference allowed between a solved frame's plate scale and the
-profile's `pixscale`. Because the window is this narrow, `pixscale` must be a
-**measured** value, not the telescope's nominal one; with a nominal value a
-good solve can fail the check. Measure it by processing a night of frames and
-taking the median of the `wcs_pixscale` column of `qa_manifest.csv` (ignoring
-blank rows). The Seestar50 value, `2.376` arcsec/px, is the median of the good
-solves from six fields, which span -0.23% to +0.29% of it.
+profile's `pixscale`. A tighter value separates degraded solves from good ones
+but only works against a **measured** `pixscale`, not the telescope's nominal
+one; with a nominal value a good solve can fail the check. The `2.813` in the
+example above stands for such a measured value.
 
-`wcs_pointing_tolerance` (degrees, default `0.30`, must be `> 0`) is the largest
-separation allowed between a solved frame's center and that frame's own header
-pointing. A solve that lands farther away is rejected as mispointed and the
-deeper star pool is tried. It is a fixed angle, not a field radius: real solves
+To measure `pixscale`, process a night of frames and take the median of the
+`wcs_pixscale` column of `qa_manifest.csv`. A frame whose solve is rejected for
+its scale still has its measured scale recorded there, so the column is
+populated even when the nominal value rejects every frame. If you prefer to
+take the median over accepted solves only, first run once with a temporarily
+wide `wcs_scale_tolerance` (for example `0.1`) and keep the rows with
+`wcs_solved` true. Once `pixscale` is set, tighten `wcs_scale_tolerance` to
+the spread of the good solves.
+
+`wcs_pointing_tolerance` (degrees, default none, must be `> 0` when set) is the
+largest separation allowed between a solved frame's center and that frame's own
+header pointing. A solve that lands farther away is rejected as mispointed and
+the deeper star pool is tried. It is a fixed angle, not a field radius. When
+it is omitted, one field radius (the frame half-diagonal at the solved scale)
+is allowed instead. It is separate from `fov_rad`, which sizes the Gaia query
+cone.
+
+### The Seestar50 tolerances
+
+The Seestar50 profile sets `wcs_scale_tolerance` to `0.005` (0.5%) and
+`wcs_pointing_tolerance` to `0.30`. They come from a sweep over six Seestar S50
+fields. The profile's `pixscale`, `2.376` arcsec/px, is the median of 4,766 good
+solves, which span -0.23% to +0.29% of it, while degraded solves sit near
+-0.7% and wrong-scale solves are far beyond; 0.5% separates them. Real solves
 usually sit within about 0.1 degree of the header pointing, and the largest
-legitimate offset measured on six Seestar S50 fields is 0.29 degree (a
-re-acquisition between frames), so the default covers that with a small margin.
-It is separate from `fov_rad`, which still sizes the Gaia query cone.
+legitimate offset measured (a re-acquisition between frames) is 0.29 degree, so
+0.30 covers it with a small margin.
 
 `header_match` is optional — omit it (or leave it `[]`) and the profile is
 still fully usable via `--instrument`/`--profile`/`--config`, just never

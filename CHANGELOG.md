@@ -9,13 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `InstrumentProfile.wcs_pointing_tolerance` (degrees, default `0.30`, also set in
-    the Seestar50 profile): the largest separation allowed between a solved
-    frame center and that frame's own header pointing (#135).
-- The QA manifest gains `wcs_pixscale` (solved plate scale, arcsec/px),
-    `solve_offset_deg` (solved frame center to the frame's own header center, in
-    degrees) and `n_snr20` (good stars with SNR >= 20), so degraded and false
-    plate solves are visible without a rerun (#135).
+- `InstrumentProfile.wcs_pointing_tolerance` (degrees, default none): the largest
+    separation allowed between a solved frame center and its header pointing,
+    instead of one field radius.
+- The QA manifest gains `wcs_pixscale` (also filled for frames rejected for their
+    scale), `solve_offset_deg` and `n_snr20`, so degraded and false plate solves
+    are visible without a rerun.
 - `InstrumentProfile.solve_pool_radius_scale` (default `0.9`): each frame plate-solves
     against only the catalog stars within this fraction of `fov_rad` of its own
     header pointing, instead of the whole batch catalog (#133).
@@ -126,20 +125,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `geometry=`; both are cached per frame on `ImageData`. `measure_photometry`
     raises `ValueError` when `geometry` is combined with an explicit `radii` or
     `annulus`. Pipeline output is unchanged (#126).
-- A plate solve is rejected as mispointed when its frame center is more than
-    `wcs_pointing_tolerance` from the frame's header pointing, instead of more
-    than one field radius, so false solves a fraction of a field away are
-    caught. `fov_rad` keeps its catalog-cone meaning (#135).
-- The default `wcs_scale_tolerance` is tightened from `0.05` to `0.005` (0.5%) and
-    the default `wcs_pointing_tolerance` is set to `0.30` degrees, both chosen from
-    a sweep over six Seestar S50 fields. Good solves span -0.23% to +0.29% of the
-    measured scale, so a degraded solve near -0.7% is now rejected and re-solved
-    with the deeper star pool. A custom profile's `pixscale` must now be a
-    measured value (the `wcs_pixscale` column of `qa_manifest.csv`), not the
-    nominal one (#135).
-- The Seestar50 profile's `pixscale` is `2.376` arcsec/px (was `2.4`), the median
-    of 4,766 good solves. The `fwhm_arcsec` used by the contamination cut changes
-    by 1% as a result (#135).
+- The Seestar50 profile now sets `wcs_scale_tolerance` to `0.005`,
+    `wcs_pointing_tolerance` to `0.30` and `pixscale` to the measured `2.376`
+    (was `2.4`). A profile that tightens the scale tolerance needs a measured
+    `pixscale`, not the nominal one.
 - `InstrumentProfile.cone_radius_margin` now defaults to `0.4` deg (was `0.0`), so
     the batch Gaia catalog covers that much pointing drift between frames.
     Widening the cone no longer disturbs plate solving because the solve pool is
