@@ -487,9 +487,12 @@ class TestOverrides:
 
     def test_centroid_override(self):
         """A custom class size and the off switch are preserved."""
-        cfg = PhotometryConfig(centroid=CentroidConfig(gaia_prior=False, cnn_class_size=20))
+        class_size = 20
+        cfg = PhotometryConfig(
+            centroid=CentroidConfig(gaia_prior=False, cnn_class_size=class_size)
+        )
         assert cfg.centroid.gaia_prior is False
-        assert cfg.centroid.cnn_class_size == 20
+        assert cfg.centroid.cnn_class_size == class_size
 
     def test_source_selection_override(self):
         """A custom min_snr is preserved on the nested config."""

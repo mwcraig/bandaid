@@ -209,6 +209,61 @@ class DriftConfig(BaseModel, frozen=True):
     drift_cap_pix: Annotated[float, Field(gt=0)] = 4.0
 
 
+class CentroidConfig(BaseModel, frozen=True):
+    """
+    Settings for the Gaia-prior position policy of the centroiding step.
+
+    Attributes
+    ----------
+    gaia_prior : bool
+        Whether stars outside the CNN class take the WCS-projected catalog
+        position plus a per-frame offset plane instead of a CNN centroid. On by
+        default; when False every star is centroided by the CNN.
+    cnn_class_size : int
+        Number of catalog targets, brightest by Gaia G inside a circle of the
+        frame's area centred on the batch centre, that keep their CNN centroid.
+        The Gaia G of the last of them sets the batch's magnitude cut.
+    fit_n_stars : int
+        Number of brightest (by Gaia G) stars surviving the edge margin on a
+        frame whose CNN centroids define that frame's offset plane.
+    min_fit_stars : int
+        Minimum number of stars that must survive clipping for the plane to be
+        used; below it the frame is centroided entirely by the CNN.
+    clip_sigma : float
+        Per-axis clipping threshold, in standard deviations, for the one clip
+        and refit of the plane.
+
+    Notes
+    -----
+    The plane is fitted to ``CNN - projected`` positions, so it absorbs the
+    small systematic offset between the CNN's centroids and the projected
+    catalog positions. It is unweighted and of first order in each axis.
+    """
+
+    gaia_prior: bool = True
+    # About 25-30 stars keeps the bright target and comparison stars on their
+    # own measured centroids while the fainter, noisier ones take the plane.
+    cnn_class_size: Annotated[int, Field(ge=1)] = 30
+    # The top 30 stars never ran short on the validation fields and the fit
+    # error is flat between the top 20 and 50.
+    fit_n_stars: Annotated[int, Field(ge=3)] = 30
+    # A first-order plane has three coefficients per axis; twelve survivors
+    # keeps the fit well-determined after clipping.
+    min_fit_stars: Annotated[int, Field(ge=3)] = 12
+    clip_sigma: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 3.0
+
+    @model_validator(mode="after")
+    def _fit_set_can_reach_minimum(self) -> "CentroidConfig":
+        """Require a fit set at least as large as the minimum survivor count."""
+        if self.fit_n_stars < self.min_fit_stars:
+            msg = (
+                f"fit_n_stars ({self.fit_n_stars}) must be at least "
+                f"min_fit_stars ({self.min_fit_stars})"
+            )
+            raise ValueError(msg)
+        return self
+
+
 class HeaderMatchRule(BaseModel, frozen=True):
     """
     One FITS-header keyword/value rule used to auto-detect an instrument.
@@ -636,6 +691,8 @@ class PhotometryConfig(BaseModel, frozen=True):
         Gaia magnitude limits selecting the measured and flagged stars.
     drift : DriftConfig
         Centroid-drift cuts.
+    centroid : CentroidConfig
+        The Gaia-prior position policy of the centroiding step.
     edge_margin_px : float
         Catalog stars whose projected position lies within this many pixels of
         a frame edge, or off the frame, are not measured. Must be positive and
@@ -656,5 +713,6 @@ class PhotometryConfig(BaseModel, frozen=True):
         default_factory=SourceSelectionConfig
     )
     drift: DriftConfig = Field(default_factory=DriftConfig)
+    centroid: CentroidConfig = Field(default_factory=CentroidConfig)
     edge_margin_px: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 10.0
     instrument: InstrumentProfile | None = None

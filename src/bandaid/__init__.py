@@ -38,6 +38,7 @@ import logging
 from .catalog import cached_gaia_radecs
 from .config import (
     ApertureConfig,
+    CentroidConfig,
     DriftConfig,
     HeaderMatchRule,
     InstrumentProfile,
