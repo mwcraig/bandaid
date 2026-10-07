@@ -51,11 +51,13 @@ from bandaid.photometry import (
     _fwhm_from_coords,
     build_photometry_table,
     calibration_sequence,
-    centroid_stars as real_centroid_stars,
     measure_photometry,
     metadata_from_header,
     prepare_image,
     process_one_image,
+)
+from bandaid.photometry import (
+    centroid_stars as real_centroid_stars,
 )
 from bandaid.scripts import estimate_center_from_header
 
@@ -718,7 +720,7 @@ class TestPrepareImage:
     def test_edge_cut_keeps_stars_exactly_one_margin_from_each_edge(
         self, stub_prepare_image_externals
     ):
-        """A star at or beyond the margin from every edge is kept; just inside, dropped."""
+        """A star at the margin from every edge is kept; just inside it, dropped."""
         margin = 10.0
         height, width = 80, 120
         x_hi, y_hi = width - 0.5 - margin, height - 0.5 - margin
@@ -827,10 +829,10 @@ class TestPrepareImage:
         assert np.array_equal(out_aligned, aligned[kept])
         assert np.array_equal(out_coords.ra.deg, coords.ra.deg[kept])
         # Dropped catalog stars that the bare 8 px pad would have kept: rows 1 and 5.
-        assert n_dropped == 2
+        assert n_dropped == len([1, 5])
 
     def test_all_stars_inside_the_margin_raises(self, stub_prepare_image_externals):
-        """When every catalog star is within the margin, NoUsableStarsError names the file."""
+        """With every star inside the margin, NoUsableStarsError names the file."""
         aligned = np.array([[3.0, 50.0], [50.0, 97.0]])
         stub_prepare_image_externals(coords=aligned, calibrated=np.zeros((100, 100)))
         photometry_coords = SkyCoord(ra=[1.0, 2.0], dec=[0.0, 0.0], unit="deg")

@@ -2564,26 +2564,17 @@ def measure_photometry(
     }
 
 
-def _drop_off_frame_catalog_stars(aligned_coords, photometry_coords, shape, file):
+def _drop_edge_catalog_stars(
+    aligned_coords,
+    photometry_coords,
+    shape,
+    file,
+    *,
+    edge_margin_px,
+    forced_rows=None,
+):
     """
-    Drop catalog stars whose aligned projection falls outside the frame.
-
-    Cutting here, right after `align`'s projection and before centroiding,
-    keeps `prepare_image` from CNN-centroiding and photometering stars that
-    `good_star_mask` would discard at the very end anyway; the Gaia cone
-    queried for the catalog is a circle of radius equal to the frame
-    half-diagonal, so roughly half the catalog projects off-frame on any
-    given frame. The bound is padded by `CENTROID_PAD_PIX`: a position
-    dropped here sits far enough off-frame that its 15x15 centroid cutout
-    has no overlap with the image, so centroiding would have returned it
-    unchanged (via the CNN's NaN fallback on the all-zero stand-in cutout)
-    and `good_star_mask` would have dropped it at the very end. The kept
-    set is therefore a superset of what `good_star_mask` keeps.
-
-    When `photometry_coords` is None, `aligned_coords` are the detected
-    coordinates themselves rather than catalog projections, and must stay
-    one-to-one with the image's own `coords`; the cut is skipped and both
-    arguments are returned unchanged.
+    Drop catalog stars projected within a margin of a frame edge or off the frame.
 
     Parameters
     ----------
@@ -2597,42 +2588,91 @@ def _drop_off_frame_catalog_stars(aligned_coords, photometry_coords, shape, file
         ``(height, width)`` of the calibrated frame, i.e. `numpy.ndarray.shape`.
     file : str or pathlib.Path
         Source frame, named in the raised error and the debug log.
+    edge_margin_px : float
+        Minimum distance, in pixels, from every frame edge for a catalog star
+        to be kept.
+    forced_rows : numpy.ndarray or None, optional
+        Boolean array, one entry per row of `aligned_coords`, marking the
+        forced targets. By default None (no forced rows).
 
     Returns
     -------
     numpy.ndarray
-        `aligned_coords`, reduced to the in-frame rows (unchanged if
+        `aligned_coords`, reduced to the kept rows (unchanged if
         `photometry_coords` is None).
     astropy.coordinates.SkyCoord or None
-        `photometry_coords`, reduced to the same in-frame rows (unchanged if
-        already None).
+        `photometry_coords`, reduced to the same rows (unchanged if already
+        None).
+    int
+        Number of catalog stars removed by the margin: those that lie within
+        `CENTROID_PAD_PIX` of the frame or inside it, but closer than
+        `edge_margin_px` to an edge. Rows far off the frame, and forced
+        targets, are not counted. Zero when `photometry_coords` is None.
 
     Raises
     ------
     NoUsableStarsError
-        If every catalog star projects outside the padded frame bounds. The
-        source `file` is attached.
+        If no row survives the cut. The source `file` is attached.
+
+    Notes
+    -----
+    The cut runs right after `align`'s projection and before centroiding, on
+    the projected position, so a star near an edge is never handed to the
+    centroiding CNN. The frame spans ``[0, width - 0.5]`` by
+    ``[0, height - 0.5]``, as in `good_star_mask`, and a star exactly
+    `edge_margin_px` from an edge is kept.
+
+    A star whose projected position is within the margin is not measured:
+    its background annulus is truncated by the frame edge, and the CNN's
+    15x15 cutout is fill-padded there, which makes its centroid unreliable and
+    able to land far from the true position. A star that projects off the frame
+    is dropped for the same reason (the Gaia cone is a circle of the frame's
+    half-diagonal, so roughly half the catalog projects off-frame on any frame).
+
+    Forced targets are exempt from the margin and keep the looser rule: they are
+    kept while within `CENTROID_PAD_PIX` outside the frame bounds. Beyond that
+    pad a position has no overlap with its centroid cutout, and the later
+    `good_star_mask` bounds cut removes whatever remains off-frame.
+
+    When `photometry_coords` is None, `aligned_coords` are the detected
+    coordinates themselves rather than catalog projections, and must stay
+    one-to-one with the image's own `coords`; the cut is skipped and both
+    arguments are returned unchanged.
     """
     if photometry_coords is None:
-        return aligned_coords, photometry_coords
+        return aligned_coords, photometry_coords, 0
     height, width = shape
-    keep = _within_frame(
-        aligned_coords[:, 0], aligned_coords[:, 1], width, height, pad=CENTROID_PAD_PIX
+    x, y = aligned_coords[:, 0], aligned_coords[:, 1]
+    margin = edge_margin_px
+    inside_margin = (
+        (x >= margin)
+        & (x <= width - 0.5 - margin)
+        & (y >= margin)
+        & (y <= height - 0.5 - margin)
     )
+    near_frame = _within_frame(x, y, width, height, pad=CENTROID_PAD_PIX)
+    keep = inside_margin
+    if forced_rows is not None:
+        # A forced row inside the pad is kept by this term, so it can never be
+        # counted as dropped by the margin below.
+        keep = keep | (np.asarray(forced_rows, dtype=bool) & near_frame)
     if not keep.any():
         msg = (
-            f"no catalog star projects onto {file}: all {len(keep)} "
-            "targets fall outside the frame"
+            f"no catalog star projects onto {file} at least {margin:g} px from "
+            f"an edge: all {len(keep)} targets fall outside the frame or "
+            "within the edge margin"
         )
         raise NoUsableStarsError(msg, file=file)
+    n_edge_dropped = int(np.sum(near_frame & ~keep))
     logger.debug(
-        "%s: %d of %d catalog stars in frame (pad %.0f px)",
+        "%s: %d of %d catalog stars kept (edge margin %.1f px, %d dropped by it)",
         file,
         keep.sum(),
         len(keep),
-        CENTROID_PAD_PIX,
+        margin,
+        n_edge_dropped,
     )
-    return aligned_coords[keep], photometry_coords[keep]
+    return aligned_coords[keep], photometry_coords[keep], n_edge_dropped
 
 
 def _parse_obs_time(obs_time, *, file=None):
@@ -2866,7 +2906,7 @@ def prepare_image(
         `TooFewStarsError` or, when ``detect_on_bayer_balanced`` is True and a
         CFA sub-grid sample is empty or has zero variance,
         `DegenerateBayerChannelError` -- both with `file` already attached by
-        `calibration_sequence` itself, and `_drop_off_frame_catalog_stars` may
+        `calibration_sequence` itself, and `_drop_edge_catalog_stars` may
         raise `NoUsableStarsError` when every catalog star projects outside
         the frame; all three propagate unchanged.)
     FrameMetadataError
@@ -3008,9 +3048,14 @@ def prepare_image(
             )
         raise
 
-    # Drop catalog stars that projected off-frame, before centroiding/photometry.
-    aligned_coords, photometry_coords = _drop_off_frame_catalog_stars(
-        aligned_coords, photometry_coords, calibrated_data.shape, file
+    # Drop catalog stars projected within the edge margin or off-frame, before
+    # centroiding/photometry.
+    aligned_coords, photometry_coords, _ = _drop_edge_catalog_stars(
+        aligned_coords,
+        photometry_coords,
+        calibrated_data.shape,
+        file,
+        edge_margin_px=config.edge_margin_px,
     )
 
     centroid_coords = centroid_stars(working_image, aligned_coords, cnn)
