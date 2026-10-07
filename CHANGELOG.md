@@ -188,11 +188,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
-- `calibration_sequence` returns a `CalibrationResult` (`calibrated_data`,
-    `metadata`, `coords`, `fwhm`, `regions`, `detection_image`) instead of a
-    5-tuple, and its `detection_image_out` parameter is removed; read
-    `result.detection_image` for the array detection ran on. Pipeline output is
-    unchanged (#123).
+- `calibration_sequence` returns a `CalibrationResult` instead of a 5-tuple, and
+    its `detection_image_out` parameter is removed; read `result.detection_image`
+    for the array detection ran on. Pipeline output is unchanged (#123).
 - `InstrumentProfile.header_center_offset` is replaced by `header_frame` and
     `header_equinox`, which declare the frame of the header RA/DEC; the Seestar50
     profile uses `"fk5"`/`"date"`. A profile that still sets the old key to
