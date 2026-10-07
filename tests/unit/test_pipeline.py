@@ -36,7 +36,6 @@ from bandaid.exceptions import (
 from bandaid.image2sl_qt import bayer_balance_image, generate_bayer_masks
 from bandaid.instruments import register_instrument
 from bandaid.photometry import (
-    CENTROID_PAD_PIX,
     DETECTION_OPENING,
     MIN_DETECTED_STARS,
     N_GAIA_STARS_ALIGN,
@@ -47,7 +46,6 @@ from bandaid.photometry import (
     _box_opening,
     _brightest_unsaturated,
     _detect_stars,
-    _drop_edge_catalog_stars,
     _fwhm_from_coords,
     build_photometry_table,
     calibration_sequence,
@@ -720,7 +718,7 @@ class TestPrepareImage:
     def test_edge_cut_keeps_stars_exactly_one_margin_from_each_edge(
         self, stub_prepare_image_externals
     ):
-        """A star at the margin from every edge is kept; just inside it, dropped."""
+        """The span is half-open like ``good_star_mask``: high edge dropped."""
         margin = 10.0
         height, width = 80, 120
         x_hi, y_hi = width - 0.5 - margin, height - 0.5 - margin
@@ -729,12 +727,12 @@ class TestPrepareImage:
             [
                 [margin, 40.0],
                 [margin - eps, 40.0],
+                [x_hi - eps, 40.0],
                 [x_hi, 40.0],
-                [x_hi + eps, 40.0],
                 [60.0, margin],
                 [60.0, margin - eps],
+                [60.0, y_hi - eps],
                 [60.0, y_hi],
-                [60.0, y_hi + eps],
             ],
         )
         externals = stub_prepare_image_externals(
@@ -799,43 +797,11 @@ class TestPrepareImage:
         assert np.array_equal(img.centroid_coords, aligned[[0]])
         assert len(img.input_photometry_coords) == 1
 
-    def test_forced_rows_are_exempt_from_the_edge_margin(self):
-        """A forced target is kept up to the centroid pad outside the frame."""
-        height = width = 100
-        inside_pad = CENTROID_PAD_PIX - 0.1
-        aligned = np.array(
-            [
-                [50.0, 50.0],  # interior catalog star
-                [3.0, 50.0],  # catalog star inside the margin
-                [3.0, 50.0],  # forced target at the same place
-                [-inside_pad, 50.0],  # forced target just off-frame, within pad
-                [-CENTROID_PAD_PIX - 0.1, 50.0],  # forced target past the pad
-                [-inside_pad, 50.0],  # catalog star just off-frame
-            ]
-        )
-        forced_rows = np.array([False, False, True, True, True, False])
-        coords = SkyCoord(ra=np.arange(6, dtype=float), dec=np.zeros(6), unit="deg")
-
-        out_aligned, out_coords, n_dropped = _drop_edge_catalog_stars(
-            aligned,
-            coords,
-            (height, width),
-            "unused.fits",
-            edge_margin_px=10.0,
-            forced_rows=forced_rows,
-        )
-
-        kept = [0, 2, 3]
-        assert np.array_equal(out_aligned, aligned[kept])
-        assert np.array_equal(out_coords.ra.deg, coords.ra.deg[kept])
-        # Dropped catalog stars that the bare 8 px pad would have kept: rows 1 and 5.
-        assert n_dropped == len([1, 5])
-
-    def test_forced_target_inside_the_margin_is_kept(
+    def test_appended_forced_target_inside_the_margin_is_dropped(
         self, stub_prepare_image_externals, mocker
     ):
-        """A forced target 3 px inside an edge is measured; a catalog star is not."""
-        aligned = np.array([[50.0, 50.0], [3.0, 50.0], [3.0, 60.0]])
+        """The last (forced-target) row gets no exemption from the edge margin."""
+        aligned = np.array([[50.0, 50.0], [60.0, 60.0], [3.0, 60.0]])
         stub_prepare_image_externals(coords=aligned, calibrated=np.zeros((100, 100)))
         mocker.patch("bandaid.photometry.centroid_stars", new=real_centroid_stars)
         ballet_centroid = mocker.patch(
@@ -845,15 +811,11 @@ class TestPrepareImage:
         photometry_coords = SkyCoord(ra=[1.0, 2.0, 3.0], dec=[0.0] * 3, unit="deg")
 
         img = prepare_image(
-            "unused.fits",
-            np.zeros((5, 2)),
-            None,
-            photometry_coords=photometry_coords,
-            forced_rows=np.array([False, False, True]),
+            "unused.fits", np.zeros((5, 2)), None, photometry_coords=photometry_coords
         )
 
-        assert np.array_equal(ballet_centroid.call_args[0][1], aligned[[0, 2]])
-        assert np.array_equal(img.input_photometry_coords.ra.deg, [1.0, 3.0])
+        assert np.array_equal(ballet_centroid.call_args[0][1], aligned[[0, 1]])
+        assert np.array_equal(img.input_photometry_coords.ra.deg, [1.0, 2.0])
 
     def test_image_data_records_the_edge_drop_count(self, stub_prepare_image_externals):
         """``ImageData.n_edge_dropped`` is the number of stars the margin removed."""
@@ -867,6 +829,22 @@ class TestPrepareImage:
 
         # Two stars sit inside the margin; the far off-frame one is not an edge drop.
         assert img.n_edge_dropped == len([1, 2])
+
+    def test_edge_drop_count_covers_the_margin_on_both_sides(
+        self, stub_prepare_image_externals
+    ):
+        """Dropped stars within the margin outside the frame count, farther ones not."""
+        aligned = np.array(
+            [[50.0, 50.0], [-9.0, 50.0], [-11.0, 50.0], [109.0, 50.0], [111.0, 50.0]]
+        )
+        stub_prepare_image_externals(coords=aligned, calibrated=np.zeros((100, 100)))
+        photometry_coords = SkyCoord(ra=np.arange(5.0), dec=np.zeros(5), unit="deg")
+
+        img = prepare_image(
+            "unused.fits", np.zeros((5, 2)), None, photometry_coords=photometry_coords
+        )
+
+        assert img.n_edge_dropped == len([1, 3])
 
     def test_all_stars_inside_the_margin_raises(self, stub_prepare_image_externals):
         """With every star inside the margin, NoUsableStarsError names the file."""
@@ -1866,21 +1844,6 @@ class TestProcessOneImage:
                 SEESTAR_PIXSCALE, rel=1e-3
             )
             assert 0 <= table.meta["solve_offset_deg"] < 1
-
-    def test_forced_rows_reach_prepare_image(self, l4_frame, mocker):
-        """``process_one_image`` hands its ``forced_rows`` to ``prepare_image``."""
-        path, masks = l4_frame
-        spy = mocker.patch(
-            "bandaid.photometry.prepare_image", side_effect=NoUsableStarsError("x")
-        )
-        forced_rows = np.array([False, True])
-
-        with pytest.raises(NoUsableStarsError):
-            process_one_image(
-                path, {}, _REF_RADECS, None, masks, forced_rows=forced_rows
-            )
-
-        assert spy.call_args.kwargs["forced_rows"] is forced_rows
 
     def test_edge_drop_count_is_stamped_on_every_table(self, l4_frame, mocker):
         """Every table, L4 included, carries the frame's ``n_edge_dropped``."""

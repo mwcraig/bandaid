@@ -2573,7 +2573,6 @@ def _drop_edge_catalog_stars(
     file,
     *,
     edge_margin_px,
-    forced_rows=None,
 ):
     """
     Drop catalog stars projected within a margin of a frame edge or off the frame.
@@ -2593,9 +2592,6 @@ def _drop_edge_catalog_stars(
     edge_margin_px : float
         Minimum distance, in pixels, from every frame edge for a catalog star
         to be kept.
-    forced_rows : numpy.ndarray or None, optional
-        Boolean array, one entry per row of `aligned_coords`, marking the
-        forced targets. By default None (no forced rows).
 
     Returns
     -------
@@ -2606,10 +2602,10 @@ def _drop_edge_catalog_stars(
         `photometry_coords`, reduced to the same rows (unchanged if already
         None).
     int
-        Number of catalog stars removed by the margin: those that lie within
-        `CENTROID_PAD_PIX` of the frame or inside it, but closer than
-        `edge_margin_px` to an edge. Rows far off the frame, and forced
-        targets, are not counted. Zero when `photometry_coords` is None.
+        Number of catalog stars removed that lie within `edge_margin_px` of a
+        frame edge, on either side of it (inside the frame or outside it).
+        Stars farther off the frame are dropped but not counted. Zero when
+        `photometry_coords` is None.
 
     Raises
     ------
@@ -2620,21 +2616,22 @@ def _drop_edge_catalog_stars(
     -----
     The cut runs right after `align`'s projection and before centroiding, on
     the projected position, so a star near an edge is never handed to the
-    centroiding CNN. The frame spans ``[0, width - 0.5]`` by
-    ``[0, height - 0.5]``, as in `good_star_mask`, and a star exactly
-    `edge_margin_px` from an edge is kept.
+    centroiding CNN. A star is kept when it lies inside the frame by at least
+    `edge_margin_px`: the span is the `good_star_mask` span shrunk by the margin
+    on every side, with the same half-open upper bound. One rule applies to
+    every row, including any target the caller appended.
 
-    A star whose projected position is within the margin is not measured:
-    its background annulus is truncated by the frame edge, and the CNN's
-    15x15 cutout is fill-padded there, which makes its centroid unreliable and
-    able to land far from the true position. A star that projects off the frame
-    is dropped for the same reason (the Gaia cone is a circle of the frame's
+    The margin is sized to the CNN's 15x15 cutout, which is fill-padded when it
+    overlaps an edge (half-size 7 px), making the centroid unreliable and able
+    to land far from the true position. A star that projects off the frame is
+    dropped for the same reason (the Gaia cone is a circle of the frame's
     half-diagonal, so roughly half the catalog projects off-frame on any frame).
 
-    Forced targets are exempt from the margin and keep the looser rule: they are
-    kept while within `CENTROID_PAD_PIX` outside the frame bounds. Beyond that
-    pad a position has no overlap with its centroid cutout, and the later
-    `good_star_mask` bounds cut removes whatever remains off-frame.
+    The margin does not address background-annulus truncation. With the default
+    apertures the annulus spans about 15 to 24 px at a 3 px FWHM, so a star
+    10 to 24 px from an edge still has a truncated annulus, which is unchanged
+    by this cut: photutils measures the background from the on-frame annulus
+    pixels.
 
     When `photometry_coords` is None, `aligned_coords` are the detected
     coordinates themselves rather than catalog projections, and must stay
@@ -2646,18 +2643,7 @@ def _drop_edge_catalog_stars(
     height, width = shape
     x, y = aligned_coords[:, 0], aligned_coords[:, 1]
     margin = edge_margin_px
-    inside_margin = (
-        (x >= margin)
-        & (x <= width - 0.5 - margin)
-        & (y >= margin)
-        & (y <= height - 0.5 - margin)
-    )
-    near_frame = _within_frame(x, y, width, height, pad=CENTROID_PAD_PIX)
-    keep = inside_margin
-    if forced_rows is not None:
-        # A forced row inside the pad is kept by this term, so it can never be
-        # counted as dropped by the margin below.
-        keep = keep | (np.asarray(forced_rows, dtype=bool) & near_frame)
+    keep = _within_frame(x, y, width, height, pad=-margin)
     if not keep.any():
         msg = (
             f"no catalog star projects onto {file} at least {margin:g} px from "
@@ -2665,7 +2651,7 @@ def _drop_edge_catalog_stars(
             "within the edge margin"
         )
         raise NoUsableStarsError(msg, file=file)
-    n_edge_dropped = int(np.sum(near_frame & ~keep))
+    n_edge_dropped = int(np.sum(~keep & _within_frame(x, y, width, height, pad=margin)))
     logger.debug(
         "%s: %d of %d catalog stars kept (edge margin %.1f px, %d dropped by it)",
         file,
@@ -2861,7 +2847,6 @@ def prepare_image(
     user_specific_metadata=None,
     wcs=None,
     frame=None,
-    forced_rows=None,
 ):
     """
     Detect sources, align, and centroid for a single image.
@@ -2895,10 +2880,6 @@ def prepare_image(
         through to `align`. By default None.
     frame : LoadedFrame or None, optional
         Pre-loaded frame; when None the file is opened once via the loader.
-    forced_rows : numpy.ndarray or None, optional
-        Boolean array, one entry per row of `photometry_coords`, marking the
-        forced targets, which are exempt from the edge margin. By default None
-        (no forced rows).
 
     Returns
     -------
@@ -2914,8 +2895,9 @@ def prepare_image(
         CFA sub-grid sample is empty or has zero variance,
         `DegenerateBayerChannelError` -- both with `file` already attached by
         `calibration_sequence` itself, and `_drop_edge_catalog_stars` may
-        raise `NoUsableStarsError` when every catalog star projects outside
-        the frame; all three propagate unchanged.)
+        raise `NoUsableStarsError` when no catalog star lies inside the frame
+        by at least ``config.edge_margin_px``; all three propagate
+        unchanged.)
     FrameMetadataError
         If a WCS must be solved (``wcs`` is None) but the frame metadata has no
         usable numeric ``pixscale`` to scale-check the solve against, no header
@@ -2936,6 +2918,9 @@ def prepare_image(
     pointing before solving, keeping brightest-first order. A radius below the
     field radius keeps more of the brightest pool stars on the rectangular
     frame. The cut is skipped (full catalog used) only when a WCS is supplied.
+
+    Every input position, including any target the caller appended to
+    `photometry_coords`, is subject to ``config.edge_margin_px``.
     """
     # "calibrate" the data and get initial detections for WCS alignment and
     # FWHM estimation. calibration_sequence raises TooFewStarsError (a
@@ -3063,7 +3048,6 @@ def prepare_image(
         calibrated_data.shape,
         file,
         edge_margin_px=config.edge_margin_px,
-        forced_rows=forced_rows,
     )
 
     centroid_coords = centroid_stars(working_image, aligned_coords, cnn)
@@ -3267,7 +3251,6 @@ def process_one_image(
     input_photometry_coords=None,
     frame=None,
     build_l4=True,
-    forced_rows=None,
 ):
     """
     Process a single image file and return one photometry table per input mask.
@@ -3308,10 +3291,6 @@ def process_one_image(
         returned under the key "L4". It is built from the RGB channels
         (TR/TG/TB) after they are photometered, so those three must be in
         ``bayer_masks``. Default True.
-    forced_rows : numpy.ndarray or None, optional
-        Boolean array, one entry per row of `input_photometry_coords`, marking
-        the forced targets, which are exempt from the edge margin. By default
-        None (no forced rows).
 
     Returns
     -------
@@ -3337,6 +3316,9 @@ def process_one_image(
 
     Notes
     -----
+    Every input position, including any target the caller appended to
+    `input_photometry_coords`, is subject to ``config.edge_margin_px``.
+
     L4 is never photometered itself; `calculate_l4_quantities` builds it from
     the TR/TG/TB tables (see its Notes).
     """
@@ -3368,7 +3350,6 @@ def process_one_image(
         photometry_coords=input_photometry_coords,
         user_specific_metadata=user_specific_metadata,
         frame=frame,
-        forced_rows=forced_rows,
     )
 
     # Reject a malformed mask dict before any photometry: the dict is shared

@@ -332,6 +332,33 @@ class TestPrepareBatch:
 
         assert isinstance(exc_info.value.__cause__, InstrumentDetectionError)
 
+    @pytest.mark.parametrize("margin", [540.0, 600.0])
+    def test_edge_margin_reaching_the_frame_center_raises(self, mocker, margin):
+        """A margin at or above half the smaller frame side fails the batch up front."""
+        prep_data = _patch_prep(mocker)
+
+        with pytest.raises(BatchPrepError, match="edge_margin_px"):
+            scripts.prepare_batch(
+                "frame1.fits",
+                cnn=object(),
+                config=PhotometryConfig(edge_margin_px=margin),
+            )
+
+        prep_data.query_field_catalog.assert_not_called()
+
+    def test_edge_margin_below_half_the_frame_is_accepted(self, mocker):
+        """A margin just under half the smaller side (1080 px wide) is allowed."""
+        _patch_prep(mocker)
+        margin = 539.0
+
+        prep = scripts.prepare_batch(
+            "frame1.fits",
+            cnn=object(),
+            config=PhotometryConfig(edge_margin_px=margin),
+        )
+
+        assert prep.config.edge_margin_px == margin
+
     def test_first_frame_resolved_with_config_instrument_profile(self, mocker):
         """
         The config's instrument is threaded into the first-frame calibration.
@@ -920,27 +947,6 @@ class TestPrepareBatch:
         expected_dec = np.concatenate([radecs[[2, 3], 1], [5.0]])
         np.testing.assert_allclose(prep.photometry_coords.ra.deg, expected_ra)
         np.testing.assert_allclose(prep.photometry_coords.dec.deg, expected_dec)
-
-    def test_forced_rows_mark_the_appended_targets(self, mocker):
-        """``forced_rows`` is True exactly on the rows appended for forced targets."""
-        radecs, mags = _batch_radecs_mags()
-        _patch_prep(mocker, radecs_mags=(radecs, mags))
-        forced = SkyCoord([20.0, 21.0] * u.deg, [5.0, 6.0] * u.deg)
-
-        prep = scripts.prepare_batch("frame1.fits", cnn=object(), forced_targets=forced)
-
-        assert prep.forced_rows.dtype == bool
-        np.testing.assert_array_equal(prep.forced_rows, [False, False, True, True])
-        assert len(prep.forced_rows) == len(prep.photometry_coords)
-
-    def test_forced_rows_none_without_forced_targets(self, mocker):
-        """A batch with no forced targets carries no ``forced_rows``."""
-        radecs, mags = _batch_radecs_mags()
-        _patch_prep(mocker, radecs_mags=(radecs, mags))
-
-        prep = scripts.prepare_batch("frame1.fits", cnn=object())
-
-        assert prep.forced_rows is None
 
     def test_forced_targets_bypass_contamination_flagging(self, mocker):
         """A forced target near a bright star still reaches ``photometry_coords``."""

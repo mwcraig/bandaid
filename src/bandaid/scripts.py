@@ -235,11 +235,6 @@ class BatchPrep:
         The ICRS forced-target sky positions appended to
         ``photometry_coords`` by `prepare_batch`. None when the batch was
         prepared without any.
-    forced_rows : numpy.ndarray or None
-        Boolean array, one entry per row of ``photometry_coords``, True for the
-        rows appended from ``forced_targets``. None when the batch was
-        prepared without any. Handed to ``process_one_image`` so the edge-margin
-        cut can exempt those rows.
     instrument_auto_detected : bool
         Whether ``config.instrument`` was resolved by
         `~bandaid.instruments.detect_instrument` (the incoming config's
@@ -267,7 +262,6 @@ class BatchPrep:
     shape: tuple
     config: PhotometryConfig
     forced_targets: SkyCoord | None = None
-    forced_rows: np.ndarray | None = None
     instrument_auto_detected: bool = False
     build_l4: bool = True
 
@@ -294,26 +288,36 @@ class BatchPrep:
             raise ValueError(msg)
 
 
-def _forced_row_mask(n_rows, forced_targets):
+def _check_edge_margin_fits_frame(edge_margin_px, metadata):
     """
-    Mark the trailing rows of the photometry coordinates that are forced targets.
+    Reject an edge margin that leaves no usable area on the frame.
 
     Parameters
     ----------
-    n_rows : int
-        Length of ``photometry_coords`` including the forced targets.
-    forced_targets : astropy.coordinates.SkyCoord or None
-        The forced targets appended at the end of ``photometry_coords``, or None.
+    edge_margin_px : float
+        The configured ``PhotometryConfig.edge_margin_px``.
+    metadata : dict
+        Frame metadata with integer ``height`` and ``width`` entries.
 
-    Returns
-    -------
-    numpy.ndarray or None
-        Boolean array of length `n_rows`, True on the last ``len(forced_targets)``
-        rows; None when there are no forced targets.
+    Raises
+    ------
+    BatchPrepError
+        If `edge_margin_px` is at or above half the smaller frame dimension.
+
+    Notes
+    -----
+    Such a margin leaves no position at least that far from every edge, so
+    every frame would raise `NoUsableStarsError` and finish as a skipped
+    manifest row. Failing the batch up front names the cause once.
     """
-    if forced_targets is None:
-        return None
-    return np.arange(n_rows) >= n_rows - len(forced_targets)
+    smaller_side = min(metadata["height"], metadata["width"])
+    if edge_margin_px >= smaller_side / 2:
+        msg = (
+            f"edge_margin_px={edge_margin_px:g} leaves no usable area on a "
+            f"{metadata['width']}x{metadata['height']} px frame; it must be "
+            f"below half the smaller side ({smaller_side / 2:g} px)"
+        )
+        raise BatchPrepError(msg)
 
 
 def _resolve_batch_instrument(config, header):
@@ -463,7 +467,9 @@ def prepare_batch(
     ------
     BatchPrepError
         If too few stars are detected in ``first_file`` to measure an FWHM.
-        Also raised if fewer than the minimum number of target stars lie within
+        Also raised if ``config.edge_margin_px`` is at or above half the
+        smaller frame dimension, which would leave no usable area on any frame,
+        and if fewer than the minimum number of target stars lie within
         the first frame's solve pool radius, if the Gaia query hit its row
         limit before reaching the target magnitude limit (a
         `~bandaid.exceptions.CatalogTruncationError`, raised unchanged), if
@@ -513,6 +519,8 @@ def prepare_batch(
     except TooFewStarsError as exc:
         msg = f"too few stars detected in {first_file!r} to prepare the batch"
         raise BatchPrepError(msg) from exc
+
+    _check_edge_margin_fits_frame(config.edge_margin_px, metadata)
 
     # Gaia DR2 positions are J2015.5; propagate them to the observation epoch so
     # high-proper-motion stars are placed where the frames actually see them.
@@ -583,13 +591,14 @@ def prepare_batch(
         target_radecs, center, metadata["fov_rad"], instrument, gaia_mag_limit
     )
 
-    fwhm_arcsec = fwhm_pix * metadata["pixscale"]
     # The flag is computed once, from the first frame's FWHM, but applied to
     # every frame of the batch, so evaluate it at a pessimistically softened
     # seeing (FWHM * contamination_seeing_margin): pairs that would become
     # contaminated as seeing degrades during the night are dropped up front.
     # https://github.com/mwcraig/bandaid/issues/64
-    flag_fwhm_arcsec = fwhm_arcsec * instrument.contamination_seeing_margin
+    flag_fwhm_arcsec = (
+        fwhm_pix * metadata["pixscale"] * instrument.contamination_seeing_margin
+    )
     # Asymmetric flagging: only targets can be flagged, but the deeper contaminant
     # list supplies the (possibly fainter) neighbors that can contaminate them.
     # The contamination model scales with the aperture area, so it is evaluated
@@ -618,10 +627,9 @@ def prepare_batch(
     # against that comp star either, so the comp star's contamination goes
     # unflagged too. Accepted -- a user forcing a target is expected to have
     # already weighed potential contamination.
-    # (2) every downstream quality cut still applies unchanged; an off-frame
-    # forced target is silently dropped by the existing x/y bounds cut, by
-    # design, not an error. The one exception is the edge margin, which
-    # exempts forced targets (see `forced_rows`).
+    # (2) every downstream quality cut still applies unchanged, the edge
+    # margin included; an off-frame forced target is silently dropped, by
+    # design, not an error.
     if forced_targets is not None:
         # A scalar SkyCoord (e.g. SkyCoord.from_name(...) for a single nova)
         # has no len(); reshape to a 1-element array so it concatenates like
@@ -663,7 +671,6 @@ def prepare_batch(
         shape=(metadata["height"], metadata["width"]),
         config=config,
         forced_targets=forced_targets,
-        forced_rows=_forced_row_mask(len(photometry_coords), forced_targets),
         instrument_auto_detected=instrument_auto_detected,
         build_l4=build_l4,
     )
@@ -1445,7 +1452,6 @@ def process_batch(
                 prep.bayer_masks,
                 config=prep.config,
                 input_photometry_coords=prep.photometry_coords,
-                forced_rows=prep.forced_rows,
                 frame=frame,
                 build_l4=prep.build_l4,
             )
