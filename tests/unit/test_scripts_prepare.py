@@ -930,9 +930,7 @@ class TestPrepareBatch:
         prep = scripts.prepare_batch("frame1.fits", cnn=object(), forced_targets=forced)
 
         assert prep.forced_rows.dtype == bool
-        np.testing.assert_array_equal(
-            prep.forced_rows, [False, False, True, True]
-        )
+        np.testing.assert_array_equal(prep.forced_rows, [False, False, True, True])
         assert len(prep.forced_rows) == len(prep.photometry_coords)
 
     def test_forced_rows_none_without_forced_targets(self, mocker):

@@ -834,7 +834,7 @@ class TestPrepareImage:
     def test_forced_target_inside_the_margin_is_kept(
         self, stub_prepare_image_externals, mocker
     ):
-        """A forced target 3 px inside an edge is measured; a catalog star there is not."""
+        """A forced target 3 px inside an edge is measured; a catalog star is not."""
         aligned = np.array([[50.0, 50.0], [3.0, 50.0], [3.0, 60.0]])
         stub_prepare_image_externals(coords=aligned, calibrated=np.zeros((100, 100)))
         mocker.patch("bandaid.photometry.centroid_stars", new=real_centroid_stars)

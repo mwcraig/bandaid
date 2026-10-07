@@ -2859,6 +2859,7 @@ def prepare_image(
     user_specific_metadata=None,
     wcs=None,
     frame=None,
+    forced_rows=None,
 ):
     """
     Detect sources, align, and centroid for a single image.
@@ -2892,6 +2893,10 @@ def prepare_image(
         through to `align`. By default None.
     frame : LoadedFrame or None, optional
         Pre-loaded frame; when None the file is opened once via the loader.
+    forced_rows : numpy.ndarray or None, optional
+        Boolean array, one entry per row of `photometry_coords`, marking the
+        forced targets, which are exempt from the edge margin. By default None
+        (no forced rows).
 
     Returns
     -------
@@ -3056,6 +3061,7 @@ def prepare_image(
         calibrated_data.shape,
         file,
         edge_margin_px=config.edge_margin_px,
+        forced_rows=forced_rows,
     )
 
     centroid_coords = centroid_stars(working_image, aligned_coords, cnn)
@@ -3258,6 +3264,7 @@ def process_one_image(
     input_photometry_coords=None,
     frame=None,
     build_l4=True,
+    forced_rows=None,
 ):
     """
     Process a single image file and return one photometry table per input mask.
@@ -3298,6 +3305,10 @@ def process_one_image(
         returned under the key "L4". It is built from the RGB channels
         (TR/TG/TB) after they are photometered, so those three must be in
         ``bayer_masks``. Default True.
+    forced_rows : numpy.ndarray or None, optional
+        Boolean array, one entry per row of `input_photometry_coords`, marking
+        the forced targets, which are exempt from the edge margin. By default
+        None (no forced rows).
 
     Returns
     -------
@@ -3354,6 +3365,7 @@ def process_one_image(
         photometry_coords=input_photometry_coords,
         user_specific_metadata=user_specific_metadata,
         frame=frame,
+        forced_rows=forced_rows,
     )
 
     # Reject a malformed mask dict before any photometry: the dict is shared

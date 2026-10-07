@@ -234,6 +234,11 @@ class BatchPrep:
         The ICRS forced-target sky positions appended to
         ``photometry_coords`` by `prepare_batch`. None when the batch was
         prepared without any.
+    forced_rows : numpy.ndarray or None
+        Boolean array, one entry per row of ``photometry_coords``, True for the
+        rows appended from ``forced_targets``. None when the batch was
+        prepared without any. Handed to ``process_one_image`` so the edge-margin
+        cut can exempt those rows.
     instrument_auto_detected : bool
         Whether ``config.instrument`` was resolved by
         `~bandaid.instruments.detect_instrument` (the incoming config's
@@ -261,6 +266,7 @@ class BatchPrep:
     shape: tuple
     config: PhotometryConfig
     forced_targets: SkyCoord | None = None
+    forced_rows: np.ndarray | None = None
     instrument_auto_detected: bool = False
     build_l4: bool = True
 
@@ -285,6 +291,28 @@ class BatchPrep:
                 "construct BatchPrep via prepare_batch"
             )
             raise ValueError(msg)
+
+
+def _forced_row_mask(n_rows, forced_targets):
+    """
+    Mark the trailing rows of the photometry coordinates that are forced targets.
+
+    Parameters
+    ----------
+    n_rows : int
+        Length of ``photometry_coords`` including the forced targets.
+    forced_targets : astropy.coordinates.SkyCoord or None
+        The forced targets appended at the end of ``photometry_coords``, or None.
+
+    Returns
+    -------
+    numpy.ndarray or None
+        Boolean array of length `n_rows`, True on the last ``len(forced_targets)``
+        rows; None when there are no forced targets.
+    """
+    if forced_targets is None:
+        return None
+    return np.arange(n_rows) >= n_rows - len(forced_targets)
 
 
 def _resolve_batch_instrument(config, header):
@@ -591,7 +619,8 @@ def prepare_batch(
     # already weighed potential contamination.
     # (2) every downstream quality cut still applies unchanged; an off-frame
     # forced target is silently dropped by the existing x/y bounds cut, by
-    # design, not an error.
+    # design, not an error. The one exception is the edge margin, which
+    # exempts forced targets (see `forced_rows`).
     if forced_targets is not None:
         # A scalar SkyCoord (e.g. SkyCoord.from_name(...) for a single nova)
         # has no len(); reshape to a 1-element array so it concatenates like
@@ -633,6 +662,7 @@ def prepare_batch(
         shape=(metadata["height"], metadata["width"]),
         config=config,
         forced_targets=forced_targets,
+        forced_rows=_forced_row_mask(len(photometry_coords), forced_targets),
         instrument_auto_detected=instrument_auto_detected,
         build_l4=build_l4,
     )
@@ -1409,6 +1439,7 @@ def process_batch(
                 prep.bayer_masks,
                 config=prep.config,
                 input_photometry_coords=prep.photometry_coords,
+                forced_rows=prep.forced_rows,
                 frame=frame,
                 build_l4=prep.build_l4,
             )
