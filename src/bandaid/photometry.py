@@ -1969,6 +1969,141 @@ def centroid_stars(calibrated_data, aligned_coords, cnn):
     return centroid.ballet_centroid(calibrated_data, aligned_coords, cnn)
 
 
+def _plane_design(xy, shape):
+    """
+    Design matrix of the offset plane: a constant and frame-normalised x and y.
+
+    Parameters
+    ----------
+    xy : numpy.ndarray
+        ``(N, 2)`` pixel coordinates.
+    shape : tuple of int
+        ``(height, width)`` of the frame.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(N, 3)`` array with columns ``1``, ``(x - w/2) / (w/2)`` and
+        ``(y - h/2) / (h/2)``.
+    """
+    height, width = shape
+    nx = (xy[:, 0] - width / 2.0) / (width / 2.0)
+    ny = (xy[:, 1] - height / 2.0) / (height / 2.0)
+    return np.column_stack([np.ones(len(xy)), nx, ny])
+
+
+@dataclass(frozen=True)
+class OffsetPlane:
+    """
+    A frame's fitted offset from projected catalog positions to CNN centroids.
+
+    Attributes
+    ----------
+    coeffs_x : numpy.ndarray
+        ``(3,)`` coefficients of the x offset: its value at the frame centre,
+        then its change from the centre to the right-hand and top edges (the
+        coordinates are scaled to run from -1 to 1 across the frame).
+    coeffs_y : numpy.ndarray
+        ``(3,)`` coefficients of the y offset, in the same form.
+    shape : tuple of int
+        ``(height, width)`` of the frame the plane was fitted on.
+    n_used : int
+        Number of stars that defined the fit after clipping.
+    n_clipped : int
+        Number of stars removed by the clip.
+    rms : float
+        Radial rms of the fit residuals over the stars used, in pixels.
+    """
+
+    coeffs_x: np.ndarray
+    coeffs_y: np.ndarray
+    shape: tuple
+    n_used: int
+    n_clipped: int
+    rms: float
+
+    def offsets(self, xy):
+        """
+        Evaluate the plane at the given pixel positions.
+
+        Parameters
+        ----------
+        xy : numpy.ndarray
+            ``(N, 2)`` pixel coordinates.
+
+        Returns
+        -------
+        numpy.ndarray
+            ``(N, 2)`` offsets to add to `xy`.
+        """
+        design = _plane_design(np.asarray(xy, dtype=float), self.shape)
+        return np.column_stack([design @ self.coeffs_x, design @ self.coeffs_y])
+
+
+def _fit_offset_plane(
+    projected,
+    measured,
+    shape,
+    *,
+    min_fit_stars=_DEFAULT_CENTROID.min_fit_stars,
+    clip_sigma=_DEFAULT_CENTROID.clip_sigma,
+):
+    """
+    Fit the per-frame plane of CNN-minus-projected offsets.
+
+    Parameters
+    ----------
+    projected : numpy.ndarray
+        ``(N, 2)`` WCS-projected catalog positions of the fit stars.
+    measured : numpy.ndarray
+        ``(N, 2)`` CNN centroids of the same stars.
+    shape : tuple of int
+        ``(height, width)`` of the frame.
+    min_fit_stars : int, optional
+        Fewest stars that may define the fit, before and after clipping.
+    clip_sigma : float, optional
+        Per-axis clipping threshold, in standard deviations of the residuals.
+
+    Returns
+    -------
+    OffsetPlane or None
+        The fitted plane, or None when fewer than `min_fit_stars` stars were
+        usable or survived the clip.
+
+    Notes
+    -----
+    Each axis is fitted by unweighted least squares to a constant plus a term
+    linear in each frame coordinate. Stars whose CNN result is not finite, or
+    equals the input position exactly (the CNN's fallback when a cutout is
+    unusable), are not measurements and are left out. The fit is then clipped
+    once: a star is dropped if either axis's residual exceeds `clip_sigma`
+    standard deviations of that axis's residuals, and the plane is refitted on
+    the rest.
+    """
+    projected = np.asarray(projected, dtype=float)
+    measured = np.asarray(measured, dtype=float)
+    usable = np.isfinite(measured).all(axis=1) & (measured != projected).any(axis=1)
+    if usable.sum() < min_fit_stars:
+        return None
+    design = _plane_design(projected[usable], shape)
+    delta = measured[usable] - projected[usable]
+    coeffs = np.linalg.lstsq(design, delta, rcond=None)[0]
+    resid = delta - design @ coeffs
+    keep = (np.abs(resid) <= clip_sigma * resid.std(axis=0)).all(axis=1)
+    if keep.sum() < min_fit_stars:
+        return None
+    coeffs = np.linalg.lstsq(design[keep], delta[keep], rcond=None)[0]
+    resid = delta[keep] - design[keep] @ coeffs
+    return OffsetPlane(
+        coeffs_x=coeffs[:, 0],
+        coeffs_y=coeffs[:, 1],
+        shape=tuple(shape),
+        n_used=int(keep.sum()),
+        n_clipped=int(len(keep) - keep.sum()),
+        rms=float(np.sqrt((resid**2).sum(axis=1).mean())),
+    )
+
+
 @dataclass(frozen=True)
 class CentroidResult:
     """

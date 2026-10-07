@@ -447,11 +447,16 @@ class TestFitOffsetPlane:
 
     def test_minimum_applies_after_clipping(self):
         """A fit that clipping reduces below the minimum gives no plane."""
-        projected = _fit_stars(MIN_FIT_STARS)
+        n_stars = 30
+        projected = _fit_stars(n_stars)
         measured = _noisy_measurements(projected)
         measured[0] += [8.0, 8.0]
 
-        assert _fit_offset_plane(projected, measured, FRAME_SHAPE) is None
+        plane = _fit_offset_plane(
+            projected, measured, FRAME_SHAPE, min_fit_stars=n_stars
+        )
+
+        assert plane is None
 
 
 def test_centroid_stars_delegates_to_ballet(mocker):
