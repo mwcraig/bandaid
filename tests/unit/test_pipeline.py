@@ -45,6 +45,7 @@ from bandaid.photometry import (
     LoadedFrame,
     _box_opening,
     _brightest_unsaturated,
+    _centroid_prior_summary,
     _detect_stars,
     _fwhm_from_coords,
     build_photometry_table,
@@ -854,6 +855,88 @@ class TestPrepareImage:
         np.testing.assert_array_equal(spy.call_args.kwargs["gaia_g"], gaia_g[[0, 2]])
         assert spy.call_args.kwargs["g_cut"] == g_cut
         assert spy.call_args.kwargs["config"] is config.centroid
+
+    def test_image_data_records_how_each_star_was_centroided(
+        self, stub_prepare_image_externals, mocker
+    ):
+        """``ImageData`` carries the per-row method, expected positions and summary."""
+        aligned = np.array([[50.0, 50.0], [60.0, 70.0]])
+        stub_prepare_image_externals(coords=aligned, calibrated=np.zeros((100, 100)))
+        method = np.array(["cnn", "plane"])
+        expected = aligned + 0.25
+        g_cut = 9.5
+        mocker.patch(
+            "bandaid.photometry.centroid_with_prior",
+            return_value=photometry.CentroidResult(
+                coords=aligned,
+                method=method,
+                expected=expected,
+                plane=None,
+                fallback=True,
+                active=True,
+            ),
+        )
+
+        img = prepare_image(
+            "unused.fits",
+            np.zeros((5, 2)),
+            None,
+            photometry_coords=SkyCoord(ra=[1.0, 2.0], dec=[0.0, 0.0], unit="deg"),
+            gaia_g=np.array([8.0, 9.0]),
+            g_cut=g_cut,
+        )
+
+        np.testing.assert_array_equal(img.centroid_method, method)
+        np.testing.assert_array_equal(img.centroid_expected, expected)
+        assert img.centroid_prior["n_cnn_class"] == 1
+        assert img.centroid_prior["g_cut"] == g_cut
+        assert img.centroid_prior["plane_fallback"] is True
+        assert img.centroid_prior["plane_n_used"] == 0
+
+    def test_centroid_prior_summary_reports_the_fitted_plane(self):
+        """The summary gives the plane's counts, rms, centre offset and slopes."""
+        plane = photometry.OffsetPlane(
+            coeffs_x=np.array([0.3, 0.1, -0.05]),
+            coeffs_y=np.array([-0.2, 0.04, 0.08]),
+            shape=(200, 300),
+            n_used=28,
+            n_clipped=2,
+            rms=0.12,
+        )
+        result = photometry.CentroidResult(
+            coords=np.zeros((3, 2)),
+            method=np.array(["cnn", "plane", "plane"]),
+            expected=np.zeros((3, 2)),
+            plane=plane,
+            active=True,
+        )
+
+        summary = _centroid_prior_summary(result, 9.5)
+
+        assert summary == {
+            "g_cut": 9.5,
+            "n_cnn_class": 1,
+            "plane_fallback": False,
+            "plane_n_used": 28,
+            "plane_n_clipped": 2,
+            "plane_rms": 0.12,
+            "plane_dx_center": 0.3,
+            "plane_dx_slope_x": 0.1,
+            "plane_dx_slope_y": -0.05,
+            "plane_dy_center": -0.2,
+            "plane_dy_slope_x": 0.04,
+            "plane_dy_slope_y": 0.08,
+        }
+
+    def test_centroid_prior_summary_is_none_when_the_policy_did_not_run(self):
+        """A frame centroided without the policy has no summary."""
+        result = photometry.CentroidResult(
+            coords=np.zeros((1, 2)),
+            method=np.array(["cnn"]),
+            expected=np.zeros((1, 2)),
+        )
+
+        assert _centroid_prior_summary(result, None) is None
 
     def test_policy_gets_no_gaia_g_without_a_catalog(
         self, stub_prepare_image_externals, mocker
@@ -1919,6 +2002,27 @@ class TestProcessOneImage:
                 SEESTAR_PIXSCALE, rel=1e-3
             )
             assert 0 <= table.meta["solve_offset_deg"] < 1
+
+    def test_centroid_prior_summary_is_stamped_on_every_table(self, l4_frame, mocker):
+        """The frame's plane summary rides along in each table's meta, L4 included."""
+        path, masks = l4_frame
+        real_prepare_image = photometry.prepare_image
+        summary = {"plane_n_used": 7, "plane_fallback": False}
+
+        def _prepare_with_summary(file, radecs, cnn, **kwargs: object):
+            img = real_prepare_image(file, radecs, cnn, **kwargs)
+            img.centroid_prior = summary
+            return img
+
+        mocker.patch(
+            "bandaid.photometry.prepare_image", side_effect=_prepare_with_summary
+        )
+
+        result = process_one_image(path, {}, _REF_RADECS, None, masks)
+
+        assert set(result) == {"TR", "TG", "TB", "L4"}
+        for table in result.values():
+            assert table.meta["centroid_prior"] == summary
 
     def test_gaia_g_and_cut_reach_prepare_image(self, l4_frame, mocker):
         """``process_one_image`` hands ``input_gaia_g`` and ``g_cut`` on."""
