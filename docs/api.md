@@ -35,6 +35,8 @@ The immutable, validated configuration objects. See
 
 ::: bandaid.DriftConfig
 
+::: bandaid.CentroidConfig
+
 ::: bandaid.InstrumentProfile
 
 ::: bandaid.HeaderMatchRule

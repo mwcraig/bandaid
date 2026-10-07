@@ -45,6 +45,7 @@ from twirl import compute_wcs
 
 from .config import (
     ApertureConfig,
+    CentroidConfig,
     DriftConfig,
     InstrumentProfile,
     PhotometryConfig,
@@ -122,6 +123,7 @@ MIN_STARS_FOR_PAIRS = 2
 # leaf-function signatures and any existing callers continue to read them. The
 # config object is the single source of truth for these values.
 _DEFAULT_APERTURES = ApertureConfig()
+_DEFAULT_CENTROID = CentroidConfig()
 _DEFAULT_DRIFT = DriftConfig()
 _DEFAULT_INSTRUMENT = InstrumentProfile()
 _DEFAULT_SOURCE_SELECTION = SourceSelectionConfig()
@@ -1344,7 +1346,7 @@ def eloy_to_starlist(eloy_table, metadata, *, min_snr=None):
 # ballet_centroid falls back to the input coordinate -- still off-frame, so
 # good_star_mask drops it. Pad the pre-centroid in-frame cut by 8 px so every
 # star it removes would have come back off-frame anyway.
-CENTROID_PAD_PIX = 8.0
+CENTROID_PAD_PIX = _DEFAULT_CENTROID.edge_margin_px
 
 
 def _within_frame(x, y, width, height, pad=0.0):

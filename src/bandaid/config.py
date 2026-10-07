@@ -209,6 +209,62 @@ class DriftConfig(BaseModel, frozen=True):
     drift_cap_pix: Annotated[float, Field(gt=0)] = 4.0
 
 
+class CentroidConfig(BaseModel, frozen=True):
+    """
+    Settings for the Gaia-prior position used where the CNN centroid is unreliable.
+
+    Attributes
+    ----------
+    edge_band_prior : bool
+        Whether stars within `edge_margin_px` of a frame edge take the
+        WCS-projected catalog position plus a per-frame offset plane instead of
+        a CNN centroid. On by default.
+    edge_margin_px : float
+        Width, in pixels, of the edge band. The default is the half-width of
+        the CNN's 15x15 cutout plus one pixel.
+    fit_n_stars : int
+        Number of brightest (by Gaia G) on-frame, non-edge stars whose CNN
+        centroids define the per-frame offset plane.
+    min_fit_stars : int
+        Minimum number of stars that must survive clipping for the plane to be
+        used; below it the frame has no plane.
+    clip_sigma : float
+        Per-axis clipping threshold, in standard deviations, for the one clip
+        and refit of the plane.
+
+    Notes
+    -----
+    The plane is fitted to ``CNN - projected`` positions, so it absorbs the
+    small systematic offset between the CNN's centroids and the projected
+    catalog positions. It is unweighted and of first order in each axis.
+    A frame whose fit leaves fewer than `min_fit_stars` stars has no plane:
+    its edge-band stars then take the bare projected position.
+    """
+
+    edge_band_prior: bool = True
+    # Eloy centroids in a 15x15 cutout (half-width 7 px), so a cutout whose
+    # centre is within 8 px of an edge is partly fill-padded.
+    edge_margin_px: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 8.0
+    # The top 30 stars never ran short on the validation fields and the fit
+    # error is flat between the top 20 and 50.
+    fit_n_stars: Annotated[int, Field(ge=3)] = 30
+    # A first-order plane has three coefficients per axis; twelve survivors
+    # keeps the fit well-determined after clipping.
+    min_fit_stars: Annotated[int, Field(ge=3)] = 12
+    clip_sigma: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 3.0
+
+    @model_validator(mode="after")
+    def _fit_set_can_reach_minimum(self) -> "CentroidConfig":
+        """Require a fit set at least as large as the minimum survivor count."""
+        if self.fit_n_stars < self.min_fit_stars:
+            msg = (
+                f"fit_n_stars ({self.fit_n_stars}) must be at least "
+                f"min_fit_stars ({self.min_fit_stars})"
+            )
+            raise ValueError(msg)
+        return self
+
+
 class HeaderMatchRule(BaseModel, frozen=True):
     """
     One FITS-header keyword/value rule used to auto-detect an instrument.
@@ -624,7 +680,7 @@ class PhotometryConfig(BaseModel, frozen=True):
     """
     The full, immutable photometry configuration carried once per batch.
 
-    Bundles the four sub-configs so the pipeline threads a single object rather
+    Bundles the sub-configs so the pipeline threads a single object rather
     than a long tail of keyword arguments. The defaults reproduce the legacy
     module constants exactly.
 
@@ -636,6 +692,8 @@ class PhotometryConfig(BaseModel, frozen=True):
         Gaia magnitude limits selecting the measured and flagged stars.
     drift : DriftConfig
         Centroid-drift cuts.
+    centroid : CentroidConfig
+        The Gaia-prior position used in the frame-edge band.
     instrument : InstrumentProfile or None
         The named telescope: detection, FWHM, PSF, and contamination settings
         plus the per-frame FITS-header dialect. ``None`` (the default) means
@@ -651,4 +709,5 @@ class PhotometryConfig(BaseModel, frozen=True):
         default_factory=SourceSelectionConfig
     )
     drift: DriftConfig = Field(default_factory=DriftConfig)
+    centroid: CentroidConfig = Field(default_factory=CentroidConfig)
     instrument: InstrumentProfile | None = None
