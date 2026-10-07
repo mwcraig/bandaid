@@ -692,6 +692,15 @@ class TestCentroidWithPrior:
         assert (result.method[n_class:] == "fallback_cnn").all()
         np.testing.assert_array_equal(result.expected, projected)
 
+    def test_an_infinite_cut_keeps_every_star_on_its_cnn_centroid(self):
+        """A sparse field has no finite cut: every star is CNN-class."""
+        projected = _fit_stars(N_CATALOG)
+
+        result = _run_policy(projected, _catalog_g(), g_cut=np.inf)
+
+        np.testing.assert_array_equal(result.coords, _measured(projected))
+        assert (result.method == "cnn").all()
+
     def test_the_cnn_is_never_called_with_an_empty_array(self, cnn_calls):
         """A frame whose stars are all fit-set stars still calls the CNN once."""
         projected = _fit_stars(N_CATALOG)

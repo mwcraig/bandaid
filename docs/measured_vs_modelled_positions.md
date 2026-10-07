@@ -113,20 +113,21 @@ blank and `centroid_method` is `cnn` throughout.
 ## What changes in your output
 
 Against an all-CNN run of the same frames (155 LS Psc frames, a field with many
-faint stars):
+faint stars; SNR is the L4 `snr` of the all-CNN run):
 
 | L4 SNR   | position change, median | flux change, median | light-curve scatter ratio |
 | -------- | ----------------------- | ------------------- | ------------------------- |
-| 1 to 2   | about 1.5 px            | +11.6 %             | 0.79                      |
-| 2 to 3   | about 1.5 px            | +3.6 %              | 0.76                      |
-| 3 to 5   | about 1.2 px            | +2.4 %              | 0.80                      |
-| 5 to 10  | about 0.7 px            | +0.1 %              | 0.91                      |
-| 10 to 20 | small                   | about 0             | 1.00                      |
-| over 20  | none                    | 0                   | 1.00                      |
+| 1 to 2   | 1.5 px                  | +12 %               | 0.83                      |
+| 2 to 3   | 1.3 px                  | +4 %                | 0.70                      |
+| 3 to 5   | 1.1 px                  | +3 %                | 0.84                      |
+| 5 to 10  | 0.5 px                  | 0                   | 0.85                      |
+| 10 to 20 | small                   | 0                   | 1.00                      |
+| over 20  | 0                       | 0                   | 1.00                      |
 
-The 30 brightest stars are unchanged. The faint stars move to the modelled
-position, their fluxes rise (the CNN's biased positions put the aperture
-slightly off the star, so the flux is under-read), and their light curves get
-tighter. Because the faint-star flux rises, more stars clear a given `min_snr`:
-with the default of 2, about 11 % more L4 rows on that field. Anyone comparing a
-star list with one made before the policy will see this change.
+The CNN-class stars are unchanged to the last bit. The faint stars move to the
+modelled position, their fluxes rise, and their light curves get tighter. Because
+the faint-star flux rises, more stars clear a given `min_snr`: with the default of
+2, 11 % more L4 rows on that field, and 0.05 to 6 % more on five other fields
+(2.5 % on SS Leo). Anyone comparing a star list with one made before the policy
+will see this change. The per-frame time drops by about 10 %, since far fewer
+stars go through the CNN.

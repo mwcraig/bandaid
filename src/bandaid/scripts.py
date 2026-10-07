@@ -413,7 +413,7 @@ def _batch_g_cut(centroid_config, coords, gaia_g, center, shape, pixscale):
     else:
         logger.warning(
             "fewer than %d catalog targets within the frame-area circle: "
-            "every star is CNN-class and the Gaia-prior plane is not used",
+            "every star is CNN-class and keeps its CNN centroid",
             centroid_config.cnn_class_size,
         )
     return g_cut
