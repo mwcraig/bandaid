@@ -47,6 +47,7 @@ from bandaid.photometry import (
     _brightest_unsaturated,
     _centroid_prior_summary,
     _detect_stars,
+    _drop_edge_catalog_stars,
     _fwhm_from_coords,
     build_photometry_table,
     calibration_sequence,

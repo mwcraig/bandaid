@@ -788,16 +788,14 @@ def prepare_batch(
 
     gaia_g = _with_forced_target_g(mags[target][~flagged_target], forced_targets)
 
-    bayer_masks = generate_bayer_masks(
-        (metadata["height"], metadata["width"]),
-        metadata,
-    )
-
     return BatchPrep(
         radecs=target_radecs,
         photometry_coords=photometry_coords,
         cnn=cnn,
-        bayer_masks=bayer_masks,
+        bayer_masks=generate_bayer_masks(
+            (metadata["height"], metadata["width"]),
+            metadata,
+        ),
         center=center,
         fov_rad=metadata["fov_rad"],
         shape=(metadata["height"], metadata["width"]),
