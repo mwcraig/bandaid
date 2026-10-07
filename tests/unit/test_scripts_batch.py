@@ -102,6 +102,22 @@ class TestProcessBatch:
             assert masks is prep.bayer_masks
             assert call.kwargs["input_photometry_coords"] is prep.photometry_coords
 
+    def test_passes_the_preps_gaia_g_and_cut(self, mocker):
+        """``process_one_image`` receives the prep's row-aligned G and magnitude cut."""
+        prep = dataclasses.replace(
+            _dummy_prep(), gaia_g=np.array([9.0, 10.0]), g_cut=9.5
+        )
+        process_one_image = mocker.patch(
+            "bandaid.scripts.process_one_image",
+            return_value={"TR": Table({"tot_count": [1.0]})},
+        )
+
+        scripts.process_batch(["a.fits"], prep, user_specific_metadata={})
+
+        kwargs = process_one_image.call_args.kwargs
+        assert kwargs["input_gaia_g"] is prep.gaia_g
+        assert kwargs["g_cut"] == prep.g_cut
+
     @pytest.mark.parametrize("build_l4", [True, False])
     def test_passes_the_preps_build_l4_flag(self, mocker, build_l4):
         """``process_one_image`` receives the flag the prep carries."""

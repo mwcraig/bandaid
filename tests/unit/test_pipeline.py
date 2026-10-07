@@ -797,6 +797,81 @@ class TestPrepareImage:
         assert np.array_equal(img.centroid_coords, aligned[[0]])
         assert len(img.input_photometry_coords) == 1
 
+    def test_gaia_g_is_cut_with_the_coordinates(self):
+        """Gaia G is dropped with its star so each G still matches its row."""
+        aligned = np.array([[50.0, 50.0], [3.0, 50.0], [60.0, 70.0], [-50.0, 5.0]])
+        coords = SkyCoord(ra=np.arange(4, dtype=float), dec=np.zeros(4), unit="deg")
+        gaia_g = np.array([8.0, 9.0, 10.0, 11.0])
+
+        _out_aligned, _out_coords, out_g, _n_dropped = _drop_edge_catalog_stars(
+            aligned,
+            coords,
+            (100, 100),
+            "unused.fits",
+            edge_margin_px=10.0,
+            gaia_g=gaia_g,
+        )
+
+        np.testing.assert_array_equal(out_g, gaia_g[[0, 2]])
+
+    def test_gaia_g_is_none_without_a_catalog(self):
+        """Without catalog coordinates there is no G to return."""
+        aligned = np.array([[50.0, 50.0]])
+
+        _out_aligned, out_coords, out_g, n_dropped = _drop_edge_catalog_stars(
+            aligned, None, (100, 100), "unused.fits", edge_margin_px=10.0
+        )
+
+        assert out_coords is None
+        assert out_g is None
+        assert n_dropped == 0
+
+    def test_policy_receives_cut_gaia_g_cut_and_config(
+        self, stub_prepare_image_externals, mocker
+    ):
+        """The centroid policy gets G cut with the coordinates, plus the cut and config."""
+        aligned = np.array(
+            [[50.0, 50.0], [-50.0, 5.0], [60.0, 70.0], [200.0, 5.0], [3.0, 50.0]]
+        )
+        stub_prepare_image_externals(coords=aligned, calibrated=np.zeros((100, 100)))
+        spy = mocker.spy(photometry, "centroid_with_prior")
+        photometry_coords = SkyCoord(ra=np.arange(5.0), dec=np.zeros(5), unit="deg")
+        gaia_g = np.array([8.0, 9.0, 10.0, 11.0, 12.0])
+        config = PhotometryConfig(instrument=InstrumentProfile())
+        g_cut = 9.5
+
+        prepare_image(
+            "unused.fits",
+            np.zeros((5, 2)),
+            None,
+            config=config,
+            photometry_coords=photometry_coords,
+            gaia_g=gaia_g,
+            g_cut=g_cut,
+        )
+
+        # Rows 1 and 3 are off-frame and row 4 is inside the edge margin.
+        np.testing.assert_array_equal(spy.call_args.kwargs["gaia_g"], gaia_g[[0, 2]])
+        assert spy.call_args.kwargs["g_cut"] == g_cut
+        assert spy.call_args.kwargs["config"] is config.centroid
+
+    def test_policy_gets_no_gaia_g_without_a_catalog(
+        self, stub_prepare_image_externals, mocker
+    ):
+        """Detected coordinates are not catalog projections: no G reaches the policy."""
+        stub_prepare_image_externals()
+        spy = mocker.spy(photometry, "centroid_with_prior")
+
+        prepare_image(
+            "unused.fits",
+            np.zeros((5, 2)),
+            None,
+            gaia_g=np.array([8.0, 9.0, 10.0]),
+            g_cut=9.5,
+        )
+
+        assert spy.call_args.kwargs["gaia_g"] is None
+
     def test_appended_forced_target_inside_the_margin_is_dropped(
         self, stub_prepare_image_externals, mocker
     ):
@@ -1844,6 +1919,23 @@ class TestProcessOneImage:
                 SEESTAR_PIXSCALE, rel=1e-3
             )
             assert 0 <= table.meta["solve_offset_deg"] < 1
+
+    def test_gaia_g_and_cut_reach_prepare_image(self, l4_frame, mocker):
+        """``process_one_image`` hands ``input_gaia_g`` and ``g_cut`` on."""
+        path, masks = l4_frame
+        spy = mocker.patch(
+            "bandaid.photometry.prepare_image", side_effect=NoUsableStarsError("x")
+        )
+        gaia_g = np.array([9.0, 10.0])
+        g_cut = 9.5
+
+        with pytest.raises(NoUsableStarsError):
+            process_one_image(
+                path, {}, _REF_RADECS, None, masks, input_gaia_g=gaia_g, g_cut=g_cut
+            )
+
+        assert spy.call_args.kwargs["gaia_g"] is gaia_g
+        assert spy.call_args.kwargs["g_cut"] == g_cut
 
     def test_edge_drop_count_is_stamped_on_every_table(self, l4_frame, mocker):
         """Every table, L4 included, carries the frame's ``n_edge_dropped``."""
