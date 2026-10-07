@@ -1472,6 +1472,8 @@ class ImageData:
     # validation. The offset is None when no header center was available.
     wcs_pixscale: float | None = None
     solve_offset_deg: float | None = None
+    # Catalog stars removed by the edge margin (see `_drop_edge_catalog_stars`).
+    n_edge_dropped: int = 0
     # Populated lazily by the first `resolve_time_airmass` call for this frame
     # and reused by the later calls (one per RGB channel) that share this same
     # `ImageData`, so the obs_time parse and airmass derivation run once per
@@ -3055,7 +3057,7 @@ def prepare_image(
 
     # Drop catalog stars projected within the edge margin or off-frame, before
     # centroiding/photometry.
-    aligned_coords, photometry_coords, _ = _drop_edge_catalog_stars(
+    aligned_coords, photometry_coords, n_edge_dropped = _drop_edge_catalog_stars(
         aligned_coords,
         photometry_coords,
         calibrated_data.shape,
@@ -3078,6 +3080,7 @@ def prepare_image(
         metadata=metadata,
         wcs_pixscale=measured.pixscale,
         solve_offset_deg=measured.offset_deg,
+        n_edge_dropped=n_edge_dropped,
     )
 
 
@@ -3383,6 +3386,7 @@ def process_one_image(
         data.meta["full_image_meta"] = img.metadata
         data.meta["wcs_pixscale"] = img.wcs_pixscale
         data.meta["solve_offset_deg"] = img.solve_offset_deg
+        data.meta["n_edge_dropped"] = img.n_edge_dropped
         by_filter_data[filter_name] = data
 
     # L4 is a recombination of the RGB tables, so it is built once they all
@@ -3393,6 +3397,7 @@ def process_one_image(
         l4.meta["full_image_meta"] = img.metadata
         l4.meta["wcs_pixscale"] = img.wcs_pixscale
         l4.meta["solve_offset_deg"] = img.solve_offset_deg
+        l4.meta["n_edge_dropped"] = img.n_edge_dropped
         by_filter_data["L4"] = l4
 
     return by_filter_data

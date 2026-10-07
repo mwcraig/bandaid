@@ -73,6 +73,7 @@ QA_MANIFEST_COLUMNS = (
     "n_centroid_drift",
     "n_drift_rejected",
     "n_forced_measured",
+    "n_edge_dropped",
 )
 
 # SNR at or above which a star counts toward the manifest's ``n_snr20`` solve-quality
@@ -1009,6 +1010,10 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
     decimals; either is blank when absent. ``n_snr20`` counts the
     representative channel's `good_star_mask`-passing rows with ``snr >= 20``,
     and is blank under the same conditions as ``n_good_stars``.
+
+    ``n_edge_dropped`` is the number of catalog stars the frame's edge margin
+    removed before measurement, read from the table ``meta`` like
+    ``wcs_pixscale``; blank when absent.
     """
     if "L4" in by_filter:
         representative = by_filter["L4"]
@@ -1085,6 +1090,7 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
         "n_centroid_drift": n_centroid_drift,
         "n_drift_rejected": n_drift_rejected,
         "n_forced_measured": n_forced_measured,
+        "n_edge_dropped": meta.get("n_edge_dropped"),
     }
 
 

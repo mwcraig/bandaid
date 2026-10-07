@@ -855,9 +855,7 @@ class TestPrepareImage:
         assert np.array_equal(ballet_centroid.call_args[0][1], aligned[[0, 2]])
         assert np.array_equal(img.input_photometry_coords.ra.deg, [1.0, 3.0])
 
-    def test_image_data_records_the_edge_drop_count(
-        self, stub_prepare_image_externals
-    ):
+    def test_image_data_records_the_edge_drop_count(self, stub_prepare_image_externals):
         """``ImageData.n_edge_dropped`` is the number of stars the margin removed."""
         aligned = np.array([[50.0, 50.0], [3.0, 50.0], [60.0, 97.0], [-50.0, 5.0]])
         stub_prepare_image_externals(coords=aligned, calibrated=np.zeros((100, 100)))
@@ -1885,7 +1883,7 @@ class TestProcessOneImage:
         assert spy.call_args.kwargs["forced_rows"] is forced_rows
 
     def test_edge_drop_count_is_stamped_on_every_table(self, l4_frame, mocker):
-        """Each table, L4 included, carries the frame's ``n_edge_dropped`` in its meta."""
+        """Every table, L4 included, carries the frame's ``n_edge_dropped``."""
         path, masks = l4_frame
         real_prepare = prepare_image
         edge_dropped = 11
