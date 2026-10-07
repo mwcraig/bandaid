@@ -101,6 +101,7 @@ class TestProcessBatch:
             assert cnn is prep.cnn
             assert masks is prep.bayer_masks
             assert call.kwargs["input_photometry_coords"] is prep.photometry_coords
+            assert call.kwargs["input_gaia_g"] is prep.gaia_g
 
     @pytest.mark.parametrize("build_l4", [True, False])
     def test_passes_the_preps_build_l4_flag(self, mocker, build_l4):

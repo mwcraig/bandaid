@@ -692,6 +692,38 @@ class TestPrepareImage:
             img.input_photometry_coords.dec.deg, photometry_coords.dec.deg[kept]
         )
 
+    def test_off_frame_cut_keeps_gaia_g_row_aligned(
+        self, stub_prepare_image_externals, mocker
+    ):
+        """Gaia G is cut with the coordinates, so each G still matches its row."""
+        aligned = np.array(
+            [[5.0, 5.0], [-50.0, 5.0], [9.0, 9.0], [200.0, 5.0]],
+        )
+        stub_prepare_image_externals(coords=aligned)
+        spy = mocker.patch(
+            "bandaid.photometry.centroid_with_prior",
+            side_effect=lambda _data, coords, _cnn, **_kw: photometry.CentroidResult(
+                coords=coords,
+                method=np.full(len(coords), "cnn"),
+                plane=None,
+                fallback=False,
+            ),
+        )
+        photometry_coords = SkyCoord(
+            ra=[1.0, 2.0, 3.0, 4.0], dec=[0.0, 0.0, 0.0, 0.0], unit="deg"
+        )
+        gaia_g = np.array([8.0, 9.0, 10.0, 11.0])
+
+        prepare_image(
+            "unused.fits",
+            np.zeros((5, 2)),
+            None,
+            photometry_coords=photometry_coords,
+            gaia_g=gaia_g,
+        )
+
+        np.testing.assert_array_equal(spy.call_args.kwargs["gaia_g"], gaia_g[[0, 2]])
+
     def test_in_frame_cut_uses_width_and_height_separately(
         self, stub_prepare_image_externals
     ):
@@ -1681,6 +1713,16 @@ class TestProcessOneImage:
         image = _detectable_image(make_test_image)
         path = _write_seestar_fits(tmp_path / "frame.fits", image)
         return path, bayer_masks_rggb(image.shape)
+
+    def test_gaia_g_is_forwarded_to_prepare_image(self, l4_frame, mocker):
+        """``input_gaia_g`` reaches ``prepare_image`` as ``gaia_g``."""
+        path, masks = l4_frame
+        spy = mocker.spy(photometry, "prepare_image")
+        gaia_g = np.array([9.0, 10.0])
+
+        process_one_image(path, {}, _REF_RADECS, None, masks, input_gaia_g=gaia_g)
+
+        assert spy.call_args.kwargs["gaia_g"] is gaia_g
 
     def test_raises_when_image_rejected(
         self, make_test_image, tmp_path, bayer_masks_rggb

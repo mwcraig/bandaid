@@ -921,6 +921,28 @@ class TestPrepareBatch:
         np.testing.assert_allclose(prep.photometry_coords.ra.deg, expected_ra)
         np.testing.assert_allclose(prep.photometry_coords.dec.deg, expected_dec)
 
+    def test_gaia_g_is_row_aligned_with_photometry_coords(self, mocker):
+        """``gaia_g`` holds the G of exactly the contamination-filtered targets."""
+        prep_data = _patch_prep(mocker)
+
+        prep = scripts.prepare_batch("frame1.fits", cnn=object())
+
+        # The tight equal-mag pair (rows 0 and 1) is dropped from the targets.
+        assert len(prep.gaia_g) == len(prep.photometry_coords)
+        np.testing.assert_array_equal(prep.gaia_g, prep_data.mags[[2, 3]])
+
+    def test_forced_targets_have_nan_gaia_g(self, mocker):
+        """A forced target has no Gaia magnitude: its ``gaia_g`` row is NaN."""
+        radecs, mags = _batch_radecs_mags()
+        _patch_prep(mocker, radecs_mags=(radecs, mags))
+        forced = SkyCoord([20.0, 21.0] * u.deg, [5.0, 5.0] * u.deg)
+
+        prep = scripts.prepare_batch("frame1.fits", cnn=object(), forced_targets=forced)
+
+        assert len(prep.gaia_g) == len(prep.photometry_coords)
+        np.testing.assert_array_equal(prep.gaia_g[:2], mags[[2, 3]])
+        assert np.isnan(prep.gaia_g[2:]).all()
+
     def test_forced_targets_bypass_contamination_flagging(self, mocker):
         """A forced target near a bright star still reaches ``photometry_coords``."""
         # A mag-8 star and a forced target ~1 arcsec away -- well inside the

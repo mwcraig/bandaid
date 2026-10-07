@@ -464,6 +464,7 @@ def _dummy_prep():
     return scripts.BatchPrep(
         radecs=np.array([[10.0, 0.0], [10.1, 0.0]]),
         photometry_coords=SkyCoord([10.0, 10.1], [0.0, 0.0], unit="deg"),
+        gaia_g=np.array([9.0, 10.0]),
         cnn=object(),
         bayer_masks={"TR": np.zeros((2, 2), dtype=bool)},
         # The field center prepare_batch stores for a header pointing at
