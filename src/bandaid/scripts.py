@@ -88,6 +88,22 @@ QA_MANIFEST_COLUMNS = (
     "plane_dy_slope_y",
 )
 
+# The QA manifest columns filled from a frame's centroid-policy summary.
+_CENTROID_MODEL_COLUMNS = (
+    "g_cut",
+    "n_cnn_class",
+    "plane_fallback",
+    "plane_n_used",
+    "plane_n_clipped",
+    "plane_rms",
+    "plane_dx_center",
+    "plane_dy_center",
+    "plane_dx_slope_x",
+    "plane_dx_slope_y",
+    "plane_dy_slope_x",
+    "plane_dy_slope_y",
+)
+
 # SNR at or above which a star counts toward the manifest's ``n_snr20`` solve-quality
 # proxy (separates good, degraded and false plate solves).
 QA_SNR_THRESHOLD = 20
@@ -291,12 +307,13 @@ class BatchPrep:
 
     def __post_init__(self) -> None:
         """
-        Verify ``config.instrument`` was already resolved.
+        Verify ``config.instrument`` was resolved and ``gaia_g`` is row-aligned.
 
         Raises
         ------
         ValueError
-            If ``config.instrument`` is None.
+            If ``config.instrument`` is None, or ``gaia_g`` is given with a
+            different length from ``photometry_coords``.
 
         Notes
         -----
@@ -308,6 +325,13 @@ class BatchPrep:
             msg = (
                 "BatchPrep.config.instrument must be resolved (not None) -- "
                 "construct BatchPrep via prepare_batch"
+            )
+            raise ValueError(msg)
+        if self.gaia_g is not None and len(self.gaia_g) != len(self.photometry_coords):
+            msg = (
+                f"BatchPrep.gaia_g has {len(self.gaia_g)} entries but "
+                f"photometry_coords has {len(self.photometry_coords)}: "
+                "they must be row-aligned"
             )
             raise ValueError(msg)
 
@@ -1262,12 +1286,11 @@ def _centroid_model_record(summary):
     Returns
     -------
     dict
-        The manifest columns from ``g_cut`` on, floats rounded to 4 decimals
+        The policy columns of the QA manifest, floats rounded to 4 decimals
         and every value None (blank) when there is no summary.
     """
     summary = summary or {}
-    first = QA_MANIFEST_COLUMNS.index("g_cut")
-    record = {column: summary.get(column) for column in QA_MANIFEST_COLUMNS[first:]}
+    record = {column: summary.get(column) for column in _CENTROID_MODEL_COLUMNS}
     return {
         column: _round_or_none(value) if isinstance(value, float) else value
         for column, value in record.items()

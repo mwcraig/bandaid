@@ -19,6 +19,7 @@ from bandaid.exceptions import (
     WCSScaleError,
     WCSSolveError,
 )
+from bandaid.scripts import _CENTROID_MODEL_COLUMNS, _centroid_model_record
 
 
 def _read_manifest(tmp_path):
@@ -596,6 +597,12 @@ class TestProcessBatchToDisk:
         assert float(row["plane_dy_center"]) == pytest.approx(-0.2012)
         assert float(row["plane_dx_slope_x"]) == pytest.approx(0.1012)
         assert float(row["plane_dy_slope_y"]) == pytest.approx(0.0812)
+
+    def test_centroid_model_columns_are_manifest_columns(self):
+        """Every policy column is a manifest column, and the record has all of them."""
+        for column in _CENTROID_MODEL_COLUMNS:
+            assert column in scripts.QA_MANIFEST_COLUMNS
+        assert set(_centroid_model_record(None)) == set(_CENTROID_MODEL_COLUMNS)
 
     def test_qa_manifest_centroid_model_blank_without_a_summary(
         self, patched_process_one_image, tmp_path, by_filter

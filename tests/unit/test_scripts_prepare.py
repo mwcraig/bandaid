@@ -1,6 +1,7 @@
 """Unit tests for once-per-batch preparation and frame-consistency checks."""
 
 import csv
+import dataclasses
 
 import astropy.units as u
 import numpy as np
@@ -1133,6 +1134,19 @@ class TestBatchPrep:
             **self._kwargs(config=PhotometryConfig(instrument=InstrumentProfile()))
         )
         assert prep.config.instrument is not None
+
+    def test_gaia_g_of_the_wrong_length_raises(self):
+        """``gaia_g`` must have one entry per photometry coordinate."""
+        prep = scripts.BatchPrep(**self._kwargs(gaia_g=np.array([9.0])))
+
+        with pytest.raises(ValueError, match="gaia_g"):
+            dataclasses.replace(prep, gaia_g=np.array([9.0, 10.0]))
+
+    def test_gaia_g_of_the_right_length_constructs_fine(self):
+        """A row-aligned ``gaia_g``, or none, is accepted."""
+        prep = scripts.BatchPrep(**self._kwargs(gaia_g=np.array([9.0])))
+
+        assert dataclasses.replace(prep, gaia_g=None).gaia_g is None
 
 
 class TestCheckFrameConsistency:
