@@ -248,12 +248,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Deriving airmass no longer attempts an IERS table download. The transform now
-    runs with `auto_download` off and `auto_max_age` unset, scoped to that call
-    so astropy's global configuration is unchanged. Without a network each
-    process used to wait on two timed-out downloads, and `auto_download=False`
-    alone raises for recent frames once the bundled predictions are 30 days old.
-    Airmass can differ from a networked run in the last digits (#128).
+- Deriving airmass no longer attempts an IERS table download, and still works for
+    recent frames when the bundled predictions are stale. Airmass can differ from a
+    networked run in the last digits (#128).
 - Frames that point away from the first frame no longer lose Gaia targets near
     their far edge: the batch catalog is queried over `fov_rad + cone_radius_margin`
     and each frame plate-solves against the stars near its own header pointing (#133).
