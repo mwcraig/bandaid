@@ -30,6 +30,10 @@ from bandaid.photometry import (
 # rule" follow profile.json instead of restating its literal.
 SEESTAR_RULE = load_instrument("Seestar50").header_match[0]
 
+# The bundled Seestar50 plate scale (arcsec/px), read from profile.json so the
+# test WCSs cannot drift from the profile when it is re-measured.
+SEESTAR_PIXSCALE = load_instrument("Seestar50").header_map["pixscale"]
+
 # Fixed random seed for reproducible noise in generated test images.
 SEED = 843032
 
@@ -156,12 +160,13 @@ def _peak_image_photometry(image, centroid_coords, mask, peak_cutouts=None):
     )
 
 
-def _make_tan_wcs(image_size=(500, 500), crval=(10.0, 20.0), pixscale=2.376):
+def _make_tan_wcs(image_size=(500, 500), crval=(10.0, 20.0), pixscale=SEESTAR_PIXSCALE):
     """
     Build a simple TAN WCS centered at ``crval`` for the given image size.
 
-    ``pixscale`` (arcsec/pixel) sets the plate scale. Pass a different value to
-    build a wrong-scale WCS for the plate-scale check tests.
+    ``pixscale`` (arcsec/pixel) sets the plate scale and defaults to the bundled
+    Seestar50 value. Pass a different value to build a wrong-scale WCS for the
+    plate-scale check tests.
     """
     wcs = WCS(naxis=2)
     wcs.wcs.crpix = [image_size[1] / 2, image_size[0] / 2]

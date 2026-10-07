@@ -3,7 +3,7 @@
 import astropy.units as u
 import numpy as np
 import pytest
-from _helpers import _make_tan_wcs, align_coords
+from _helpers import SEESTAR_PIXSCALE, _make_tan_wcs, align_coords
 from astropy.coordinates import SkyCoord
 
 from bandaid.exceptions import (
@@ -186,9 +186,9 @@ class TestAlign:
             (2.4, 2.4, None),
             (4.2, 2.4, WCSScaleError),
             (4.2, None, None),
-            (2.359, 2.376, WCSScaleError),
-            (2.383, 2.376, None),
-            (2.3705, 2.376, None),
+            (SEESTAR_PIXSCALE * (1 - 0.007), SEESTAR_PIXSCALE, WCSScaleError),
+            (SEESTAR_PIXSCALE * (1 + 0.003), SEESTAR_PIXSCALE, None),
+            (SEESTAR_PIXSCALE * (1 - 0.002), SEESTAR_PIXSCALE, None),
         ],
         ids=[
             "matching-scale-accepted",

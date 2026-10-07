@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from _helpers import _CONSISTENT_HEADER, _make_tan_wcs
+from _helpers import SEESTAR_PIXSCALE, _CONSISTENT_HEADER, _make_tan_wcs
 
 from bandaid.photometry import CalibrationResult, LoadedFrame, WCSMeasurement
 
@@ -85,7 +85,7 @@ def stub_prepare_image_externals(mocker):
             side_effect=lambda coords, _radecs, **_kwargs: (
                 coords,
                 _make_tan_wcs(),
-                WCSMeasurement(2.376, 0.0),
+                WCSMeasurement(SEESTAR_PIXSCALE, 0.0),
             ),
         )
         centroid_stars = mocker.patch(

@@ -6,7 +6,13 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from _helpers import SEED, _make_tan_wcs, _seestar_header, five_diagonal_regions
+from _helpers import (
+    SEED,
+    SEESTAR_PIXSCALE,
+    _make_tan_wcs,
+    _seestar_header,
+    five_diagonal_regions,
+)
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.nddata import CCDData
@@ -1715,8 +1721,10 @@ class TestProcessOneImage:
         result = process_one_image(path, {}, _REF_RADECS, None, masks)
 
         for table in result.values():
-            # The stubbed TAN WCS is built at 2.4 arcsec/px.
-            assert table.meta["wcs_pixscale"] == pytest.approx(2.376, rel=1e-3)
+            # The stubbed TAN WCS is built at the Seestar50 plate scale.
+            assert table.meta["wcs_pixscale"] == pytest.approx(
+                SEESTAR_PIXSCALE, rel=1e-3
+            )
             assert 0 <= table.meta["solve_offset_deg"] < 1
 
     def test_l4_channel_skips_the_full_frame_photometry_pass(self, l4_frame, mocker):
