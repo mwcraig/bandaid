@@ -636,6 +636,10 @@ class PhotometryConfig(BaseModel, frozen=True):
         Gaia magnitude limits selecting the measured and flagged stars.
     drift : DriftConfig
         Centroid-drift cuts.
+    edge_margin_px : float
+        Catalog stars whose projected position lies within this many pixels of
+        a frame edge, or off the frame, are not measured. Must be positive and
+        finite. Forced targets are exempt (see `~bandaid.photometry.prepare_image`).
     instrument : InstrumentProfile or None
         The named telescope: detection, FWHM, PSF, and contamination settings
         plus the per-frame FITS-header dialect. ``None`` (the default) means
@@ -651,4 +655,5 @@ class PhotometryConfig(BaseModel, frozen=True):
         default_factory=SourceSelectionConfig
     )
     drift: DriftConfig = Field(default_factory=DriftConfig)
+    edge_margin_px: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 10.0
     instrument: InstrumentProfile | None = None

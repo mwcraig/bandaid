@@ -43,17 +43,18 @@ The knobs fall into three groups by how safe they are to change.
 
 These are ordinary analysis choices and are safe to set for any run.
 
-| Sub-config         | Field                    | Default  | Meaning                                                             |
-| ------------------ | ------------------------ | -------- | ------------------------------------------------------------------- |
-| `apertures`        | `radii`                  | `(1.0,)` | Aperture radii, in units of FWHM                                    |
-| `apertures`        | `gap`                    | `4.0`    | FWHM gap between largest aperture and annulus                       |
-| `apertures`        | `annulus_width`          | `3.0`    | Radial width of the background annulus, in FWHM                     |
-| `source_selection` | `gaia_mag_limit`         | `15.0`   | Magnitude limit for the photometry targets                          |
-| `source_selection` | `contaminant_mag_offset` | `3.0`    | Contaminant-catalog depth below `gaia_mag_limit`                    |
-| `source_selection` | `min_snr`                | `2.0`    | Minimum SNR a star must have to reach the output                    |
-| `source_selection` | `gaia_row_limit`         | `10000`  | Base maximum rows the Gaia query may return (scaled with cone area) |
-| `drift`            | `drift_tolerance_fwhm`   | `1.0`    | Max centroid drift, in FWHM                                         |
-| `drift`            | `drift_cap_pix`          | `4.0`    | Absolute pixel cap on centroid drift                                |
+| Sub-config         | Field                    | Default  | Meaning                                                                     |
+| ------------------ | ------------------------ | -------- | --------------------------------------------------------------------------- |
+| `apertures`        | `radii`                  | `(1.0,)` | Aperture radii, in units of FWHM                                            |
+| `apertures`        | `gap`                    | `4.0`    | FWHM gap between largest aperture and annulus                               |
+| `apertures`        | `annulus_width`          | `3.0`    | Radial width of the background annulus, in FWHM                             |
+| `source_selection` | `gaia_mag_limit`         | `15.0`   | Magnitude limit for the photometry targets                                  |
+| `source_selection` | `contaminant_mag_offset` | `3.0`    | Contaminant-catalog depth below `gaia_mag_limit`                            |
+| `source_selection` | `min_snr`                | `2.0`    | Minimum SNR a star must have to reach the output                            |
+| `source_selection` | `gaia_row_limit`         | `10000`  | Base maximum rows the Gaia query may return (scaled with cone area)         |
+| `drift`            | `drift_tolerance_fwhm`   | `1.0`    | Max centroid drift, in FWHM                                                 |
+| `drift`            | `drift_cap_pix`          | `4.0`    | Absolute pixel cap on centroid drift                                        |
+| (top level)        | `edge_margin_px`         | `10.0`   | Catalog stars projected within this many pixels of an edge are not measured |
 
 ### Tier 2 — Instrument / per-telescope (advanced)
 
@@ -145,12 +146,25 @@ exposed on the config. Mis-setting them stalls or breaks the WCS solve (the cost
 of the matcher grows like `C(N, 4)`, and too-small counts leave frames unsolved),
 so they remain locked module constants in `bandaid.photometry`.
 
+### Frame-edge margin
+
+A catalog star whose projected position (where the plate solution puts it,
+before centroiding) is within `edge_margin_px` of any frame edge, or off the
+frame, is dropped before centroiding and photometry, so it has no row in the
+output. Near an edge the background annulus is truncated and the centroiding
+CNN's fill-padded cutout is unreliable, so such a star is not measured. The
+frame spans `[0, width - 0.5]` by `[0, height - 0.5]`. Forced targets are exempt:
+they are kept while within 8 px outside the frame, as before. The number of
+catalog stars removed this way is recorded per frame in the QA manifest column
+`n_edge_dropped`.
+
 ## Validation
 
 Construction enforces the invariants the pipeline relies on, for example:
 
 - aperture radii, `gap`, and `annulus_width` must all be positive, and
-- the drift cuts and `gaia_mag_limit` must be finite.
+- the drift cuts and `gaia_mag_limit` must be finite, and
+- `edge_margin_px` must be positive and finite.
 
 Several values are **derived** rather than set directly, so the invariants the
 pipeline cares about hold by construction instead of needing a validator:
