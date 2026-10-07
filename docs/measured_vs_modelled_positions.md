@@ -35,17 +35,25 @@ more realistic noise do not remove the bias below SNR 5; they move it.
 
 Projected positions, by contrast, are good to about 0.15 px once a per-frame
 smooth offset is fitted to the bright stars. The CNN is therefore used only for
-the bright stars, where it is accurate, which is the SNR floor for using it:
-below it, a star's position comes from the model.
+the bright stars, where it is accurate. The rule that selects them is the
+batch-fixed Gaia G cut described below, not a measured SNR: the policy never
+knows a star's aperture SNR. On the validation fields the cut corresponds to an
+aperture SNR of about 10 (G_cut 12.26 for LS Psc, 12.4 for SS Leo, 12.3 for
+TU UMa, 11.9 for T CrB, 10.9 for V816 Oph and 11.9 for Qatar-8 b).
 
 ## The policy
 
 The policy is on by default (`PhotometryConfig.centroid.model_faint_positions`).
+When it is on and a catalog is measured, `prepare_image` and `process_one_image`
+require both the catalog's Gaia G and the batch's `G_cut` and raise
+`ValueError` without them; `prepare_batch` always supplies both.
 
 1. **The CNN class.** A catalog star is *CNN-class* if its Gaia G is at or
     brighter than the batch's magnitude cut `G_cut`, or if it is a forced target
     (a forced target has no Gaia G and is always CNN-class). A CNN-class star keeps
-    its CNN centroid.
+    its CNN centroid, unless the CNN returned its input position exactly (its
+    fallback for an unusable cutout): such a star is output at the plane position
+    like the stars outside the class, and is labelled `plane`.
 1. **The fit set.** On every frame, the `fit_n_stars` (30) brightest stars by
     Gaia G that survive the [edge margin](configuration.md#frame-edge-margin) are
     centroided by the CNN, and an offset plane is fitted to their CNN minus
@@ -65,7 +73,9 @@ The policy is on by default (`PhotometryConfig.centroid.model_faint_positions`).
 alone: it is the Gaia G of the `cnn_class_size`-th (30th) brightest catalog
 target inside a circle centred on the batch center whose area equals the frame's
 area (radius `sqrt(width * height / pi)` pixels, about 0.54 degrees for a
-Seestar S50). The value is logged at the start of the run. Because it depends
+Seestar S50). The circle is centred on the first frame's header pointing, so a
+run whose first frames precede centring shifts the cut batch-wide, not per
+frame. The value is logged at the start of the run. Because it depends
 only on the catalog, a star's class is the same on every frame; the alternative,
 ranking stars by how bright they are on each frame, makes borderline stars flip
 between measured and modelled from one frame to the next, and each flip steps the
@@ -80,8 +90,13 @@ coordinate, one set of coefficients per axis, fitted by unweighted least squares
 to the fit set. Stars whose CNN result is not finite, or is exactly equal to the
 input position (the network's fallback for an unusable cutout), are not
 measurements and are left out. One clip is applied: a star is dropped if either
-axis's residual exceeds `clip_sigma` (3) standard deviations of that axis's
-residuals, and the plane is refitted on the rest. Higher orders and weighting
+axis's residual lies more than `clip_sigma` (3) robust standard deviations
+(1.4826 times the median absolute deviation) from that axis's median residual,
+and the plane is refitted on the rest. The scale is robust because with the
+plain standard deviation a few gross outliers inflate it enough to hide
+themselves: 4 of 30 stars 5 px off would give a 3 sigma limit of about 5.5 px
+and none would be clipped. The fit is made with astropy's `Polynomial2D` and
+`LinearLSQFitter`. Higher orders and weighting
 were tried on three fields and were worse as often as they were better.
 
 ## Seeing the choice in the output

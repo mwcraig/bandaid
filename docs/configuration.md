@@ -59,7 +59,7 @@ These are ordinary analysis choices and are safe to set for any run.
 | `centroid`         | `cnn_class_size`         | `30`     | Number of brightest catalog targets that keep their CNN centroid                   |
 | `centroid`         | `fit_n_stars`            | `30`     | Brightest stars per frame whose CNN centroids define the plane                     |
 | `centroid`         | `min_fit_stars`          | `12`     | Fewest stars that must survive the clip for a frame to use a plane                 |
-| `centroid`         | `clip_sigma`             | `3.0`    | Per-axis clip, in standard deviations, applied once when fitting the plane         |
+| `centroid`         | `clip_sigma`             | `3.0`    | Clip, in robust standard deviations, applied once when fitting the plane           |
 
 ### Tier 2 — Instrument / per-telescope (advanced)
 
