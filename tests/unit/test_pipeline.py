@@ -724,6 +724,24 @@ class TestPrepareImage:
 
         np.testing.assert_array_equal(spy.call_args.kwargs["gaia_g"], gaia_g[[0, 2]])
 
+    def test_gaia_g_is_ignored_without_a_catalog(
+        self, stub_prepare_image_externals, mocker
+    ):
+        """Detected coordinates are not catalog projections, so G does not apply."""
+        aligned = np.array([[5.0, 5.0], [-50.0, 5.0]])
+        stub_prepare_image_externals(coords=aligned)
+        spy = mocker.spy(photometry, "centroid_with_prior")
+
+        prepare_image(
+            "unused.fits",
+            np.zeros((5, 2)),
+            None,
+            photometry_coords=None,
+            gaia_g=np.array([8.0, 9.0]),
+        )
+
+        assert spy.call_args.kwargs["gaia_g"] is None
+
     def test_in_frame_cut_uses_width_and_height_separately(
         self, stub_prepare_image_externals
     ):
