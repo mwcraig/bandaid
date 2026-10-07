@@ -30,6 +30,7 @@ from astropy.io import fits
 from astropy.stats import SigmaClip
 from astropy.table import Table
 from astropy.time import Time
+from astropy.utils import iers
 from astropy.wcs.utils import proj_plane_pixel_scales
 from dateutil import parser
 from eloy import centroid, photometry, psf, utils
@@ -1163,7 +1164,16 @@ def _airmass_from_metadata(metadata, *, obs_datetime=None):
         lat=site_lat * u.deg, lon=site_lon * u.deg, height=site_elev * u.m
     )
     pointing = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
-    altaz = pointing.transform_to(AltAz(obstime=Time(obs_datetime), location=location))
+    # Bundled IERS tables are accurate far beyond what airmass needs, so keep the
+    # transform off the network and tolerate stale predictions. Scoped to this
+    # call so a host application's astropy configuration is left alone.
+    with (
+        iers.conf.set_temp("auto_download", value=False),
+        iers.conf.set_temp("auto_max_age", value=None),
+    ):
+        altaz = pointing.transform_to(
+            AltAz(obstime=Time(obs_datetime), location=location)
+        )
 
     # Kasten & Young (1989) relative optical airmass:
     #   X = 1 / (sin(h) + 0.50572 * (h + 6.07995)**-1.6364),  h = apparent
