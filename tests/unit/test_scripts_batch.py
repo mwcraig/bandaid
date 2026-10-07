@@ -16,6 +16,7 @@ from bandaid.exceptions import (
     FrameError,
     FrameMetadataError,
     TooFewStarsError,
+    WCSScaleError,
     WCSSolveError,
 )
 
@@ -519,7 +520,9 @@ class TestProcessBatchToDisk:
         ``wcs_pixscale`` and ``solve_offset_deg`` are read from the table meta
         that ``process_one_image`` stamps; ``n_snr20`` counts representative-channel
         rows that pass ``good_star_mask`` with ``snr >= 20``. A frame that never
-        solved has no such numbers and records them blank.
+        solved has no such numbers and records them blank, except that a frame
+        rejected for its plate scale still records the scale it measured, so a
+        fully rejected run can be used to calibrate ``pixscale``.
         """
         for column in ("wcs_pixscale", "solve_offset_deg", "n_snr20"):
             assert column in scripts.QA_MANIFEST_COLUMNS
@@ -532,17 +535,20 @@ class TestProcessBatchToDisk:
                 table.meta["solve_offset_deg"] = 0.04321
             return result
 
-        mocker.patch(
-            "bandaid.scripts.process_one_image",
-            side_effect=_raise_on(
-                "nosolve.fits",
-                WCSSolveError("twirl found no match", file="nosolve.fits"),
-                _solved,
-            ),
-        )
+        errors = {
+            "nosolve.fits": WCSSolveError("twirl found no match"),
+            "badscale.fits": WCSScaleError("out of tolerance", measured_scale=2.43217),
+        }
+
+        def _process(file, *_args: object, **_kwargs: object):
+            if file in errors:
+                raise errors[file]
+            return _solved()
+
+        mocker.patch("bandaid.scripts.process_one_image", side_effect=_process)
 
         scripts.process_batch(
-            ["good.fits", "nosolve.fits"],
+            ["good.fits", "nosolve.fits", "badscale.fits"],
             _dummy_prep(),
             user_specific_metadata={},
             output_dir=tmp_path,
@@ -557,6 +563,9 @@ class TestProcessBatchToDisk:
         assert nosolve["wcs_pixscale"] == ""
         assert nosolve["solve_offset_deg"] == ""
         assert nosolve["n_snr20"] == ""
+        badscale = by_file["badscale.fits"]
+        assert float(badscale["wcs_pixscale"]) == pytest.approx(2.4322)
+        assert badscale["solve_offset_deg"] == ""
 
     def test_qa_manifest_sky_median_is_median_of_bkgd_count(
         self, patched_process_one_image, tmp_path, by_filter

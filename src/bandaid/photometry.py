@@ -1808,7 +1808,7 @@ def _solve_wcs(
             f"expected {expected_pixscale:.3g} arcsec/px "
             f"(> {scale_tolerance * 100:g}% off); rejected as a wrong-scale solve"
         )
-        raise WCSScaleError(msg)
+        raise WCSScaleError(msg, measured_scale=last_bad_scale)
     if last_bad_center is not None:
         msg = (
             "twirl solved a WCS whose frame center is "

@@ -331,7 +331,7 @@ class TestAlign:
         )
         coords = align_coords(N_IMAGE_STARS_ALIGN)
 
-        with pytest.raises(WCSScaleError, match=expected_text):
+        with pytest.raises(WCSScaleError, match=expected_text) as excinfo:
             align(
                 coords,
                 coords.copy(),
@@ -339,6 +339,7 @@ class TestAlign:
                 expected_pixscale=2.4,
                 scale_tolerance=tolerance,
             )
+        assert excinfo.value.measured_scale == pytest.approx(4.2)
 
     def test_wcs_scale_error_is_wcs_solve_error(self):
         """WCSScaleError is a WCSSolveError so the batch loop still skips the frame."""

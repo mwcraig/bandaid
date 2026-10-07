@@ -86,7 +86,20 @@ class WCSScaleError(WCSSolveError):
     skipped. It subclasses `WCSSolveError` so the batch loop still skips the
     frame, while staying distinguishable in logs/manifests from a genuine
     "no match".
+
+    Parameters
+    ----------
+    reason : str
+        Human-readable explanation of why the frame was rejected.
+    file : str or pathlib.Path or None, optional
+        The offending frame.
+    measured_scale : float or None, optional
+        The last solved plate scale in arcsec/pixel, for the QA manifest.
     """
+
+    def __init__(self, reason, *, file=None, measured_scale=None) -> None:
+        super().__init__(reason, file=file)
+        self.measured_scale = measured_scale
 
 
 class WCSPointingError(WCSSolveError):

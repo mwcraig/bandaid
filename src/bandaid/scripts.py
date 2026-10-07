@@ -1046,9 +1046,9 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
         "sky_median": sky_median,
         "fwhm": meta.get("fwhm"),
         "wcs_solved": True,
-        "pointing_offset_deg": _round_offset(pointing_offset),
-        "wcs_pixscale": _round_offset(meta.get("wcs_pixscale")),
-        "solve_offset_deg": _round_offset(meta.get("solve_offset_deg")),
+        "pointing_offset_deg": _round_or_none(pointing_offset),
+        "wcs_pixscale": _round_or_none(meta.get("wcs_pixscale")),
+        "solve_offset_deg": _round_or_none(meta.get("solve_offset_deg")),
         "n_good_stars": n_good_stars,
         "n_snr20": n_snr20,
         "dropped_filters": dropped_filters_value,
@@ -1058,24 +1058,28 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
     }
 
 
-def _round_offset(pointing_offset):
+def _round_or_none(value, ndigits=4):
     """
-    Round a pointing offset for the QA manifest, passing None through.
+    Round a QA manifest value, passing None through.
 
     Parameters
     ----------
-    pointing_offset : float or None
-        Offset in degrees, or None when the comparison was not reached.
+    value : float or None
+        The value to record, or None when it was not measured.
+    ndigits : int, optional
+        Decimal places to keep. By default 4.
 
     Returns
     -------
     float or None
-        The offset rounded to 4 decimals, or None.
+        The rounded value, or None.
     """
-    return None if pointing_offset is None else round(float(pointing_offset), 4)
+    return None if value is None else round(float(value), ndigits)
 
 
-def _qa_record_failed(file, status, *, wcs_solved=None, pointing_offset=None):
+def _qa_record_failed(
+    file, status, *, wcs_solved=None, pointing_offset=None, wcs_pixscale=None
+):
     """
     Build the QA manifest record for a skipped or errored frame.
 
@@ -1091,6 +1095,9 @@ def _qa_record_failed(file, status, *, wcs_solved=None, pointing_offset=None):
     pointing_offset : float or None, optional
         The frame's header-center offset from the batch center in degrees, when
         it got past the pointing comparison; None (default) leaves it blank.
+    wcs_pixscale : float or None, optional
+        The plate scale in arcsec/pixel measured on a solve rejected for its
+        scale; None (default) leaves it blank.
 
     Returns
     -------
@@ -1101,7 +1108,8 @@ def _qa_record_failed(file, status, *, wcs_solved=None, pointing_offset=None):
     record["file"] = str(file)
     record["status"] = status
     record["wcs_solved"] = wcs_solved
-    record["pointing_offset_deg"] = _round_offset(pointing_offset)
+    record["pointing_offset_deg"] = _round_or_none(pointing_offset)
+    record["wcs_pixscale"] = _round_or_none(wcs_pixscale)
     return record
 
 
@@ -1142,6 +1150,7 @@ def _record_frame_skip(file, exc, *, pointing_offset=None):
         f"skipped: {type(exc).__name__}",
         wcs_solved=False if isinstance(exc, WCSSolveError) else None,
         pointing_offset=getattr(exc, "pointing_offset", pointing_offset),
+        wcs_pixscale=getattr(exc, "measured_scale", None),
     )
 
 
