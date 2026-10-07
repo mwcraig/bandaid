@@ -6,7 +6,13 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from _helpers import SEED, _make_tan_wcs, _seestar_header, five_diagonal_regions
+from _helpers import (
+    SEED,
+    SEESTAR_PIXSCALE,
+    _make_tan_wcs,
+    _seestar_header,
+    five_diagonal_regions,
+)
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.nddata import CCDData
@@ -232,6 +238,27 @@ class TestPrepareImage:
         prepare_image("unused.fits", np.zeros((5, 2)), None, config=config)
 
         assert externals.align.call_args.kwargs["scale_tolerance"] == expected_tolerance
+
+    def test_instrument_wcs_pointing_tolerance_reaches_alignment(
+        self, stub_prepare_image_externals
+    ):
+        """
+        The instrument's ``wcs_pointing_tolerance`` is forwarded to ``align``.
+
+        Spy on ``align`` and assert a non-default profile tolerance arrives as
+        ``pointing_tolerance``.
+        """
+        expected_tolerance = 0.13
+        externals = stub_prepare_image_externals()
+
+        config = PhotometryConfig(
+            instrument=InstrumentProfile(wcs_pointing_tolerance=expected_tolerance),
+        )
+        prepare_image("unused.fits", np.zeros((5, 2)), None, config=config)
+
+        assert (
+            externals.align.call_args.kwargs["pointing_tolerance"] == expected_tolerance
+        )
 
     def test_missing_pixscale_raises_when_solving(self, stub_prepare_image_externals):
         """
@@ -1681,6 +1708,25 @@ class TestProcessOneImage:
         rgb_sum = sum(result[name]["tot_count"] for name in ("TR", "TG", "TB"))
         np.testing.assert_allclose(result["L4"]["tot_count"], rgb_sum)
 
+    def test_tables_carry_the_solved_scale_and_offset(self, l4_frame):
+        """
+        Every table's meta carries the solved plate scale and solve offset.
+
+        ``_qa_record_ok`` only sees the tables, so ``process_one_image`` stamps
+        the solved scale (arcsec/px) and the solved-centre-to-header-centre
+        separation (deg) on each one.
+        """
+        path, masks = l4_frame
+
+        result = process_one_image(path, {}, _REF_RADECS, None, masks)
+
+        for table in result.values():
+            # The stubbed TAN WCS is built at the Seestar50 plate scale.
+            assert table.meta["wcs_pixscale"] == pytest.approx(
+                SEESTAR_PIXSCALE, rel=1e-3
+            )
+            assert 0 <= table.meta["solve_offset_deg"] < 1
+
     def test_l4_channel_skips_the_full_frame_photometry_pass(self, l4_frame, mocker):
         """
         L4's own full-frame ``measure_photometry`` pass is skipped (PR #120).
@@ -1908,12 +1954,15 @@ class TestSmokeRealFrame:
         data = fits.getdata(str(_REAL_FRAME))
         metadata = metadata_from_header(header)
 
-        # Center the stubbed WCS on the real field so the cosmetic ra/dec columns
-        # are plausible in a failure dump.
+        # Center the stubbed WCS on the frame's converted header pointing (the
+        # header RA/DEC is equinox-of-date), so it passes the pointing check and
+        # the cosmetic ra/dec columns are plausible in a failure dump.
         _stub_wcs_and_centroid(
             mocker,
             wcs_image_size=data.shape,
-            wcs_crval=(header["RA"], header["DEC"]),
+            wcs_crval=estimate_center_from_header(
+                metadata, InstrumentProfile(header_frame="fk5", header_equinox="date")
+            ),
         )
 
         masks = generate_bayer_masks(

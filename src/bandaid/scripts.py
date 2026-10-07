@@ -65,12 +65,19 @@ QA_MANIFEST_COLUMNS = (
     "fwhm",
     "wcs_solved",
     "pointing_offset_deg",
+    "wcs_pixscale",
+    "solve_offset_deg",
     "n_good_stars",
+    "n_snr20",
     "dropped_filters",
     "n_centroid_drift",
     "n_drift_rejected",
     "n_forced_measured",
 )
+
+# SNR at or above which a star counts toward the manifest's ``n_snr20`` solve-quality
+# proxy (separates good, degraded and false plate solves).
+QA_SNR_THRESHOLD = 20
 
 logger = logging.getLogger(__name__)
 
@@ -965,6 +972,13 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
     and also None -- rather than a misleadingly precise 0 -- when the
     representative channel lacks the columns/bounds needed to evaluate
     `good_star_mask` in the first place.
+
+    ``wcs_pixscale`` (solved plate scale, arcsec/pixel) and ``solve_offset_deg``
+    (solved frame center to the frame's own header center, in degrees) are read
+    from the table ``meta`` that `process_one_image` stamps, rounded to 4
+    decimals; either is blank when absent. ``n_snr20`` counts the
+    representative channel's `good_star_mask`-passing rows with ``snr >= 20``,
+    and is blank under the same conditions as ``n_good_stars``.
     """
     if "L4" in by_filter:
         representative = by_filter["L4"]
@@ -987,6 +1001,7 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
         if len(finite):
             sky_median = float(np.median(finite))
     n_good_stars = None
+    n_snr20 = None
     has_phot_cols = {"tot_count", "count_err", "x", "y"} <= cols
     has_bounds = {"width", "height"} <= set(full_meta)
     good = None
@@ -997,6 +1012,9 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
         # written -- even for tables produced under a different config.
         good = good_star_mask(representative, full_meta, min_snr=meta.get("min_snr"))
         n_good_stars = int(np.sum(good))
+        if "snr" in cols:
+            snr = np.asarray(representative["snr"])
+            n_snr20 = int(np.sum(good & (snr >= QA_SNR_THRESHOLD)))
 
     dropped_filters_value = _dropped_filters(by_filter)
 
@@ -1028,8 +1046,11 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
         "sky_median": sky_median,
         "fwhm": meta.get("fwhm"),
         "wcs_solved": True,
-        "pointing_offset_deg": _round_offset(pointing_offset),
+        "pointing_offset_deg": _round_or_none(pointing_offset),
+        "wcs_pixscale": _round_or_none(meta.get("wcs_pixscale")),
+        "solve_offset_deg": _round_or_none(meta.get("solve_offset_deg")),
         "n_good_stars": n_good_stars,
+        "n_snr20": n_snr20,
         "dropped_filters": dropped_filters_value,
         "n_centroid_drift": n_centroid_drift,
         "n_drift_rejected": n_drift_rejected,
@@ -1037,24 +1058,28 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
     }
 
 
-def _round_offset(pointing_offset):
+def _round_or_none(value, ndigits=4):
     """
-    Round a pointing offset for the QA manifest, passing None through.
+    Round a QA manifest value, passing None through.
 
     Parameters
     ----------
-    pointing_offset : float or None
-        Offset in degrees, or None when the comparison was not reached.
+    value : float or None
+        The value to record, or None when it was not measured.
+    ndigits : int, optional
+        Decimal places to keep. By default 4.
 
     Returns
     -------
     float or None
-        The offset rounded to 4 decimals, or None.
+        The rounded value, or None.
     """
-    return None if pointing_offset is None else round(float(pointing_offset), 4)
+    return None if value is None else round(float(value), ndigits)
 
 
-def _qa_record_failed(file, status, *, wcs_solved=None, pointing_offset=None):
+def _qa_record_failed(
+    file, status, *, wcs_solved=None, pointing_offset=None, wcs_pixscale=None
+):
     """
     Build the QA manifest record for a skipped or errored frame.
 
@@ -1070,6 +1095,9 @@ def _qa_record_failed(file, status, *, wcs_solved=None, pointing_offset=None):
     pointing_offset : float or None, optional
         The frame's header-center offset from the batch center in degrees, when
         it got past the pointing comparison; None (default) leaves it blank.
+    wcs_pixscale : float or None, optional
+        The plate scale in arcsec/pixel measured on a solve rejected for its
+        scale; None (default) leaves it blank.
 
     Returns
     -------
@@ -1080,7 +1108,8 @@ def _qa_record_failed(file, status, *, wcs_solved=None, pointing_offset=None):
     record["file"] = str(file)
     record["status"] = status
     record["wcs_solved"] = wcs_solved
-    record["pointing_offset_deg"] = _round_offset(pointing_offset)
+    record["pointing_offset_deg"] = _round_or_none(pointing_offset)
+    record["wcs_pixscale"] = _round_or_none(wcs_pixscale)
     return record
 
 
@@ -1121,6 +1150,7 @@ def _record_frame_skip(file, exc, *, pointing_offset=None):
         f"skipped: {type(exc).__name__}",
         wcs_solved=False if isinstance(exc, WCSSolveError) else None,
         pointing_offset=getattr(exc, "pointing_offset", pointing_offset),
+        wcs_pixscale=getattr(exc, "measured_scale", None),
     )
 
 

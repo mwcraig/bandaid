@@ -60,31 +60,38 @@ These are ordinary analysis choices and are safe to set for any run.
 The `instrument` field is an `InstrumentProfile`: a **named telescope** that
 bundles the detection/PSF tuning below with that telescope's per-frame
 FITS-header dialect (`header_map`). These depend on the plate scale, the PSF, and
-the instrument's sensitivity. The defaults are the Seestar50 values; change them
-only when pointing a **different** telescope at the sky.
+the instrument's sensitivity. The class defaults below are the Seestar50 values
+except where noted; change them only when pointing a **different** telescope at
+the sky.
 
-| Sub-config   | Field                         | Default       | Meaning                                                                        |
-| ------------ | ----------------------------- | ------------- | ------------------------------------------------------------------------------ |
-| `instrument` | `name`                        | `"Seestar50"` | The telescope's name (its registry key)                                        |
-| `instrument` | `thresh`                      | `0.5`         | Source-detection threshold, in background sigma                                |
-| `instrument` | `detection_opening`           | `5`           | Morphological-opening kernel that gates faint detections                       |
-| `instrument` | `fwhm_cutout_half`            | `25`          | Half-width (px) of the PSF window for the FWHM fit                             |
-| `instrument` | `fwhm_n_stars`                | `25`          | Cap on the brightest detections fed to the FWHM fit                            |
-| `instrument` | `contamination_tolerance`     | `0.01`        | Max neighbour spillover before flagging                                        |
-| `instrument` | `moffat_beta`                 | `3.0`         | Moffat wing index for the contamination model                                  |
-| `instrument` | `contamination_seeing_margin` | `1.25`        | Seeing-pessimism factor for the once-per-batch flag                            |
-| `instrument` | `wcs_scale_tolerance`         | `0.05`        | Max fractional plate-scale deviation before a WCS is rejected as wrong-scale   |
-| `instrument` | `cone_radius_margin`          | `0.4`         | Degrees added to `fov_rad` for the once-per-batch Gaia query                   |
-| `instrument` | `solve_pool_radius_scale`     | `0.9`         | Fraction of `fov_rad` used as the radius of each frame's plate-solve star pool |
-| `instrument` | `header_map`                  | Seestar50     | FITS-header dialect resolved by `metadata_from_header`                         |
-| `instrument` | `header_match`                | `()`          | FITS-header rules used by `detect_instrument` to auto-select this profile      |
+| Sub-config   | Field                         | Default       | Meaning                                                                                    |
+| ------------ | ----------------------------- | ------------- | ------------------------------------------------------------------------------------------ |
+| `instrument` | `name`                        | `"Seestar50"` | The telescope's name (its registry key)                                                    |
+| `instrument` | `thresh`                      | `0.5`         | Source-detection threshold, in background sigma                                            |
+| `instrument` | `detection_opening`           | `5`           | Morphological-opening kernel that gates faint detections                                   |
+| `instrument` | `fwhm_cutout_half`            | `25`          | Half-width (px) of the PSF window for the FWHM fit                                         |
+| `instrument` | `fwhm_n_stars`                | `25`          | Cap on the brightest detections fed to the FWHM fit                                        |
+| `instrument` | `contamination_tolerance`     | `0.01`        | Max neighbour spillover before flagging                                                    |
+| `instrument` | `moffat_beta`                 | `3.0`         | Moffat wing index for the contamination model                                              |
+| `instrument` | `contamination_seeing_margin` | `1.25`        | Seeing-pessimism factor for the once-per-batch flag                                        |
+| `instrument` | `wcs_scale_tolerance`         | `0.05`        | Max fractional plate-scale deviation before a WCS is rejected as wrong-scale               |
+| `instrument` | `wcs_pointing_tolerance`      | none          | Max degrees between a solved frame center and its header pointing (none: one field radius) |
+| `instrument` | `cone_radius_margin`          | `0.4`         | Degrees added to `fov_rad` for the once-per-batch Gaia query                               |
+| `instrument` | `solve_pool_radius_scale`     | `0.9`         | Fraction of `fov_rad` used as the radius of each frame's plate-solve star pool             |
+| `instrument` | `header_map`                  | Seestar50     | FITS-header dialect resolved by `metadata_from_header`                                     |
+| `instrument` | `header_match`                | `()`          | FITS-header rules used by `detect_instrument` to auto-select this profile                  |
 
-Unlike every other row, `header_match`'s default is **not** what the bundled
-Seestar50 profile carries: the bare-class default is `()` (no rules, so a
-bare `InstrumentProfile()` is never auto-detected), while `load_instrument("Seestar50")`
-returns a profile with one rule (`INSTRUME == "Seestar S50"`). This is
-deliberate — see
+Three rows differ between the bare class and the bundled Seestar50 profile.
+`header_match` defaults to `()` (no rules, so a bare `InstrumentProfile()` is
+never auto-detected), while `load_instrument("Seestar50")` returns a profile
+with one rule (`INSTRUME == "Seestar S50"`). This is deliberate; see
 [Auto-detection from the FITS header](instrument_profiles.md#auto-detection-from-the-fits-header).
+The Seestar50 profile also tightens `wcs_scale_tolerance` to `0.005` and sets
+`wcs_pointing_tolerance` to `0.30`, values measured on Seestar S50 data that
+only make sense against the profile's measured `pixscale`; see
+[The Seestar50 tolerances](instrument_profiles.md#the-seestar50-tolerances).
+A hand-written Seestar config that copies the class defaults from this table
+loses that tightened gate.
 
 The bright-neighbour contamination flag is computed once per batch, from the
 *first* frame's FWHM, and applied to every frame of the night. Because seeing

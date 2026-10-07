@@ -316,7 +316,15 @@ class InstrumentProfile(BaseModel, frozen=True):
         instrument's expected pixscale before the WCS is rejected as a
         wrong-scale solve (see :func:`~bandaid.photometry.align`). It is an
         instrument setting because it is a tolerance on *this* telescope's plate
-        scale; the empirical basis for the ``0.05`` default is in issue #83.
+        scale. Because the window can be narrow, the profile's ``pixscale`` must
+        be accurate to within it.
+    wcs_pointing_tolerance : float or None
+        Maximum angular separation, in degrees, between a solved frame center
+        and the frame's own header pointing before the WCS is rejected as a
+        mispointed solve (see :func:`~bandaid.photometry.align`). It is a fixed
+        angle, distinct from ``fov_rad``, which sizes the catalog cone. ``None``
+        (the default) allows one field radius (the frame half-diagonal at the
+        solved scale) instead.
     header_frame : {"icrs", "fk5"}
         The coordinate frame the header ``ra``/``dec`` pointing is written in.
         ``"icrs"`` (the default) uses it as is; ``"fk5"`` converts it to ICRS
@@ -380,6 +388,7 @@ class InstrumentProfile(BaseModel, frozen=True):
     # seeing already contaminates, silently shipping blended photometry.
     contamination_seeing_margin: Annotated[float, Field(ge=1.0)] = 1.25
     wcs_scale_tolerance: Annotated[float, Field(gt=0)] = 0.05
+    wcs_pointing_tolerance: Annotated[float | None, Field(gt=0)] = None
     header_frame: Literal["icrs", "fk5"] = "icrs"
     header_equinox: str = "J2000"
     cone_radius_margin: Annotated[float, Field(ge=0)] = 0.4

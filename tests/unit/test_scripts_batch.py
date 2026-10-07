@@ -16,6 +16,7 @@ from bandaid.exceptions import (
     FrameError,
     FrameMetadataError,
     TooFewStarsError,
+    WCSScaleError,
     WCSSolveError,
 )
 
@@ -511,6 +512,60 @@ class TestProcessBatchToDisk:
         )
         assert by_file["nopointing.fits"]["status"].startswith("skipped")
         assert by_file["nopointing.fits"]["pointing_offset_deg"] == ""
+
+    def test_qa_manifest_records_solve_quality(self, mocker, tmp_path, by_filter):
+        """
+        The manifest carries the solved scale, solve offset and SNR >= 20 count.
+
+        ``wcs_pixscale`` and ``solve_offset_deg`` are read from the table meta
+        that ``process_one_image`` stamps; ``n_snr20`` counts representative-channel
+        rows that pass ``good_star_mask`` with ``snr >= 20``. A frame that never
+        solved has no such numbers and records them blank, except that a frame
+        rejected for its plate scale still records the scale it measured, so a
+        fully rejected run can be used to calibrate ``pixscale``.
+        """
+        for column in ("wcs_pixscale", "solve_offset_deg", "n_snr20"):
+            assert column in scripts.QA_MANIFEST_COLUMNS
+
+        def _solved():
+            result = by_filter()
+            for table in result.values():
+                table["snr"] = [25.0, 10.0]
+                table.meta["wcs_pixscale"] = 2.37654
+                table.meta["solve_offset_deg"] = 0.04321
+            return result
+
+        errors = {
+            "nosolve.fits": WCSSolveError("twirl found no match"),
+            "badscale.fits": WCSScaleError("out of tolerance", measured_scale=2.43217),
+        }
+
+        def _process(file, *_args: object, **_kwargs: object):
+            if file in errors:
+                raise errors[file]
+            return _solved()
+
+        mocker.patch("bandaid.scripts.process_one_image", side_effect=_process)
+
+        scripts.process_batch(
+            ["good.fits", "nosolve.fits", "badscale.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+        )
+
+        by_file = {row["file"]: row for row in _read_manifest(tmp_path)}
+        good = by_file["good.fits"]
+        assert float(good["wcs_pixscale"]) == pytest.approx(2.3765)
+        assert float(good["solve_offset_deg"]) == pytest.approx(0.0432)
+        assert good["n_snr20"] == "1"
+        nosolve = by_file["nosolve.fits"]
+        assert nosolve["wcs_pixscale"] == ""
+        assert nosolve["solve_offset_deg"] == ""
+        assert nosolve["n_snr20"] == ""
+        badscale = by_file["badscale.fits"]
+        assert float(badscale["wcs_pixscale"]) == pytest.approx(2.4322)
+        assert badscale["solve_offset_deg"] == ""
 
     def test_qa_manifest_sky_median_is_median_of_bkgd_count(
         self, patched_process_one_image, tmp_path, by_filter

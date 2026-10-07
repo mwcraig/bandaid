@@ -24,6 +24,9 @@ from bandaid.instruments import (
 )
 
 EXPECTED_CONE_MARGIN = 0.4
+EXPECTED_WCS_POINTING_TOLERANCE = 0.30
+EXPECTED_WCS_SCALE_TOLERANCE = 0.005
+EXPECTED_SEESTAR_PIXSCALE = 2.376
 EXPECTED_SOLVE_POOL_SCALE = 0.9
 
 
@@ -90,6 +93,23 @@ class TestLoadInstrument:
         assert InstrumentProfile().cone_radius_margin == EXPECTED_CONE_MARGIN
         assert load_instrument("Seestar50").cone_radius_margin == EXPECTED_CONE_MARGIN
 
+    def test_seestar_carries_the_tight_wcs_tolerances(self):
+        """
+        The Seestar50 profile sets the tight WCS tolerances; the class does not.
+
+        The class defaults stay loose (a 5% scale window, and no fixed pointing
+        angle so the field radius applies) because they apply to every
+        instrument; only the Seestar50 profile has the measured pixscale that
+        makes 0.5% and 0.30 deg safe.
+        """
+        default = InstrumentProfile()
+        assert default.wcs_pointing_tolerance is None
+        assert default.wcs_scale_tolerance != EXPECTED_WCS_SCALE_TOLERANCE
+
+        seestar = load_instrument("Seestar50")
+        assert seestar.wcs_pointing_tolerance == EXPECTED_WCS_POINTING_TOLERANCE
+        assert seestar.wcs_scale_tolerance == EXPECTED_WCS_SCALE_TOLERANCE
+
     def test_solve_pool_radius_scale_default(self):
         """The solve-pool scale defaults to 0.9 and the bundle does not override it."""
         assert InstrumentProfile().solve_pool_radius_scale == EXPECTED_SOLVE_POOL_SCALE
@@ -131,6 +151,9 @@ class TestLoadInstrument:
         profile = load_instrument("Seestar50")
         assert profile.header_map["obs_time"] == "@DATE-OBS"
         assert profile.header_map["egain"] == pytest.approx(0.3116)
+        assert profile.header_map["pixscale"] == pytest.approx(
+            EXPECTED_SEESTAR_PIXSCALE
+        )
 
     def test_unknown_instrument_raises(self):
         """An unregistered, unbundled name raises rather than guessing."""

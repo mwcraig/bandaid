@@ -5,7 +5,8 @@ the two telescope-specific things the pipeline needs:
 
 - the **detection / PSF tuning** knobs (`thresh`, `detection_opening`,
     `fwhm_cutout_half`, `fwhm_n_stars`, `contamination_tolerance`, `moffat_beta`,
-    `contamination_seeing_margin`, `wcs_scale_tolerance`), and
+    `contamination_seeing_margin`, `wcs_scale_tolerance`,
+    `wcs_pointing_tolerance`), and
 - the **field-center** settings (`header_frame`, `header_equinox`,
     `cone_radius_margin`, `solve_pool_radius_scale`), which say what coordinate
     frame the header pointing is written in, how wide the Gaia cone is, and how
@@ -142,7 +143,7 @@ resolves the directives against a frame's FITS header.
 | ---------------- | ----------------------------------- | -------------------------------------------------------------------------------------------- |
 | `"@KEY"`         | `"obs_time": "@DATE-OBS"`           | Take the value of FITS header keyword `KEY`. Falls back to a `#`-default (below) if missing. |
 | `"!KEY index N"` | `"tel_manufac": "!CREATOR index 0"` | Split header keyword `KEY` on whitespace and take the `N`-th token (0-based).                |
-| literal          | `"pixscale": 2.4`                   | Use the literal value as-is. Used for hardware constants the header does not carry.          |
+| literal          | `"egain": 0.3116`                   | Use the literal value as-is. Used for hardware constants the header does not carry.          |
 | `"#key": value`  | `"#stack": 1`                       | A **fallback** for `key`: used only when the `@` lookup for `key` finds nothing.             |
 | `"_anything"`    | `"_note": "..."`                    | A comment. Ignored entirely.                                                                 |
 
@@ -243,7 +244,7 @@ A `my_scope.json` looks like:
         "roworder": "top-down",
         "xbayroff": 0,
         "ybayroff": 0,
-        "pixscale": 2.8,
+        "pixscale": 2.813,
         "fov_rad": 1.7,
         "egain": 0.31,
         "largest_usable_adu_value": 60000,
@@ -282,6 +283,43 @@ disk of the full field radius is about half off-frame, so a smaller disk puts mo
 of the brightest pool stars actually on the frame. `0.9` keeps the solve rate
 while eliminating false solves.
 
+`wcs_scale_tolerance` (default `0.05`, i.e. 5%, must be `> 0`) is the largest
+fractional difference allowed between a solved frame's plate scale and the
+profile's `pixscale`. A tighter value separates degraded solves from good ones
+but only works against a **measured** `pixscale`, not the telescope's nominal
+one; with a nominal value a good solve can fail the check. The `2.813` in the
+example above stands for such a measured value.
+
+To measure `pixscale`, process a night of frames and take the median of the
+`wcs_pixscale` column of `qa_manifest.csv`. A frame whose solve is rejected for
+its scale still has a measured scale recorded there, so the column is
+populated even when the nominal value rejects every frame. That value is the
+scale of the last candidate solve tried for the frame, which is occasionally a
+wrong-scale false solve rather than the good solve that failed the check, so
+take the median rather than the mean. If you prefer to use accepted solves
+only, first run once with a temporarily wide `wcs_scale_tolerance` (for
+example `0.1`) and keep the rows with `wcs_solved` true. Once `pixscale` is set, tighten `wcs_scale_tolerance` to
+the spread of the good solves.
+
+`wcs_pointing_tolerance` (degrees, default none, must be `> 0` when set) is the
+largest separation allowed between a solved frame's center and that frame's own
+header pointing. A solve that lands farther away is rejected as mispointed and
+the deeper star pool is tried. It is a fixed angle, not a field radius. When
+it is omitted, one field radius (the frame half-diagonal at the solved scale)
+is allowed instead. It is separate from `fov_rad`, which sizes the Gaia query
+cone.
+
+### The Seestar50 tolerances
+
+The Seestar50 profile sets `wcs_scale_tolerance` to `0.005` (0.5%) and
+`wcs_pointing_tolerance` to `0.30`. They come from a sweep over six Seestar S50
+fields. The profile's `pixscale`, `2.376` arcsec/px, is the median of 4,766 good
+solves, which span -0.23% to +0.29% of it, while degraded solves sit near
+-0.7% and wrong-scale solves are far beyond; 0.5% separates them. Real solves
+usually sit within about 0.1 degree of the header pointing, and the largest
+legitimate offset measured (a re-acquisition between frames) is 0.29 degree, so
+0.30 covers it with a small margin.
+
 `header_match` is optional — omit it (or leave it `[]`) and the profile is
 still fully usable via `--instrument`/`--profile`/`--config`, just never
 auto-selected from a bare `PhotometryConfig()`. Add it (as above) if you want
@@ -307,7 +345,8 @@ $ bandaid config validate my_config.json
 
 `InstrumentProfile.from_file` raises the same Pydantic errors directly. The common
 ones are out-of-range values — `thresh`, `contamination_tolerance`,
-`moffat_beta`, `wcs_scale_tolerance`, and `solve_pool_radius_scale` must be
+`moffat_beta`, `wcs_scale_tolerance`, `wcs_pointing_tolerance`, and
+`solve_pool_radius_scale` must be
 `> 0`; `detection_opening`,
 `fwhm_cutout_half`, and `fwhm_n_stars` must be `>= 1`;
 `contamination_seeing_margin` must be `>= 1`.

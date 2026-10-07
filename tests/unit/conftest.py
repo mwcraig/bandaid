@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from _helpers import _CONSISTENT_HEADER, _make_tan_wcs
+from _helpers import SEESTAR_PIXSCALE, _CONSISTENT_HEADER, _make_tan_wcs
 
-from bandaid.photometry import CalibrationResult, LoadedFrame
+from bandaid.photometry import CalibrationResult, LoadedFrame, WCSMeasurement
 
 
 @pytest.fixture
@@ -34,7 +34,7 @@ def stub_prepare_image_externals(mocker):
     Patches ``calibration_sequence`` (returns a configurable
     ``CalibrationResult`` whose ``detection_image`` is ``calibrated``),
     ``align`` (returns
-    ``(coords, wcs)``), ``centroid_stars`` (identity) and ``_load_frame``
+    ``(coords, wcs, measurement)``), ``centroid_stars`` (identity) and ``_load_frame``
     (returns a ``LoadedFrame`` with header ``{"creator": "spy", "INSTRUME":
     "Seestar S50"}`` -- the ``INSTRUME`` lets a default (``instrument=None``)
     ``PhotometryConfig`` auto-detect Seestar50). Returns the four mocks so
@@ -82,7 +82,11 @@ def stub_prepare_image_externals(mocker):
         )
         align = mocker.patch(
             "bandaid.photometry.align",
-            side_effect=lambda coords, _radecs, **_kwargs: (coords, _make_tan_wcs()),
+            side_effect=lambda coords, _radecs, **_kwargs: (
+                coords,
+                _make_tan_wcs(),
+                WCSMeasurement(SEESTAR_PIXSCALE, 0.0),
+            ),
         )
         centroid_stars = mocker.patch(
             "bandaid.photometry.centroid_stars",

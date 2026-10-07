@@ -3,7 +3,7 @@
 import astropy.units as u
 import numpy as np
 import pytest
-from _helpers import _make_tan_wcs, align_coords
+from _helpers import SEESTAR_PIXSCALE, _make_tan_wcs, align_coords
 from astropy.coordinates import SkyCoord
 
 from bandaid.exceptions import (
@@ -11,6 +11,7 @@ from bandaid.exceptions import (
     WCSScaleError,
     WCSSolveError,
 )
+from bandaid.instruments import load_instrument
 from bandaid.photometry import (
     N_GAIA_STARS_ALIGN,
     N_GAIA_STARS_ALIGN_RETRY,
@@ -19,6 +20,9 @@ from bandaid.photometry import (
     _solve_pool_near,
     align,
 )
+
+# The Seestar50 profile's scale tolerance; the class default is looser.
+TIGHT_SCALE_TOLERANCE = 0.005
 
 
 class TestAlign:
@@ -30,7 +34,7 @@ class TestAlign:
         sky = SkyCoord(ra=[10.0, 10.01] * u.deg, dec=[20.0, 20.01] * u.deg)
         coords = np.array([[250.0, 250.0], [260.0, 260.0]])
 
-        aligned, returned_wcs = align(
+        aligned, returned_wcs, _ = align(
             coords, radecs=None, photometry_coords=sky, wcs=wcs
         )
 
@@ -65,7 +69,7 @@ class TestAlign:
         coords = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
         radecs = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
 
-        aligned, returned_wcs = align(coords, radecs, photometry_coords=None)
+        aligned, returned_wcs, _ = align(coords, radecs, photometry_coords=None)
 
         assert returned_wcs is sentinel_wcs
         # The two lists are sliced by their own caps, independently.
@@ -97,7 +101,7 @@ class TestAlign:
         coords = align_coords(N_IMAGE_STARS_ALIGN)
         radecs = coords.copy()
 
-        _, returned_wcs = align(coords, radecs, photometry_coords=None)
+        _, returned_wcs, _ = align(coords, radecs, photometry_coords=None)
 
         assert returned_wcs is sentinel_wcs
         assert capsys.readouterr().out == ""
@@ -170,7 +174,7 @@ class TestAlign:
         coords = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
         radecs = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
 
-        _, returned_wcs = align(coords, radecs, photometry_coords=None)
+        _, returned_wcs, _ = align(coords, radecs, photometry_coords=None)
 
         assert returned_wcs is sentinel_wcs
         # Shallow pool tried first, then the deeper retry pool -- in that order.
@@ -183,11 +187,17 @@ class TestAlign:
             (2.4, 2.4, None),
             (4.2, 2.4, WCSScaleError),
             (4.2, None, None),
+            (SEESTAR_PIXSCALE * (1 - 0.007), SEESTAR_PIXSCALE, WCSScaleError),
+            (SEESTAR_PIXSCALE * (1 + 0.003), SEESTAR_PIXSCALE, None),
+            (SEESTAR_PIXSCALE * (1 - 0.002), SEESTAR_PIXSCALE, None),
         ],
         ids=[
             "matching-scale-accepted",
             "wrong-scale-rejected",
             "no-expected-scale-skips-check",
+            "degraded-solve-0.7-percent-off-rejected",
+            "real-spread-0.3-percent-high-accepted",
+            "real-spread-0.2-percent-low-accepted",
         ],
     )
     def test_scale_check_gates_on_expected_pixscale(
@@ -200,7 +210,9 @@ class TestAlign:
         twirl-returns-a-self-consistent-but-wrong-scale case, ~4.2 vs the true
         ~2.4 arcsec/px) raises WCSScaleError rather than photometering at the
         wrong pixel positions; and expected_pixscale=None skips the check
-        entirely (back-compat), trusting even a wrong-scale WCS.
+        entirely (back-compat), trusting even a wrong-scale WCS. With a 0.5%
+        ``scale_tolerance`` a degraded solve 0.7% off the profile scale is
+        rejected, while the 0.2-0.3% spread of good solves is accepted.
         """
         solved_wcs = _make_tan_wcs(pixscale=pixscale)
         mocker.patch("bandaid.photometry.compute_wcs", return_value=solved_wcs)
@@ -213,14 +225,16 @@ class TestAlign:
                     coords.copy(),
                     photometry_coords=None,
                     expected_pixscale=expected_pixscale,
+                    scale_tolerance=TIGHT_SCALE_TOLERANCE,
                 )
             return
 
-        _, returned_wcs = align(
+        _, returned_wcs, _ = align(
             coords,
             coords.copy(),
             photometry_coords=None,
             expected_pixscale=expected_pixscale,
+            scale_tolerance=TIGHT_SCALE_TOLERANCE,
         )
         assert returned_wcs is solved_wcs
 
@@ -260,7 +274,9 @@ class TestAlign:
         coords = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
         radecs = np.arange(n_detected * 2, dtype=float).reshape(n_detected, 2)
 
-        _, returned_wcs = align(coords, radecs, photometry_coords=None, **align_kwargs)
+        _, returned_wcs, _ = align(
+            coords, radecs, photometry_coords=None, **align_kwargs
+        )
 
         assert returned_wcs is good_wcs
         pool_sizes = [len(call.args[1]) for call in compute_wcs.call_args_list]
@@ -271,7 +287,9 @@ class TestAlign:
         bad_wcs = _make_tan_wcs(pixscale=4.2)
         coords = np.array([[250.0, 250.0], [260.0, 260.0]])
 
-        _, returned_wcs = align(coords, radecs=None, wcs=bad_wcs, expected_pixscale=2.4)
+        _, returned_wcs, _ = align(
+            coords, radecs=None, wcs=bad_wcs, expected_pixscale=2.4
+        )
 
         assert returned_wcs is bad_wcs
 
@@ -287,7 +305,7 @@ class TestAlign:
         mocker.patch("bandaid.photometry.compute_wcs", return_value=wcs_10pct_off)
         coords = align_coords(N_IMAGE_STARS_ALIGN)
 
-        _, returned_wcs = align(
+        _, returned_wcs, _ = align(
             coords,
             coords.copy(),
             photometry_coords=None,
@@ -304,6 +322,56 @@ class TestAlign:
                 expected_pixscale=2.4,
                 scale_tolerance=0.05,
             )
+
+    @pytest.mark.parametrize(
+        ("tolerance", "expected_text"),
+        [(0.0025, "> 0.25% off"), (0.0004, "> 0.04% off"), (0.05, "> 5% off")],
+    )
+    def test_scale_error_states_the_tolerance_exactly(
+        self, mocker, tolerance, expected_text
+    ):
+        """The wrong-scale message prints the tolerance without rounding it away."""
+        mocker.patch(
+            "bandaid.photometry.compute_wcs", return_value=_make_tan_wcs(pixscale=4.2)
+        )
+        coords = align_coords(N_IMAGE_STARS_ALIGN)
+
+        with pytest.raises(WCSScaleError, match=expected_text) as excinfo:
+            align(
+                coords,
+                coords.copy(),
+                photometry_coords=None,
+                expected_pixscale=2.4,
+                scale_tolerance=tolerance,
+            )
+        assert excinfo.value.measured_scale == pytest.approx(4.2)
+
+    def test_returns_the_measured_scale_and_center_offset(self, mocker):
+        """
+        ``align`` returns the plate scale and center offset of the accepted WCS.
+
+        The values are the ones the validation compared against its limits, so
+        the QA manifest cannot disagree with the gate. The offset is None when
+        no expected center was given, and a supplied WCS is measured too.
+        """
+        solved_wcs = _make_tan_wcs(pixscale=2.38, crval=(10.0, 20.0))
+        mocker.patch("bandaid.photometry.compute_wcs", return_value=solved_wcs)
+        coords = align_coords(N_IMAGE_STARS_ALIGN)
+        kwargs = {
+            "photometry_coords": None,
+            "expected_center": SkyCoord(10.0, 20.1, unit="deg"),
+            "shape": (500, 500),
+        }
+
+        _, _, measured = align(coords, coords.copy(), **kwargs)
+        assert measured.pixscale == pytest.approx(2.38, rel=1e-4)
+        assert measured.offset_deg == pytest.approx(0.1, abs=1e-3)
+
+        _, _, no_center = align(coords, coords.copy(), photometry_coords=None)
+        assert no_center.offset_deg is None
+
+        _, _, supplied = align(coords, None, wcs=solved_wcs, **kwargs)
+        assert supplied == measured
 
     def test_wcs_scale_error_is_wcs_solve_error(self):
         """WCSScaleError is a WCSSolveError so the batch loop still skips the frame."""
@@ -360,7 +428,7 @@ class TestAlign:
                 )
             return
 
-        _, returned_wcs = align(
+        _, returned_wcs, _ = align(
             coords,
             coords.copy(),
             photometry_coords=None,
@@ -369,12 +437,87 @@ class TestAlign:
         )
         assert returned_wcs is solved_wcs
 
+    def test_pointing_tolerance_param_controls_the_check(self, mocker):
+        """
+        ``pointing_tolerance`` (degrees) sets how far the solved center may sit.
+
+        A solve 0.2 deg from the header center passes the default (field-radius)
+        limit but is rejected as mispointed once the tolerance drops to 0.1 deg,
+        and the error says which limit was exceeded.
+        """
+        solved_wcs = _make_tan_wcs(crval=(10.0, 20.0))
+        mocker.patch("bandaid.photometry.compute_wcs", return_value=solved_wcs)
+        coords = align_coords(N_IMAGE_STARS_ALIGN)
+        kwargs = {
+            "photometry_coords": None,
+            "expected_center": SkyCoord(10.0, 20.2, unit="deg"),
+            "shape": (500, 500),
+        }
+
+        _, returned_wcs, _ = align(coords, coords.copy(), **kwargs)
+        assert returned_wcs is solved_wcs
+
+        with pytest.raises(WCSPointingError, match=r"0\.1 deg"):
+            align(coords, coords.copy(), pointing_tolerance=0.1, **kwargs)
+
+    def test_pointing_tolerance_is_independent_of_frame_size(self, mocker):
+        """
+        A fixed ``pointing_tolerance`` replaces the field-radius limit.
+
+        A solve 0.4 deg from the header center sits inside the half-diagonal of
+        a 1000-px frame at 2.376 arcsec/px (about 0.47 deg), so the default
+        accepts it; a fixed 0.3 deg tolerance rejects it regardless of frame size.
+        """
+        mocker.patch(
+            "bandaid.photometry.compute_wcs",
+            return_value=_make_tan_wcs((1000, 1000), crval=(10.0, 20.0)),
+        )
+        coords = align_coords(N_IMAGE_STARS_ALIGN)
+        kwargs = {
+            "photometry_coords": None,
+            "expected_center": SkyCoord(10.0, 20.4, unit="deg"),
+            "shape": (1000, 1000),
+        }
+
+        align(coords, coords.copy(), **kwargs)
+
+        with pytest.raises(WCSPointingError, match="center"):
+            align(coords, coords.copy(), pointing_tolerance=0.30, **kwargs)
+
+    def test_seestar_tolerance_accepts_largest_measured_offset(self, mocker):
+        """
+        The Seestar50 pointing tolerance accepts a 0.29 deg re-acquisition offset.
+
+        0.29 deg is the largest legitimate header-to-solve offset seen across
+        the six Seestar S50 fields the tolerance was tuned on. It is wider
+        than a 500-px frame's half-diagonal (about 0.23 deg), so the
+        field-radius default rejects it while the bundled profile's fixed
+        tolerance accepts it.
+        """
+        solved_wcs = _make_tan_wcs(crval=(10.0, 20.0))
+        mocker.patch("bandaid.photometry.compute_wcs", return_value=solved_wcs)
+        coords = align_coords(N_IMAGE_STARS_ALIGN)
+        kwargs = {
+            "photometry_coords": None,
+            "expected_center": SkyCoord(10.0, 20.29, unit="deg"),
+            "shape": (500, 500),
+        }
+        seestar_tolerance = load_instrument("Seestar50").wcs_pointing_tolerance
+
+        with pytest.raises(WCSPointingError, match="center"):
+            align(coords, coords.copy(), **kwargs)
+
+        _, returned_wcs, _ = align(
+            coords, coords.copy(), pointing_tolerance=seestar_tolerance, **kwargs
+        )
+        assert returned_wcs is solved_wcs
+
     def test_supplied_wcs_center_not_checked(self):
         """A caller-supplied WCS is trusted and not center-checked."""
         mispointed_wcs = _make_tan_wcs(crval=(15.0, 20.0))
         coords = np.array([[250.0, 250.0], [260.0, 260.0]])
 
-        _, returned_wcs = align(
+        _, returned_wcs, _ = align(
             coords,
             radecs=None,
             wcs=mispointed_wcs,

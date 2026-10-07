@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `InstrumentProfile.wcs_pointing_tolerance` (degrees, default none): the largest
+    separation allowed between a solved frame center and its header pointing,
+    instead of one field radius.
+- The QA manifest gains `wcs_pixscale` (also filled for frames rejected for their
+    scale), `solve_offset_deg` and `n_snr20`, so degraded and false plate solves
+    are visible without a rerun.
 - `InstrumentProfile.solve_pool_radius_scale` (default `0.9`): each frame plate-solves
     against only the catalog stars within this fraction of `fov_rad` of its own
     header pointing, instead of the whole batch catalog (#133).
@@ -119,6 +125,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `geometry=`; both are cached per frame on `ImageData`. `measure_photometry`
     raises `ValueError` when `geometry` is combined with an explicit `radii` or
     `annulus`. Pipeline output is unchanged (#126).
+- Breaking: `align` returns a third value, a `WCSMeasurement` holding the plate
+    scale and header-pointing offset that the solve validation measured, so the
+    QA manifest reports the numbers the gate used.
+- The Seestar50 profile now sets `wcs_scale_tolerance` to `0.005`,
+    `wcs_pointing_tolerance` to `0.30` and `pixscale` to the measured `2.376`
+    (was `2.4`). A profile that tightens the scale tolerance needs a measured
+    `pixscale`, not the nominal one.
 - `InstrumentProfile.cone_radius_margin` now defaults to `0.4` deg (was `0.0`), so
     the batch Gaia catalog covers that much pointing drift between frames.
     Widening the cone no longer disturbs plate solving because the solve pool is
