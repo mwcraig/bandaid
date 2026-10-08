@@ -73,6 +73,7 @@ QA_MANIFEST_COLUMNS = (
     "n_centroid_drift",
     "n_drift_rejected",
     "n_forced_measured",
+    "n_edge_dropped",
 )
 
 # SNR at or above which a star counts toward the manifest's ``n_snr20`` solve-quality
@@ -287,6 +288,38 @@ class BatchPrep:
             raise ValueError(msg)
 
 
+def _check_edge_margin_fits_frame(edge_margin_px, metadata):
+    """
+    Reject an edge margin that leaves no usable area on the frame.
+
+    Parameters
+    ----------
+    edge_margin_px : float
+        The configured ``PhotometryConfig.edge_margin_px``.
+    metadata : dict
+        Frame metadata with integer ``height`` and ``width`` entries.
+
+    Raises
+    ------
+    BatchPrepError
+        If `edge_margin_px` is at or above half the smaller frame dimension.
+
+    Notes
+    -----
+    Such a margin leaves no position at least that far from every edge, so
+    every frame would raise `NoUsableStarsError` and finish as a skipped
+    manifest row. Failing the batch up front names the cause once.
+    """
+    smaller_side = min(metadata["height"], metadata["width"])
+    if edge_margin_px >= smaller_side / 2:
+        msg = (
+            f"edge_margin_px={edge_margin_px:g} leaves no usable area on a "
+            f"{metadata['width']}x{metadata['height']} px frame; it must be "
+            f"below half the smaller side ({smaller_side / 2:g} px)"
+        )
+        raise BatchPrepError(msg)
+
+
 def _resolve_batch_instrument(config, header):
     """
     Resolve ``config.instrument`` for the batch, wrapping a detection failure.
@@ -434,7 +467,9 @@ def prepare_batch(
     ------
     BatchPrepError
         If too few stars are detected in ``first_file`` to measure an FWHM.
-        Also raised if fewer than the minimum number of target stars lie within
+        Also raised if ``config.edge_margin_px`` is at or above half the
+        smaller frame dimension, which would leave no usable area on any frame,
+        and if fewer than the minimum number of target stars lie within
         the first frame's solve pool radius, if the Gaia query hit its row
         limit before reaching the target magnitude limit (a
         `~bandaid.exceptions.CatalogTruncationError`, raised unchanged), if
@@ -484,6 +519,8 @@ def prepare_batch(
     except TooFewStarsError as exc:
         msg = f"too few stars detected in {first_file!r} to prepare the batch"
         raise BatchPrepError(msg) from exc
+
+    _check_edge_margin_fits_frame(config.edge_margin_px, metadata)
 
     # Gaia DR2 positions are J2015.5; propagate them to the observation epoch so
     # high-proper-motion stars are placed where the frames actually see them.
@@ -554,13 +591,14 @@ def prepare_batch(
         target_radecs, center, metadata["fov_rad"], instrument, gaia_mag_limit
     )
 
-    fwhm_arcsec = fwhm_pix * metadata["pixscale"]
     # The flag is computed once, from the first frame's FWHM, but applied to
     # every frame of the batch, so evaluate it at a pessimistically softened
     # seeing (FWHM * contamination_seeing_margin): pairs that would become
     # contaminated as seeing degrades during the night are dropped up front.
     # https://github.com/mwcraig/bandaid/issues/64
-    flag_fwhm_arcsec = fwhm_arcsec * instrument.contamination_seeing_margin
+    flag_fwhm_arcsec = (
+        fwhm_pix * metadata["pixscale"] * instrument.contamination_seeing_margin
+    )
     # Asymmetric flagging: only targets can be flagged, but the deeper contaminant
     # list supplies the (possibly fainter) neighbors that can contaminate them.
     # The contamination model scales with the aperture area, so it is evaluated
@@ -589,8 +627,8 @@ def prepare_batch(
     # against that comp star either, so the comp star's contamination goes
     # unflagged too. Accepted -- a user forcing a target is expected to have
     # already weighed potential contamination.
-    # (2) every downstream quality cut still applies unchanged; an off-frame
-    # forced target is silently dropped by the existing x/y bounds cut, by
+    # (2) every downstream quality cut still applies unchanged, the edge
+    # margin included; an off-frame forced target is silently dropped, by
     # design, not an error.
     if forced_targets is not None:
         # A scalar SkyCoord (e.g. SkyCoord.from_name(...) for a single nova)
@@ -979,6 +1017,10 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
     decimals; either is blank when absent. ``n_snr20`` counts the
     representative channel's `good_star_mask`-passing rows with ``snr >= 20``,
     and is blank under the same conditions as ``n_good_stars``.
+
+    ``n_edge_dropped`` is the number of catalog stars the frame's edge margin
+    removed before measurement, read from the table ``meta`` like
+    ``wcs_pixscale``; blank when absent.
     """
     if "L4" in by_filter:
         representative = by_filter["L4"]
@@ -1055,6 +1097,7 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
         "n_centroid_drift": n_centroid_drift,
         "n_drift_rejected": n_drift_rejected,
         "n_forced_measured": n_forced_measured,
+        "n_edge_dropped": meta.get("n_edge_dropped"),
     }
 
 

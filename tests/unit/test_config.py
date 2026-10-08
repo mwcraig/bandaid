@@ -50,6 +50,10 @@ EXPECTED_MIN_SNR = 2.0
 
 EXPECTED_GAIA_ROW_LIMIT = 10000
 
+# Not a legacy constant: the edge-margin cut is new. 10 px covers the
+# centroiding CNN's 15x15 fill-padded cutout (half-size 7 px).
+EXPECTED_EDGE_MARGIN_PX = 10.0
+
 
 class TestDefaultsMatchLegacyConstants:
     """A default config reproduces the current module-level constants."""
@@ -145,6 +149,10 @@ class TestDefaultsMatchLegacyConstants:
         assert isinstance(cfg.drift, DriftConfig)
         # None means "resolve from the frame header" -- see detect_instrument.
         assert cfg.instrument is None
+
+    def test_edge_margin(self):
+        """The edge margin defaults to 10 px."""
+        assert PhotometryConfig().edge_margin_px == EXPECTED_EDGE_MARGIN_PX
 
 
 class TestImmutability:
@@ -376,6 +384,12 @@ class TestValidators:
         with pytest.raises(ValidationError, match="gaia_mag_limit"):
             SourceSelectionConfig(gaia_mag_limit=float("inf"))
 
+    @pytest.mark.parametrize("edge_margin_px", [0.0, -1.0, float("nan")])
+    def test_non_positive_edge_margin_rejected(self, edge_margin_px):
+        """An edge margin that is not a positive number of pixels is rejected."""
+        with pytest.raises(ValidationError):
+            PhotometryConfig(edge_margin_px=edge_margin_px)
+
     def test_negative_drift_cap_rejected(self):
         """A negative pixel cap on centroid drift is rejected."""
         with pytest.raises(ValidationError):
@@ -425,6 +439,11 @@ class TestOverrides:
             max(radii) + gap,
             max(radii) + gap + annulus_width,
         )
+
+    def test_edge_margin_override(self):
+        """A custom edge margin is preserved."""
+        margin = 4.5
+        assert PhotometryConfig(edge_margin_px=margin).edge_margin_px == margin
 
     def test_source_selection_override(self):
         """A custom min_snr is preserved on the nested config."""

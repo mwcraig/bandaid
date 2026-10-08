@@ -121,6 +121,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Breaking for `.star` and table output: catalog stars projected within
+    `PhotometryConfig.edge_margin_px` (default `10.0` px) of a frame edge, or off
+    the frame, are no longer measured, because the centroiding CNN's fill-padded
+    cutout misplaces them (#129). The QA manifest gains `n_edge_dropped`. See
+    "Frame-edge margin" in `docs/configuration.md`.
 - Breaking: `build_photometry_table` no longer accepts `peak_cutouts=` or
     `geometry=`; both are cached per frame on `ImageData`. `measure_photometry`
     raises `ValueError` when `geometry` is combined with an explicit `radii` or

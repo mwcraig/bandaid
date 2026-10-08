@@ -43,17 +43,18 @@ The knobs fall into three groups by how safe they are to change.
 
 These are ordinary analysis choices and are safe to set for any run.
 
-| Sub-config         | Field                    | Default  | Meaning                                                             |
-| ------------------ | ------------------------ | -------- | ------------------------------------------------------------------- |
-| `apertures`        | `radii`                  | `(1.0,)` | Aperture radii, in units of FWHM                                    |
-| `apertures`        | `gap`                    | `4.0`    | FWHM gap between largest aperture and annulus                       |
-| `apertures`        | `annulus_width`          | `3.0`    | Radial width of the background annulus, in FWHM                     |
-| `source_selection` | `gaia_mag_limit`         | `15.0`   | Magnitude limit for the photometry targets                          |
-| `source_selection` | `contaminant_mag_offset` | `3.0`    | Contaminant-catalog depth below `gaia_mag_limit`                    |
-| `source_selection` | `min_snr`                | `2.0`    | Minimum SNR a star must have to reach the output                    |
-| `source_selection` | `gaia_row_limit`         | `10000`  | Base maximum rows the Gaia query may return (scaled with cone area) |
-| `drift`            | `drift_tolerance_fwhm`   | `1.0`    | Max centroid drift, in FWHM                                         |
-| `drift`            | `drift_cap_pix`          | `4.0`    | Absolute pixel cap on centroid drift                                |
+| Sub-config         | Field                    | Default  | Meaning                                                                     |
+| ------------------ | ------------------------ | -------- | --------------------------------------------------------------------------- |
+| `apertures`        | `radii`                  | `(1.0,)` | Aperture radii, in units of FWHM                                            |
+| `apertures`        | `gap`                    | `4.0`    | FWHM gap between largest aperture and annulus                               |
+| `apertures`        | `annulus_width`          | `3.0`    | Radial width of the background annulus, in FWHM                             |
+| `source_selection` | `gaia_mag_limit`         | `15.0`   | Magnitude limit for the photometry targets                                  |
+| `source_selection` | `contaminant_mag_offset` | `3.0`    | Contaminant-catalog depth below `gaia_mag_limit`                            |
+| `source_selection` | `min_snr`                | `2.0`    | Minimum SNR a star must have to reach the output                            |
+| `source_selection` | `gaia_row_limit`         | `10000`  | Base maximum rows the Gaia query may return (scaled with cone area)         |
+| `drift`            | `drift_tolerance_fwhm`   | `1.0`    | Max centroid drift, in FWHM                                                 |
+| `drift`            | `drift_cap_pix`          | `4.0`    | Absolute pixel cap on centroid drift                                        |
+| (top level)        | `edge_margin_px`         | `10.0`   | Catalog stars projected within this many pixels of an edge are not measured |
 
 ### Tier 2 — Instrument / per-telescope (advanced)
 
@@ -145,12 +146,34 @@ exposed on the config. Mis-setting them stalls or breaks the WCS solve (the cost
 of the matcher grows like `C(N, 4)`, and too-small counts leave frames unsolved),
 so they remain locked module constants in `bandaid.photometry`.
 
+### Frame-edge margin
+
+A catalog star whose projected position (where the plate solution puts it,
+before centroiding) is within `edge_margin_px` of any frame edge, or off the
+frame, is dropped before centroiding and photometry, so it has no row in the
+output. The default 10 px covers the centroiding CNN's 15x15 cutout (half-size
+7 px), which is fill-padded where it overlaps an edge and then gives an
+unreliable centroid. The same rule applies to every position, forced targets
+included. The frame spans `[0, width - 0.5)` by `[0, height - 0.5)`, the same
+span `good_star_mask` uses, shrunk by the margin on every side.
+
+The margin does not change background-annulus handling. With the default
+apertures the annulus spans about 15 to 24 px at a 3 px FWHM, so stars 10 to
+24 px from an edge still have a truncated annulus, as before; photutils
+measures their background from the on-frame annulus pixels.
+
+The number of catalog stars dropped within `edge_margin_px` of a frame edge,
+inside or outside it, is recorded per frame in the QA manifest column
+`n_edge_dropped`. A margin of half the smaller frame side or more is rejected
+when the batch is prepared.
+
 ## Validation
 
 Construction enforces the invariants the pipeline relies on, for example:
 
 - aperture radii, `gap`, and `annulus_width` must all be positive, and
-- the drift cuts and `gaia_mag_limit` must be finite.
+- the drift cuts and `gaia_mag_limit` must be finite, and
+- `edge_margin_px` must be positive and finite.
 
 Several values are **derived** rather than set directly, so the invariants the
 pipeline cares about hold by construction instead of needing a validator:

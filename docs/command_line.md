@@ -95,7 +95,9 @@ Forced targets are **not checked against the Gaia magnitude/contamination
 model** (there is no Gaia magnitude for a nova or supernova to size that
 check against), but every other output quality cut still applies: a target
 too faint to measure, or off the edge of a given frame, is simply absent
-from that frame's output — not an error. The bypass runs both directions: a
+from that frame's output, not an error. The
+[frame-edge margin](configuration.md#frame-edge-margin) applies to forced
+targets like any other star. The bypass runs both directions: a
 bright forced target near a Gaia comparison star is likewise invisible to
 *that* star's contamination check, so the comparison star is not flagged
 either. bandaid's stance is that a user forcing a target is expected to

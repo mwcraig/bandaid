@@ -204,13 +204,13 @@ class TestNumpyBalletOffline:
         """
         Coordinates at or past the CENTROID_PAD_PIX bounds centroid to themselves.
 
-        `_drop_off_frame_catalog_stars` relies on this: a position it drops
-        has no overlap with its 15x15 cutout, so eloy substitutes an all-zero
-        stand-in, the model's per-cutout normalization turns it into NaN, and
-        `ballet_centroid` falls back to the input coordinate -- still
-        off-frame. The mechanism is weight-independent (random-init weights
-        here), but it does depend on the cutout size: this fails if the
-        cutout ever grows past the 8 px pad.
+        `_drop_edge_catalog_stars` relies on this for forced targets: a
+        position it drops has no overlap with its 15x15 cutout, so eloy
+        substitutes an all-zero stand-in, the model's per-cutout normalization
+        turns it into NaN, and `ballet_centroid` falls back to the input
+        coordinate -- still off-frame. The mechanism is weight-independent
+        (random-init weights here), but it does depend on the cutout size:
+        this fails if the cutout ever grows past the 8 px pad.
         """
         model = NumpyBallet(model_file=_random_weights_npz(tmp_path))
         height, width = 20, 30

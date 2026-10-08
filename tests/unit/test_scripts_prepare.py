@@ -332,6 +332,33 @@ class TestPrepareBatch:
 
         assert isinstance(exc_info.value.__cause__, InstrumentDetectionError)
 
+    @pytest.mark.parametrize("margin", [540.0, 600.0])
+    def test_edge_margin_reaching_the_frame_center_raises(self, mocker, margin):
+        """A margin at or above half the smaller frame side fails the batch up front."""
+        prep_data = _patch_prep(mocker)
+
+        with pytest.raises(BatchPrepError, match="edge_margin_px"):
+            scripts.prepare_batch(
+                "frame1.fits",
+                cnn=object(),
+                config=PhotometryConfig(edge_margin_px=margin),
+            )
+
+        prep_data.query_field_catalog.assert_not_called()
+
+    def test_edge_margin_below_half_the_frame_is_accepted(self, mocker):
+        """A margin just under half the smaller side (1080 px wide) is allowed."""
+        _patch_prep(mocker)
+        margin = 539.0
+
+        prep = scripts.prepare_batch(
+            "frame1.fits",
+            cnn=object(),
+            config=PhotometryConfig(edge_margin_px=margin),
+        )
+
+        assert prep.config.edge_margin_px == margin
+
     def test_first_frame_resolved_with_config_instrument_profile(self, mocker):
         """
         The config's instrument is threaded into the first-frame calibration.

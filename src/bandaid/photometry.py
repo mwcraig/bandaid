@@ -1472,6 +1472,8 @@ class ImageData:
     # validation. The offset is None when no header center was available.
     wcs_pixscale: float | None = None
     solve_offset_deg: float | None = None
+    # Catalog stars removed by the edge margin (see `_drop_edge_catalog_stars`).
+    n_edge_dropped: int = 0
     # Populated lazily by the first `resolve_time_airmass` call for this frame
     # and reused by the later calls (one per RGB channel) that share this same
     # `ImageData`, so the obs_time parse and airmass derivation run once per
@@ -2564,26 +2566,16 @@ def measure_photometry(
     }
 
 
-def _drop_off_frame_catalog_stars(aligned_coords, photometry_coords, shape, file):
+def _drop_edge_catalog_stars(
+    aligned_coords,
+    photometry_coords,
+    shape,
+    file,
+    *,
+    edge_margin_px,
+):
     """
-    Drop catalog stars whose aligned projection falls outside the frame.
-
-    Cutting here, right after `align`'s projection and before centroiding,
-    keeps `prepare_image` from CNN-centroiding and photometering stars that
-    `good_star_mask` would discard at the very end anyway; the Gaia cone
-    queried for the catalog is a circle of radius equal to the frame
-    half-diagonal, so roughly half the catalog projects off-frame on any
-    given frame. The bound is padded by `CENTROID_PAD_PIX`: a position
-    dropped here sits far enough off-frame that its 15x15 centroid cutout
-    has no overlap with the image, so centroiding would have returned it
-    unchanged (via the CNN's NaN fallback on the all-zero stand-in cutout)
-    and `good_star_mask` would have dropped it at the very end. The kept
-    set is therefore a superset of what `good_star_mask` keeps.
-
-    When `photometry_coords` is None, `aligned_coords` are the detected
-    coordinates themselves rather than catalog projections, and must stay
-    one-to-one with the image's own `coords`; the cut is skipped and both
-    arguments are returned unchanged.
+    Drop catalog stars projected within a margin of a frame edge or off the frame.
 
     Parameters
     ----------
@@ -2597,42 +2589,78 @@ def _drop_off_frame_catalog_stars(aligned_coords, photometry_coords, shape, file
         ``(height, width)`` of the calibrated frame, i.e. `numpy.ndarray.shape`.
     file : str or pathlib.Path
         Source frame, named in the raised error and the debug log.
+    edge_margin_px : float
+        Minimum distance, in pixels, from every frame edge for a catalog star
+        to be kept.
 
     Returns
     -------
     numpy.ndarray
-        `aligned_coords`, reduced to the in-frame rows (unchanged if
+        `aligned_coords`, reduced to the kept rows (unchanged if
         `photometry_coords` is None).
     astropy.coordinates.SkyCoord or None
-        `photometry_coords`, reduced to the same in-frame rows (unchanged if
-        already None).
+        `photometry_coords`, reduced to the same rows (unchanged if already
+        None).
+    int
+        Number of catalog stars removed that lie within `edge_margin_px` of a
+        frame edge, on either side of it (inside the frame or outside it).
+        Stars farther off the frame are dropped but not counted. Zero when
+        `photometry_coords` is None.
 
     Raises
     ------
     NoUsableStarsError
-        If every catalog star projects outside the padded frame bounds. The
-        source `file` is attached.
+        If no row survives the cut. The source `file` is attached.
+
+    Notes
+    -----
+    The cut runs right after `align`'s projection and before centroiding, on
+    the projected position, so a star near an edge is never handed to the
+    centroiding CNN. A star is kept when it lies inside the frame by at least
+    `edge_margin_px`: the span is the `good_star_mask` span shrunk by the margin
+    on every side, with the same half-open upper bound. One rule applies to
+    every row, including any target the caller appended.
+
+    The margin is sized to the CNN's 15x15 cutout, which is fill-padded when it
+    overlaps an edge (half-size 7 px), making the centroid unreliable and able
+    to land far from the true position. A star that projects off the frame is
+    dropped for the same reason (the Gaia cone is a circle of the frame's
+    half-diagonal, so roughly half the catalog projects off-frame on any frame).
+
+    The margin does not address background-annulus truncation. With the default
+    apertures the annulus spans about 15 to 24 px at a 3 px FWHM, so a star
+    10 to 24 px from an edge still has a truncated annulus, which is unchanged
+    by this cut: photutils measures the background from the on-frame annulus
+    pixels.
+
+    When `photometry_coords` is None, `aligned_coords` are the detected
+    coordinates themselves rather than catalog projections, and must stay
+    one-to-one with the image's own `coords`; the cut is skipped and both
+    arguments are returned unchanged.
     """
     if photometry_coords is None:
-        return aligned_coords, photometry_coords
+        return aligned_coords, photometry_coords, 0
     height, width = shape
-    keep = _within_frame(
-        aligned_coords[:, 0], aligned_coords[:, 1], width, height, pad=CENTROID_PAD_PIX
-    )
+    x, y = aligned_coords[:, 0], aligned_coords[:, 1]
+    margin = edge_margin_px
+    keep = _within_frame(x, y, width, height, pad=-margin)
     if not keep.any():
         msg = (
-            f"no catalog star projects onto {file}: all {len(keep)} "
-            "targets fall outside the frame"
+            f"no catalog star projects onto {file} at least {margin:g} px from "
+            f"an edge: all {len(keep)} targets fall outside the frame or "
+            "within the edge margin"
         )
         raise NoUsableStarsError(msg, file=file)
+    n_edge_dropped = int(np.sum(~keep & _within_frame(x, y, width, height, pad=margin)))
     logger.debug(
-        "%s: %d of %d catalog stars in frame (pad %.0f px)",
+        "%s: %d of %d catalog stars kept (edge margin %.1f px, %d dropped by it)",
         file,
         keep.sum(),
         len(keep),
-        CENTROID_PAD_PIX,
+        margin,
+        n_edge_dropped,
     )
-    return aligned_coords[keep], photometry_coords[keep]
+    return aligned_coords[keep], photometry_coords[keep], n_edge_dropped
 
 
 def _parse_obs_time(obs_time, *, file=None):
@@ -2866,9 +2894,10 @@ def prepare_image(
         `TooFewStarsError` or, when ``detect_on_bayer_balanced`` is True and a
         CFA sub-grid sample is empty or has zero variance,
         `DegenerateBayerChannelError` -- both with `file` already attached by
-        `calibration_sequence` itself, and `_drop_off_frame_catalog_stars` may
-        raise `NoUsableStarsError` when every catalog star projects outside
-        the frame; all three propagate unchanged.)
+        `calibration_sequence` itself, and `_drop_edge_catalog_stars` may
+        raise `NoUsableStarsError` when no catalog star lies inside the frame
+        by at least ``config.edge_margin_px``; all three propagate
+        unchanged.)
     FrameMetadataError
         If a WCS must be solved (``wcs`` is None) but the frame metadata has no
         usable numeric ``pixscale`` to scale-check the solve against, no header
@@ -2889,6 +2918,9 @@ def prepare_image(
     pointing before solving, keeping brightest-first order. A radius below the
     field radius keeps more of the brightest pool stars on the rectangular
     frame. The cut is skipped (full catalog used) only when a WCS is supplied.
+
+    Every input position, including any target the caller appended to
+    `photometry_coords`, is subject to ``config.edge_margin_px``.
     """
     # "calibrate" the data and get initial detections for WCS alignment and
     # FWHM estimation. calibration_sequence raises TooFewStarsError (a
@@ -3008,9 +3040,14 @@ def prepare_image(
             )
         raise
 
-    # Drop catalog stars that projected off-frame, before centroiding/photometry.
-    aligned_coords, photometry_coords = _drop_off_frame_catalog_stars(
-        aligned_coords, photometry_coords, calibrated_data.shape, file
+    # Drop catalog stars projected within the edge margin or off-frame, before
+    # centroiding/photometry.
+    aligned_coords, photometry_coords, n_edge_dropped = _drop_edge_catalog_stars(
+        aligned_coords,
+        photometry_coords,
+        calibrated_data.shape,
+        file,
+        edge_margin_px=config.edge_margin_px,
     )
 
     centroid_coords = centroid_stars(working_image, aligned_coords, cnn)
@@ -3027,6 +3064,7 @@ def prepare_image(
         metadata=metadata,
         wcs_pixscale=measured.pixscale,
         solve_offset_deg=measured.offset_deg,
+        n_edge_dropped=n_edge_dropped,
     )
 
 
@@ -3278,6 +3316,9 @@ def process_one_image(
 
     Notes
     -----
+    Every input position, including any target the caller appended to
+    `input_photometry_coords`, is subject to ``config.edge_margin_px``.
+
     L4 is never photometered itself; `calculate_l4_quantities` builds it from
     the TR/TG/TB tables (see its Notes).
     """
@@ -3326,6 +3367,7 @@ def process_one_image(
         data.meta["full_image_meta"] = img.metadata
         data.meta["wcs_pixscale"] = img.wcs_pixscale
         data.meta["solve_offset_deg"] = img.solve_offset_deg
+        data.meta["n_edge_dropped"] = img.n_edge_dropped
         by_filter_data[filter_name] = data
 
     # L4 is a recombination of the RGB tables, so it is built once they all
@@ -3336,6 +3378,7 @@ def process_one_image(
         l4.meta["full_image_meta"] = img.metadata
         l4.meta["wcs_pixscale"] = img.wcs_pixscale
         l4.meta["solve_offset_deg"] = img.solve_offset_deg
+        l4.meta["n_edge_dropped"] = img.n_edge_dropped
         by_filter_data["L4"] = l4
 
     return by_filter_data
