@@ -7,12 +7,15 @@ from astropy.io import fits
 from astropy.stats import gaussian_fwhm_to_sigma
 from astropy.table import Table
 
+from bandaid.config import CentroidConfig
 from bandaid.photometry import (
     _brightest_unsaturated,
+    _fit_offset_plane,
     _fwhm_from_coords,
     calibration_sequence,
     centroid_drift_flag,
     centroid_stars,
+    centroid_with_catalog_model,
 )
 
 
@@ -31,11 +34,29 @@ def _grid_star_image(make_test_image, fwhm, *, jitter=1.0, seed=SEED):
     - this lays down a dense grid of identical stars at deliberate sub-pixel
       offsets so a stable ePSF can be median-stacked.
 
-    Returns ``(image, true_coords_xy, jittered_coords_xy)``. ``true_coords_xy`` are
-    the exact (sub-pixel) star centers; ``jittered_coords_xy`` are those centers
-    displaced by up to ``jitter`` px, standing in for an imperfect detection centroid
-    that smears a position-stacked PSF. Together they let the registration test prove
-    the effective PSF survives centroid error.
+    Parameters
+    ----------
+    make_test_image : callable
+        The conftest image factory.
+    fwhm : float
+        FWHM of the injected stars, in pixels.
+    jitter : float, optional
+        Largest displacement, in pixels, of a jittered coordinate from the true
+        one. By default 1.0.
+    seed : int, optional
+        Seed for the star offsets, the jitter and the image noise.
+
+    Returns
+    -------
+    image : numpy.ndarray
+        The noisy image.
+    true_coords : numpy.ndarray
+        ``(N, 2)`` exact (sub-pixel) star centers.
+    jittered_coords : numpy.ndarray
+        ``(N, 2)`` `true_coords` displaced by up to `jitter` px, standing in for
+        an imperfect detection centroid that smears a position-stacked PSF.
+        Together they let the registration test prove the effective PSF
+        survives centroid error.
     """
     rng = np.random.default_rng(seed)
     img_size = (300, 300)
@@ -319,6 +340,551 @@ class TestCentroidDriftFlag:
         flag = centroid_drift_flag(centroid, aligned, fwhm=2.3)
         assert flag[0]
         assert not flag[1]
+
+
+FRAME_SHAPE = (200, 300)  # (height, width)
+MIN_FIT_STARS = 12
+FIT_NOISE_PIX = 0.05
+
+
+def _fit_stars(n, *, seed=SEED):
+    """
+    Scatter projected star positions well inside ``FRAME_SHAPE``.
+
+    Parameters
+    ----------
+    n : int
+        Number of stars.
+    seed : int, optional
+        Seed for the positions.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(n, 2)`` pixel positions, at least 20 px from every edge.
+    """
+    rng = np.random.default_rng(seed)
+    height, width = FRAME_SHAPE
+    return np.column_stack(
+        [rng.uniform(20, width - 20, n), rng.uniform(20, height - 20, n)]
+    )
+
+
+def _affine_offset(xy):
+    """
+    Return a known CNN-minus-projected offset, linear in position.
+
+    Parameters
+    ----------
+    xy : numpy.ndarray
+        ``(N, 2)`` pixel positions.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(N, 2)`` offsets in pixels: a constant plus a term linear in each
+        frame-normalised coordinate.
+    """
+    height, width = FRAME_SHAPE
+    nx = (xy[:, 0] - width / 2) / (width / 2)
+    ny = (xy[:, 1] - height / 2) / (height / 2)
+    return np.column_stack(
+        [0.30 + 0.10 * nx - 0.05 * ny, -0.20 + 0.04 * nx + 0.08 * ny]
+    )
+
+
+def _noisy_measurements(projected, *, seed=SEED):
+    """
+    Return CNN-like positions: projected plus the affine offset plus noise.
+
+    Parameters
+    ----------
+    projected : numpy.ndarray
+        ``(N, 2)`` projected catalog positions.
+    seed : int, optional
+        Seed for the noise.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(N, 2)`` positions with `FIT_NOISE_PIX` Gaussian noise on each axis.
+    """
+    rng = np.random.default_rng(seed + 1)
+    return (
+        projected
+        + _affine_offset(projected)
+        + rng.normal(0, FIT_NOISE_PIX, projected.shape)
+    )
+
+
+class TestFitOffsetPlane:
+    """The per-frame plane fitted to (CNN - projected) offsets of bright stars."""
+
+    def test_recovers_a_known_affine_offset(self):
+        """A linear offset field is recovered across the whole frame to < 0.05 px."""
+        projected = _fit_stars(40)
+        measured = _noisy_measurements(projected)
+
+        plane = _fit_offset_plane(projected, measured, FRAME_SHAPE)
+
+        height, width = FRAME_SHAPE
+        grid = np.array(
+            [[2.0, 2.0], [width - 2.0, 2.0], [2.0, height - 2.0], [150.0, 100.0]]
+        )
+        max_error = 0.05
+        assert np.abs(plane.offsets(grid) - _affine_offset(grid)).max() < max_error
+
+    def test_reports_the_fit_diagnostics(self):
+        """Centre offset, rms and star counts describe the fit."""
+        projected = _fit_stars(40)
+        measured = _noisy_measurements(projected)
+
+        plane = _fit_offset_plane(projected, measured, FRAME_SHAPE)
+
+        centre = _affine_offset(np.array([[150.0, 100.0]]))[0]
+        np.testing.assert_allclose(
+            [plane.coeffs_x[0], plane.coeffs_y[0]], centre, atol=0.05
+        )
+        assert plane.n_used + plane.n_clipped == len(projected)
+        # Radial rms of two independent axes with 0.05 px noise each.
+        assert plane.rms == pytest.approx(FIT_NOISE_PIX * np.sqrt(2), rel=0.3)
+
+    def test_one_gross_outlier_is_clipped(self):
+        """A star the CNN got badly wrong is clipped and does not tilt the plane."""
+        projected = _fit_stars(30)
+        measured = _noisy_measurements(projected)
+        measured[3] += [5.0, -5.0]
+
+        plane = _fit_offset_plane(projected, measured, FRAME_SHAPE)
+
+        assert plane.n_clipped == 1
+        assert plane.n_used == len(projected) - 1
+        grid = np.array([[2.0, 2.0], [297.0, 197.0]])
+        max_error = 0.1
+        assert np.abs(plane.offsets(grid) - _affine_offset(grid)).max() < max_error
+
+    def test_several_gross_outliers_are_all_clipped(self):
+        """Four stars 5 px off do not inflate the clip scale enough to hide."""
+        projected = _fit_stars(30)
+        measured = _noisy_measurements(projected)
+        outliers = [3, 8, 14, 21]
+        measured[outliers] += [5.0, 5.0]
+
+        plane = _fit_offset_plane(projected, measured, FRAME_SHAPE)
+
+        assert plane.n_clipped == len(outliers)
+        grid = np.array([[2.0, 2.0], [297.0, 197.0], [150.0, 100.0]])
+        max_error = 0.1
+        assert np.abs(plane.offsets(grid) - _affine_offset(grid)).max() < max_error
+
+    def test_an_exact_plane_clips_nothing(self):
+        """Residuals at round-off level give a zero scale: no star is clipped."""
+        projected = _fit_stars(30)
+        measured = projected + _affine_offset(projected)
+
+        plane = _fit_offset_plane(projected, measured, FRAME_SHAPE)
+
+        assert plane.n_clipped == 0
+        assert plane.n_used == len(projected)
+        round_off_pix = 1e-6
+        assert plane.rms < round_off_pix
+
+    @pytest.mark.parametrize(
+        "shift", [[6.0, 0.0], [0.0, 6.0]], ids=["x-only", "y-only"]
+    )
+    def test_an_outlier_on_one_axis_is_clipped(self, shift):
+        """A star that is off on either axis alone is clipped."""
+        projected = _fit_stars(30)
+        measured = _noisy_measurements(projected)
+        measured[3] += shift
+
+        plane = _fit_offset_plane(projected, measured, FRAME_SHAPE)
+
+        assert plane.n_clipped == 1
+
+    def test_rows_returned_exactly_at_the_input_are_excluded(self):
+        """A CNN result equal to its input is a failed fallback, not a measurement."""
+        projected = _fit_stars(40)
+        measured = _noisy_measurements(projected)
+        failed = np.arange(8)
+        measured[failed] = projected[failed]
+
+        plane = _fit_offset_plane(projected, measured, FRAME_SHAPE)
+
+        # Counting the failed rows would drag the fitted offset toward zero.
+        assert plane.n_used + plane.n_clipped == len(projected) - len(failed)
+        centre = _affine_offset(np.array([[150.0, 100.0]]))[0]
+        np.testing.assert_allclose(
+            [plane.coeffs_x[0], plane.coeffs_y[0]], centre, atol=0.05
+        )
+
+    def test_non_finite_rows_are_excluded(self):
+        """A NaN CNN result does not poison the fit."""
+        projected = _fit_stars(40)
+        measured = _noisy_measurements(projected)
+        measured[[0, 1]] = np.nan
+
+        plane = _fit_offset_plane(projected, measured, FRAME_SHAPE)
+
+        assert plane.n_used + plane.n_clipped == len(projected) - 2
+        assert np.isfinite(plane.coeffs_x).all()
+
+    def test_fewer_than_the_minimum_gives_no_plane(self):
+        """Eleven usable stars give no plane; twelve do."""
+        projected = _fit_stars(MIN_FIT_STARS)
+        measured = _noisy_measurements(projected)
+
+        assert _fit_offset_plane(projected[:-1], measured[:-1], FRAME_SHAPE) is None
+        assert _fit_offset_plane(projected, measured, FRAME_SHAPE) is not None
+
+    def test_minimum_applies_after_dropping_failed_rows(self):
+        """Rows excluded as failed do not count toward the minimum."""
+        projected = _fit_stars(MIN_FIT_STARS + 2)
+        measured = _noisy_measurements(projected)
+        measured[[0, 1, 2]] = projected[[0, 1, 2]]
+
+        assert _fit_offset_plane(projected, measured, FRAME_SHAPE) is None
+
+    def test_minimum_applies_after_clipping(self):
+        """A fit that clipping reduces below the minimum gives no plane."""
+        n_stars = 30
+        projected = _fit_stars(n_stars)
+        measured = _noisy_measurements(projected)
+        measured[0] += [8.0, 8.0]
+
+        plane = _fit_offset_plane(
+            projected, measured, FRAME_SHAPE, min_fit_stars=n_stars
+        )
+
+        assert plane is None
+
+
+N_CATALOG = 60
+N_CNN_CLASS = 10
+# Gaia G of catalog row i is 8 + i, so the ten brightest rows are G <= 17.
+G_CUT = 17.0
+PLANE_TOLERANCE_PIX = 0.15
+
+
+def _catalog_g(n=N_CATALOG):
+    """
+    Return Gaia G values that increase with row number, one magnitude apart.
+
+    Parameters
+    ----------
+    n : int, optional
+        Number of catalog rows. By default `N_CATALOG`.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(n,)`` magnitudes ``8, 9, 10, ...``.
+    """
+    return 8.0 + np.arange(n)
+
+
+def _measured(coords):
+    """
+    Return CNN-like positions: input plus the affine offset plus a small ripple.
+
+    Parameters
+    ----------
+    coords : numpy.ndarray
+        ``(N, 2)`` input pixel positions.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(N, 2)`` positions, a deterministic function of `coords`.
+    """
+    ripple = 0.05 * np.column_stack(
+        [np.sin(7.3 * coords[:, 0]), np.cos(5.1 * coords[:, 1])]
+    )
+    return coords + _affine_offset(coords) + ripple
+
+
+@pytest.fixture
+def cnn_calls(mocker):
+    """
+    Patch ``centroid_stars`` with `_measured` and record what it was given.
+
+    Parameters
+    ----------
+    mocker : pytest_mock.MockerFixture
+        The pytest-mock fixture used to patch ``centroid_stars``.
+
+    Returns
+    -------
+    list of numpy.ndarray
+        One ``(N, 2)`` coordinate array per call of the patched function.
+    """
+    calls = []
+
+    def fake(_data, coords, _cnn):
+        """
+        Stand in for ``centroid_stars``.
+
+        Parameters
+        ----------
+        _data : numpy.ndarray
+            The image data, ignored.
+        coords : numpy.ndarray
+            ``(N, 2)`` positions to centroid; a copy is appended to ``calls``.
+        _cnn : object
+            The CNN model, ignored.
+
+        Returns
+        -------
+        numpy.ndarray
+            ``_measured(coords)``.
+        """
+        calls.append(np.array(coords))
+        return _measured(coords)
+
+    mocker.patch("bandaid.photometry.centroid_stars", side_effect=fake)
+    return calls
+
+
+def _run_policy(projected, gaia_g, *, config=None, g_cut=G_CUT):
+    """
+    Run `centroid_with_catalog_model` on a blank frame of ``FRAME_SHAPE``.
+
+    Parameters
+    ----------
+    projected : numpy.ndarray
+        ``(N, 2)`` projected catalog positions.
+    gaia_g : numpy.ndarray or None
+        Gaia G of each row.
+    config : `~bandaid.config.CentroidConfig` or None, optional
+        Policy settings. By default None (the defaults).
+    g_cut : float or None, optional
+        The CNN-class magnitude cut. By default `G_CUT`.
+
+    Returns
+    -------
+    `~bandaid.photometry.CentroidResult`
+        The policy result.
+    """
+    return centroid_with_catalog_model(
+        np.zeros(FRAME_SHAPE),
+        projected,
+        None,
+        gaia_g=gaia_g,
+        g_cut=g_cut,
+        config=config,
+    )
+
+
+@pytest.mark.usefixtures("cnn_calls")
+class TestCentroidWithCatalogModel:
+    """The batch-fixed CNN class keeps its centroid; the rest take the plane."""
+
+    def test_without_gaia_g_every_star_goes_to_the_cnn(self, cnn_calls):
+        """With no magnitudes there is no policy: one CNN call on every star."""
+        projected = _fit_stars(N_CATALOG)
+
+        result = centroid_with_catalog_model(np.zeros(FRAME_SHAPE), projected, None)
+
+        assert len(cnn_calls) == 1
+        np.testing.assert_array_equal(cnn_calls[0], projected)
+        np.testing.assert_array_equal(result.coords, _measured(projected))
+        assert (result.method == "cnn").all()
+        assert not result.active
+
+    def test_without_a_cut_every_star_goes_to_the_cnn(self, cnn_calls):
+        """Magnitudes without a batch cut give the plain all-CNN result."""
+        projected = _fit_stars(N_CATALOG)
+
+        result = _run_policy(projected, _catalog_g(), g_cut=None)
+
+        assert len(cnn_calls) == 1
+        assert (result.method == "cnn").all()
+        assert not result.active
+
+    def test_switched_off_every_star_goes_to_the_cnn(self, cnn_calls):
+        """``model_faint_positions=False`` gives the plain all-CNN result."""
+        projected = _fit_stars(N_CATALOG)
+
+        result = _run_policy(
+            projected, _catalog_g(), config=CentroidConfig(model_faint_positions=False)
+        )
+
+        assert len(cnn_calls) == 1
+        np.testing.assert_array_equal(result.coords, _measured(projected))
+        assert not result.active
+
+    def test_class_stars_keep_their_cnn_centroid(self):
+        """A star at or brighter than the cut keeps exactly its CNN position."""
+        projected = _fit_stars(N_CATALOG)
+
+        result = _run_policy(projected, _catalog_g())
+
+        cnn_class = slice(0, N_CNN_CLASS)
+        np.testing.assert_array_equal(
+            result.coords[cnn_class], _measured(projected[cnn_class])
+        )
+        assert (result.method[cnn_class] == "cnn").all()
+
+    def test_a_class_star_the_cnn_could_not_measure_is_modelled(self, mocker):
+        """A class star whose CNN result is its input is output at the plane."""
+        projected = _fit_stars(N_CATALOG)
+        failed = 2
+
+        def fake(_data, coords, _cnn):
+            out = _measured(coords)
+            out[failed] = coords[failed]
+            return out
+
+        mocker.patch("bandaid.photometry.centroid_stars", side_effect=fake)
+
+        result = _run_policy(projected, _catalog_g())
+
+        assert result.method[failed] == "plane"
+        np.testing.assert_allclose(
+            result.coords[failed],
+            projected[failed] + result.plane.offsets(projected[failed : failed + 1])[0],
+        )
+        assert (result.method[:failed] == "cnn").all()
+
+    def test_a_star_at_the_cut_is_in_the_class_and_one_fainter_is_not(self):
+        """The class is G <= cut: row 9 (G = 17) is in, row 10 (G = 18) is out."""
+        projected = _fit_stars(N_CATALOG)
+
+        result = _run_policy(projected, _catalog_g())
+
+        assert result.method[N_CNN_CLASS - 1] == "cnn"
+        assert result.method[N_CNN_CLASS] == "plane"
+
+    def test_other_stars_take_the_projected_position_plus_the_plane(self):
+        """Stars outside the class sit on projected plus the fitted plane."""
+        projected = _fit_stars(N_CATALOG)
+
+        result = _run_policy(projected, _catalog_g())
+
+        rest = slice(N_CNN_CLASS, None)
+        expected = projected[rest] + _affine_offset(projected[rest])
+        assert np.abs(result.coords[rest] - expected).max() < PLANE_TOLERANCE_PIX
+        assert (result.method[rest] == "plane").all()
+        assert result.plane is not None
+        assert not result.fallback
+        assert result.active
+
+    def test_the_cnn_sees_only_the_class_and_the_fit_set(self, cnn_calls):
+        """The 30 brightest are centroided once; every fainter star never is."""
+        projected = _fit_stars(N_CATALOG)
+
+        _run_policy(projected, _catalog_g())
+
+        assert len(cnn_calls) == 1
+        fit_n_stars = CentroidConfig().fit_n_stars
+        np.testing.assert_array_equal(cnn_calls[0], projected[:fit_n_stars])
+
+    def test_fit_stars_outside_the_class_are_output_at_the_plane(self):
+        """A fit-set star that is not CNN-class is measured but not output."""
+        projected = _fit_stars(N_CATALOG)
+
+        result = _run_policy(projected, _catalog_g())
+
+        fit_only = slice(N_CNN_CLASS, CentroidConfig().fit_n_stars)
+        measured = _measured(projected[fit_only])
+        assert not np.allclose(result.coords[fit_only], measured, atol=1e-6)
+        assert (result.method[fit_only] == "plane").all()
+
+    def test_class_larger_than_the_fit_set_is_still_measured(self, cnn_calls):
+        """Class stars outside the fit set are centroided too, but do not fit."""
+        projected = _fit_stars(N_CATALOG)
+        config = CentroidConfig(fit_n_stars=12, min_fit_stars=12)
+        big_class_cut = 8.0 + 19  # twenty class stars
+
+        result = _run_policy(
+            projected, _catalog_g(), config=config, g_cut=big_class_cut
+        )
+
+        n_class = 20
+        np.testing.assert_array_equal(cnn_calls[0], projected[:n_class])
+        np.testing.assert_array_equal(
+            result.coords[:n_class], _measured(projected[:n_class])
+        )
+        assert (result.method[:n_class] == "cnn").all()
+        assert (result.method[n_class:] == "plane").all()
+
+    def test_a_star_without_gaia_g_is_in_the_class_and_not_in_the_fit(self, cnn_calls):
+        """A forced target has no G: it keeps its CNN centroid and never fits."""
+        projected = _fit_stars(N_CATALOG + 1)
+        gaia_g = np.append(_catalog_g(), np.nan)
+
+        result = _run_policy(projected, gaia_g)
+
+        assert result.method[-1] == "cnn"
+        np.testing.assert_array_equal(result.coords[-1], _measured(projected[-1:])[0])
+        fit_n_stars = CentroidConfig().fit_n_stars
+        np.testing.assert_array_equal(
+            cnn_calls[0], projected[[*range(fit_n_stars), N_CATALOG]]
+        )
+
+    def test_the_fit_set_is_the_brightest_whatever_the_row_order(self, cnn_calls):
+        """The fit set is chosen by G, not by position in the catalog."""
+        projected = _fit_stars(N_CATALOG)
+        order = np.random.default_rng(SEED).permutation(N_CATALOG)
+
+        _run_policy(projected[order], _catalog_g()[order])
+
+        fit_n_stars = CentroidConfig().fit_n_stars
+        np.testing.assert_array_equal(
+            np.sort(cnn_calls[0][:, 0]), np.sort(projected[:fit_n_stars, 0])
+        )
+
+    def test_row_order_and_shape_are_preserved(self):
+        """The result is row-aligned with the input."""
+        projected = _fit_stars(N_CATALOG)
+
+        result = _run_policy(projected, _catalog_g())
+
+        assert result.coords.shape == projected.shape
+        assert result.method.shape == (N_CATALOG,)
+        assert result.expected.shape == projected.shape
+
+    def test_expected_positions_are_projected_plus_the_plane(self):
+        """The drift reference is the plane position for every row."""
+        projected = _fit_stars(N_CATALOG)
+
+        result = _run_policy(projected, _catalog_g())
+
+        np.testing.assert_allclose(
+            result.expected, projected + result.plane.offsets(projected)
+        )
+
+    def test_too_few_fit_stars_gives_the_all_cnn_frame(self):
+        """Under 12 fit stars the whole frame is centroided by the CNN."""
+        n_stars = 11
+        projected = _fit_stars(n_stars)
+
+        result = _run_policy(projected, _catalog_g(n_stars), g_cut=8.0 + 4)
+
+        np.testing.assert_array_equal(result.coords, _measured(projected))
+        assert result.plane is None
+        assert result.fallback
+        n_class = 5
+        assert (result.method[:n_class] == "cnn").all()
+        assert (result.method[n_class:] == "fallback_cnn").all()
+        np.testing.assert_array_equal(result.expected, projected)
+
+    def test_an_infinite_cut_keeps_every_star_on_its_cnn_centroid(self):
+        """A sparse field has no finite cut: every star is CNN-class."""
+        projected = _fit_stars(N_CATALOG)
+
+        result = _run_policy(projected, _catalog_g(), g_cut=np.inf)
+
+        np.testing.assert_array_equal(result.coords, _measured(projected))
+        assert (result.method == "cnn").all()
+
+    def test_the_cnn_is_never_called_with_an_empty_array(self, cnn_calls):
+        """A frame whose stars are all fit-set stars still calls the CNN once."""
+        projected = _fit_stars(N_CATALOG)
+
+        _run_policy(projected, _catalog_g(), g_cut=-np.inf)
+
+        assert all(len(call) for call in cnn_calls)
 
 
 def test_centroid_stars_delegates_to_ballet(mocker):

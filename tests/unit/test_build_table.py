@@ -193,6 +193,60 @@ class TestBuildPhotometryTable:
             [False, False, True],
         )
 
+    def test_centroid_method_column_records_how_each_star_was_placed(self, mocker):
+        """The table carries the per-row ``centroid_method`` the image recorded."""
+        n_stars = 3
+        mocker.patch(
+            "bandaid.photometry.measure_photometry",
+            side_effect=_fake_phot_factory(n_stars),
+        )
+        centroid_coords = np.array([[245.0, 250.0], [255.0, 260.0], [250.0, 240.0]])
+        img = _make_image_data(_make_tan_wcs(), centroid_coords, None)
+        img.centroid_method = np.array(["cnn", "plane", "fallback_cnn"])
+
+        table = build_photometry_table(img, mask=None)
+
+        assert list(table["centroid_method"]) == ["cnn", "plane", "fallback_cnn"]
+
+    def test_centroid_method_defaults_to_cnn(self, mocker):
+        """An image built without a recorded method was centroided by the CNN."""
+        n_stars = 3
+        mocker.patch(
+            "bandaid.photometry.measure_photometry",
+            side_effect=_fake_phot_factory(n_stars),
+        )
+        centroid_coords = np.array([[245.0, 250.0], [255.0, 260.0], [250.0, 240.0]])
+        img = _make_image_data(_make_tan_wcs(), centroid_coords, None)
+
+        table = build_photometry_table(img, mask=None)
+
+        assert list(table["centroid_method"]) == ["cnn"] * n_stars
+
+    def test_centroid_drift_is_measured_from_the_expected_position(self, mocker):
+        """With a plane, drift is relative to projected plus plane, not projected."""
+        n_stars = 3
+        mocker.patch(
+            "bandaid.photometry.measure_photometry",
+            side_effect=_fake_phot_factory(n_stars),
+        )
+        aligned_coords = np.full((n_stars, 2), 250.0)
+        # A plane offset of 5 px puts the expected position beyond the 2.3 px
+        # threshold from the projected one.
+        expected = aligned_coords + np.array([5.0, 0.0])
+        centroid_coords = expected + np.array([[0.5, 0.0], [5.0, 0.0], [0.0, 0.0]])
+        img = _make_image_data(
+            _make_tan_wcs(),
+            centroid_coords,
+            input_photometry_coords=None,
+            aligned_coords=aligned_coords,
+        )
+        img.centroid_expected = expected
+        img.centroid_method = np.array(["cnn", "cnn", "plane"])
+
+        table = build_photometry_table(img, mask=None)
+
+        np.testing.assert_array_equal(table["centroid_drift"], [False, True, False])
+
     # --- Regression tests for issue #57: ``time`` is the mid-exposure JD. ---
 
     def _time_column(self, mocker, metadata):

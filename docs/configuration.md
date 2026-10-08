@@ -43,18 +43,23 @@ The knobs fall into three groups by how safe they are to change.
 
 These are ordinary analysis choices and are safe to set for any run.
 
-| Sub-config         | Field                    | Default  | Meaning                                                                     |
-| ------------------ | ------------------------ | -------- | --------------------------------------------------------------------------- |
-| `apertures`        | `radii`                  | `(1.0,)` | Aperture radii, in units of FWHM                                            |
-| `apertures`        | `gap`                    | `4.0`    | FWHM gap between largest aperture and annulus                               |
-| `apertures`        | `annulus_width`          | `3.0`    | Radial width of the background annulus, in FWHM                             |
-| `source_selection` | `gaia_mag_limit`         | `15.0`   | Magnitude limit for the photometry targets                                  |
-| `source_selection` | `contaminant_mag_offset` | `3.0`    | Contaminant-catalog depth below `gaia_mag_limit`                            |
-| `source_selection` | `min_snr`                | `2.0`    | Minimum SNR a star must have to reach the output                            |
-| `source_selection` | `gaia_row_limit`         | `10000`  | Base maximum rows the Gaia query may return (scaled with cone area)         |
-| `drift`            | `drift_tolerance_fwhm`   | `1.0`    | Max centroid drift, in FWHM                                                 |
-| `drift`            | `drift_cap_pix`          | `4.0`    | Absolute pixel cap on centroid drift                                        |
-| (top level)        | `edge_margin_px`         | `10.0`   | Catalog stars projected within this many pixels of an edge are not measured |
+| Sub-config         | Field                    | Default  | Meaning                                                                            |
+| ------------------ | ------------------------ | -------- | ---------------------------------------------------------------------------------- |
+| `apertures`        | `radii`                  | `(1.0,)` | Aperture radii, in units of FWHM                                                   |
+| `apertures`        | `gap`                    | `4.0`    | FWHM gap between largest aperture and annulus                                      |
+| `apertures`        | `annulus_width`          | `3.0`    | Radial width of the background annulus, in FWHM                                    |
+| `source_selection` | `gaia_mag_limit`         | `15.0`   | Magnitude limit for the photometry targets                                         |
+| `source_selection` | `contaminant_mag_offset` | `3.0`    | Contaminant-catalog depth below `gaia_mag_limit`                                   |
+| `source_selection` | `min_snr`                | `2.0`    | Minimum SNR a star must have to reach the output                                   |
+| `source_selection` | `gaia_row_limit`         | `10000`  | Base maximum rows the Gaia query may return (scaled with cone area)                |
+| `drift`            | `drift_tolerance_fwhm`   | `1.0`    | Max centroid drift, in FWHM                                                        |
+| `drift`            | `drift_cap_pix`          | `4.0`    | Absolute pixel cap on centroid drift                                               |
+| (top level)        | `edge_margin_px`         | `10.0`   | Catalog stars projected within this many pixels of an edge are not measured        |
+| `centroid`         | `model_faint_positions`  | `True`   | Faint stars take the projected position plus a per-frame plane, not a CNN centroid |
+| `centroid`         | `cnn_class_size`         | `30`     | Number of brightest catalog targets that keep their CNN centroid                   |
+| `centroid`         | `fit_n_stars`            | `30`     | Brightest stars per frame whose CNN centroids define the plane                     |
+| `centroid`         | `min_fit_stars`          | `12`     | Fewest stars that must survive the clip for a frame to use a plane                 |
+| `centroid`         | `clip_sigma`             | `3.0`    | Clip, in robust standard deviations, applied once when fitting the plane           |
 
 ### Tier 2 — Instrument / per-telescope (advanced)
 
@@ -167,13 +172,25 @@ inside or outside it, is recorded per frame in the QA manifest column
 `n_edge_dropped`. A margin of half the smaller frame side or more is rejected
 when the batch is prepared.
 
+### Centroid policy
+
+By default only the brightest catalog stars keep their CNN centroid; every other
+star is output at its projected position plus a per-frame plane fitted to the
+brightest stars. See [Measured versus modelled positions](measured_vs_modelled_positions.md)
+for the rule, the magnitude cut `cnn_class_size` sets, and the output columns that
+record the choice. `model_faint_positions=False` switches the policy off and centroids every
+star with the CNN.
+
 ## Validation
 
 Construction enforces the invariants the pipeline relies on, for example:
 
 - aperture radii, `gap`, and `annulus_width` must all be positive, and
 - the drift cuts and `gaia_mag_limit` must be finite, and
-- `edge_margin_px` must be positive and finite.
+- `edge_margin_px` must be positive and finite, and
+- the centroid policy's `cnn_class_size` must be at least 1, `min_fit_stars` at
+    least 3, `fit_n_stars` at least `min_fit_stars`, and `clip_sigma` positive and
+    finite.
 
 Several values are **derived** rather than set directly, so the invariants the
 pipeline cares about hold by construction instead of needing a validator:

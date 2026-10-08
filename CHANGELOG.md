@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `CentroidConfig` (on `PhotometryConfig.centroid`) holds the settings of the
+    measured-versus-modelled centroid policy, on by default through
+    `model_faint_positions`. See `docs/measured_vs_modelled_positions.md` (#131, #106, #147).
+- The eloy table gets a per-row `centroid_method` column (`cnn`, `plane` or
+    `fallback_cnn`) and the QA manifest gains `g_cut`, `n_cnn_class` and the
+    `plane_*` columns (#131, #147).
+- A documentation page on measured versus modelled star positions, including the
+    low-SNR bias curve of the CNN centroid (#130, #147).
 - `InstrumentProfile.wcs_pointing_tolerance` (degrees, default none): the largest
     separation allowed between a solved frame center and its header pointing,
     instead of one field radius.
@@ -121,6 +129,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Only the brightest catalog stars keep their CNN centroid; the rest are output at
+    their projected position plus a per-frame fitted plane, which moves faint-star
+    positions by about 1 to 1.5 px and tightens their light curves. Set
+    `CentroidConfig(model_faint_positions=False)` for the previous behavior
+    (#131, #106, #147).
+- `centroid_drift` is now measured from the plane position and only for
+    CNN-measured stars; earlier `n_centroid_drift` counts are not comparable
+    (#131, #147).
 - Breaking for `.star` and table output: catalog stars projected within
     `PhotometryConfig.edge_margin_px` (default `10.0` px) of a frame edge, or off
     the frame, are no longer measured, because the centroiding CNN's fill-padded

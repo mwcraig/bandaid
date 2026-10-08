@@ -18,18 +18,32 @@ To make these cases visible, `build_photometry_table` records a per-star boolean
 ## How the flag is computed
 
 The drift is the pixel-space displacement between the measured centroid and the
-aligned position:
+position it is expected at:
 
 ```python
-drift = np.linalg.norm(centroid_coords - aligned_coords, axis=-1)
+drift = np.linalg.norm(centroid_coords - expected_coords, axis=-1)
 ```
 
-Both arrays are already in pixel space, so no WCS round-trip is needed and the
-metric isolates centroid wander from WCS quality. A star is flagged when
+The expected position is the aligned position plus the frame's fitted offset
+plane (see [Measured versus modelled positions](measured_vs_modelled_positions.md)),
+which is how far the CNN's centroids sit from the projected positions on that
+frame. With the centroid policy switched off, or on a frame with no plane, the
+expected position is the aligned position itself. Both arrays are already in
+pixel space, so no WCS round-trip is needed and the metric isolates centroid
+wander from WCS quality. A star is flagged when
 
 ```python
 drift > min(drift_tolerance * fwhm, drift_cap)
 ```
+
+Only stars whose position was measured by the CNN can drift. A star output at
+the plane position (`centroid_method` of `plane`) sits at its expected position by
+construction and is never flagged, so the flag counts how many of the CNN-measured
+stars wandered from the plane, not how many faint stars the plane moved. Before
+the centroid policy the flag was measured from the bare aligned position, so a
+frame's count included every faint star the CNN placed off its projected position
+and the smooth offset between the two; counts from runs made before the policy
+are not comparable.
 
 The FWHM-relative term lets the allowance scale with seeing, while the absolute
 pixel cap keeps a pathologically large FWHM from licensing an enormous shift.

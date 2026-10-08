@@ -5,6 +5,7 @@ nav:
   - Configuration: configuration.md
   - Instrument profiles: instrument_profiles.md
   - Understanding the output: outputs.md
+  - Measured versus modelled positions: measured_vs_modelled_positions.md
   - Centroid-drift check: centroid_drift_check.md
   - Training the Ballet centroider: training_the_ballet_centroider.md
   - Troubleshooting: troubleshooting.md

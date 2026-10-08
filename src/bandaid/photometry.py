@@ -28,7 +28,8 @@ from astropy.coordinates import (
     search_around_sky,
 )
 from astropy.io import fits
-from astropy.stats import SigmaClip
+from astropy.modeling import fitting, models
+from astropy.stats import SigmaClip, mad_std, sigma_clip
 from astropy.table import Table
 from astropy.time import Time
 from astropy.utils import iers
@@ -45,6 +46,7 @@ from twirl import compute_wcs
 
 from .config import (
     ApertureConfig,
+    CentroidConfig,
     DriftConfig,
     InstrumentProfile,
     PhotometryConfig,
@@ -122,6 +124,9 @@ MIN_STARS_FOR_PAIRS = 2
 # leaf-function signatures and any existing callers continue to read them. The
 # config object is the single source of truth for these values.
 _DEFAULT_APERTURES = ApertureConfig()
+_DEFAULT_CENTROID = CentroidConfig()
+# Residuals with a robust scale below this, in pixels, are round-off, not noise.
+_MIN_CLIP_SCALE_PIX = 1e-6
 _DEFAULT_DRIFT = DriftConfig()
 _DEFAULT_INSTRUMENT = InstrumentProfile()
 _DEFAULT_SOURCE_SELECTION = SourceSelectionConfig()
@@ -1474,6 +1479,13 @@ class ImageData:
     solve_offset_deg: float | None = None
     # Catalog stars removed by the edge margin (see `_drop_edge_catalog_stars`).
     n_edge_dropped: int = 0
+    # How each centroid row was obtained (None means every row came from the
+    # CNN), the position a CNN centroid is expected at for the drift flag (None
+    # means the aligned position) and the frame's offset-plane summary for the
+    # QA manifest (None when the centroid policy did not run).
+    centroid_method: np.ndarray | None = None
+    centroid_expected: np.ndarray | None = None
+    centroid_model: dict | None = None
     # Populated lazily by the first `resolve_time_airmass` call for this frame
     # and reused by the later calls (one per RGB channel) that share this same
     # `ImageData`, so the obs_time parse and airmass derivation run once per
@@ -1967,6 +1979,406 @@ def centroid_stars(calibrated_data, aligned_coords, cnn):
         Centroided star coordinates in pixel space.
     """
     return centroid.ballet_centroid(calibrated_data, aligned_coords, cnn)
+
+
+def _normalised_xy(xy, shape):
+    """
+    Scale pixel coordinates so each runs from -1 to 1 across the frame.
+
+    Parameters
+    ----------
+    xy : numpy.ndarray
+        ``(N, 2)`` pixel coordinates.
+    shape : tuple of int
+        ``(height, width)`` of the frame.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(2, N)`` array: ``(x - w/2) / (w/2)`` then ``(y - h/2) / (h/2)``.
+    """
+    height, width = shape
+    return np.array(
+        [
+            (xy[:, 0] - width / 2.0) / (width / 2.0),
+            (xy[:, 1] - height / 2.0) / (height / 2.0),
+        ]
+    )
+
+
+@dataclass(frozen=True)
+class OffsetPlane:
+    """
+    A frame's fitted offset from projected catalog positions to CNN centroids.
+
+    Attributes
+    ----------
+    coeffs_x : numpy.ndarray
+        ``(3,)`` coefficients of the x offset: its value at the frame centre,
+        then its change from the centre to the right-hand and top edges (the
+        coordinates are scaled to run from -1 to 1 across the frame).
+    coeffs_y : numpy.ndarray
+        ``(3,)`` coefficients of the y offset, in the same form.
+    shape : tuple of int
+        ``(height, width)`` of the frame the plane was fitted on.
+    n_used : int
+        Number of stars that defined the fit after clipping.
+    n_clipped : int
+        Number of stars removed by the clip.
+    rms : float
+        Radial rms of the fit residuals over the stars used, in pixels.
+    """
+
+    coeffs_x: np.ndarray
+    coeffs_y: np.ndarray
+    shape: tuple
+    n_used: int
+    n_clipped: int
+    rms: float
+
+    def offsets(self, xy):
+        """
+        Evaluate the plane at the given pixel positions.
+
+        Parameters
+        ----------
+        xy : numpy.ndarray
+            ``(N, 2)`` pixel coordinates.
+
+        Returns
+        -------
+        numpy.ndarray
+            ``(N, 2)`` offsets to add to `xy`.
+        """
+        nx, ny = _normalised_xy(np.asarray(xy, dtype=float), self.shape)
+        return np.column_stack(
+            [
+                self.coeffs_x[0] + self.coeffs_x[1] * nx + self.coeffs_x[2] * ny,
+                self.coeffs_y[0] + self.coeffs_y[1] * nx + self.coeffs_y[2] * ny,
+            ]
+        )
+
+
+def _fit_plane_models(nx, ny, delta):
+    """
+    Fit the x and y offsets as a two-model first-order polynomial set.
+
+    Parameters
+    ----------
+    nx : numpy.ndarray
+        ``(N,)`` frame-normalised x coordinates of the stars.
+    ny : numpy.ndarray
+        ``(N,)`` frame-normalised y coordinates of the stars.
+    delta : numpy.ndarray
+        ``(2, N)`` CNN-minus-projected offsets, x row then y row.
+
+    Returns
+    -------
+    fitted : `~astropy.modeling.polynomial.Polynomial2D`
+        The fitted two-model set.
+    resid : numpy.ndarray
+        ``(2, N)`` residuals of the fit.
+    """
+    fitted = fitting.LinearLSQFitter()(
+        models.Polynomial2D(degree=1, n_models=2), nx, ny, delta
+    )
+    # A model set evaluates one input row per model.
+    return fitted, delta - fitted(np.tile(nx, (2, 1)), np.tile(ny, (2, 1)))
+
+
+def _robust_scale(values, axis=None):
+    """
+    Return the robust standard deviation, or infinity where it is round-off.
+
+    Parameters
+    ----------
+    values : numpy.ndarray
+        Residuals to measure.
+    axis : int or None, optional
+        Axis along which to measure. By default None (all values).
+
+    Returns
+    -------
+    float or numpy.ndarray
+        1.4826 times the median absolute deviation, replaced by infinity where
+        it is below `_MIN_CLIP_SCALE_PIX` so that nothing is clipped there.
+    """
+    scale = mad_std(values, axis=axis)
+    return np.where(scale > _MIN_CLIP_SCALE_PIX, scale, np.inf)
+
+
+def _fit_offset_plane(
+    projected,
+    measured,
+    shape,
+    *,
+    min_fit_stars=_DEFAULT_CENTROID.min_fit_stars,
+    clip_sigma=_DEFAULT_CENTROID.clip_sigma,
+):
+    """
+    Fit the per-frame plane of CNN-minus-projected offsets.
+
+    Parameters
+    ----------
+    projected : numpy.ndarray
+        ``(N, 2)`` WCS-projected catalog positions of the fit stars.
+    measured : numpy.ndarray
+        ``(N, 2)`` CNN centroids of the same stars.
+    shape : tuple of int
+        ``(height, width)`` of the frame.
+    min_fit_stars : int, optional
+        Fewest stars that may define the fit, before and after clipping.
+    clip_sigma : float, optional
+        Clipping threshold, in robust standard deviations (1.4826 times the
+        median absolute deviation) of the residuals about their median.
+
+    Returns
+    -------
+    OffsetPlane or None
+        The fitted plane, or None when fewer than `min_fit_stars` stars were
+        usable or survived the clip.
+
+    Notes
+    -----
+    The x and y offsets are fitted together as a two-model set of first-order
+    `~astropy.modeling.polynomial.Polynomial2D` by unweighted linear least
+    squares, in coordinates scaled to run from -1 to 1 across the frame. Stars
+    whose CNN result is not finite, or equals the input position exactly (the
+    CNN's fallback when a cutout is unusable), are not measurements and are
+    left out. The fit is then clipped once: a star is dropped if either axis's
+    residual lies more than `clip_sigma` robust standard deviations from that
+    axis's median residual, and the plane is refitted on the rest. A robust
+    scale is used because with the plain standard deviation a few gross
+    outliers inflate it enough to hide themselves. An axis whose residuals are
+    at round-off level (a robust scale below `_MIN_CLIP_SCALE_PIX`) clips
+    nothing.
+    """
+    projected = np.asarray(projected, dtype=float)
+    measured = np.asarray(measured, dtype=float)
+    usable = np.isfinite(measured).all(axis=1) & (measured != projected).any(axis=1)
+    if usable.sum() < min_fit_stars:
+        return None
+    nx, ny = _normalised_xy(projected[usable], shape)
+    delta = (measured[usable] - projected[usable]).T
+    _, resid = _fit_plane_models(nx, ny, delta)
+    clipped = sigma_clip(
+        resid,
+        sigma=clip_sigma,
+        maxiters=1,
+        cenfunc="median",
+        stdfunc=_robust_scale,
+        axis=1,
+    )
+    keep = ~np.ma.getmaskarray(clipped).any(axis=0)
+    if keep.sum() < min_fit_stars:
+        return None
+    fitted, resid = _fit_plane_models(nx[keep], ny[keep], delta[:, keep])
+    return OffsetPlane(
+        coeffs_x=np.array([fitted.c0_0[0], fitted.c1_0[0], fitted.c0_1[0]]),
+        coeffs_y=np.array([fitted.c0_0[1], fitted.c1_0[1], fitted.c0_1[1]]),
+        shape=tuple(shape),
+        n_used=int(keep.sum()),
+        n_clipped=int(len(keep) - keep.sum()),
+        rms=float(np.sqrt((resid**2).sum(axis=0).mean())),
+    )
+
+
+@dataclass(frozen=True)
+class CentroidResult:
+    """
+    Positions for one frame plus how each was obtained.
+
+    Attributes
+    ----------
+    coords : numpy.ndarray
+        ``(N, 2)`` pixel positions, row-aligned with the input coordinates.
+    method : numpy.ndarray
+        ``(N,)`` array of strings naming how each row's position was obtained:
+        ``"cnn"`` (the CNN centroid of a CNN-class star, or of any star when the
+        policy did not run), ``"plane"`` (projected position plus the frame's
+        offset plane, for a star outside the CNN class or a class star the CNN
+        could not measure) or ``"fallback_cnn"`` (a star outside the CNN class that
+        took its CNN centroid because the frame had no plane). On a frame without
+        a plane a class star the CNN could not measure keeps the ``"cnn"`` label at
+        its projected position, which is then the modelled position as well.
+    expected : numpy.ndarray
+        ``(N, 2)`` positions a CNN centroid is expected at: the projected
+        position plus the offset plane, or the projected position alone when the
+        frame has no plane or the policy did not run.
+    plane : OffsetPlane or None
+        The offset plane fitted for this frame, or None when there was none.
+    fallback : bool
+        Whether the policy ran but the frame had no plane, so it was centroided
+        entirely by the CNN.
+    active : bool
+        Whether the policy ran for this frame (it needs Gaia G and a batch cut,
+        and is switchable in the config).
+    """
+
+    coords: np.ndarray
+    method: np.ndarray
+    expected: np.ndarray
+    plane: OffsetPlane | None = None
+    fallback: bool = False
+    active: bool = False
+
+
+def centroid_with_catalog_model(
+    calibrated_data, aligned_coords, cnn, *, gaia_g=None, g_cut=None, config=None
+):
+    """
+    Centroid stars, using the modelled-position plane for those outside the CNN class.
+
+    Parameters
+    ----------
+    calibrated_data : numpy.ndarray
+        Calibrated image data.
+    aligned_coords : numpy.ndarray
+        ``(N, 2)`` WCS-projected catalog pixel coordinates.
+    cnn : object
+        Centroiding CNN model, as for `centroid_stars`.
+    gaia_g : numpy.ndarray or None, optional
+        Gaia G magnitude of each row, ``(N,)``, NaN where a row has none (a
+        forced target). When None the policy does not run and every star is
+        sent to the CNN.
+    g_cut : float or None, optional
+        The batch's CNN-class magnitude cut: a star with ``G <= g_cut`` is
+        CNN-class. When None the policy does not run.
+    config : `~bandaid.config.CentroidConfig` or None, optional
+        Policy settings; None uses the defaults.
+
+    Returns
+    -------
+    CentroidResult
+        The positions, row-aligned with `aligned_coords`, and how each was
+        obtained.
+
+    Notes
+    -----
+    A star is CNN-class when its Gaia G is at or brighter than `g_cut`, or it
+    has no G (a forced target). The class is decided from the catalog alone, so
+    it is the same on every frame of a batch. A CNN-class star keeps its CNN
+    centroid, unless the CNN returned its input position exactly (its fallback
+    for an unusable cutout), in which case the star is output at the plane
+    position like the stars outside the class.
+
+    The offset plane is fitted to the CNN centroids of the
+    ``config.fit_n_stars`` brightest stars with a G on this frame, whether or
+    not they are CNN-class (see `_fit_offset_plane`). A fit star outside the
+    class is centroided only to define the plane and is output at the plane
+    position, as is every other star outside the class. The CNN is called once,
+    through `centroid_stars`, on the class and the fit set together, and never
+    with an empty array.
+
+    A frame whose fit leaves fewer than ``config.min_fit_stars`` stars has no
+    plane: every star is then centroided by the CNN, and the result records
+    the fallback.
+    """
+    config = config or _DEFAULT_CENTROID
+    projected = np.asarray(aligned_coords, dtype=float)
+    if gaia_g is None or g_cut is None or not config.model_faint_positions:
+        coords = centroid_stars(calibrated_data, aligned_coords, cnn)
+        return CentroidResult(
+            coords=coords,
+            method=np.full(len(coords), "cnn"),
+            expected=projected,
+        )
+
+    gaia_g = np.asarray(gaia_g, dtype=float)
+    # `nan > g_cut` is False, so a row without a G lands in the class.
+    cnn_class = ~(gaia_g > g_cut)
+    with_g = np.flatnonzero(np.isfinite(gaia_g))
+    fit_rows = with_g[np.argsort(gaia_g[with_g], kind="stable")[: config.fit_n_stars]]
+    fit_mask = np.zeros(len(projected), dtype=bool)
+    fit_mask[fit_rows] = True
+
+    measured_rows = cnn_class | fit_mask
+    measured = np.full(projected.shape, np.nan)
+    measured[measured_rows] = centroid_stars(
+        calibrated_data, projected[measured_rows], cnn
+    )
+    plane = _fit_offset_plane(
+        projected[fit_rows],
+        measured[fit_rows],
+        calibrated_data.shape[:2],
+        min_fit_stars=config.min_fit_stars,
+        clip_sigma=config.clip_sigma,
+    )
+
+    coords = projected.copy()
+    if plane is None:
+        coords[measured_rows] = measured[measured_rows]
+        rest = ~measured_rows
+        if rest.any():
+            coords[rest] = centroid_stars(calibrated_data, projected[rest], cnn)
+        method = np.where(cnn_class, "cnn", "fallback_cnn")
+        expected = projected
+    else:
+        expected = projected + plane.offsets(projected)
+        coords = expected.copy()
+        # A CNN result equal to its input is the network's unusable-cutout
+        # fallback, not a measurement: such a star is modelled like the rest.
+        unmeasured = (measured == projected).all(axis=1)
+        keeps_cnn = cnn_class & ~unmeasured
+        coords[keeps_cnn] = measured[keeps_cnn]
+        method = np.where(keeps_cnn, "cnn", "plane")
+    return CentroidResult(
+        coords=coords,
+        method=method,
+        expected=expected,
+        plane=plane,
+        fallback=plane is None,
+        active=True,
+    )
+
+
+def _centroid_model_summary(result, g_cut):
+    """
+    Summarise a frame's centroid policy and offset plane for the QA manifest.
+
+    Parameters
+    ----------
+    result : CentroidResult
+        The frame's `centroid_with_catalog_model` result.
+    g_cut : float or None
+        The batch's CNN-class magnitude cut.
+
+    Returns
+    -------
+    dict or None
+        None when the policy did not run. Otherwise the cut, the number of
+        CNN-class stars, whether the no-plane fallback fired, and the plane's
+        star counts, rms, centre offset and slopes (None where there is no
+        plane). The slopes are the change in offset from the frame centre to
+        the right-hand (``slope_x``) and top (``slope_y``) edges, in pixels.
+    """
+    if not result.active:
+        return None
+    plane = result.plane
+    summary = {
+        "g_cut": g_cut,
+        "n_cnn_class": int(np.sum(result.method == "cnn")),
+        "plane_fallback": result.fallback,
+        "plane_n_used": 0 if plane is None else plane.n_used,
+        "plane_n_clipped": 0 if plane is None else plane.n_clipped,
+    }
+    names = (
+        "plane_rms",
+        "plane_dx_center",
+        "plane_dx_slope_x",
+        "plane_dx_slope_y",
+        "plane_dy_center",
+        "plane_dy_slope_x",
+        "plane_dy_slope_y",
+    )
+    values = (
+        (None,) * len(names)
+        if plane is None
+        else (plane.rms, *plane.coeffs_x, *plane.coeffs_y)
+    )
+    for name, value in zip(names, values, strict=True):
+        summary[name] = None if value is None else float(value)
+    return summary
 
 
 def annulus_sigma_clip_stats(data, coords, r_in, r_out, input_mask=None, sigma=3):
@@ -2573,6 +2985,7 @@ def _drop_edge_catalog_stars(
     file,
     *,
     edge_margin_px,
+    gaia_g=None,
 ):
     """
     Drop catalog stars projected within a margin of a frame edge or off the frame.
@@ -2592,6 +3005,9 @@ def _drop_edge_catalog_stars(
     edge_margin_px : float
         Minimum distance, in pixels, from every frame edge for a catalog star
         to be kept.
+    gaia_g : numpy.ndarray or None, optional
+        Gaia G magnitude of each row of `aligned_coords`. Cut with the
+        coordinates so it stays row-aligned. By default None.
 
     Returns
     -------
@@ -2601,6 +3017,8 @@ def _drop_edge_catalog_stars(
     astropy.coordinates.SkyCoord or None
         `photometry_coords`, reduced to the same rows (unchanged if already
         None).
+    numpy.ndarray or None
+        `gaia_g`, reduced to the same rows (None if `gaia_g` is None).
     int
         Number of catalog stars removed that lie within `edge_margin_px` of a
         frame edge, on either side of it (inside the frame or outside it).
@@ -2639,7 +3057,7 @@ def _drop_edge_catalog_stars(
     arguments are returned unchanged.
     """
     if photometry_coords is None:
-        return aligned_coords, photometry_coords, 0
+        return aligned_coords, photometry_coords, gaia_g, 0
     height, width = shape
     x, y = aligned_coords[:, 0], aligned_coords[:, 1]
     margin = edge_margin_px
@@ -2660,7 +3078,12 @@ def _drop_edge_catalog_stars(
         margin,
         n_edge_dropped,
     )
-    return aligned_coords[keep], photometry_coords[keep], n_edge_dropped
+    return (
+        aligned_coords[keep],
+        photometry_coords[keep],
+        None if gaia_g is None else np.asarray(gaia_g)[keep],
+        n_edge_dropped,
+    )
 
 
 def _parse_obs_time(obs_time, *, file=None):
@@ -2836,6 +3259,40 @@ def estimate_center_from_header(metadata, profile):
     return (float(icrs.ra.deg), float(icrs.dec.deg))
 
 
+def _require_model_inputs(centroid_config, photometry_coords, gaia_g, g_cut):
+    """
+    Raise if the catalog position policy is on but its inputs are missing.
+
+    Parameters
+    ----------
+    centroid_config : `~bandaid.config.CentroidConfig`
+        The centroid policy settings.
+    photometry_coords : astropy.coordinates.SkyCoord or None
+        The catalog coordinates being measured, or None when detected
+        coordinates are measured instead.
+    gaia_g : numpy.ndarray or None
+        Gaia G magnitude of each catalog coordinate.
+    g_cut : float or None
+        The batch's CNN-class magnitude cut.
+
+    Raises
+    ------
+    ValueError
+        If a catalog is measured with ``model_faint_positions`` on and `gaia_g`
+        or `g_cut` is None.
+    """
+    if (
+        photometry_coords is not None
+        and centroid_config.model_faint_positions
+        and (gaia_g is None or g_cut is None)
+    ):
+        msg = (
+            "config.centroid.model_faint_positions is True, which needs both "
+            "gaia_g and g_cut: pass them, or set model_faint_positions=False"
+        )
+        raise ValueError(msg)
+
+
 def prepare_image(
     file,
     radecs,
@@ -2847,6 +3304,8 @@ def prepare_image(
     user_specific_metadata=None,
     wcs=None,
     frame=None,
+    gaia_g=None,
+    g_cut=None,
 ):
     """
     Detect sources, align, and centroid for a single image.
@@ -2880,6 +3339,15 @@ def prepare_image(
         through to `align`. By default None.
     frame : LoadedFrame or None, optional
         Pre-loaded frame; when None the file is opened once via the loader.
+    gaia_g : numpy.ndarray or None, optional
+        Gaia G magnitude of each row of `photometry_coords` (NaN for a forced
+        target, which has none). With `g_cut` it selects the stars that keep a
+        CNN centroid; see `centroid_with_catalog_model`. Required, with
+        `g_cut`, when `photometry_coords` is given and
+        ``config.centroid.model_faint_positions`` is True. By default None.
+    g_cut : float or None, optional
+        The batch's CNN-class magnitude cut. Required under the same
+        conditions as `gaia_g`. By default None.
 
     Returns
     -------
@@ -2921,6 +3389,11 @@ def prepare_image(
 
     Every input position, including any target the caller appended to
     `photometry_coords`, is subject to ``config.edge_margin_px``.
+
+    A `ValueError` is raised before any work when `photometry_coords` is given,
+    ``config.centroid.model_faint_positions`` is True and `gaia_g` or `g_cut`
+    is None: without them the policy cannot tell which stars keep a CNN
+    centroid and would silently not run.
     """
     # "calibrate" the data and get initial detections for WCS alignment and
     # FWHM estimation. calibration_sequence raises TooFewStarsError (a
@@ -2946,6 +3419,7 @@ def prepare_image(
         exc.file = file
         raise
     instrument = config.instrument
+    _require_model_inputs(config.centroid, photometry_coords, gaia_g, g_cut)
     calibration = calibration_sequence(
         file,
         detect_on_bayer_balanced=detect_on_bayer_balanced,
@@ -2955,8 +3429,7 @@ def prepare_image(
     )
     calibrated_data = calibration.calibrated_data
     metadata = calibration.metadata
-    coords = calibration.coords
-    fwhm = calibration.fwhm
+    coords, fwhm = calibration.coords, calibration.fwhm
 
     if user_specific_metadata is not None:
         metadata.update(user_specific_metadata)
@@ -3042,21 +3515,33 @@ def prepare_image(
 
     # Drop catalog stars projected within the edge margin or off-frame, before
     # centroiding/photometry.
-    aligned_coords, photometry_coords, n_edge_dropped = _drop_edge_catalog_stars(
-        aligned_coords,
-        photometry_coords,
-        calibrated_data.shape,
-        file,
-        edge_margin_px=config.edge_margin_px,
+    aligned_coords, photometry_coords, gaia_g, n_edge_dropped = (
+        _drop_edge_catalog_stars(
+            aligned_coords,
+            photometry_coords,
+            calibrated_data.shape,
+            file,
+            edge_margin_px=config.edge_margin_px,
+            gaia_g=gaia_g,
+        )
     )
 
-    centroid_coords = centroid_stars(working_image, aligned_coords, cnn)
+    # Without a catalog the aligned coordinates are detections, not projected
+    # catalog positions, so there is no modelled position to apply.
+    centroided = centroid_with_catalog_model(
+        working_image,
+        aligned_coords,
+        cnn,
+        gaia_g=None if photometry_coords is None else gaia_g,
+        g_cut=g_cut,
+        config=config.centroid,
+    )
 
     return ImageData(
         calibrated_data=calibrated_data,
         coords=coords,
         fwhm=fwhm,
-        centroid_coords=centroid_coords,
+        centroid_coords=centroided.coords,
         aligned_coords=aligned_coords,
         wcs=this_wcs,
         header=frame.header,
@@ -3065,6 +3550,9 @@ def prepare_image(
         wcs_pixscale=measured.pixscale,
         solve_offset_deg=measured.offset_deg,
         n_edge_dropped=n_edge_dropped,
+        centroid_method=centroided.method,
+        centroid_expected=centroided.expected,
+        centroid_model=_centroid_model_summary(centroided, g_cut),
     )
 
 
@@ -3080,6 +3568,7 @@ _MASK_INDEPENDENT_COLUMNS = (
     "x",
     "y",
     "centroid_drift",
+    "centroid_method",
 )
 
 
@@ -3225,10 +3714,15 @@ def build_photometry_table(
     data["y"] = img.centroid_coords[..., 1]
     data["centroid_drift"] = centroid_drift_flag(
         img.centroid_coords,
-        img.aligned_coords,
+        img.aligned_coords if img.centroid_expected is None else img.centroid_expected,
         img.fwhm,
         tolerance=drift_tolerance,
         cap=drift_cap,
+    )
+    data["centroid_method"] = (
+        np.full(len(img.centroid_coords), "cnn")
+        if img.centroid_method is None
+        else img.centroid_method
     )
     data["aperture_area"] = phot["aperture_area"]
     data.meta["fwhm"] = float(img.fwhm)
@@ -3251,6 +3745,8 @@ def process_one_image(
     input_photometry_coords=None,
     frame=None,
     build_l4=True,
+    input_gaia_g=None,
+    g_cut=None,
 ):
     """
     Process a single image file and return one photometry table per input mask.
@@ -3291,6 +3787,14 @@ def process_one_image(
         returned under the key "L4". It is built from the RGB channels
         (TR/TG/TB) after they are photometered, so those three must be in
         ``bayer_masks``. Default True.
+    input_gaia_g : numpy.ndarray or None, optional
+        Gaia G magnitude of each row of `input_photometry_coords` (NaN for a
+        forced target). Required, with `g_cut`, when `input_photometry_coords`
+        is given and ``config.centroid.model_faint_positions`` is True.
+        By default None.
+    g_cut : float or None, optional
+        The batch's CNN-class magnitude cut, handed to `prepare_image`.
+        Required under the same conditions as `input_gaia_g`. By default None.
 
     Returns
     -------
@@ -3305,7 +3809,10 @@ def process_one_image(
     ------
     ValueError
         If ``build_l4`` is true and the TR/TG/TB channels L4 is built from
-        are missing from ``bayer_masks``.
+        are missing from ``bayer_masks``, or (from `prepare_image`) if
+        `input_photometry_coords` is given with
+        ``config.centroid.model_faint_positions`` True but `input_gaia_g` or
+        `g_cut` is None.
     InstrumentDetectionError
         A `FrameMetadataError` subclass, raised with `file` attached when
         ``config.instrument`` is None and the frame's header matches zero or
@@ -3350,6 +3857,8 @@ def process_one_image(
         photometry_coords=input_photometry_coords,
         user_specific_metadata=user_specific_metadata,
         frame=frame,
+        gaia_g=input_gaia_g,
+        g_cut=g_cut,
     )
 
     # Reject a malformed mask dict before any photometry: the dict is shared
@@ -3368,6 +3877,7 @@ def process_one_image(
         data.meta["wcs_pixscale"] = img.wcs_pixscale
         data.meta["solve_offset_deg"] = img.solve_offset_deg
         data.meta["n_edge_dropped"] = img.n_edge_dropped
+        data.meta["centroid_model"] = img.centroid_model
         by_filter_data[filter_name] = data
 
     # L4 is a recombination of the RGB tables, so it is built once they all
@@ -3379,6 +3889,7 @@ def process_one_image(
         l4.meta["wcs_pixscale"] = img.wcs_pixscale
         l4.meta["solve_offset_deg"] = img.solve_offset_deg
         l4.meta["n_edge_dropped"] = img.n_edge_dropped
+        l4.meta["centroid_model"] = img.centroid_model
         by_filter_data["L4"] = l4
 
     return by_filter_data

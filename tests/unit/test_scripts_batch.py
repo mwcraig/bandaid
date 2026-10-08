@@ -19,6 +19,7 @@ from bandaid.exceptions import (
     WCSScaleError,
     WCSSolveError,
 )
+from bandaid.scripts import _CENTROID_MODEL_COLUMNS, _centroid_model_record
 
 
 def _read_manifest(tmp_path):
@@ -101,6 +102,22 @@ class TestProcessBatch:
             assert cnn is prep.cnn
             assert masks is prep.bayer_masks
             assert call.kwargs["input_photometry_coords"] is prep.photometry_coords
+
+    def test_passes_the_preps_gaia_g_and_cut(self, mocker):
+        """``process_one_image`` receives the prep's row-aligned G and magnitude cut."""
+        prep = dataclasses.replace(
+            _dummy_prep(), gaia_g=np.array([9.0, 10.0]), g_cut=9.5
+        )
+        process_one_image = mocker.patch(
+            "bandaid.scripts.process_one_image",
+            return_value={"TR": Table({"tot_count": [1.0]})},
+        )
+
+        scripts.process_batch(["a.fits"], prep, user_specific_metadata={})
+
+        kwargs = process_one_image.call_args.kwargs
+        assert kwargs["input_gaia_g"] is prep.gaia_g
+        assert kwargs["g_cut"] == prep.g_cut
 
     @pytest.mark.parametrize("build_l4", [True, False])
     def test_passes_the_preps_build_l4_flag(self, mocker, build_l4):
@@ -536,6 +553,74 @@ class TestProcessBatchToDisk:
         by_file = {row["file"]: row for row in _read_manifest(tmp_path)}
         assert by_file["edge.fits"]["n_edge_dropped"] == "17"
         assert by_file["unstamped.fits"]["n_edge_dropped"] == ""
+
+    def test_qa_manifest_records_centroid_model_diagnostics(
+        self, patched_process_one_image, tmp_path, by_filter
+    ):
+        """The plane summary stamped on the tables lands in the manifest row."""
+        summary = {
+            "g_cut": 12.1234,
+            "n_cnn_class": 26,
+            "plane_fallback": False,
+            "plane_n_used": 28,
+            "plane_n_clipped": 2,
+            "plane_rms": 0.123456,
+            "plane_dx_center": 0.301234,
+            "plane_dy_center": -0.201234,
+            "plane_dx_slope_x": 0.101234,
+            "plane_dx_slope_y": -0.051234,
+            "plane_dy_slope_x": 0.041234,
+            "plane_dy_slope_y": 0.081234,
+        }
+        for column in summary:
+            assert column in scripts.QA_MANIFEST_COLUMNS
+        result = by_filter()
+        for table in result.values():
+            table.meta["centroid_model"] = summary
+        patched_process_one_image(result)
+
+        scripts.process_batch(
+            ["a.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+        )
+
+        row = _read_manifest(tmp_path)[0]
+        assert row["n_cnn_class"] == "26"
+        assert row["plane_fallback"] == "False"
+        assert row["plane_n_used"] == "28"
+        assert row["plane_n_clipped"] == "2"
+        assert float(row["g_cut"]) == pytest.approx(12.1234)
+        assert float(row["plane_rms"]) == pytest.approx(0.1235)
+        assert float(row["plane_dx_center"]) == pytest.approx(0.3012)
+        assert float(row["plane_dy_center"]) == pytest.approx(-0.2012)
+        assert float(row["plane_dx_slope_x"]) == pytest.approx(0.1012)
+        assert float(row["plane_dy_slope_y"]) == pytest.approx(0.0812)
+
+    def test_centroid_model_columns_are_manifest_columns(self):
+        """Every policy column is a manifest column, and the record has all of them."""
+        for column in _CENTROID_MODEL_COLUMNS:
+            assert column in scripts.QA_MANIFEST_COLUMNS
+        assert set(_centroid_model_record(None)) == set(_CENTROID_MODEL_COLUMNS)
+
+    def test_qa_manifest_centroid_model_blank_without_a_summary(
+        self, patched_process_one_image, tmp_path, by_filter
+    ):
+        """A frame the policy did not run on records the plane columns blank."""
+        patched_process_one_image(by_filter())
+
+        scripts.process_batch(
+            ["a.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+        )
+
+        row = _read_manifest(tmp_path)[0]
+        assert row["plane_n_used"] == ""
+        assert row["plane_fallback"] == ""
+        assert row["n_cnn_class"] == ""
 
     def test_qa_manifest_records_solve_quality(self, mocker, tmp_path, by_filter):
         """
