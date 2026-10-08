@@ -1,5 +1,7 @@
 """Unit tests for FWHM estimation, CNN centroiding, and centroid-drift flags."""
 
+import logging
+
 import numpy as np
 import pytest
 from _helpers import SEED, _seestar_header, five_diagonal_regions
@@ -712,6 +714,21 @@ class TestCentroidWithCatalogModel:
         assert len(cnn_calls) == 1
         np.testing.assert_array_equal(result.coords, _measured(projected))
         assert not result.active
+
+    def test_debug_level_reports_the_method_counts(self, caplog):
+        """At DEBUG the policy logs how many stars took each centroid method."""
+        projected = _fit_stars(N_CATALOG)
+
+        with caplog.at_level(logging.DEBUG, logger="bandaid.photometry"):
+            result = _run_policy(projected, _catalog_g())
+
+        expected = (
+            f"centroided {len(projected)} stars "
+            f"({np.sum(result.method == 'cnn')} cnn, "
+            f"{np.sum(result.method == 'plane')} plane, "
+            f"{np.sum(result.method == 'fallback_cnn')} fallback_cnn)"
+        )
+        assert any(expected in r.getMessage() for r in caplog.records)
 
     def test_class_stars_keep_their_cnn_centroid(self):
         """A star at or brighter than the cut keeps exactly its CNN position."""

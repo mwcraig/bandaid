@@ -9,30 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `bandaid process -v` now logs the frame count and catalog size, one outcome line
+    per frame (WCS solved or the skip reason, stars measured, FWHM, elapsed time)
+    and a closing total; `-vv` adds per-stage detail for each frame (plate-solve
+    pool, solved scale and pointing offset, star counts after each cut, centroid
+    methods and offset-plane fit, background levels and files written). Before,
+    the two levels differed by about one line per frame.
+
 - `CentroidConfig` (on `PhotometryConfig.centroid`) holds the settings of the
     measured-versus-modelled centroid policy, on by default through
     `model_faint_positions`. See `docs/measured_vs_modelled_positions.md` (#131, #106, #147).
+
 - The eloy table gets a per-row `centroid_method` column (`cnn`, `plane` or
     `fallback_cnn`) and the QA manifest gains `g_cut`, `n_cnn_class` and the
     `plane_*` columns (#131, #147).
+
 - A documentation page on measured versus modelled star positions, including the
     low-SNR bias curve of the CNN centroid (#130, #147).
+
 - `InstrumentProfile.wcs_pointing_tolerance` (degrees, default none): the largest
     separation allowed between a solved frame center and its header pointing,
     instead of one field radius.
+
 - The QA manifest gains `wcs_pixscale` (also filled for frames rejected for their
     scale), `solve_offset_deg` and `n_snr20`, so degraded and false plate solves
     are visible without a rerun.
+
 - `InstrumentProfile.solve_pool_radius_scale` (default `0.9`): each frame plate-solves
     against only the catalog stars within this fraction of `fov_rad` of its own
     header pointing, instead of the whole batch catalog (#133).
+
 - `SourceSelectionConfig.gaia_row_limit` (default `10000`): the row limit of the
     batch Gaia query, scaled with cone area. The query is filtered server-side to
     `Gmag <= contaminant_mag_limit`; a result that hits the limit raises
     `CatalogTruncationError` if targets were lost and warns if only contaminants
     were (#133).
+
 - The QA manifest gains `pointing_offset_deg`, each frame's header-center offset
     from the batch center in degrees (#133).
+
 - A `bandaid` command-line interface (`bandaid process`, `instrument`, `config`,
     `weights`) for running photometry on a night of frames and inspecting
     instruments/config without writing Python. See `docs/command_line.md`. The
@@ -44,11 +59,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     single directory are written flat as `<stem>.star`; frames from a mix of
     directories mirror the source tree as `<dirname>/<stem>.star`, keeping
     identically named frames distinct without mangling their names.
+
 - A tiered, pydantic-validated `PhotometryConfig` (with `ApertureConfig`,
     `SourceSelectionConfig`, `DriftConfig`, and `InstrumentProfile`) makes the
     photometry tuning parameters configurable. `prepare_batch` accepts a
     `config=` argument carried through the batch pipeline. See
     `docs/configuration.md`.
+
 - An instrument-profile registry (`bandaid.instruments`) unifies a telescope's
     detection tuning with its per-frame FITS-header dialect. `InstrumentProfile`
     carries both (a `header_map` plus the tuning knobs) and serialises to/from a
@@ -57,42 +74,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     The bundled Seestar50 dialect moved from `meta_json_files/Seestar50/basic.json`
     into `meta_json_files/Seestar50/profile.json`, and `metadata_from_header`
     takes an optional `profile=`.
+
 - An optional `remote_data`-marked smoke test (`pytest-remotedata` test
     dependency) drives the real Ballet CNN on a bundled frame end-to-end,
     downloading the centroider weights from HuggingFace. It is skipped by default
     and runs only under `pytest --remote-data=any`, in a dedicated, non-blocking
     CI job. The plugin's socket-blocking also guards the rest of the suite from
     accidental network access.
+
 - Two per-frame QA-manifest columns instrumenting the centroid-drift flag
     (#60): `n_centroid_drift` (drift-flagged stars in the frame) and
     `n_drift_rejected` (drift-flagged stars that pass the quality cuts — the
     marginal effect a future drift gate would have). Whether the flag should
     gate output will be decided from these counts on real nights.
+
 - `InstrumentProfile.contamination_seeing_margin` (default 1.25): the
     once-per-batch bright-neighbour contamination flag is evaluated at
     `first-frame FWHM x margin`, so pairs that would become contaminated as
     seeing softens during the night are dropped up front (#64).
+
 - The instrument `header_map` understands `xbayroff`, and `YBAYROFF`/`XBAYROFF`
     now follow the standard Siril/N.I.N.A. convention (row/column offsets into
     the Bayer pattern). The masks are pinned to Han Kleijn's public-domain
     Bayer conformance images in the test suite (#51).
+
 - `DegenerateBayerChannelError` (a `FrameError`): a frame whose CFA channel
     sample is empty or has zero variance is now skipped cleanly instead of
     silently dividing by zero during Bayer balancing (#61).
+
 - `bandaid process --log-file PATH` also writes log records to a file, at the
     same level as the terminal (#92).
+
 - `SourceSelectionConfig.min_snr` (default `2.0`): a minimum-SNR floor a star
     must clear to reach the output, applied by `good_star_mask` alongside its
     existing flux/error/bounds/contamination cuts. New `bandaid process`
     `--gaia-mag-limit` and `--min-snr` flags override the corresponding
     `source_selection` fields without needing a full `--config` file (#101,
     #102).
+
 - `bandaid process --forced-targets FILE` (and `forced_targets=` on
     `prepare_batch`/`photometer_frames`): photometer extra sky positions
     absent from the Gaia catalog, e.g. a nova (#100). `FILE` is a CSV/ECSV
     table with `ra`/`dec` in ICRS degrees. Forced targets skip the
     Gaia-magnitude contamination model; all other quality cuts still apply
     (see the docs for details).
+
 - Instrument auto-detection from the FITS header. A new `HeaderMatchRule`
     model and `InstrumentProfile.header_match` field (a tuple of
     keyword/pattern rules; empty by default -- including on a bare
@@ -120,6 +146,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     keyword. `InstrumentProfile.matches_header(header)` is the shared
     predicate. `BatchPrep` now requires a `config` whose `instrument` is
     resolved. See `docs/instrument_profiles.md`.
+
 - `register_instrument` checks for conflicts before touching the registry:
     a name that already resolves (bundled or registered) is refused unless
     `replace=True` is passed, and a `header_match` rule that duplicates a

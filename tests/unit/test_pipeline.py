@@ -1,6 +1,7 @@
 """Unit tests for the detect/align/centroid pipeline (prepare_image, process)."""
 
 import gzip
+import logging
 import warnings
 from pathlib import Path
 
@@ -152,6 +153,33 @@ class TestPrepareImage:
         )
 
         assert np.array_equal(img.coords, img.aligned_coords)
+
+    def test_debug_level_logs_the_frame_stages(
+        self, stub_prepare_image_externals, caplog
+    ):
+        """At DEBUG ``prepare_image`` reports its solve pool and WCS."""
+        stub_prepare_image_externals()
+
+        with caplog.at_level(logging.DEBUG, logger="bandaid.photometry"):
+            _prepare_without_model("unused.fits", np.zeros((5, 2)), None)
+
+        messages = [record.getMessage() for record in caplog.records]
+        for expected in (
+            "unused.fits: plate-solving with ",
+            "unused.fits: WCS solved: plate scale ",
+        ):
+            assert any(m.startswith(expected) for m in messages), expected
+
+    def test_info_level_stays_quiet_about_the_frame_stages(
+        self, stub_prepare_image_externals, caplog
+    ):
+        """The per-stage records are DEBUG, so -v does not show them."""
+        stub_prepare_image_externals()
+
+        with caplog.at_level(logging.INFO, logger="bandaid.photometry"):
+            _prepare_without_model("unused.fits", np.zeros((5, 2)), None)
+
+        assert not [r for r in caplog.records if r.name == "bandaid.photometry"]
 
     def test_instrument_config_reaches_detection(self, stub_prepare_image_externals):
         """

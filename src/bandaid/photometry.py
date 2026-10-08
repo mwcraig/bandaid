@@ -1078,6 +1078,13 @@ def calibration_sequence(
         msg = "all detected sources are saturated"
         raise TooFewStarsError(msg, file=file)
 
+    logger.debug(
+        "%s: %d sources detected, FWHM %.2f px (bayer-balanced detection: %s)",
+        file,
+        len(regions),
+        fwhm,
+        detect_on_bayer_balanced,
+    )
     return CalibrationResult(
         calibrated_data=calibrated_data,
         metadata=metadata,
@@ -2322,6 +2329,16 @@ def centroid_with_catalog_model(
         keeps_cnn = cnn_class & ~unmeasured
         coords[keeps_cnn] = measured[keeps_cnn]
         method = np.where(keeps_cnn, "cnn", "plane")
+    logger.debug(
+        "centroided %d stars (%d cnn, %d plane, %d fallback_cnn); offset plane: %s",
+        len(method),
+        np.sum(method == "cnn"),
+        np.sum(method == "plane"),
+        np.sum(method == "fallback_cnn"),
+        "none"
+        if plane is None
+        else f"{plane.n_used} stars used, rms {plane.rms:.3f} px",
+    )
     return CentroidResult(
         coords=coords,
         method=method,
@@ -3190,6 +3207,14 @@ def _frame_solve_pool(radecs, metadata, center, radius_scale, *, file=None):
         raise FrameMetadataError(msg, file=file)
     pool_radius = field_radius * radius_scale
     mask = _solve_pool_near(radecs, center.ra.deg, center.dec.deg, pool_radius)
+    logger.debug(
+        "%s: plate-solving with %d of %d catalog stars within %.2f deg of the "
+        "header pointing",
+        file,
+        np.sum(mask),
+        len(radecs),
+        pool_radius,
+    )
     return radecs[mask], pool_radius
 
 
@@ -3484,11 +3509,8 @@ def prepare_image(
             file=file,
         )
     else:
-        expected_pixscale = None
-        expected_center = None
-        shape = None
+        expected_pixscale = expected_center = shape = pool_radius = None
         solve_radecs = radecs
-        pool_radius = None
 
     try:
         aligned_coords, this_wcs, measured = align(
@@ -3513,6 +3535,15 @@ def prepare_image(
             )
         raise
 
+    logger.debug(
+        "%s: WCS %s: plate scale %.3f arcsec/px (header pixscale %s), "
+        "%s deg from the header pointing",
+        file,
+        "supplied" if wcs is not None else "solved",
+        measured.pixscale,
+        expected_pixscale,
+        "unknown" if measured.offset_deg is None else f"{measured.offset_deg:.3f}",
+    )
     # Drop catalog stars projected within the edge margin or off-frame, before
     # centroiding/photometry.
     aligned_coords, photometry_coords, gaia_g, n_edge_dropped = (
@@ -3570,6 +3601,27 @@ _MASK_INDEPENDENT_COLUMNS = (
     "centroid_drift",
     "centroid_method",
 )
+
+
+def _median_sky(table):
+    """
+    Return the median finite ``bkgd_count`` of a photometry table, or NaN.
+
+    Parameters
+    ----------
+    table : astropy.table.Table
+        A photometry table from `build_photometry_table`.
+
+    Returns
+    -------
+    float
+        The median over finite rows; NaN when the column is absent or has none.
+    """
+    if "bkgd_count" not in table.colnames:
+        return float("nan")
+    bkgd = np.asarray(table["bkgd_count"], dtype=float)
+    finite = bkgd[np.isfinite(bkgd)]
+    return float(np.median(finite)) if len(finite) else float("nan")
 
 
 def _missing_rgb_channels(channels):
@@ -3879,6 +3931,13 @@ def process_one_image(
         data.meta["n_edge_dropped"] = img.n_edge_dropped
         data.meta["centroid_model"] = img.centroid_model
         by_filter_data[filter_name] = data
+        logger.debug(
+            "%s: %s photometry table has %d rows, median background count %.1f",
+            file,
+            filter_name,
+            len(data),
+            _median_sky(data),
+        )
 
     # L4 is a recombination of the RGB tables, so it is built once they all
     # exist; the caller's dict is read, never mutated.
