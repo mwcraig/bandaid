@@ -15,6 +15,7 @@ side-effect state.
 
 import logging
 import math
+import warnings
 
 import astropy.units as u
 import numpy as np
@@ -116,6 +117,20 @@ def test_proper_motion_applied_matches_apply_space_motion(
     # And the propagated positions actually moved off the catalog epoch.
     shift = np.abs(radecs[:, 1] - gaia_table["DE_ICRS"].value).max()
     assert shift > PM_SHIFT_FLOOR_DEG
+
+
+@pytest.mark.usefixtures("fake_vizier")
+def test_proper_motion_propagation_emits_no_erfa_warning(center):
+    """
+    Propagating proper motions without distances does not warn the caller.
+
+    ERFA substitutes a default distance, which is expected for Gaia rows that
+    lack parallaxes. The project's pytest configuration filters that warning, so
+    escalate every warning to an error here to see what a command-line user sees.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        cached_gaia_radecs(center, 0.2, obs_epoch=Time("2024-06-01"))
 
 
 def test_masked_pm_yields_finite_catalog_epoch_positions(
