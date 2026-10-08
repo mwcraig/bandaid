@@ -94,7 +94,7 @@ axis's residual lies more than `clip_sigma` (3) robust standard deviations
 (1.4826 times the median absolute deviation) from that axis's median residual,
 and the plane is refitted on the rest. The scale is robust because with the
 plain standard deviation a few gross outliers inflate it enough to hide
-themselves: 4 of 30 stars 5 px off would give a 3 sigma limit of about 5.5 px
+themselves: 4 of 30 stars 5 px off would give a 3 sigma limit of about 5 px
 and none would be clipped. The fit is made with astropy's `Polynomial2D` and
 `LinearLSQFitter`. Higher orders and weighting
 were tried on three fields and were worse as often as they were better.

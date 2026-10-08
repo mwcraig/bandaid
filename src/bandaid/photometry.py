@@ -2198,7 +2198,9 @@ class CentroidResult:
         policy did not run), ``"plane"`` (projected position plus the frame's
         offset plane, for a star outside the CNN class or a class star the CNN
         could not measure) or ``"fallback_cnn"`` (a star outside the CNN class that
-        took its CNN centroid because the frame had no plane).
+        took its CNN centroid because the frame had no plane). On a frame without
+        a plane a class star the CNN could not measure keeps the ``"cnn"`` label at
+        its projected position, which is then the modelled position as well.
     expected : numpy.ndarray
         ``(N, 2)`` positions a CNN centroid is expected at: the projected
         position plus the offset plane, or the projected position alone when the
