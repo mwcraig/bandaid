@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     pool, solved scale and pointing offset, star counts after each cut, centroid
     methods and offset-plane fit, files written). Before,
     the two levels differed by about one line per frame.
+- `CentroidConfig.max_plane_rms_pix` (default 1 px): a frame whose offset plane
+    fits its own CNN-centroided stars with a larger rms is skipped with the new
+    `CentroidPlaneError` (manifest status `skipped: CentroidPlaneError`, with
+    `plane_rms` filled) instead of being photometered at poorly modelled positions
+    (#149).
 - `CentroidConfig` (on `PhotometryConfig.centroid`) holds the settings of the
     measured-versus-modelled centroid policy, on by default through
     `model_faint_positions`. See `docs/measured_vs_modelled_positions.md` (#131, #106, #147).

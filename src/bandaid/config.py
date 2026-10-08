@@ -238,12 +238,22 @@ class CentroidConfig(BaseModel, frozen=True, protected_namespaces=()):
         Per-axis clipping threshold, in robust standard deviations (1.4826
         times the median absolute deviation), for the one clip and refit of
         the plane.
+    max_plane_rms_pix : float
+        Largest post-clip rms, in pixels, of the plane fit to its own stars. A
+        frame above it is skipped rather than photometered.
 
     Notes
     -----
     The plane is fitted to ``CNN - projected`` positions, so it absorbs the
     small systematic offset between the CNN's centroids and the projected
     catalog positions. It is unweighted and of first order in each axis.
+
+    A plane that cannot reproduce the centroids it was fitted to places every
+    modelled star at a position that is wrong by about that rms. This happens
+    on trailed or otherwise disturbed frames, where the CNN does little better
+    than the plane either, so the frame is skipped rather than rescued. The
+    default is above the rms of every well-tracked frame in the validation
+    fields (at most 0.74 px; typically 0.13 to 0.24 px).
     """
 
     model_faint_positions: bool = True
@@ -257,6 +267,7 @@ class CentroidConfig(BaseModel, frozen=True, protected_namespaces=()):
     # keeps the fit well-determined after clipping.
     min_fit_stars: Annotated[int, Field(ge=3)] = 12
     clip_sigma: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 3.0
+    max_plane_rms_pix: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 1.0
 
     @model_validator(mode="after")
     def _fit_set_can_reach_minimum(self) -> "CentroidConfig":
