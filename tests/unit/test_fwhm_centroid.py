@@ -6,6 +6,7 @@ from _helpers import SEED, _seestar_header, five_diagonal_regions
 from astropy.io import fits
 from astropy.stats import gaussian_fwhm_to_sigma
 from astropy.table import Table
+from eloy import psf
 
 from bandaid.config import CentroidConfig
 from bandaid.exceptions import CentroidPlaneError
@@ -224,6 +225,45 @@ class TestFwhmFromCoords:
             (25.0, 20.0),
             (35.0, 30.0),
         }
+
+    @pytest.mark.parametrize("seed", range(5))
+    def test_fwhm_is_stable_to_last_bit_changes_in_the_stack(self, mocker, seed):
+        """
+        Last-bit perturbations of the stacked PSF leave the FWHM unchanged.
+
+        The fit minimises a shallow sum of squares over a 50x50 stack that sits
+        on a high floor, so a fitter that stops at the first tiny decrease lands
+        wherever rounding noise put it. The stack is shaped like a real one:
+        elliptical, peak-normalised, floor at ~0.4 of the peak, 1 % noise.
+        """
+        x, y = np.indices((50, 50))
+        stack = psf.gaussian(
+            x,
+            y,
+            amplitude=0.6,
+            x=25,
+            y=25,
+            sigma_x=1.4,
+            sigma_y=0.9,
+            theta=1.6,
+            background=0.4,
+        )
+        stack = stack + 0.01 * np.random.default_rng(seed).standard_normal(stack.shape)
+        stack = stack / stack.max()
+        coords = np.array([[100.0, 100.0]])
+        mocker.patch("bandaid.photometry.ballet_centroid", return_value=coords)
+        fwhms = []
+        for delta in (0.0, 1e-12, -1e-9):
+            mocker.patch(
+                "bandaid.photometry._registered_epsf", return_value=stack + delta
+            )
+            fwhms.append(
+                _fwhm_from_coords(
+                    np.ones((200, 200)), coords, max_adu=5e4, cnn=object()
+                )
+            )
+        assert fwhms[1] == pytest.approx(fwhms[0], rel=1e-6)
+        assert fwhms[2] == pytest.approx(fwhms[0], rel=1e-6)
 
 
 class TestCalibrationSequenceCnn:
