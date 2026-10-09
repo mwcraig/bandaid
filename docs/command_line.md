@@ -109,14 +109,11 @@ runs: a single bad frame is logged and skipped rather than aborting the batch.
 Pass `--fail-fast` while debugging so unexpected errors surface immediately.
 
 Skip/error warnings for individual frames always go to stderr, even with no
-`-v` — a run is never silently missing frames. Pass `-v` to also stream
-progress to the terminal as the batch runs: the catalog size and frame count at
-the start, one line per frame giving its outcome (WCS solved or the skip reason,
-stars measured, FWHM, elapsed time) and a closing total. Pass `-vv` to add
-per-stage detail for each frame — the plate-solve pool size, solved plate scale
-and pointing offset, star counts after each cut, the centroid methods used and
-offset-plane fit, background levels and the files written — the most direct way
-to see why a single frame was skipped (see
+`-v` — a run is never silently missing frames. Pass `-v` to also stream progress: one line per frame with its outcome (WCS
+solved or the skip reason, stars measured, FWHM, elapsed time) plus a batch
+header and total. Pass `-vv` for per-stage detail on each frame — the plate
+solve, star counts after each cut, centroid methods and offset-plane fit, and
+the files written — the quickest way to see why a frame was skipped (see
 [Troubleshooting](troubleshooting.md)). If **every** frame in the batch fails,
 the command exits with a non-zero status (a partial failure still exits 0,
 since skipping a bad frame is normal robust-mode operation). New to the

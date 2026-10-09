@@ -30,8 +30,10 @@ $ bandaid process night-of-2026-06-27/ -o out/ -v
 ```
 
 `-v` streams a one-line outcome per frame so you can watch the batch move (use
-`-vv` for per-stage detail such as the plate solve and star counts). The first frame takes the longest — that is the once-per-batch
-preparation from idea 2 — and the rest follow quickly.
+`-vv` for per-stage detail such as the plate solve and star counts). The first
+frame takes the longest — that is the once-per-batch preparation (instrument
+detection, a detection pass on the first frame, the Gaia query and contamination
+flagging) — and the rest follow quickly.
 
 ## The Ballet weights (first run)
 

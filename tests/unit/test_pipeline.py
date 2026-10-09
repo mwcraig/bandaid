@@ -157,7 +157,7 @@ class TestPrepareImage:
     def test_debug_level_logs_the_frame_stages(
         self, stub_prepare_image_externals, caplog
     ):
-        """At DEBUG ``prepare_image`` reports its solve pool and WCS."""
+        """At DEBUG ``prepare_image`` reports its solve pool, WCS and centroids."""
         stub_prepare_image_externals()
 
         with caplog.at_level(logging.DEBUG, logger="bandaid.photometry"):
@@ -167,6 +167,7 @@ class TestPrepareImage:
         for expected in (
             "unused.fits: plate-solving with ",
             "unused.fits: WCS solved: plate scale ",
+            "unused.fits: centroided 3 stars (3 cnn, 0 plane, 0 fallback_cnn)",
         ):
             assert any(m.startswith(expected) for m in messages), expected
 

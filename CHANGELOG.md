@@ -9,11 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `bandaid process -v` now logs the frame count and catalog size, one outcome line
+- `bandaid process -v` now logs the frame and photometry-target counts, one outcome line
     per frame (WCS solved or the skip reason, stars measured, FWHM, elapsed time)
     and a closing total; `-vv` adds per-stage detail for each frame (plate-solve
     pool, solved scale and pointing offset, star counts after each cut, centroid
-    methods and offset-plane fit, background levels and files written). Before,
+    methods and offset-plane fit, files written). Before,
     the two levels differed by about one line per frame.
 - `CentroidConfig` (on `PhotometryConfig.centroid`) holds the settings of the
     measured-versus-modelled centroid policy, on by default through

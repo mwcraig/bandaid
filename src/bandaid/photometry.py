@@ -2329,16 +2329,6 @@ def centroid_with_catalog_model(
         keeps_cnn = cnn_class & ~unmeasured
         coords[keeps_cnn] = measured[keeps_cnn]
         method = np.where(keeps_cnn, "cnn", "plane")
-    logger.debug(
-        "centroided %d stars (%d cnn, %d plane, %d fallback_cnn); offset plane: %s",
-        len(method),
-        np.sum(method == "cnn"),
-        np.sum(method == "plane"),
-        np.sum(method == "fallback_cnn"),
-        "none"
-        if plane is None
-        else f"{plane.n_used} stars used, rms {plane.rms:.3f} px",
-    )
     return CentroidResult(
         coords=coords,
         method=method,
@@ -3482,8 +3472,7 @@ def prepare_image(
         # is cut and where align checks the solved WCS lands, so a frame whose
         # pointing is absent or cannot be converted cannot be solved. bool is
         # excluded explicitly because float() would accept it.
-        ra = metadata.get("ra")
-        dec = metadata.get("dec")
+        ra, dec = metadata.get("ra"), metadata.get("dec")
         if isinstance(ra, bool) or isinstance(dec, bool):
             msg = (
                 "frame metadata has no usable numeric pointing "
@@ -3568,6 +3557,17 @@ def prepare_image(
         config=config.centroid,
     )
 
+    logger.debug(
+        "%s: centroided %d stars (%d cnn, %d plane, %d fallback_cnn); offset plane: %s",
+        file,
+        len(centroided.method),
+        np.sum(centroided.method == "cnn"),
+        np.sum(centroided.method == "plane"),
+        np.sum(centroided.method == "fallback_cnn"),
+        "none"
+        if centroided.plane is None
+        else f"{centroided.plane.n_used} stars used, rms {centroided.plane.rms:.3f} px",
+    )
     return ImageData(
         calibrated_data=calibrated_data,
         coords=coords,
@@ -3601,27 +3601,6 @@ _MASK_INDEPENDENT_COLUMNS = (
     "centroid_drift",
     "centroid_method",
 )
-
-
-def _median_sky(table):
-    """
-    Return the median finite ``bkgd_count`` of a photometry table, or NaN.
-
-    Parameters
-    ----------
-    table : astropy.table.Table
-        A photometry table from `build_photometry_table`.
-
-    Returns
-    -------
-    float
-        The median over finite rows; NaN when the column is absent or has none.
-    """
-    if "bkgd_count" not in table.colnames:
-        return float("nan")
-    bkgd = np.asarray(table["bkgd_count"], dtype=float)
-    finite = bkgd[np.isfinite(bkgd)]
-    return float(np.median(finite)) if len(finite) else float("nan")
 
 
 def _missing_rgb_channels(channels):
@@ -3932,11 +3911,7 @@ def process_one_image(
         data.meta["centroid_model"] = img.centroid_model
         by_filter_data[filter_name] = data
         logger.debug(
-            "%s: %s photometry table has %d rows, median background count %.1f",
-            file,
-            filter_name,
-            len(data),
-            _median_sky(data),
+            "%s: %s photometry table has %d rows", file, filter_name, len(data)
         )
 
     # L4 is a recombination of the RGB tables, so it is built once they all

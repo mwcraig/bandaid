@@ -1425,7 +1425,7 @@ def _log_frame_stages(file, record):
     )
 
 
-def _log_frame_summary(file, record, started):
+def _log_frame_summary(file, record, started, idx, total):
     """
     Log one INFO line giving the outcome of a frame.
 
@@ -1437,18 +1437,25 @@ def _log_frame_summary(file, record, started):
         The frame's QA manifest row.
     started : float
         `time.perf_counter` reading taken when the frame began.
+    idx : int
+        One-based position of the frame in the batch.
+    total : int
+        Number of frames in the batch.
 
     Notes
     -----
     A frame that was measured reports its star count and FWHM; one that was
-    skipped reports the skip reason from its ``status`` and whether its WCS
-    solved.
+    skipped or failed reports its ``status`` and whether its WCS solved
+    (``solved``, ``not solved`` or ``unknown``). Each line starts with the
+    frame's ``[idx/total]`` position.
     """
     elapsed = time.perf_counter() - started
     if record["status"] == "ok":
         fwhm = record.get("fwhm")
         logger.info(
-            "%s: ok, WCS solved, %s stars measured, FWHM %s px, %.1f s",
+            "[%d/%d] %s: ok, WCS solved, %s stars measured, FWHM %s px, %.1f s",
+            idx,
+            total,
             file,
             record.get("n_good_stars"),
             "unknown" if fwhm is None else f"{fwhm:.2f}",
@@ -1456,10 +1463,14 @@ def _log_frame_summary(file, record, started):
         )
     else:
         logger.info(
-            "%s: %s, WCS solved: %s, %.1f s",
+            "[%d/%d] %s: %s, WCS %s, %.1f s",
+            idx,
+            total,
             file,
             record["status"],
-            record.get("wcs_solved"),
+            {True: "solved", False: "not solved"}.get(
+                record.get("wcs_solved"), "unknown"
+            ),
             elapsed,
         )
 
@@ -1695,7 +1706,7 @@ def process_batch(
     if output_dir is not None:
         _ensure_output_dirs(output_dir, output_paths)
     logger.info(
-        "photometering %d frames against %d catalog stars; output to %s",
+        "photometering %d frames against %d photometry targets; output to %s",
         len(files),
         len(prep.photometry_coords),
         "memory" if output_dir is None else output_dir,
@@ -1705,7 +1716,7 @@ def process_batch(
         # Per-frame progress. Invisible by default (the package logger has only a
         # NullHandler); `bandaid process --verbose` routes it to the terminal via
         # configure_logging, alongside the skip/error warnings logged below.
-        logger.info("processing %d/%d: %s", idx, len(files), file)
+        logger.debug("processing %d/%d: %s", idx, len(files), file)
         # Stays None for a frame that fails before its pointing offset is known.
         pointing_offset = None
         try:
@@ -1740,7 +1751,7 @@ def process_batch(
             manifest_records.append(
                 _record_frame_skip(file, exc, pointing_offset=pointing_offset)
             )
-            _log_frame_summary(file, manifest_records[-1], started)
+            _log_frame_summary(file, manifest_records[-1], started, idx, len(files))
             continue
         except Exception as exc:
             # Unexpected error (a bug, not a bad frame): surface it by default;
@@ -1755,6 +1766,7 @@ def process_batch(
                     pointing_offset=pointing_offset,
                 )
             )
+            _log_frame_summary(file, manifest_records[-1], started, idx, len(files))
             continue
         else:
             # The frame processed cleanly. Writing its output is deliberately
@@ -1788,7 +1800,7 @@ def process_batch(
                     )
             else:
                 results[file] = by_filter
-            _log_frame_summary(file, manifest_records[-1], started)
+            _log_frame_summary(file, manifest_records[-1], started, idx, len(files))
 
     # Persist the per-frame QA manifest next to the starlists. Only written in
     # write-to-disk mode (in-memory mode has no directory to write it to) and
