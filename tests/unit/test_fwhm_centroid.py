@@ -895,12 +895,12 @@ class TestCentroidWithCatalogModel:
         self._patch_noisy_cnn(mocker)
         projected = _fit_stars(N_CATALOG)
 
-        with pytest.raises(CentroidPlaneError, match=r"rms.*threshold") as excinfo:
+        with pytest.raises(CentroidPlaneError, match=r"rms.*exceeds") as excinfo:
             _run_policy(projected, _catalog_g())
 
         assert excinfo.value.plane_rms > CentroidConfig().max_plane_rms_pix
-        assert "trailed" in str(excinfo.value)
-        assert "threshold of 1 px" in str(excinfo.value)
+        assert f"rms {excinfo.value.plane_rms:.2f} px" in str(excinfo.value)
+        assert "exceeds 1 px" in str(excinfo.value)
 
     def test_the_poor_fit_error_reports_the_fit_star_count(self, mocker):
         """The message and the exception carry how many stars defined the fit."""

@@ -247,13 +247,6 @@ class CentroidConfig(BaseModel, frozen=True, protected_namespaces=()):
     The plane is fitted to ``CNN - projected`` positions, so it absorbs the
     small systematic offset between the CNN's centroids and the projected
     catalog positions. It is unweighted and of first order in each axis.
-
-    A plane that cannot reproduce the centroids it was fitted to places every
-    modelled star at a position that is wrong by about that rms. This happens
-    on trailed or otherwise disturbed frames, where the CNN does little better
-    than the plane either, so the frame is skipped rather than rescued. The
-    default is above the rms of every well-tracked frame in the validation
-    fields (at most 0.74 px; typically 0.13 to 0.24 px).
     """
 
     model_faint_positions: bool = True

@@ -2296,12 +2296,6 @@ def centroid_with_catalog_model(
     A frame whose fit leaves fewer than ``config.min_fit_stars`` stars has no
     plane: every star is then centroided by the CNN, and the result records
     the fallback.
-
-    A plane whose rms exceeds ``config.max_plane_rms_pix`` does not reproduce
-    the stars it was fitted to, which marks a trailed or otherwise disturbed
-    frame (the CNN centroids scatter about the plane by as much as the plane
-    would misplace the modelled stars). Such a frame raises
-    `~bandaid.exceptions.CentroidPlaneError` instead of returning positions.
     """
     config = config or _DEFAULT_CENTROID
     projected = np.asarray(aligned_coords, dtype=float)
@@ -2336,9 +2330,8 @@ def centroid_with_catalog_model(
 
     if plane is not None and plane.rms > config.max_plane_rms_pix:
         msg = (
-            f"offset plane rms {plane.rms:.2f} px exceeds the threshold of "
-            f"{config.max_plane_rms_pix:g} px on {plane.n_used} fit stars; this "
-            "usually indicates a trailed or otherwise disturbed frame"
+            f"offset plane rms {plane.rms:.2f} px exceeds "
+            f"{config.max_plane_rms_pix:g} px on {plane.n_used} fit stars"
         )
         raise CentroidPlaneError(msg, plane_rms=plane.rms, n_fit_stars=plane.n_used)
 

@@ -66,16 +66,12 @@ require both the catalog's Gaia G and the batch's `G_cut` and raise
 1. **Fallback.** If fewer than `min_fit_stars` (12) fit stars survive the
     clip, the frame has no plane and every star is centroided by the CNN, as
     before the policy existed. This is recorded in the QA manifest.
-1. **Skip.** If the plane's post-clip rms exceeds `max_plane_rms_pix` (1 px),
-    the plane does not reproduce the stars it was fitted to, and the frame is
-    skipped with a `CentroidPlaneError`, like a frame with a wrong-scale WCS
-    solve. The manifest status is `skipped: CentroidPlaneError` and `plane_rms`
-    holds the measured rms. The cause is a trailed or otherwise disturbed frame:
-    the fit stars scatter by a few pixels about any plane, and the CNN centroids
-    are barely better than the plane there, so falling back to CNN centroids
-    would not rescue the photometry. Across about 3,450 validation frames the
-    largest plane rms on a clean frame was 0.74 px (medians 0.13 to 0.24 px),
-    while the two trailed frames found measured 2.2 and 3.0 px.
+1. **Skip.** If the plane's post-clip rms exceeds `max_plane_rms_pix`, the
+    plane does not reproduce the stars it was fitted to and the frame is skipped
+    with a `CentroidPlaneError`, like a frame with a wrong-scale WCS solve; the
+    manifest status is `skipped: CentroidPlaneError` and `plane_rms` holds the
+    measured rms. On such a frame the CNN centroids are little better than the
+    plane, so falling back to them would not rescue the photometry.
 
 ### The magnitude cut
 
