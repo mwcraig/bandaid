@@ -1127,7 +1127,8 @@ def _airmass_from_metadata(metadata, *, obs_datetime=None):
     Returns
     -------
     float
-        The resolved ``airmass`` value, or the derived Kasten-Young airmass.
+        The resolved ``airmass`` value, or the derived Kasten-Young airmass. NaN
+        if the derived field center is below the horizon.
 
     Raises
     ------
@@ -1186,6 +1187,14 @@ def _airmass_from_metadata(metadata, *, obs_datetime=None):
     #   sec(z) breaks down (sec(z) is ~3% high at airmass ~5.7).
     # Kasten & Young 1989, Applied Optics 28(22), 4735; doi:10.1364/AO.28.004735
     alt_deg = altaz.alt.to_value(u.deg)
+    if alt_deg < 0.0:
+        logger.warning(
+            "Field center is %.1f deg below the horizon, so airmass is undefined "
+            "and set to NaN; check site_lat and site_lon (and ra/dec/obs_time) "
+            "in the frame metadata.",
+            -alt_deg,
+        )
+        return float("nan")
     airmass = 1.0 / (
         np.sin(np.deg2rad(alt_deg)) + 0.50572 * (alt_deg + 6.07995) ** -1.6364
     )

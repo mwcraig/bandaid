@@ -165,6 +165,27 @@ class TestAirmassFromMetadata:
 
         assert np.isfinite(airmass)
 
+    def test_below_horizon_returns_nan_and_warns_about_site(self, caplog):
+        """
+        A field below the horizon gives NaN and one log message, no numpy warning.
+
+        Swapped or wrong site coordinates put the target far below the horizon,
+        where the Kasten-Young term is undefined; the log message names the
+        likely cause instead of surfacing numpy's raw "invalid value" warning.
+        """
+        metadata = self._metadata_pointing_at_altitude(-20.0)
+
+        with caplog.at_level(logging.WARNING, logger="bandaid.photometry"):
+            airmass = _airmass_from_metadata(metadata)
+
+        assert np.isnan(airmass)
+        messages = [
+            r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+        ]
+        assert len(messages) == 1
+        assert "site_lat" in messages[0]
+        assert "site_lon" in messages[0]
+
     def test_header_map_renames_resolve(self):
         """A dialect with renamed site/pointing/time keywords derives airmass (#59)."""
         # None of the Seestar keyword names appear in this header; only the

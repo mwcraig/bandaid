@@ -21,6 +21,7 @@ astropy's :meth:`~astropy.coordinates.SkyCoord.apply_space_motion`.
 
 import logging
 import math
+import warnings
 
 import astropy.units as u
 import numpy as np
@@ -28,6 +29,7 @@ from astropy.coordinates import SkyCoord
 from astropy.table import MaskedColumn
 from astropy.time import Time
 from astroquery.vizier import Vizier
+from erfa import ErfaWarning
 
 from bandaid.exceptions import CatalogTruncationError
 
@@ -184,7 +186,15 @@ def cached_gaia_radecs(
             pm_ra_cosdec=pmra,
             pm_dec=pmdec,
             obstime=Time(GAIA_DR2_EPOCH, format="jyear"),
-        ).apply_space_motion(new_obstime=Time(obs_epoch))
+        )
+        # No parallax or radial velocity is supplied, so ERFA substitutes a
+        # default distance and warns once per call. That substitution is
+        # expected here; silence only this message, only around this call.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", message='ERFA function "pmsafe" yielded', category=ErfaWarning
+            )
+            coords = coords.apply_space_motion(new_obstime=Time(obs_epoch))
         ra = coords.ra.deg
         dec = coords.dec.deg
         # Defensive final guard: if propagation still produced a non-finite

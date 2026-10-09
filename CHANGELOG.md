@@ -295,6 +295,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The command line no longer prints ERFA's "distance overridden" warning when Gaia
+    proper motions are propagated, and a field center below the horizon now gives a
+    NaN airmass with one log message instead of numpy's "invalid value" warning (#89).
 - Deriving airmass no longer attempts an IERS table download, and still works for
     recent frames when the bundled predictions are stale. Airmass can differ from a
     networked run in the last digits (#128).
