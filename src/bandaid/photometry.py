@@ -53,6 +53,7 @@ from .config import (
     SourceSelectionConfig,
 )
 from .exceptions import (
+    CentroidPlaneError,
     DegenerateBayerChannelError,
     FrameMetadataError,
     InstrumentDetectionError,
@@ -2269,6 +2270,12 @@ def centroid_with_catalog_model(
         The positions, row-aligned with `aligned_coords`, and how each was
         obtained.
 
+    Raises
+    ------
+    CentroidPlaneError
+        If the frame's offset plane fits its own stars with an rms above
+        ``config.max_plane_rms_pix``.
+
     Notes
     -----
     A star is CNN-class when its Gaia G is at or brighter than `g_cut`, or it
@@ -2320,6 +2327,13 @@ def centroid_with_catalog_model(
         min_fit_stars=config.min_fit_stars,
         clip_sigma=config.clip_sigma,
     )
+
+    if plane is not None and plane.rms > config.max_plane_rms_pix:
+        msg = (
+            f"offset plane rms {plane.rms:.2f} px exceeds "
+            f"{config.max_plane_rms_pix:g} px on {plane.n_used} fit stars"
+        )
+        raise CentroidPlaneError(msg, plane_rms=plane.rms, n_fit_stars=plane.n_used)
 
     coords = projected.copy()
     if plane is None:

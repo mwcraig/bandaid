@@ -66,6 +66,12 @@ require both the catalog's Gaia G and the batch's `G_cut` and raise
 1. **Fallback.** If fewer than `min_fit_stars` (12) fit stars survive the
     clip, the frame has no plane and every star is centroided by the CNN, as
     before the policy existed. This is recorded in the QA manifest.
+1. **Skip.** If the plane's post-clip rms exceeds `max_plane_rms_pix`, the
+    plane does not reproduce the stars it was fitted to and the frame is skipped
+    with a `CentroidPlaneError`, like a frame with a wrong-scale WCS solve; the
+    manifest status is `skipped: CentroidPlaneError` and `plane_rms` holds the
+    measured rms. On such a frame the CNN centroids are little better than the
+    plane, so falling back to them would not rescue the photometry.
 
 ### The magnitude cut
 

@@ -13,6 +13,7 @@ from astropy.table import Table
 
 from bandaid import scripts
 from bandaid.exceptions import (
+    CentroidPlaneError,
     FrameError,
     FrameMetadataError,
     TooFewStarsError,
@@ -753,6 +754,32 @@ class TestProcessBatchToDisk:
         badscale = by_file["badscale.fits"]
         assert float(badscale["wcs_pixscale"]) == pytest.approx(2.4322)
         assert badscale["solve_offset_deg"] == ""
+
+    def test_a_poorly_fitting_plane_skips_the_frame_and_the_batch_continues(
+        self, mocker, tmp_path, by_filter
+    ):
+        """A `CentroidPlaneError` is a skipped status with its rms; later frames run."""
+        error = CentroidPlaneError("plane rms 2.18 px", plane_rms=2.18, n_fit_stars=30)
+
+        def _process(file, *_args: object, **_kwargs: object):
+            if file == "trailed.fits":
+                raise error
+            return by_filter()
+
+        mocker.patch("bandaid.scripts.process_one_image", side_effect=_process)
+
+        results = scripts.process_batch(
+            ["trailed.fits", "good.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+        )
+
+        by_file = {row["file"]: row for row in _read_manifest(tmp_path)}
+        assert by_file["trailed.fits"]["status"] == "skipped: CentroidPlaneError"
+        assert float(by_file["trailed.fits"]["plane_rms"]) == pytest.approx(2.18)
+        assert by_file["good.fits"]["status"] == "ok"
+        assert list(results) == ["good.fits"]
 
     def test_qa_manifest_sky_median_is_median_of_bkgd_count(
         self, patched_process_one_image, tmp_path, by_filter

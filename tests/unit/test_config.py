@@ -60,6 +60,7 @@ EXPECTED_CNN_CLASS_SIZE = 30
 EXPECTED_FIT_N_STARS = 30
 EXPECTED_MIN_FIT_STARS = 12
 EXPECTED_CLIP_SIGMA = 3.0
+EXPECTED_MAX_PLANE_RMS_PIX = 1.0
 
 
 class TestDefaultsMatchLegacyConstants:
@@ -99,6 +100,7 @@ class TestDefaultsMatchLegacyConstants:
         assert cfg.fit_n_stars == EXPECTED_FIT_N_STARS
         assert cfg.min_fit_stars == EXPECTED_MIN_FIT_STARS
         assert cfg.clip_sigma == EXPECTED_CLIP_SIGMA
+        assert cfg.max_plane_rms_pix == EXPECTED_MAX_PLANE_RMS_PIX
 
     def test_instrument(self):
         """Detection/FWHM/PSF settings default to the legacy literal values."""
@@ -434,6 +436,14 @@ class TestValidators:
         """A non-positive or non-finite clipping threshold is rejected."""
         with pytest.raises(ValidationError):
             CentroidConfig(clip_sigma=clip_sigma)
+
+    @pytest.mark.parametrize(
+        "max_plane_rms_pix", [0.0, -1.0, float("nan"), float("inf")]
+    )
+    def test_non_positive_or_non_finite_max_plane_rms_rejected(self, max_plane_rms_pix):
+        """A plane-rms limit that is not a positive finite number is rejected."""
+        with pytest.raises(ValidationError):
+            CentroidConfig(max_plane_rms_pix=max_plane_rms_pix)
 
     def test_non_finite_min_snr_rejected(self):
         """A non-finite minimum SNR floor is rejected with a clear message."""

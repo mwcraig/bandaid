@@ -60,6 +60,7 @@ These are ordinary analysis choices and are safe to set for any run.
 | `centroid`         | `fit_n_stars`            | `30`     | Brightest stars per frame whose CNN centroids define the plane                     |
 | `centroid`         | `min_fit_stars`          | `12`     | Fewest stars that must survive the clip for a frame to use a plane                 |
 | `centroid`         | `clip_sigma`             | `3.0`    | Clip, in robust standard deviations, applied once when fitting the plane           |
+| `centroid`         | `max_plane_rms_pix`      | `1.0`    | Frames whose plane rms (pixels) exceeds this are skipped, not photometered         |
 
 ### Tier 2 — Instrument / per-telescope (advanced)
 
@@ -189,8 +190,8 @@ Construction enforces the invariants the pipeline relies on, for example:
 - the drift cuts and `gaia_mag_limit` must be finite, and
 - `edge_margin_px` must be positive and finite, and
 - the centroid policy's `cnn_class_size` must be at least 1, `min_fit_stars` at
-    least 3, `fit_n_stars` at least `min_fit_stars`, and `clip_sigma` positive and
-    finite.
+    least 3, `fit_n_stars` at least `min_fit_stars`, and `clip_sigma` and
+    `max_plane_rms_pix` positive and finite.
 
 Several values are **derived** rather than set directly, so the invariants the
 pipeline cares about hold by construction instead of needing a validator:

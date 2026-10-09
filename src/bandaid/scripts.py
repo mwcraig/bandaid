@@ -1318,7 +1318,13 @@ def _round_or_none(value, ndigits=4):
 
 
 def _qa_record_failed(
-    file, status, *, wcs_solved=None, pointing_offset=None, wcs_pixscale=None
+    file,
+    status,
+    *,
+    wcs_solved=None,
+    pointing_offset=None,
+    wcs_pixscale=None,
+    plane_rms=None,
 ):
     """
     Build the QA manifest record for a skipped or errored frame.
@@ -1338,6 +1344,9 @@ def _qa_record_failed(
     wcs_pixscale : float or None, optional
         The plate scale in arcsec/pixel measured on a solve rejected for its
         scale; None (default) leaves it blank.
+    plane_rms : float or None, optional
+        The offset-plane rms in pixels measured on a frame rejected for it;
+        None (default) leaves it blank.
 
     Returns
     -------
@@ -1350,6 +1359,7 @@ def _qa_record_failed(
     record["wcs_solved"] = wcs_solved
     record["pointing_offset_deg"] = _round_or_none(pointing_offset)
     record["wcs_pixscale"] = _round_or_none(wcs_pixscale)
+    record["plane_rms"] = _round_or_none(plane_rms)
     return record
 
 
@@ -1391,6 +1401,7 @@ def _record_frame_skip(file, exc, *, pointing_offset=None):
         wcs_solved=False if isinstance(exc, WCSSolveError) else None,
         pointing_offset=getattr(exc, "pointing_offset", pointing_offset),
         wcs_pixscale=getattr(exc, "measured_scale", None),
+        plane_rms=getattr(exc, "plane_rms", None),
     )
 
 

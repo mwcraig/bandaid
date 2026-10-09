@@ -238,6 +238,9 @@ class CentroidConfig(BaseModel, frozen=True, protected_namespaces=()):
         Per-axis clipping threshold, in robust standard deviations (1.4826
         times the median absolute deviation), for the one clip and refit of
         the plane.
+    max_plane_rms_pix : float
+        Largest post-clip rms, in pixels, of the plane fit to its own stars. A
+        frame above it is skipped rather than photometered.
 
     Notes
     -----
@@ -257,6 +260,7 @@ class CentroidConfig(BaseModel, frozen=True, protected_namespaces=()):
     # keeps the fit well-determined after clipping.
     min_fit_stars: Annotated[int, Field(ge=3)] = 12
     clip_sigma: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 3.0
+    max_plane_rms_pix: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 1.0
 
     @model_validator(mode="after")
     def _fit_set_can_reach_minimum(self) -> "CentroidConfig":

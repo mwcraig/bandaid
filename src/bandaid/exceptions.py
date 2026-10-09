@@ -17,6 +17,7 @@ __all__ = [
     "BandaidError",
     "BatchPrepError",
     "CatalogTruncationError",
+    "CentroidPlaneError",
     "DegenerateBayerChannelError",
     "FrameError",
     "FrameMetadataError",
@@ -123,6 +124,28 @@ class FrameMetadataError(FrameError):
 
 class NoUsableStarsError(FrameError):
     """No stars survived photometry filtering, so the frame yields no output."""
+
+
+class CentroidPlaneError(FrameError):
+    """
+    The frame's offset plane fits its own CNN-centroided stars too poorly to use.
+
+    Parameters
+    ----------
+    reason : str
+        Human-readable explanation of why the frame was rejected.
+    file : str or pathlib.Path or None, optional
+        The offending frame.
+    plane_rms : float or None, optional
+        The post-clip rms of the plane fit, in pixels.
+    n_fit_stars : int or None, optional
+        Number of stars that defined the fit.
+    """
+
+    def __init__(self, reason, *, file=None, plane_rms=None, n_fit_stars=None) -> None:
+        super().__init__(reason, file=file)
+        self.plane_rms = plane_rms
+        self.n_fit_stars = n_fit_stars
 
 
 class StarListValidationError(FrameError):

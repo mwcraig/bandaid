@@ -8,6 +8,7 @@ from astropy.stats import gaussian_fwhm_to_sigma
 from astropy.table import Table
 
 from bandaid.config import CentroidConfig
+from bandaid.exceptions import CentroidPlaneError
 from bandaid.photometry import (
     _brightest_unsaturated,
     _fit_offset_plane,
@@ -868,6 +869,74 @@ class TestCentroidWithCatalogModel:
         assert (result.method[:n_class] == "cnn").all()
         assert (result.method[n_class:] == "fallback_cnn").all()
         np.testing.assert_array_equal(result.expected, projected)
+
+    @staticmethod
+    def _patch_noisy_cnn(mocker, scatter=2.0) -> None:
+        """
+        Patch ``centroid_stars`` so every centroid scatters about the true plane.
+
+        Parameters
+        ----------
+        mocker : pytest_mock.MockerFixture
+            The pytest-mock fixture used to patch ``centroid_stars``.
+        scatter : float, optional
+            Standard deviation, in pixels, of the Gaussian noise added to each
+            centroid. By default 2.0.
+        """
+        rng = np.random.default_rng(SEED)
+
+        def fake(_data, coords, _cnn):
+            return _measured(coords) + rng.normal(0.0, scatter, np.shape(coords))
+
+        mocker.patch("bandaid.photometry.centroid_stars", side_effect=fake)
+
+    def test_a_poorly_fitting_plane_raises(self, mocker):
+        """Fit stars scattered by ~2 px give an rms over the limit: the frame errors."""
+        self._patch_noisy_cnn(mocker)
+        projected = _fit_stars(N_CATALOG)
+
+        with pytest.raises(CentroidPlaneError, match=r"rms.*exceeds") as excinfo:
+            _run_policy(projected, _catalog_g())
+
+        assert excinfo.value.plane_rms > CentroidConfig().max_plane_rms_pix
+        assert f"rms {excinfo.value.plane_rms:.2f} px" in str(excinfo.value)
+        assert "exceeds 1 px" in str(excinfo.value)
+
+    def test_the_poor_fit_error_reports_the_fit_star_count(self, mocker):
+        """The message and the exception carry how many stars defined the fit."""
+        self._patch_noisy_cnn(mocker)
+        projected = _fit_stars(N_CATALOG)
+
+        with pytest.raises(CentroidPlaneError) as excinfo:
+            _run_policy(projected, _catalog_g())
+
+        assert excinfo.value.n_fit_stars >= CentroidConfig().min_fit_stars
+        assert f"{excinfo.value.n_fit_stars} fit stars" in str(excinfo.value)
+
+    def test_plane_rms_limit_is_applied_at_the_achieved_rms(self, mocker):
+        """A limit just above the achieved rms uses the plane; just below raises."""
+        self._patch_noisy_cnn(mocker)
+        projected = _fit_stars(N_CATALOG)
+        achieved = _run_policy(
+            projected, _catalog_g(), config=CentroidConfig(max_plane_rms_pix=100.0)
+        ).plane.rms
+
+        self._patch_noisy_cnn(mocker)
+        result = _run_policy(
+            projected,
+            _catalog_g(),
+            config=CentroidConfig(max_plane_rms_pix=achieved * 1.001),
+        )
+        assert result.plane is not None
+        assert not result.fallback
+
+        self._patch_noisy_cnn(mocker)
+        with pytest.raises(CentroidPlaneError):
+            _run_policy(
+                projected,
+                _catalog_g(),
+                config=CentroidConfig(max_plane_rms_pix=achieved * 0.999),
+            )
 
     def test_an_infinite_cut_keeps_every_star_on_its_cnn_centroid(self):
         """A sparse field has no finite cut: every star is CNN-class."""
