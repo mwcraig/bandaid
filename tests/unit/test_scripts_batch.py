@@ -133,14 +133,14 @@ class TestProcessBatch:
         assert process_one_image.call_args.kwargs["build_l4"] is build_l4
 
     def test_emits_progress_log_per_frame(self, patched_process_one_image, caplog):
-        """Each frame logs a ``processing i/N: name`` line at INFO for --verbose."""
+        """Each frame logs a ``processing i/N: name`` line at DEBUG."""
         patched_process_one_image({"TR": Table({"tot_count": [1.0]})})
 
         # Identically-named frames from different directories (a supported
         # mirrored-tree batch): the line logs the full path, not just the
         # basename, so the two "a.fits" frames stay distinguishable.
         files = ["night1/a.fits", "night2/a.fits", "night2/b.fits"]
-        with caplog.at_level(logging.INFO, logger="bandaid"):
+        with caplog.at_level(logging.DEBUG, logger="bandaid"):
             scripts.process_batch(files, _dummy_prep(), user_specific_metadata={})
 
         progress = [
@@ -153,6 +153,84 @@ class TestProcessBatch:
             "processing 2/3: night2/a.fits",
             "processing 3/3: night2/b.fits",
         ]
+
+    def test_info_level_summarises_each_frame_and_the_batch(self, mocker, caplog):
+        """At INFO each frame gets an outcome line, with the batch bracketed."""
+        mocker.patch(
+            "bandaid.scripts._record_frame_skip",
+            return_value={"status": "skipped: TooFewStarsError", "wcs_solved": None},
+        )
+        mocker.patch(
+            "bandaid.scripts.process_one_image",
+            side_effect=[
+                {"TR": Table({"tot_count": [1.0]})},
+                TooFewStarsError("too few", file="b.fits"),
+            ],
+        )
+
+        with caplog.at_level(logging.INFO, logger="bandaid"):
+            scripts.process_batch(
+                ["a.fits", "b.fits"], _dummy_prep(), user_specific_metadata={}
+            )
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert messages[0].startswith("photometering 2 frames against ")
+        assert messages[0].endswith("; output to memory")
+        assert any(m.startswith("[1/2] a.fits: ok, WCS solved,") for m in messages)
+        assert any(
+            m.startswith("[2/2] b.fits: skipped: TooFewStarsError, WCS unknown")
+            for m in messages
+        )
+        assert messages[-1] == "finished: 1 of 2 frames photometered"
+
+    def test_unexpected_error_still_gets_an_outcome_line(self, mocker, caplog):
+        """In robust mode an unexpected error is summarised like any other frame."""
+        mocker.patch(
+            "bandaid.scripts.process_one_image", side_effect=RuntimeError("boom")
+        )
+
+        with caplog.at_level(logging.INFO, logger="bandaid"):
+            scripts.process_batch(
+                ["a.fits"], _dummy_prep(), user_specific_metadata={}, fail_fast=False
+            )
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any(
+            m.startswith("[1/1] a.fits: error: RuntimeError, WCS unknown")
+            for m in messages
+        )
+
+    def test_info_level_hides_stage_detail(self, patched_process_one_image, caplog):
+        """Per-stage detail is DEBUG-only, so -v stays one line per frame."""
+        patched_process_one_image({"TR": Table({"tot_count": [1.0]})})
+
+        with caplog.at_level(logging.INFO, logger="bandaid"):
+            scripts.process_batch(["a.fits"], _dummy_prep(), user_specific_metadata={})
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert not [m for m in messages if "detected" in m or "quality cuts" in m]
+
+    def test_debug_level_reports_stage_counts_and_the_write(
+        self, patched_process_one_image, tmp_path, caplog
+    ):
+        """At DEBUG a frame also logs its star counts and the file it wrote."""
+        patched_process_one_image({"TR": Table({"tot_count": [1.0]})})
+
+        with caplog.at_level(logging.DEBUG, logger="bandaid"):
+            scripts.process_batch(
+                ["a.fits"],
+                _dummy_prep(),
+                user_specific_metadata={},
+                output_dir=tmp_path,
+                write_frame=lambda _by_filter, path: path,
+            )
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any(
+            m.startswith("a.fits: ") and "pass the quality cuts" in m for m in messages
+        )
+        assert any(m.startswith("a.fits: wrote ") for m in messages)
+        assert any(m.startswith("wrote the QA manifest to ") for m in messages)
 
     def test_failed_frames_are_skipped(self, mocker):
         """A frame whose ``process_one_image`` raises a FrameError is omitted."""

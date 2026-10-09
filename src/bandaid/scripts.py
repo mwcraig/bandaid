@@ -17,6 +17,7 @@ functions: no shared mutable state, no "is it done yet?" bookkeeping.
 import csv
 import glob
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -1393,6 +1394,87 @@ def _record_frame_skip(file, exc, *, pointing_offset=None):
     )
 
 
+def _log_frame_stages(file, record):
+    """
+    Log a processed frame's measured star counts and background at DEBUG.
+
+    Parameters
+    ----------
+    file : str or pathlib.Path
+        The processed input frame.
+    record : dict
+        The frame's QA manifest row from `_qa_record_ok`.
+
+    Notes
+    -----
+    The counts come from the manifest row so they are the very numbers written to
+    the QA manifest: stars detected for the plate solve, catalog stars dropped by
+    the edge margin, stars passing the quality cuts, stars with a signal-to-noise
+    of at least `QA_SNR_THRESHOLD` and the median background count.
+    """
+    logger.debug(
+        "%s: %s detected, %s catalog stars dropped at the edge, %s pass the "
+        "quality cuts (%s with SNR >= %g), median background %s",
+        file,
+        record.get("n_detected"),
+        record.get("n_edge_dropped"),
+        record.get("n_good_stars"),
+        record.get("n_snr20"),
+        QA_SNR_THRESHOLD,
+        _round_or_none(record.get("sky_median"), 1),
+    )
+
+
+def _log_frame_summary(file, record, started, idx, total):
+    """
+    Log one INFO line giving the outcome of a frame.
+
+    Parameters
+    ----------
+    file : str or pathlib.Path
+        The input frame.
+    record : dict
+        The frame's QA manifest row.
+    started : float
+        `time.perf_counter` reading taken when the frame began.
+    idx : int
+        One-based position of the frame in the batch.
+    total : int
+        Number of frames in the batch.
+
+    Notes
+    -----
+    A frame that was measured reports its star count and FWHM; one that was
+    skipped or failed reports its ``status`` and whether its WCS solved
+    (``solved``, ``not solved`` or ``unknown``). Each line starts with the
+    frame's ``[idx/total]`` position.
+    """
+    elapsed = time.perf_counter() - started
+    if record["status"] == "ok":
+        fwhm = record.get("fwhm")
+        logger.info(
+            "[%d/%d] %s: ok, WCS solved, %s stars measured, FWHM %s px, %.1f s",
+            idx,
+            total,
+            file,
+            record.get("n_good_stars"),
+            "unknown" if fwhm is None else f"{fwhm:.2f}",
+            elapsed,
+        )
+    else:
+        logger.info(
+            "[%d/%d] %s: %s, WCS %s, %.1f s",
+            idx,
+            total,
+            file,
+            record["status"],
+            {True: "solved", False: "not solved"}.get(
+                record.get("wcs_solved"), "unknown"
+            ),
+            elapsed,
+        )
+
+
 def _write_qa_manifest(path, records):
     """
     Write the per-frame QA records to a CSV manifest.
@@ -1623,11 +1705,18 @@ def process_batch(
     # front so a missing or unwritable parent fails fast.
     if output_dir is not None:
         _ensure_output_dirs(output_dir, output_paths)
+    logger.info(
+        "photometering %d frames against %d photometry targets; output to %s",
+        len(files),
+        len(prep.photometry_coords),
+        "memory" if output_dir is None else output_dir,
+    )
     for idx, file in enumerate(files, 1):
+        started = time.perf_counter()
         # Per-frame progress. Invisible by default (the package logger has only a
         # NullHandler); `bandaid process --verbose` routes it to the terminal via
         # configure_logging, alongside the skip/error warnings logged below.
-        logger.info("processing %d/%d: %s", idx, len(files), file)
+        logger.debug("processing %d/%d: %s", idx, len(files), file)
         # Stays None for a frame that fails before its pointing offset is known.
         pointing_offset = None
         try:
@@ -1662,6 +1751,7 @@ def process_batch(
             manifest_records.append(
                 _record_frame_skip(file, exc, pointing_offset=pointing_offset)
             )
+            _log_frame_summary(file, manifest_records[-1], started, idx, len(files))
             continue
         except Exception as exc:
             # Unexpected error (a bug, not a bad frame): surface it by default;
@@ -1676,6 +1766,7 @@ def process_batch(
                     pointing_offset=pointing_offset,
                 )
             )
+            _log_frame_summary(file, manifest_records[-1], started, idx, len(files))
             continue
         else:
             # The frame processed cleanly. Writing its output is deliberately
@@ -1696,9 +1787,11 @@ def process_batch(
                     pointing_offset=pointing_offset,
                 )
             )
+            _log_frame_stages(file, manifest_records[-1])
             if output_dir is not None:
                 try:
                     results[file] = write_frame(by_filter, output_paths[file])
+                    logger.debug("%s: wrote %s", file, results[file])
                 except FrameError as exc:
                     # Replace the provisional ok record appended above with
                     # the skip, so the manifest keeps one row per frame.
@@ -1707,12 +1800,15 @@ def process_batch(
                     )
             else:
                 results[file] = by_filter
+            _log_frame_summary(file, manifest_records[-1], started, idx, len(files))
 
     # Persist the per-frame QA manifest next to the starlists. Only written in
     # write-to-disk mode (in-memory mode has no directory to write it to) and
     # only when the caller has not opted out.
     if write_manifest:
         _write_qa_manifest(Path(output_dir) / qa_manifest_name, manifest_records)
+        logger.debug("wrote the QA manifest to %s", Path(output_dir) / qa_manifest_name)
+    logger.info("finished: %d of %d frames photometered", len(results), len(files))
     return results
 
 

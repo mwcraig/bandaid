@@ -1078,6 +1078,13 @@ def calibration_sequence(
         msg = "all detected sources are saturated"
         raise TooFewStarsError(msg, file=file)
 
+    logger.debug(
+        "%s: %d sources detected, FWHM %.2f px (bayer-balanced detection: %s)",
+        file,
+        len(regions),
+        fwhm,
+        detect_on_bayer_balanced,
+    )
     return CalibrationResult(
         calibrated_data=calibrated_data,
         metadata=metadata,
@@ -3199,6 +3206,14 @@ def _frame_solve_pool(radecs, metadata, center, radius_scale, *, file=None):
         raise FrameMetadataError(msg, file=file)
     pool_radius = field_radius * radius_scale
     mask = _solve_pool_near(radecs, center.ra.deg, center.dec.deg, pool_radius)
+    logger.debug(
+        "%s: plate-solving with %d of %d catalog stars within %.2f deg of the "
+        "header pointing",
+        file,
+        np.sum(mask),
+        len(radecs),
+        pool_radius,
+    )
     return radecs[mask], pool_radius
 
 
@@ -3466,8 +3481,7 @@ def prepare_image(
         # is cut and where align checks the solved WCS lands, so a frame whose
         # pointing is absent or cannot be converted cannot be solved. bool is
         # excluded explicitly because float() would accept it.
-        ra = metadata.get("ra")
-        dec = metadata.get("dec")
+        ra, dec = metadata.get("ra"), metadata.get("dec")
         if isinstance(ra, bool) or isinstance(dec, bool):
             msg = (
                 "frame metadata has no usable numeric pointing "
@@ -3493,11 +3507,8 @@ def prepare_image(
             file=file,
         )
     else:
-        expected_pixscale = None
-        expected_center = None
-        shape = None
+        expected_pixscale = expected_center = shape = pool_radius = None
         solve_radecs = radecs
-        pool_radius = None
 
     try:
         aligned_coords, this_wcs, measured = align(
@@ -3522,6 +3533,15 @@ def prepare_image(
             )
         raise
 
+    logger.debug(
+        "%s: WCS %s: plate scale %.3f arcsec/px (header pixscale %s), "
+        "%s deg from the header pointing",
+        file,
+        "supplied" if wcs is not None else "solved",
+        measured.pixscale,
+        expected_pixscale,
+        "unknown" if measured.offset_deg is None else f"{measured.offset_deg:.3f}",
+    )
     # Drop catalog stars projected within the edge margin or off-frame, before
     # centroiding/photometry.
     aligned_coords, photometry_coords, gaia_g, n_edge_dropped = (
@@ -3546,6 +3566,17 @@ def prepare_image(
         config=config.centroid,
     )
 
+    logger.debug(
+        "%s: centroided %d stars (%d cnn, %d plane, %d fallback_cnn); offset plane: %s",
+        file,
+        len(centroided.method),
+        np.sum(centroided.method == "cnn"),
+        np.sum(centroided.method == "plane"),
+        np.sum(centroided.method == "fallback_cnn"),
+        "none"
+        if centroided.plane is None
+        else f"{centroided.plane.n_used} stars used, rms {centroided.plane.rms:.3f} px",
+    )
     return ImageData(
         calibrated_data=calibrated_data,
         coords=coords,
@@ -3888,6 +3919,9 @@ def process_one_image(
         data.meta["n_edge_dropped"] = img.n_edge_dropped
         data.meta["centroid_model"] = img.centroid_model
         by_filter_data[filter_name] = data
+        logger.debug(
+            "%s: %s photometry table has %d rows", file, filter_name, len(data)
+        )
 
     # L4 is a recombination of the RGB tables, so it is built once they all
     # exist; the caller's dict is read, never mutated.
