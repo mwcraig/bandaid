@@ -306,6 +306,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The per-frame FWHM fit is now stable: the Gaussian fit of the stacked PSF runs
+    scipy's L-BFGS-B to floating-point noise (`ftol=1e-15`, `gtol=1e-12`, `maxcor=30`)
+    instead of eloy's default tolerances, under which the fitted width tracked
+    last-bit noise in the stack and could shift by a few percent, or stop short of
+    a lower minimum, between near-identical frames. The fit now lives in bandaid
+    (`_gaussian_fwhm`, same model, seed and bounds as `eloy.psf.fit_gaussian`);
+    FWHMs change by < 1e-4 on all but a handful of frames (#150).
 - The command line no longer prints ERFA's "distance overridden" warning when Gaia
     proper motions are propagated, and a field center below the horizon now gives a
     NaN airmass with one log message instead of numpy's "invalid value" warning (#89).
