@@ -7,6 +7,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Every job builds and runs third-party code (PyPI and git-sourced
+# dependencies), so none of them gets a token that can write to the repository.
+permissions:
+  contents: read
+
 # Auto-cancel superseded runs when a PR is updated.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -58,6 +63,24 @@ jobs:
         # Deliberately no --remote-data: this job runs an offline random-weights
         # jax-vs-numpy parity test, so a HuggingFace outage can't break it.
         run: uv run pytest
+
+  tests-photutils-dev:
+    name: tests (photutils main)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        # Builds photutils from the commit pinned in pyproject.toml; uv caches
+        # the built wheel by SHA so only the first run pays for the compile.
+        run: uv sync --group tests --extra photutils-dev --python 3.12
+      - name: Show installed photutils version
+        run: uv run --no-sync python -c "import photutils; print(photutils.__version__)"
+      - name: Run pytest
+        run: uv run --no-sync pytest
 
   remote-tests:
     name: remote-data (CNN weights)
