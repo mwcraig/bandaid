@@ -7,6 +7,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Every job builds and runs third-party code (PyPI and git-sourced
+# dependencies), so none of them gets a token that can write to the repository.
+permissions:
+  contents: read
+
 # Auto-cancel superseded runs when a PR is updated.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
