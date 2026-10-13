@@ -6,6 +6,10 @@ name: Update photutils pin
 # once a week and opens a PR, but only if the test suite passes on it. The
 # suite runs here because a PR opened by a workflow does not trigger the CI
 # workflow.
+#
+# The jobs that install and run the (unreviewed) nightly hold a read-only token
+# and never persist it into the checkout; only the final job, which runs no
+# third-party code, can write to the repository.
 
 on:
   schedule:
@@ -14,14 +18,22 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
-  update-pin:
+  relock:
+    name: relock to the newest nightly
     runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.pin.outputs.changed }}
+      old_version: ${{ steps.pin.outputs.old_version }}
+      new_version: ${{ steps.pin.outputs.new_version }}
+      old_sha: ${{ steps.pin.outputs.old_sha }}
+      new_sha: ${{ steps.pin.outputs.new_sha }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Install uv
         uses: astral-sh/setup-uv@v7
         with:
@@ -38,12 +50,58 @@ jobs:
           --old-version "${{ steps.unpin.outputs.old_version }}"
       - name: Re-lock after pinning
         run: uv lock
+      - name: Save the relocked files
+        uses: actions/upload-artifact@v7
+        with:
+          name: relocked-files
+          path: |
+            pyproject.toml
+            uv.lock
+
+  tests:
+    name: tests on the newest nightly (Python ${{ matrix.python-version }})
+    needs: relock
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Restore the relocked files
+        uses: actions/download-artifact@v8
+        with:
+          name: relocked-files
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
       - name: Install dependencies
-        run: uv sync --group tests --python 3.12
+        run: uv sync --locked --group tests --python ${{ matrix.python-version }}
+      - name: Show installed photutils version
+        run: uv run python -c "import photutils; print(photutils.__version__)"
       - name: Run pytest
         run: uv run pytest
+
+  pull-request:
+    name: open the pin-update PR
+    needs: [relock, tests]
+    if: needs.relock.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Restore the relocked files
+        uses: actions/download-artifact@v8
+        with:
+          name: relocked-files
       - name: Open pull request
-        if: steps.pin.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v7
         with:
           branch: update-photutils-pin
@@ -51,13 +109,13 @@ jobs:
           add-paths: |
             pyproject.toml
             uv.lock
-          commit-message: Bump photutils nightly pin to ${{ steps.pin.outputs.new_version }}
-          title: Bump photutils nightly pin to ${{ steps.pin.outputs.new_version }}
+          commit-message: Bump photutils nightly pin to ${{ needs.relock.outputs.new_version }}
+          title: Bump photutils nightly pin to ${{ needs.relock.outputs.new_version }}
           body: |
-            Moves the photutils nightly pin from `${{ steps.pin.outputs.old_version }}` to `${{ steps.pin.outputs.new_version }}`.
+            Moves the photutils nightly pin from `${{ needs.relock.outputs.old_version }}` to `${{ needs.relock.outputs.new_version }}`.
 
-            photutils changes: https://github.com/astropy/photutils/compare/${{ steps.pin.outputs.old_sha }}...${{ steps.pin.outputs.new_sha }}
+            photutils changes: https://github.com/astropy/photutils/compare/${{ needs.relock.outputs.old_sha }}...${{ needs.relock.outputs.new_sha }}
 
-            The test suite passed on the new nightly in the [workflow run that opened this PR](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+            The test suite passed on the new nightly on Python 3.12 and 3.13 in the [workflow run that opened this PR](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
 
             🤖 Generated with [Claude Code](https://claude.com/claude-code)
