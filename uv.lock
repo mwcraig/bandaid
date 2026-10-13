@@ -8,6 +8,7 @@ resolution-markers = [
 ]
 
 [manifest]
+constraints = [{ name = "photutils", specifier = "==3.0.1.dev1404+ga6acb06a2", index = "https://pypi.anaconda.org/astropy/simple" }]
 overrides = [{ name = "numpy", specifier = ">=2.1" }]
 
 [[package]]
@@ -292,7 +293,7 @@ requires-dist = [
     { name = "jax", marker = "extra == 'jax'" },
     { name = "jax", marker = "extra == 'train'" },
     { name = "optax", marker = "extra == 'train'" },
-    { name = "photutils", specifier = "==3.0.1.dev1404+ga6acb06a2", index = "https://pypi.anaconda.org/astropy/simple" },
+    { name = "photutils", index = "https://pypi.anaconda.org/astropy/simple" },
     { name = "pydantic", specifier = ">=2" },
     { name = "python-dateutil" },
     { name = "scikit-image" },

@@ -3,12 +3,9 @@ name: Update photutils pin
 # bandaid pins photutils to a nightly wheel from astropy's anaconda.org channel,
 # which keeps only its 10 newest nightlies, so a stale `==` pin stops resolving
 # after roughly 10 publishes. This workflow moves the pin to the newest nightly
-# once a week and opens a PR, but only if the test suite passes on it.
-#
-# PRs opened with the default GITHUB_TOKEN do not trigger other workflows (so
-# the CI workflow will not run on the PR), which is why the tests are run here.
-# A PHOTUTILS_PIN_TOKEN personal access token secret is optional; if set, the PR
-# is opened with it and CI runs on the PR as usual.
+# once a week and opens a PR, but only if the test suite passes on it. The
+# suite runs here because a PR opened by a workflow does not trigger the CI
+# workflow.
 
 on:
   schedule:
@@ -49,7 +46,6 @@ jobs:
         if: steps.pin.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v7
         with:
-          token: ${{ secrets.PHOTUTILS_PIN_TOKEN || secrets.GITHUB_TOKEN }}
           branch: update-photutils-pin
           delete-branch: true
           add-paths: |

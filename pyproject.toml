@@ -41,14 +41,9 @@ dependencies = [
     "eloy @ git+https://github.com/mwcraig/eloy@a056c91a945772e0520a89695f8fcd16fda36870",
     # "eloy @ git+https://github.com/lgrcia/eloy@0b53f23f90b12b33ef21473cbb1a785a819aaeeb",
     "huggingface_hub>=1.0",
-    # Pinned to a photutils nightly from the astropy anaconda.org channel (see
-    # [tool.uv.sources] below) because the compiled sigma-clipped ApertureStats
-    # on photutils main cuts bandaid's per-frame time by ~26 %. The version's
-    # local segment is the short SHA of the photutils commit the wheel was built
-    # from. The channel keeps only the 10 newest nightlies, so this pin is
-    # refreshed by .github/workflows/update-photutils-pin.yml. Drop the pin and
-    # the index once photutils 3.1 is released.
-    "photutils==3.0.1.dev1404+ga6acb06a2",
+    # Left unpinned here so a plain pip install gets the released photutils from
+    # PyPI. Under uv the [tool.uv] section below pins a nightly instead.
+    "photutils",
     "pydantic>=2",
     "scikit-image",
     "scipy",
@@ -134,11 +129,22 @@ types = [
 # Remove once twirl ships numpy-2 support.
 [tool.uv]
 override-dependencies = ["numpy>=2.1"]
+# Pin photutils to a nightly from astropy's anaconda.org channel (the index
+# below) because the compiled sigma-clipped ApertureStats on photutils main cuts
+# bandaid's per-frame time by ~26 %. The version's local segment is the short
+# SHA of the photutils commit the wheel was built from. The channel keeps only
+# the 10 newest nightlies, so this pin is refreshed by
+# .github/workflows/update-photutils-pin.yml. A constraint rather than a
+# dependency pin so that pip, which ignores this table, still installs the
+# released photutils. Drop the constraint and the index once photutils 3.1 is
+# released.
+constraint-dependencies = [
+    "photutils==3.0.1.dev1404+ga6acb06a2",
+]
 
 # Nightly wheels of photutils (astropy's anaconda.org channel). `explicit` keeps
 # every other dependency on PyPI; only photutils is routed here via
-# [tool.uv.sources]. Note this is uv-only wiring: a plain `pip install` of
-# bandaid cannot see this index and will fail to find the pinned dev version.
+# [tool.uv.sources].
 [[tool.uv.index]]
 name = "astropy-nightly"
 url = "https://pypi.anaconda.org/astropy/simple"

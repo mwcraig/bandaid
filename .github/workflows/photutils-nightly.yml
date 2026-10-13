@@ -19,12 +19,8 @@ permissions:
 
 jobs:
   tests-nightly:
-    name: tests vs photutils nightly (Python ${{ matrix.python-version }})
+    name: tests vs photutils nightly
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v7
       - name: Install uv
@@ -36,7 +32,7 @@ jobs:
       - name: Upgrade photutils in lock
         run: uv lock --upgrade-package photutils
       - name: Install dependencies
-        run: uv sync --group tests --python ${{ matrix.python-version }}
+        run: uv sync --group tests --python 3.13
       - name: Show installed photutils version
         run: uv run python -c "import photutils; print(photutils.__version__)"
       - name: Run pytest
