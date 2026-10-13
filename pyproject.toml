@@ -41,7 +41,14 @@ dependencies = [
     "eloy @ git+https://github.com/mwcraig/eloy@a056c91a945772e0520a89695f8fcd16fda36870",
     # "eloy @ git+https://github.com/lgrcia/eloy@0b53f23f90b12b33ef21473cbb1a785a819aaeeb",
     "huggingface_hub>=1.0",
-    "photutils",
+    # Pinned to a photutils nightly from the astropy anaconda.org channel (see
+    # [tool.uv.sources] below) because the compiled sigma-clipped ApertureStats
+    # on photutils main cuts bandaid's per-frame time by ~26 %. The version's
+    # local segment is the short SHA of the photutils commit the wheel was built
+    # from. The channel keeps only the 10 newest nightlies, so this pin is
+    # refreshed by .github/workflows/update-photutils-pin.yml. Drop the pin and
+    # the index once photutils 3.1 is released.
+    "photutils==3.0.1.dev1404+ga6acb06a2",
     "pydantic>=2",
     "scikit-image",
     "scipy",
@@ -127,6 +134,18 @@ types = [
 # Remove once twirl ships numpy-2 support.
 [tool.uv]
 override-dependencies = ["numpy>=2.1"]
+
+# Nightly wheels of photutils (astropy's anaconda.org channel). `explicit` keeps
+# every other dependency on PyPI; only photutils is routed here via
+# [tool.uv.sources]. Note this is uv-only wiring: a plain `pip install` of
+# bandaid cannot see this index and will fail to find the pinned dev version.
+[[tool.uv.index]]
+name = "astropy-nightly"
+url = "https://pypi.anaconda.org/astropy/simple"
+explicit = true
+
+[tool.uv.sources]
+photutils = { index = "astropy-nightly" }
 
 # Hatch is building your package's wheel and sdist
 # This tells Hatch to build the package from the src/ directory.
@@ -244,6 +263,9 @@ ignore = [
     "E402",  # 'Module level import not at top of file'
     "F401",  # 'Imported but unused'
     "I001",  # 'Import block is un-sorted or un-formatted' ignored because we may have to import in a particular, not-alphabetical order.
+]
+".github/scripts/*.py" = [
+    "INP001",  # 'Implicit namespace package' ignored because CI helper scripts are not a package.
 ]
 "tests/**/*.py" = [
     "S101",  # 'Use of assert detected' ignored because we are using pytest.

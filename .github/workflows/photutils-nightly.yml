@@ -1,0 +1,43 @@
+# photutils nightly
+#
+# Checks bandaid against the newest photutils nightly wheel, so a breaking
+# change upstream shows up here before the weekly pin-update workflow opens a
+# PR. This workflow never commits anything: the pin is loosened and the lock
+# is regenerated only inside the runner's checkout, and the result is
+# discarded when the job ends.
+
+name: photutils nightly
+
+on:
+  schedule:
+    # Daily at 06:00 UTC, after the astropy channel's 04:30 UTC nightly publish.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests-nightly:
+    name: tests vs photutils nightly (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Loosen photutils pin
+        run: python3 .github/scripts/update_photutils_pin.py unpin
+      - name: Upgrade photutils in lock
+        run: uv lock --upgrade-package photutils
+      - name: Install dependencies
+        run: uv sync --group tests --python ${{ matrix.python-version }}
+      - name: Show installed photutils version
+        run: uv run python -c "import photutils; print(photutils.__version__)"
+      - name: Run pytest
+        run: uv run pytest

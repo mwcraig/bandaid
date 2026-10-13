@@ -140,6 +140,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- photutils is pinned to a nightly wheel from astropy's anaconda.org channel
+    (`photutils==3.0.1.dev1404+ga6acb06a2`, the local segment being the photutils
+    commit) because the compiled sigma-clipped `ApertureStats` on photutils main
+    cuts the per-frame time by about 26 % with only last-bit float differences in
+    the output. The channel keeps the 10 newest nightlies, so a weekly workflow
+    opens a PR that moves the pin, and a daily workflow runs the test suite
+    against the newest nightly. The pin and the extra uv index go away once
+    photutils 3.1 is released. Note the index is uv-only wiring: a plain
+    `pip install` of bandaid cannot resolve the pinned version (#103).
 - Only the brightest catalog stars keep their CNN centroid; the rest are output at
     their projected position plus a per-frame fitted plane, which moves faint-star
     positions by about 1 to 1.5 px and tightens their light curves. Set

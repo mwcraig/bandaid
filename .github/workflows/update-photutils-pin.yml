@@ -1,0 +1,67 @@
+name: Update photutils pin
+
+# bandaid pins photutils to a nightly wheel from astropy's anaconda.org channel,
+# which keeps only its 10 newest nightlies, so a stale `==` pin stops resolving
+# after roughly 10 publishes. This workflow moves the pin to the newest nightly
+# once a week and opens a PR, but only if the test suite passes on it.
+#
+# PRs opened with the default GITHUB_TOKEN do not trigger other workflows (so
+# the CI workflow will not run on the PR), which is why the tests are run here.
+# A PHOTUTILS_PIN_TOKEN personal access token secret is optional; if set, the PR
+# is opened with it and CI runs on the PR as usual.
+
+on:
+  schedule:
+    # Mondays 08:00 UTC, a few hours after the 04:30 UTC nightly publish.
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-pin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Loosen the photutils pin
+        id: unpin
+        run: python3 .github/scripts/update_photutils_pin.py unpin
+      - name: Upgrade photutils in the lock file
+        run: uv lock --upgrade-package photutils
+      - name: Pin photutils to the locked version
+        id: pin
+        run: >-
+          python3 .github/scripts/update_photutils_pin.py pin
+          --old-version "${{ steps.unpin.outputs.old_version }}"
+      - name: Re-lock after pinning
+        run: uv lock
+      - name: Install dependencies
+        run: uv sync --group tests --python 3.12
+      - name: Run pytest
+        run: uv run pytest
+      - name: Open pull request
+        if: steps.pin.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.PHOTUTILS_PIN_TOKEN || secrets.GITHUB_TOKEN }}
+          branch: update-photutils-pin
+          delete-branch: true
+          add-paths: |
+            pyproject.toml
+            uv.lock
+          commit-message: Bump photutils nightly pin to ${{ steps.pin.outputs.new_version }}
+          title: Bump photutils nightly pin to ${{ steps.pin.outputs.new_version }}
+          body: |
+            Moves the photutils nightly pin from `${{ steps.pin.outputs.old_version }}` to `${{ steps.pin.outputs.new_version }}`.
+
+            photutils changes: https://github.com/astropy/photutils/compare/${{ steps.pin.outputs.old_sha }}...${{ steps.pin.outputs.new_sha }}
+
+            The test suite passed on the new nightly in the [workflow run that opened this PR](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).
+
+            🤖 Generated with [Claude Code](https://claude.com/claude-code)
