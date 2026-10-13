@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `photutils-dev` extra: `uv sync --extra photutils-dev` builds photutils from a
+    commit pinned on photutils main, for the compiled sigma-clipped
+    `ApertureStats` (about 26 % less time per frame, output differs only at the
+    last bit). Opt-in and for developers only; the default install, pip and the
+    browser build stay on the released photutils. Goes away with photutils 3.1
+    (#103).
 - `bandaid process -v` now logs the frame and photometry-target counts, one outcome line
     per frame (WCS solved or the skip reason, stars measured, FWHM, elapsed time)
     and a closing total; `-vv` adds per-stage detail for each frame (plate-solve
@@ -140,12 +146,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Under uv, photutils resolves to a nightly wheel from astropy's anaconda.org
-    channel, pinned in `[tool.uv] constraint-dependencies`, for the compiled
-    sigma-clipped `ApertureStats` (about 26 % less time per frame, output differs
-    only at the last bit). pip installs still get the released photutils. A weekly
-    workflow moves the pin; the pin, the index and the workflows go away with
-    photutils 3.1 (#103).
 - Only the brightest catalog stars keep their CNN centroid; the rest are output at
     their projected position plus a per-frame fitted plane, which moves faint-star
     positions by about 1 to 1.5 px and tightens their light curves. Set

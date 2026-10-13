@@ -41,8 +41,8 @@ dependencies = [
     "eloy @ git+https://github.com/mwcraig/eloy@a056c91a945772e0520a89695f8fcd16fda36870",
     # "eloy @ git+https://github.com/lgrcia/eloy@0b53f23f90b12b33ef21473cbb1a785a819aaeeb",
     "huggingface_hub>=1.0",
-    # Left unpinned here so a plain pip install gets the released photutils from
-    # PyPI. Under uv the [tool.uv] section below pins a nightly instead.
+    # The released photutils. The `photutils-dev` extra below swaps in a build
+    # from a pinned commit on photutils main.
     "photutils",
     "pydantic>=2",
     "scikit-image",
@@ -56,6 +56,19 @@ dependencies = [
 # model instead of the numpy forward pass. Deliberately NOT a base dependency --
 # the base install must stay numpy-only so bandaid can run in the browser.
 jax = ["jax", "flax"]
+
+# Opt in to photutils main, built from the commit pinned in [tool.uv.sources],
+# for its compiled sigma-clipped ApertureStats (~26 % less time per frame,
+# output differs only at the last bit). For developers only: the default
+# install stays on the released photutils, which is what pip and the browser
+# build use. Under uv the two extras are declared conflicting so that
+# `uv sync` without `--extra photutils-dev` resolves photutils from PyPI; the
+# `photutils-release` extra exists only as the other side of that conflict and
+# never needs to be requested. Drop both, the conflict and the sources once
+# photutils 3.1 is released. pip ignores [tool.uv] and installs the release
+# for both extras.
+photutils-release = ["photutils"]
+photutils-dev = ["photutils"]
 
 # Extras needed to run the Ballet CNN training scripts (src/bandaid/train_ballet_*.py).
 # Runtime centroiding defaults to numpy (bandaid.ballet); this extra additionally
@@ -129,29 +142,22 @@ types = [
 # Remove once twirl ships numpy-2 support.
 [tool.uv]
 override-dependencies = ["numpy>=2.1"]
-# Pin photutils to a nightly from astropy's anaconda.org channel (the index
-# below) because the compiled sigma-clipped ApertureStats on photutils main cuts
-# bandaid's per-frame time by ~26 %. The version's local segment is the short
-# SHA of the photutils commit the wheel was built from. The channel keeps only
-# the 10 newest nightlies, so this pin is refreshed by
-# .github/workflows/update-photutils-pin.yml. A constraint rather than a
-# dependency pin so that pip, which ignores this table, still installs the
-# released photutils. Drop the constraint and the index once photutils 3.1 is
-# released.
-constraint-dependencies = [
-    "photutils==3.0.1.dev1404+ga6acb06a2",
-]
+# See the photutils-dev extra. Without this conflict uv would resolve one
+# photutils for every environment and the git build would satisfy the bare
+# `photutils` dependency too, so the extra would not be opt-in.
+conflicts = [[{ extra = "photutils-release" }, { extra = "photutils-dev" }]]
 
-# Nightly wheels of photutils (astropy's anaconda.org channel). `explicit` keeps
-# every other dependency on PyPI; only photutils is routed here via
-# [tool.uv.sources].
 [[tool.uv.index]]
-name = "astropy-nightly"
-url = "https://pypi.anaconda.org/astropy/simple"
-explicit = true
+name = "pypi"
+url = "https://pypi.org/simple"
 
+# The photutils-dev commit is pinned by full SHA so the build is reproducible
+# and content-addressed. Move it by hand when a newer photutils main is wanted.
 [tool.uv.sources]
-photutils = { index = "astropy-nightly" }
+photutils = [
+    { git = "https://github.com/astropy/photutils", rev = "a6acb06a2cc1f910548ab60bd572b6dfaf865cc7", extra = "photutils-dev" },
+    { index = "pypi", extra = "photutils-release" },
+]
 
 # Hatch is building your package's wheel and sdist
 # This tells Hatch to build the package from the src/ directory.
@@ -269,9 +275,6 @@ ignore = [
     "E402",  # 'Module level import not at top of file'
     "F401",  # 'Imported but unused'
     "I001",  # 'Import block is un-sorted or un-formatted' ignored because we may have to import in a particular, not-alphabetical order.
-]
-".github/scripts/*.py" = [
-    "INP001",  # 'Implicit namespace package' ignored because CI helper scripts are not a package.
 ]
 "tests/**/*.py" = [
     "S101",  # 'Use of assert detected' ignored because we are using pytest.
