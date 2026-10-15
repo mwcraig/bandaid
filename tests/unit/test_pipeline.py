@@ -2097,7 +2097,7 @@ class TestProcessOneImage:
         """
         Every table's meta carries the solved plate scale and solve offset.
 
-        ``_qa_record_ok`` only sees the tables, so ``process_one_image`` stamps
+        ``qa_record_ok`` only sees the tables, so ``process_one_image`` stamps
         the solved scale (arcsec/px) and the solved-centre-to-header-centre
         separation (deg) on each one.
         """

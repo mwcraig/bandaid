@@ -15,7 +15,7 @@ from _helpers import (
     _stub_load_frame,
 )
 from astropy.coordinates import SkyCoord
-from astropy.table import MaskedColumn, Table
+from astropy.table import MaskedColumn
 from astropy.time import Time
 from dateutil import parser
 
@@ -1647,7 +1647,7 @@ class TestCheckFrameConsistency:
         assert "''s" not in message
         assert ("auto-detected" in message) is auto_detected
 
-    def test_inconsistent_frame_is_skipped_by_batch(self, mocker):
+    def test_inconsistent_frame_is_skipped_by_batch(self, mocker, by_filter):
         """process_batch skips an off-field frame and keeps the good one."""
         prep = self._prep()
 
@@ -1658,7 +1658,7 @@ class TestCheckFrameConsistency:
         mocker.patch("bandaid.scripts._load_frame", side_effect=_fake_load_frame)
         mocker.patch(
             "bandaid.scripts.process_one_image",
-            return_value={"TR": Table({"tot_count": [1.0]})},
+            return_value=by_filter(),
         )
         results = scripts.process_batch(
             ["good.fits", "bad.fits"],
@@ -1667,7 +1667,9 @@ class TestCheckFrameConsistency:
         )
         assert list(results) == ["good.fits"]
 
-    def test_mixing_guard_skip_is_recorded_and_batch_continues(self, mocker, tmp_path):
+    def test_mixing_guard_skip_is_recorded_and_batch_continues(
+        self, mocker, tmp_path, by_filter
+    ):
         """
         process_batch skips a guard-rejected frame and records it in the manifest.
 
@@ -1690,7 +1692,7 @@ class TestCheckFrameConsistency:
         mocker.patch("bandaid.scripts._load_frame", side_effect=_fake_load_frame)
         mocker.patch(
             "bandaid.scripts.process_one_image",
-            return_value={"TR": Table({"tot_count": [1.0]})},
+            return_value=by_filter(),
         )
         results = scripts.process_batch(
             ["bad.fits", "good.fits"],
@@ -1708,13 +1710,11 @@ class TestCheckFrameConsistency:
 
 
 class TestQaRecordOkForcedTargets:
-    """Unit tests for ``_qa_record_ok``'s ``n_forced_measured`` QA column."""
+    """Unit tests for ``qa_record_ok``'s ``n_forced_measured`` QA column."""
 
     def test_blank_without_forced_targets(self, by_filter):
         """``n_forced_measured`` is None when the batch has no forced targets."""
-        record = scripts._qa_record_ok(  # noqa: SLF001
-            "a.fits", by_filter(), forced_targets=None
-        )
+        record = scripts.qa_record_ok("a.fits", by_filter(), forced_targets=None)
 
         assert record["n_forced_measured"] is None
 
@@ -1726,9 +1726,7 @@ class TestQaRecordOkForcedTargets:
         forced = SkyCoord([10.0, 11.0], [20.0, 21.0], unit="deg")
         expected_matches = 2
 
-        record = scripts._qa_record_ok(  # noqa: SLF001
-            "a.fits", by_filter(), forced_targets=forced
-        )
+        record = scripts.qa_record_ok("a.fits", by_filter(), forced_targets=forced)
 
         assert record["n_forced_measured"] == expected_matches
 
@@ -1736,23 +1734,6 @@ class TestQaRecordOkForcedTargets:
         """A forced target far from every good row counts as 0, not None."""
         forced = SkyCoord([200.0], [-50.0], unit="deg")
 
-        record = scripts._qa_record_ok(  # noqa: SLF001
-            "a.fits", by_filter(), forced_targets=forced
-        )
+        record = scripts.qa_record_ok("a.fits", by_filter(), forced_targets=forced)
 
         assert record["n_forced_measured"] == 0
-
-    def test_none_when_needed_columns_unavailable(self, by_filter):
-        """Forced targets configured but no evaluable photometry columns -> None."""
-        # Strip the columns good_star_mask needs so `good` stays None; the
-        # missing-data blank must win over a misleadingly precise 0.
-        result = by_filter()
-        for table in result.values():
-            table.remove_columns(["tot_count", "count_err"])
-        forced = SkyCoord([10.0], [20.0], unit="deg")
-
-        record = scripts._qa_record_ok(  # noqa: SLF001
-            "a.fits", result, forced_targets=forced
-        )
-
-        assert record["n_forced_measured"] is None

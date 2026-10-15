@@ -8,10 +8,12 @@ photometry/centroiding points, the CNN centroiding model, and the Bayer masks.
 
 `prepare_batch` computes these once -- deriving the field pointing, plate scale,
 FOV, Bayer pattern, and (via one cheap detection pass on the first frame) the
-FWHM -- and returns them as a `BatchPrep` bundle. `process_batch` then loops the
-frames through `process_one_image`, reusing that bundle. The split keeps the
-once-per-batch work and the per-frame work as separate, single-trigger
-functions: no shared mutable state, no "is it done yet?" bookkeeping.
+FWHM -- and returns them as a `BatchPrep` bundle. `process_frame` photometers
+one frame against that bundle and reports the outcome as a `FrameResult`;
+`process_batch` loops the frames through it, writes the outputs and the QA
+manifest. The split keeps the once-per-batch work and the per-frame work as
+separate, single-trigger functions: no shared mutable state, no "is it done
+yet?" bookkeeping.
 """
 
 import csv
@@ -19,6 +21,7 @@ import glob
 import logging
 import time
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 import astropy.units as u
@@ -33,6 +36,7 @@ from .exceptions import (
     FrameError,
     FrameMetadataError,
     InstrumentDetectionError,
+    NoUsableStarsError,
     TooFewStarsError,
     WCSSolveError,
 )
@@ -51,7 +55,7 @@ from .photometry import (
     neighbor_contamination_flag_sky,
     process_one_image,
 )
-from .writers import write_starlist_set
+from .writers import usable_filters, write_starlist_set
 
 # Per-frame QA manifest written alongside the starlists in write-to-disk mode.
 # The columns are the run-quality signals the pipeline already computes; a
@@ -105,6 +109,17 @@ _CENTROID_MODEL_COLUMNS = (
     "plane_dy_slope_y",
 )
 
+# The manifest columns written rounded to 4 decimals; every other column is
+# written as recorded.
+_ROUNDED_COLUMNS = frozenset(
+    (
+        "pointing_offset_deg",
+        "wcs_pixscale",
+        "solve_offset_deg",
+        *_CENTROID_MODEL_COLUMNS,
+    )
+)
+
 # SNR at or above which a star counts toward the manifest's ``n_snr20`` solve-quality
 # proxy (separates good, degraded and false plate solves).
 QA_SNR_THRESHOLD = 20
@@ -112,7 +127,10 @@ QA_SNR_THRESHOLD = 20
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "QA_MANIFEST_COLUMNS",
     "BatchPrep",
+    "FrameOutcome",
+    "FrameResult",
     "LoadedFrame",
     "check_frame_consistency",
     "estimate_center_from_header",
@@ -120,6 +138,11 @@ __all__ = [
     "photometer_frames",
     "prepare_batch",
     "process_batch",
+    "process_frame",
+    "qa_record_error",
+    "qa_record_ok",
+    "qa_record_skipped",
+    "write_qa_manifest",
 ]
 
 # Filename endings treated as FITS frames when expanding directory/glob arguments.
@@ -1074,66 +1097,42 @@ def check_frame_consistency(file, header, prep):
     return offset
 
 
-def _dropped_filters(by_filter):
+def qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None):
     """
-    Report the filters `~bandaid.writers.write_starlist_set` would drop.
-
-    Mirrors the writer's own per-filter drop criterion (#109): a filter is
-    "dropped" when its table has no `good_star_mask` survivors. Runs over
-    every filter in ``by_filter`` (including L4), unlike the QA manifest's
-    representative-channel diagnostics, so a drop is visible even when the
-    representative channel itself is the one starved but a sibling filter
-    carried the frame.
+    Build the QA record for a frame that processed cleanly.
 
     Parameters
     ----------
+    file : str or Path
+        The processed input frame, or its label.
     by_filter : dict of {str: astropy.table.Table}
-        The ``process_one_image`` result for one frame.
+        The ``process_one_image`` result for this frame.
+    forced_targets : astropy.coordinates.SkyCoord or None, optional
+        The batch's forced targets (`BatchPrep.forced_targets`), used only to
+        compute ``n_forced_measured``. None (default) records it as blank.
+    pointing_offset : float or None, optional
+        The frame's header-center offset from the batch center in degrees, as
+        returned by `check_frame_consistency`. None (default) records it as
+        blank.
 
     Returns
     -------
-    str or None
-        Semicolon-joined dropped filter names in ``by_filter`` order; ``""``
-        when every filter was evaluable and none was dropped; ``None`` when
-        some filter's table lacks the columns needed to evaluate it (so
-        "nothing was dropped" can't be claimed).
-    """
-    dropped = []
-    all_evaluable = True
-    for filter_name, table in by_filter.items():
-        table_meta = table.meta
-        table_full_meta = table_meta.get("full_image_meta", {})
-        table_cols = set(table.colnames)
-        has_phot_cols = {"tot_count", "count_err", "x", "y"} <= table_cols
-        has_bounds = {"width", "height"} <= set(table_full_meta)
-        if not (has_phot_cols and has_bounds):
-            # Can't evaluate this filter's survivors -- don't claim it was
-            # dropped, but also don't claim the frame is clean.
-            all_evaluable = False
-            continue
-        table_good = good_star_mask(
-            table, table_full_meta, min_snr=table_meta.get("min_snr")
-        )
-        if not np.any(table_good):
-            dropped.append(filter_name)
-    if dropped:
-        return ";".join(dropped)
-    return "" if all_evaluable else None
+    dict
+        One record keyed by `QA_MANIFEST_COLUMNS`, every value a plain Python
+        ``str``, ``int``, ``float``, ``bool`` or None at full precision
+        (`write_qa_manifest` does the rounding for the CSV).
 
-
-def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None):
-    """
-    Build the QA manifest record for a frame that processed cleanly.
-
+    Notes
+    -----
     Diagnostics are pulled defensively from a representative channel (L4 if
-    present, else the first), so a frame missing a given column simply records a
-    blank for it rather than failing the whole manifest.
+    present, else the first), so a frame missing a given column simply records
+    a blank for it rather than failing the whole manifest.
 
-    ``dropped_filters`` (see `_dropped_filters`) is evaluated across every
-    filter, not just the representative channel, so the frame can still be
-    ``status`` ``"ok"`` (with even ``n_good_stars`` at 0) when the
-    representative channel itself is the one starved but a sibling filter
-    carried the frame.
+    ``dropped_filters`` names the filters `~bandaid.writers.usable_filters`
+    rejects, evaluated across every filter and not just the representative
+    channel, so the frame can still be ``status`` ``"ok"`` (with even
+    ``n_good_stars`` at 0) when the representative channel itself is the one
+    starved but a sibling filter carried the frame.
 
     ``n_centroid_drift`` and ``n_drift_rejected`` instrument the
     `centroid_drift` flag (see `centroid_drift_flag`) without wiring it into
@@ -1145,27 +1144,6 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
     high-proper-motion stars whose *catalog* position was stale, not on genuine
     drift.
 
-    Parameters
-    ----------
-    file : str or Path
-        The processed input frame.
-    by_filter : dict of {str: astropy.table.Table}
-        The ``process_one_image`` result for this frame.
-    forced_targets : astropy.coordinates.SkyCoord or None, optional
-        The batch's forced targets (`BatchPrep.forced_targets`), used only to
-        compute ``n_forced_measured``. None (default) records it as blank.
-    pointing_offset : float or None, optional
-        The frame's header-center offset from the batch center in degrees, as
-        returned by `check_frame_consistency`. Recorded rounded to 4 decimals;
-        None (default) records it as blank.
-
-    Returns
-    -------
-    dict
-        One manifest row keyed by `QA_MANIFEST_COLUMNS`.
-
-    Notes
-    -----
     ``n_forced_measured`` counts how many of ``forced_targets`` landed on a
     `good_star_mask`-passing row of the representative channel, matched by
     sky position within a generous 1 arcsec tolerance -- photometry runs at
@@ -1178,8 +1156,8 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
 
     ``wcs_pixscale`` (solved plate scale, arcsec/pixel) and ``solve_offset_deg``
     (solved frame center to the frame's own header center, in degrees) are read
-    from the table ``meta`` that `process_one_image` stamps, rounded to 4
-    decimals; either is blank when absent. ``n_snr20`` counts the
+    from the table ``meta`` that `process_one_image` stamps; either is blank
+    when absent. ``n_snr20`` counts the
     representative channel's `good_star_mask`-passing rows with ``snr >= 20``,
     and is blank under the same conditions as ``n_good_stars``.
 
@@ -1230,7 +1208,8 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
             snr = np.asarray(representative["snr"])
             n_snr20 = int(np.sum(good & (snr >= QA_SNR_THRESHOLD)))
 
-    dropped_filters_value = _dropped_filters(by_filter)
+    usable = usable_filters(by_filter)
+    dropped_filters_value = ";".join(name for name in by_filter if name not in usable)
 
     # The drift flag is computed from centroid_coords/aligned_coords/fwhm before
     # channel masking, so it is identical across TR/TG/TB/L4 and the
@@ -1260,9 +1239,9 @@ def _qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None)
         "sky_median": sky_median,
         "fwhm": meta.get("fwhm"),
         "wcs_solved": True,
-        "pointing_offset_deg": _round_or_none(pointing_offset),
-        "wcs_pixscale": _round_or_none(meta.get("wcs_pixscale")),
-        "solve_offset_deg": _round_or_none(meta.get("solve_offset_deg")),
+        "pointing_offset_deg": _float_or_none(pointing_offset),
+        "wcs_pixscale": _float_or_none(meta.get("wcs_pixscale")),
+        "solve_offset_deg": _float_or_none(meta.get("solve_offset_deg")),
         "n_good_stars": n_good_stars,
         "n_snr20": n_snr20,
         "dropped_filters": dropped_filters_value,
@@ -1287,15 +1266,32 @@ def _centroid_model_record(summary):
     Returns
     -------
     dict
-        The policy columns of the QA manifest, floats rounded to 4 decimals
+        The policy columns of the QA manifest, floats as plain Python floats
         and every value None (blank) when there is no summary.
     """
     summary = summary or {}
     record = {column: summary.get(column) for column in _CENTROID_MODEL_COLUMNS}
     return {
-        column: _round_or_none(value) if isinstance(value, float) else value
+        column: float(value) if isinstance(value, float) else value
         for column, value in record.items()
     }
+
+
+def _float_or_none(value):
+    """
+    Coerce a measured QA value to a plain Python float, passing None through.
+
+    Parameters
+    ----------
+    value : float or None
+        The value to record, or None when it was not measured.
+
+    Returns
+    -------
+    float or None
+        ``float(value)``, or None.
+    """
+    return None if value is None else float(value)
 
 
 def _round_or_none(value, ndigits=4):
@@ -1317,59 +1313,98 @@ def _round_or_none(value, ndigits=4):
     return None if value is None else round(float(value), ndigits)
 
 
-def _qa_record_failed(
-    file,
-    status,
-    *,
-    wcs_solved=None,
-    pointing_offset=None,
-    wcs_pixscale=None,
-    plane_rms=None,
-):
+def _qa_record_failed(file, status, *, pointing_offset=None):
     """
-    Build the QA manifest record for a skipped or errored frame.
+    Build the QA record of a frame that was not photometered, diagnostics blank.
 
     Parameters
     ----------
     file : str or Path
-        The input frame.
+        The input frame, or its label.
     status : str
         Outcome label, e.g. ``"skipped: WCSSolveError"`` or ``"error: KeyError"``.
-    wcs_solved : bool or None, optional
-        ``False`` for a WCS solve failure, otherwise ``None`` (the frame failed
-        before -- or unrelated to -- the solve, so it is left blank).
     pointing_offset : float or None, optional
         The frame's header-center offset from the batch center in degrees, when
         it got past the pointing comparison; None (default) leaves it blank.
-    wcs_pixscale : float or None, optional
-        The plate scale in arcsec/pixel measured on a solve rejected for its
-        scale; None (default) leaves it blank.
-    plane_rms : float or None, optional
-        The offset-plane rms in pixels measured on a frame rejected for it;
-        None (default) leaves it blank.
 
     Returns
     -------
     dict
-        One manifest row keyed by `QA_MANIFEST_COLUMNS`, diagnostics blank.
+        One record keyed by `QA_MANIFEST_COLUMNS`.
     """
     record = dict.fromkeys(QA_MANIFEST_COLUMNS)
     record["file"] = str(file)
     record["status"] = status
-    record["wcs_solved"] = wcs_solved
-    record["pointing_offset_deg"] = _round_or_none(pointing_offset)
-    record["wcs_pixscale"] = _round_or_none(wcs_pixscale)
-    record["plane_rms"] = _round_or_none(plane_rms)
+    record["pointing_offset_deg"] = _float_or_none(pointing_offset)
     return record
 
 
-def _record_frame_skip(file, exc, *, pointing_offset=None):
+def qa_record_skipped(file, exc, *, pointing_offset=None):
     """
-    Log an expected per-frame failure and build its ``skipped`` manifest row.
+    Build the QA record of a frame skipped for a `FrameError`.
 
-    Shared by `process_batch`'s two `FrameError` handlers (the per-frame
-    processing handler and the write-time handler) so a skip is logged and
-    recorded identically wherever the frame-quality error surfaces.
+    Parameters
+    ----------
+    file : str or Path
+        The input frame, or its label.
+    exc : FrameError
+        The frame-quality error the frame was skipped for.
+    pointing_offset : float or None, optional
+        The frame's header-center offset in degrees if it got past the
+        pointing comparison; None (default) leaves it blank. An offset carried
+        by ``exc`` itself (a pointing-drift rejection) takes precedence.
+
+    Returns
+    -------
+    dict
+        One ``skipped: <type>`` record keyed by `QA_MANIFEST_COLUMNS`.
+
+    Notes
+    -----
+    ``wcs_solved`` is False for a `WCSSolveError` and blank otherwise (the
+    frame failed before, or unrelated to, the solve). A solve rejected for
+    its scale still records the ``wcs_pixscale`` it measured, and a frame
+    rejected for its offset plane records its ``plane_rms``, read from the
+    error.
+    """
+    record = _qa_record_failed(
+        file,
+        f"skipped: {type(exc).__name__}",
+        pointing_offset=getattr(exc, "pointing_offset", pointing_offset),
+    )
+    record["wcs_solved"] = False if isinstance(exc, WCSSolveError) else None
+    record["wcs_pixscale"] = _float_or_none(getattr(exc, "measured_scale", None))
+    record["plane_rms"] = _float_or_none(getattr(exc, "plane_rms", None))
+    return record
+
+
+def qa_record_error(file, exc, *, pointing_offset=None):
+    """
+    Build the QA record of a frame that hit an unexpected error.
+
+    Parameters
+    ----------
+    file : str or Path
+        The input frame, or its label.
+    exc : Exception
+        The error, one that is not a `FrameError`.
+    pointing_offset : float or None, optional
+        The frame's header-center offset in degrees if it got past the
+        pointing comparison; None (default) leaves it blank.
+
+    Returns
+    -------
+    dict
+        One ``error: <type>`` record keyed by `QA_MANIFEST_COLUMNS`.
+    """
+    return _qa_record_failed(
+        file, f"error: {type(exc).__name__}", pointing_offset=pointing_offset
+    )
+
+
+def _warn_frame_skip(file, exc):
+    """
+    Log an expected per-frame failure, attaching the file to it when missing.
 
     Parameters
     ----------
@@ -1379,15 +1414,6 @@ def _record_frame_skip(file, exc, *, pointing_offset=None):
         The frame-quality error. Some raisers (``build_photometry_table``,
         ``eloy_to_starlist``) do not know the path, so it is attached here
         when missing.
-    pointing_offset : float or None, optional
-        The frame's header-center offset in degrees if it got past the
-        pointing comparison; None (default) leaves it blank. An offset carried
-        by ``exc`` itself (a pointing-drift rejection) takes precedence.
-
-    Returns
-    -------
-    dict
-        The frame's ``skipped: <type>`` QA manifest row.
     """
     # exc.reason is the human-readable headline; exc_info=exc captures the
     # traceback and chained __cause__ (e.g. the original twirl traceback) so
@@ -1395,14 +1421,6 @@ def _record_frame_skip(file, exc, *, pointing_offset=None):
     if exc.file is None:
         exc.file = file
     logger.warning("skipping %s: %s", file, exc.reason, exc_info=exc)
-    return _qa_record_failed(
-        file,
-        f"skipped: {type(exc).__name__}",
-        wcs_solved=False if isinstance(exc, WCSSolveError) else None,
-        pointing_offset=getattr(exc, "pointing_offset", pointing_offset),
-        wcs_pixscale=getattr(exc, "measured_scale", None),
-        plane_rms=getattr(exc, "plane_rms", None),
-    )
 
 
 def _log_frame_stages(file, record):
@@ -1436,7 +1454,7 @@ def _log_frame_stages(file, record):
     )
 
 
-def _log_frame_summary(file, record, started, idx, total):
+def _log_frame_summary(file, record, elapsed, idx, total):
     """
     Log one INFO line giving the outcome of a frame.
 
@@ -1446,8 +1464,8 @@ def _log_frame_summary(file, record, started, idx, total):
         The input frame.
     record : dict
         The frame's QA manifest row.
-    started : float
-        `time.perf_counter` reading taken when the frame began.
+    elapsed : float
+        Seconds the frame took.
     idx : int
         One-based position of the frame in the batch.
     total : int
@@ -1460,7 +1478,6 @@ def _log_frame_summary(file, record, started, idx, total):
     (``solved``, ``not solved`` or ``unknown``). Each line starts with the
     frame's ``[idx/total]`` position.
     """
-    elapsed = time.perf_counter() - started
     if record["status"] == "ok":
         fwhm = record.get("fwhm")
         logger.info(
@@ -1486,17 +1503,24 @@ def _log_frame_summary(file, record, started, idx, total):
         )
 
 
-def _write_qa_manifest(path, records):
+def write_qa_manifest(path, records):
     """
-    Write the per-frame QA records to a CSV manifest.
+    Write per-frame QA records to a CSV manifest.
 
     Parameters
     ----------
     path : pathlib.Path
         Destination CSV path.
     records : list of dict
-        Per-frame rows keyed by `QA_MANIFEST_COLUMNS`; ``None`` values are
-        written as empty cells.
+        Per-frame records keyed by `QA_MANIFEST_COLUMNS`, as built by
+        `qa_record_ok`, `qa_record_skipped` and `qa_record_error` (or carried
+        by `FrameResult.qa`).
+
+    Notes
+    -----
+    ``None`` is written as an empty cell. The pointing offset, solved scale,
+    solve offset and the plane columns are written rounded to 4 decimals;
+    every other value is written as recorded.
     """
     with path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=QA_MANIFEST_COLUMNS)
@@ -1504,10 +1528,38 @@ def _write_qa_manifest(path, records):
         for record in records:
             writer.writerow(
                 {
-                    key: "" if record.get(key) is None else record[key]
+                    key: _manifest_cell(key, record.get(key))
                     for key in QA_MANIFEST_COLUMNS
                 }
             )
+
+
+def _manifest_cell(column, value):
+    """
+    Format one QA record value for the CSV manifest.
+
+    Parameters
+    ----------
+    column : str
+        The manifest column.
+    value : object
+        The recorded value.
+
+    Returns
+    -------
+    object
+        ``""`` for None, the value rounded to 4 decimals for a float in one of
+        the rounded columns, otherwise the value itself.
+    """
+    if value is None:
+        return ""
+    if column in _ROUNDED_COLUMNS and isinstance(value, float):
+        return round(value, 4)
+    return value
+
+
+# process_batch's ``write_qa_manifest`` keyword shadows the function inside it.
+_write_manifest_csv = write_qa_manifest
 
 
 def _unique_output_paths(files, output_dir, suffix):
@@ -1601,6 +1653,239 @@ def _ensure_output_dirs(output_dir, output_paths):
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
 
+class FrameOutcome(StrEnum):
+    """How `process_frame` ended for a frame."""
+
+    OK = "ok"
+    SKIPPED = "skipped"
+    ERROR = "error"
+
+
+@dataclass(frozen=True)
+class FrameResult:
+    """
+    The outcome of `process_frame` for one frame.
+
+    Attributes
+    ----------
+    file : str
+        The frame as given to `process_frame` (its label when one was given).
+    outcome : FrameOutcome
+        ``ok`` when the frame was photometered, ``skipped`` for a
+        `FrameError` and ``error`` for an unexpected error.
+    by_filter : dict of {str: astropy.table.Table}
+        The photometry tables, one per filter; empty unless ``ok``.
+    dropped_filters : tuple of str
+        The filters of ``by_filter`` with no star surviving the quality cuts
+        (see `~bandaid.writers.usable_filters`); empty unless ``ok``.
+    error : BaseException or None
+        The error the frame was skipped or failed for; None when ``ok``.
+    qa : dict
+        The frame's QA record keyed by `QA_MANIFEST_COLUMNS`, every value a
+        plain Python ``str``, ``int``, ``float``, ``bool`` or None at full
+        precision, so it serialises as JSON as is.
+    pointing_offset : float or None
+        The frame's header-center offset from the batch center in degrees, or
+        None when the frame failed before it was known.
+    elapsed_s : float
+        Seconds the frame took, loading included.
+    schema_version : int
+        The version of this result's layout, 1.
+    """
+
+    file: str
+    outcome: FrameOutcome
+    by_filter: dict
+    dropped_filters: tuple
+    error: BaseException | None
+    qa: dict
+    pointing_offset: float | None
+    elapsed_s: float
+    schema_version: int = 1
+
+    @property
+    def ok(self):
+        """
+        Whether the frame was photometered.
+
+        Returns
+        -------
+        bool
+            True when ``outcome`` is ``ok``.
+        """
+        return self.outcome is FrameOutcome.OK
+
+    @property
+    def reason_type(self):
+        """
+        The class name of ``error``.
+
+        Returns
+        -------
+        str or None
+            The name, e.g. ``"WCSSolveError"``; None when ``ok``.
+        """
+        return None if self.error is None else type(self.error).__name__
+
+
+def _check_usable_filters(by_filter):
+    """
+    Name the filters with a surviving star, requiring at least one.
+
+    Parameters
+    ----------
+    by_filter : dict of {str: astropy.table.Table}
+        The ``process_one_image`` result for one frame.
+
+    Returns
+    -------
+    list of str
+        `~bandaid.writers.usable_filters` of ``by_filter``.
+
+    Raises
+    ------
+    NoUsableStarsError
+        If no filter keeps a star, so there is nothing to write.
+    """
+    usable = usable_filters(by_filter)
+    if not usable:
+        msg = "no stars survived photometry filtering in any filter"
+        raise NoUsableStarsError(msg)
+    return usable
+
+
+def process_frame(
+    file,
+    prep,
+    *,
+    user_specific_metadata=None,
+    frame=None,
+    label=None,
+    fail_fast=True,
+):
+    """
+    Photometer one frame against a shared `BatchPrep` and report the outcome.
+
+    Parameters
+    ----------
+    file : str or pathlib.Path
+        The FITS frame to process.
+    prep : BatchPrep
+        The reusable prep bundle from `prepare_batch`.
+    user_specific_metadata : dict or None, optional
+        User-specific metadata recorded with the output. None (default) is an
+        empty dict.
+    frame : LoadedFrame or None, optional
+        The already-loaded contents of ``file``. None (default) loads it here.
+    label : str or None, optional
+        The name to report the frame under, in `FrameResult.file` and the QA
+        record. None (default) uses ``str(file)``.
+    fail_fast : bool, optional
+        How to handle an *unexpected* error (one that is not a `FrameError`).
+        If True (default), re-raise it so genuine bugs surface. If False, log
+        it at ERROR and report it as an ``error`` outcome. Expected per-frame
+        failures (`FrameError` and its subclasses) are always logged and
+        reported as ``skipped`` regardless of this flag.
+
+    Returns
+    -------
+    FrameResult
+        The frame's outcome, tables and QA record.
+
+    Raises
+    ------
+    Exception
+        Any unexpected (non-`FrameError`) error raised while processing the
+        frame, when ``fail_fast`` is True (the default).
+
+    Notes
+    -----
+    The frame is checked against the batch (`check_frame_consistency`),
+    aligned and photometered (`process_one_image`), and then checked for
+    stars surviving the quality cuts: a frame with none in any filter is
+    reported ``skipped`` for `NoUsableStarsError` here, so the outcome is
+    final on return and does not change when the tables are written.
+
+    In every table of an ``ok`` result the ``ra`` and ``dec`` columns are
+    the very ``float64`` values of ``prep.photometry_coords.ra.degree`` and
+    ``prep.photometry_coords.dec.degree``, row for row, with no
+    `~astropy.coordinates.SkyCoord` transform or unit conversion in between,
+    so they are an exact join key to the batch's photometry targets. A copy
+    that went through a text format such as CSV should be matched by
+    tolerance instead.
+    """
+    started = time.perf_counter()
+    name = str(file) if label is None else label
+    # Stays None for a frame that fails before its pointing offset is known.
+    pointing_offset = None
+    try:
+        if frame is None:
+            frame = _load_frame(file)
+        pointing_offset = check_frame_consistency(file, frame.header, prep)
+        by_filter = process_one_image(
+            file,
+            {} if user_specific_metadata is None else user_specific_metadata,
+            prep.radecs,
+            prep.cnn,
+            prep.bayer_masks,
+            config=prep.config,
+            input_photometry_coords=prep.photometry_coords,
+            input_gaia_g=prep.gaia_g,
+            g_cut=prep.g_cut,
+            frame=frame,
+            build_l4=prep.build_l4,
+        )
+        # The raw pixel array is not needed past this point; drop the
+        # reference now so it does not stay alive through the caller's write
+        # step.
+        del frame
+        usable = _check_usable_filters(by_filter)
+    except FrameError as exc:
+        # Expected per-frame failure: report the skip.
+        _warn_frame_skip(file, exc)
+        return FrameResult(
+            name,
+            FrameOutcome.SKIPPED,
+            {},
+            (),
+            exc,
+            qa_record_skipped(name, exc, pointing_offset=pointing_offset),
+            pointing_offset,
+            time.perf_counter() - started,
+        )
+    except Exception as exc:
+        # Unexpected error (a bug, not a bad frame): surface it by default;
+        # only report-and-return when the caller opted into robust mode.
+        if fail_fast:
+            raise
+        logger.exception("unexpected error on %s", file)
+        return FrameResult(
+            name,
+            FrameOutcome.ERROR,
+            {},
+            (),
+            exc,
+            qa_record_error(name, exc, pointing_offset=pointing_offset),
+            pointing_offset,
+            time.perf_counter() - started,
+        )
+    return FrameResult(
+        name,
+        FrameOutcome.OK,
+        by_filter,
+        tuple(filter_name for filter_name in by_filter if filter_name not in usable),
+        None,
+        qa_record_ok(
+            name,
+            by_filter,
+            forced_targets=prep.forced_targets,
+            pointing_offset=pointing_offset,
+        ),
+        pointing_offset,
+        time.perf_counter() - started,
+    )
+
+
 def process_batch(
     files,
     prep,
@@ -1645,18 +1930,16 @@ def process_batch(
         in the result mapping (see `bandaid.writers`). Default
         `write_starlist_set` (one `StarListSet` JSON per frame). Ignored in
         in-memory mode (``output_dir`` is None). A `FrameError` raised by the
-        writer (e.g. the default writer's `NoUsableStarsError` when no star
-        survives filtering in any filter) marks the frame skipped and the batch
-        continues;
-        any other writer exception is treated as a systemic write failure and
+        writer marks the frame skipped and the batch continues; any other
+        writer exception is treated as a systemic write failure and
         propagates, aborting the run.
     fail_fast : bool, optional
         How to handle an *unexpected* error (one that is not a `FrameError`)
-        while processing a frame. If True (default), re-raise it so genuine
-        bugs surface. If False, log it at ERROR and continue with the next
-        frame -- the robust mode for unattended runs. Expected per-frame
-        failures (`FrameError` and its subclasses) are always logged and
-        skipped regardless of this flag.
+        while processing a frame. If True (default), it propagates out of
+        `process_frame` so genuine bugs surface. If False, log it at ERROR
+        and continue with the next frame -- the robust mode for unattended
+        runs. Expected per-frame failures (`FrameError` and its subclasses)
+        are always logged and skipped regardless of this flag.
     write_qa_manifest : bool, optional
         Whether to write the per-frame QA manifest in write-to-disk mode.
         Default True -- the manifest is cheap and makes a degrading night
@@ -1678,8 +1961,9 @@ def process_batch(
         in-memory mode (``output_dir`` is None) the value is the
         ``{filter: Table}`` photometry result; in write-to-disk mode the value
         is the written output ``Path`` (the tables are not held in memory).
-        Frames that raise a `FrameError` (too few stars, unsolvable WCS, ...)
-        are skipped with a logged warning and omitted from the result.
+        Frames that raise a `FrameError` (too few stars, unsolvable WCS, no
+        star surviving the quality cuts in any filter, ...) are skipped with a
+        logged warning and omitted from the result.
 
         In write-to-disk mode, unless ``write_qa_manifest`` is False, a
         per-frame QA manifest (``qa_manifest_name``) is also written to
@@ -1687,17 +1971,12 @@ def process_batch(
         (``ok`` / ``skipped: <FrameError type>`` / ``error: <type>``) and the
         available run-quality signals (`QA_MANIFEST_COLUMNS`).
 
-    Raises
-    ------
-    Exception
-        Any unexpected (non-`FrameError`) error raised while processing a frame
-        is re-raised when ``fail_fast`` is True (the default).
-
     Notes
     -----
-    Each frame is opened exactly once: the first frame reuses ``first_frame``
-    when the caller provides it, and every other frame is loaded fresh here
-    (issue #44).
+    Each frame goes through `process_frame`; this function adds the output
+    naming, the writer and the QA manifest. Each frame is opened exactly once:
+    the first frame reuses ``first_frame`` when the caller provides it, and
+    every other frame is loaded fresh here (issue #44).
     """
     results = {}
     # One QA record per frame (ok/skipped/error), written to a manifest at the
@@ -1723,101 +2002,48 @@ def process_batch(
         "memory" if output_dir is None else output_dir,
     )
     for idx, file in enumerate(files, 1):
-        started = time.perf_counter()
         # Per-frame progress. Invisible by default (the package logger has only a
         # NullHandler); `bandaid process --verbose` routes it to the terminal via
-        # configure_logging, alongside the skip/error warnings logged below.
+        # configure_logging, alongside the skip/error warnings process_frame logs.
         logger.debug("processing %d/%d: %s", idx, len(files), file)
-        # Stays None for a frame that fails before its pointing offset is known.
-        pointing_offset = None
-        try:
-            # Reuse the caller's already-opened first frame when given, else
-            # load it now -- exactly one open per frame for the whole run
-            # (issue #44).
-            frame = (
-                first_frame
-                if idx == 1 and first_frame is not None
-                else _load_frame(file)
-            )
-            pointing_offset = check_frame_consistency(file, frame.header, prep)
-            by_filter = process_one_image(
-                file,
-                user_specific_metadata,
-                prep.radecs,
-                prep.cnn,
-                prep.bayer_masks,
-                config=prep.config,
-                input_photometry_coords=prep.photometry_coords,
-                input_gaia_g=prep.gaia_g,
-                g_cut=prep.g_cut,
-                frame=frame,
-                build_l4=prep.build_l4,
-            )
-            # The raw pixel array is not needed past this point; drop the
-            # reference now so it does not stay alive through the write step
-            # (matching the pre-#44 per-frame peak-memory profile).
-            del frame
-        except FrameError as exc:
-            # Expected per-frame failure: skip the frame and keep going.
-            manifest_records.append(
-                _record_frame_skip(file, exc, pointing_offset=pointing_offset)
-            )
-            _log_frame_summary(file, manifest_records[-1], started, idx, len(files))
-            continue
-        except Exception as exc:
-            # Unexpected error (a bug, not a bad frame): surface it by default;
-            # only swallow-and-continue when the caller opted into robust mode.
-            if fail_fast:
-                raise
-            logger.exception("unexpected error on %s", file)
-            manifest_records.append(
-                _qa_record_failed(
-                    file,
-                    f"error: {type(exc).__name__}",
-                    pointing_offset=pointing_offset,
-                )
-            )
-            _log_frame_summary(file, manifest_records[-1], started, idx, len(files))
-            continue
-        else:
-            # The frame processed cleanly. Writing its output is deliberately
-            # outside the try above: a write failure (bad output_dir,
-            # permissions, full disk) is systemic, not a property of this
-            # frame, so it must abort the run rather than be skipped as a
-            # "bad frame". A writer can still raise a frame-quality error at
-            # write time, though -- the default writer raises
-            # NoUsableStarsError when no star survives filtering in any
-            # filter (#78) -- so
-            # split on exception type: a FrameError is this frame's problem
-            # and is skipped like any other, everything else propagates.
-            manifest_records.append(
-                _qa_record_ok(
-                    file,
-                    by_filter,
-                    forced_targets=prep.forced_targets,
-                    pointing_offset=pointing_offset,
-                )
-            )
-            _log_frame_stages(file, manifest_records[-1])
+        # Reuse the caller's already-opened first frame when given -- exactly
+        # one open per frame for the whole run (issue #44).
+        result = process_frame(
+            file,
+            prep,
+            user_specific_metadata=user_specific_metadata,
+            frame=first_frame if idx == 1 else None,
+            fail_fast=fail_fast,
+        )
+        record = result.qa
+        if result.ok:
+            _log_frame_stages(file, record)
             if output_dir is not None:
+                # A write failure (bad output_dir, permissions, full disk) is
+                # systemic, not a property of this frame, so it must abort the
+                # run rather than be skipped as a "bad frame". A writer can
+                # still raise a frame-quality error at write time, though, so
+                # split on exception type: a FrameError is this frame's
+                # problem and is skipped like any other, everything else
+                # propagates.
                 try:
-                    results[file] = write_frame(by_filter, output_paths[file])
+                    results[file] = write_frame(result.by_filter, output_paths[file])
                     logger.debug("%s: wrote %s", file, results[file])
                 except FrameError as exc:
-                    # Replace the provisional ok record appended above with
-                    # the skip, so the manifest keeps one row per frame.
-                    manifest_records[-1] = _record_frame_skip(
-                        file, exc, pointing_offset=pointing_offset
+                    _warn_frame_skip(file, exc)
+                    record = qa_record_skipped(
+                        file, exc, pointing_offset=result.pointing_offset
                     )
             else:
-                results[file] = by_filter
-            _log_frame_summary(file, manifest_records[-1], started, idx, len(files))
+                results[file] = result.by_filter
+        manifest_records.append(record)
+        _log_frame_summary(file, record, result.elapsed_s, idx, len(files))
 
     # Persist the per-frame QA manifest next to the starlists. Only written in
     # write-to-disk mode (in-memory mode has no directory to write it to) and
     # only when the caller has not opted out.
     if write_manifest:
-        _write_qa_manifest(Path(output_dir) / qa_manifest_name, manifest_records)
+        _write_manifest_csv(Path(output_dir) / qa_manifest_name, manifest_records)
         logger.debug("wrote the QA manifest to %s", Path(output_dir) / qa_manifest_name)
     logger.info("finished: %d of %d frames photometered", len(results), len(files))
     return results
