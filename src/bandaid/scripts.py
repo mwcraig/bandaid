@@ -20,6 +20,7 @@ import csv
 import glob
 import logging
 import time
+import traceback
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -60,7 +61,9 @@ from .writers import usable_filters, write_starlist_set
 # Per-frame QA manifest written alongside the starlists in write-to-disk mode.
 # The columns are the run-quality signals the pipeline already computes; a
 # degrading night (clouds, rising airmass) shows up at a glance and the manifest
-# enables a future partial-batch resume.
+# enables a future partial-batch resume. QA_MANIFEST_COLUMNS is also the key set
+# of every FrameResult.qa record: adding, removing or renaming a column bumps
+# FrameResult.schema_version.
 QA_MANIFEST_FILENAME = "qa_manifest.csv"
 QA_MANIFEST_COLUMNS = (
     "file",
@@ -92,7 +95,6 @@ QA_MANIFEST_COLUMNS = (
     "plane_dy_slope_x",
     "plane_dy_slope_y",
 )
-
 # The QA manifest columns filled from a frame's centroid-policy summary.
 _CENTROID_MODEL_COLUMNS = (
     "g_cut",
@@ -1638,7 +1640,12 @@ class FrameResult:
         ``ok`` when the frame was photometered, ``skipped`` for a
         `FrameError` and ``error`` for an unexpected error.
     by_filter : dict of {str: astropy.table.Table}
-        The photometry tables, one per filter; empty unless ``ok``.
+        The photometry tables, one per filter; empty unless ``ok``. The
+        tables are unfiltered: every measured target has a row, whether or
+        not it passes the quality cuts. A consumer that wants only the rows
+        the ``.star`` writer keeps applies
+        ``good_star_mask(table, table.meta["full_image_meta"],
+        min_snr=table.meta.get("min_snr"))`` itself.
     dropped_filters : tuple of str
         The filters of ``by_filter`` with no star surviving the quality cuts
         (see `~bandaid.writers.usable_filters`); empty unless ``ok``.
@@ -1660,15 +1667,17 @@ class FrameResult:
     -----
     ``qa`` and ``by_filter`` are ordinary mutable containers handed to the
     caller. The dataclass is frozen, so the fields cannot be rebound, but their
-    contents can be changed; `process_batch` uses ``qa`` as the manifest row as
-    is.
+    contents can be changed. `process_batch` writes ``qa`` as the frame's
+    manifest row, except for a frame whose write raises a `FrameError`, which
+    gets a ``skipped`` row instead.
 
     The values of ``qa`` are plain Python types, but a float may be non-finite:
     ``g_cut`` is ``inf`` when fewer targets than the CNN class size fall on the
-    frame, and ``fwhm`` can be NaN. Python's `json.dumps` writes them as
-    ``Infinity`` and ``NaN``, which JavaScript's ``JSON.parse`` rejects, so a
-    consumer that needs strict JSON should map non-finite floats to null
-    (``json.dumps(qa, allow_nan=False)`` raises instead).
+    frame, and ``fwhm`` and ``solve_offset_deg`` can be NaN. Python's
+    `json.dumps` writes them as ``Infinity`` and ``NaN``, which JavaScript's
+    ``JSON.parse`` rejects, so a consumer that needs strict JSON should map
+    non-finite floats to null (``json.dumps(qa, allow_nan=False)`` raises
+    instead).
     """
 
     file: str
@@ -1733,8 +1742,9 @@ def process_frame(
     frame : LoadedFrame or None, optional
         The already-loaded contents of ``file``. None (default) loads it here.
     label : str or os.PathLike or None, optional
-        The name to report the frame under, in `FrameResult.file` and the QA
-        record. None (default) uses ``str(file)``.
+        The name to report the frame under: in `FrameResult.file`, the QA
+        record, the log lines and the ``file`` of a raised `FrameError`. None
+        (default) uses ``str(file)``.
     fail_fast : bool, optional
         How to handle an *unexpected* error (one that is not a `FrameError`).
         If True (default), re-raise it so genuine bugs surface. If False, log
@@ -1758,8 +1768,16 @@ def process_frame(
     The frame is checked against the batch (`check_frame_consistency`),
     aligned and photometered (`process_one_image`), and then checked for
     stars surviving the quality cuts: a frame with none in any filter is
-    reported ``skipped`` for `NoUsableStarsError` here, so the outcome is
-    final on return and does not change when the tables are written.
+    reported ``skipped`` for `NoUsableStarsError` here rather than by the
+    writer. The one `FrameError` a write can still raise afterwards is
+    `StarListValidationError`, a row the AAVSO starlist schema rejects.
+
+    ``file`` is opened only when ``frame`` is None; with a loaded frame it is
+    just the name the frame is reported under, like ``label``.
+
+    A ``skipped`` or ``error`` result keeps its error with the traceback, but
+    the traceback's frames are cleared and the loaded frame is dropped, so
+    holding on to the result does not hold the pixel data.
 
     In every table of an ``ok`` result the ``ra`` and ``dec`` of a row are
     the very ``float64`` values of ``prep.photometry_coords.ra.degree`` and
@@ -1777,9 +1795,11 @@ def process_frame(
     try:
         if frame is None:
             frame = _load_frame(file)
-        pointing_offset = check_frame_consistency(file, frame.header, prep)
+        # From here on the frame is loaded, so `file` is only its name:
+        # report it under the label.
+        pointing_offset = check_frame_consistency(name, frame.header, prep)
         by_filter = process_one_image(
-            file,
+            name,
             {} if user_specific_metadata is None else user_specific_metadata,
             prep.radecs,
             prep.cnn,
@@ -1791,10 +1811,6 @@ def process_frame(
             frame=frame,
             build_l4=prep.build_l4,
         )
-        # The raw pixel array is not needed past this point; drop the
-        # reference now so it does not stay alive through the caller's write
-        # step.
-        del frame
         qa = qa_record_ok(
             name,
             by_filter,
@@ -1813,7 +1829,13 @@ def process_frame(
             raise NoUsableStarsError(msg)  # noqa: TRY301
     except FrameError as exc:
         # Expected per-frame failure: report the skip.
-        _warn_frame_skip(file, exc)
+        _warn_frame_skip(name, exc)
+        # The result keeps the error, so clear the locals of the frames its
+        # traceback holds (the line numbers still format): they reference the
+        # pixel array and the images derived from it.
+        traceback.clear_frames(exc.__traceback__)
+        # A pointing-drift rejection carries the offset on the error.
+        pointing_offset = getattr(exc, "pointing_offset", pointing_offset)
         return FrameResult(
             file=name,
             outcome=FrameOutcome.SKIPPED,
@@ -1829,7 +1851,9 @@ def process_frame(
         # only report-and-return when the caller opted into robust mode.
         if fail_fast:
             raise
-        logger.exception("unexpected error on %s", file)
+        logger.exception("unexpected error on %s", name)
+        # As for a skip: keep the error, not the pixels.
+        traceback.clear_frames(exc.__traceback__)
         return FrameResult(
             file=name,
             outcome=FrameOutcome.ERROR,
@@ -1840,6 +1864,12 @@ def process_frame(
             pointing_offset=pointing_offset,
             elapsed_s=time.perf_counter() - started,
         )
+    finally:
+        # The pixel array is not needed past the photometry; drop this
+        # function's reference however the frame ended, so it stays alive
+        # neither through the caller's write step nor on a kept error's
+        # traceback (this frame is executing, so clear_frames leaves it).
+        frame = None
     return FrameResult(
         file=name,
         outcome=FrameOutcome.OK,

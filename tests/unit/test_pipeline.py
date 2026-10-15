@@ -40,7 +40,7 @@ from bandaid.exceptions import (
     WCSSolveError,
 )
 from bandaid.image2sl_qt import bayer_balance_image, generate_bayer_masks
-from bandaid.instruments import register_instrument
+from bandaid.instruments import load_instrument, register_instrument
 from bandaid.photometry import (
     DETECTION_OPENING,
     MIN_DETECTED_STARS,
@@ -65,7 +65,7 @@ from bandaid.photometry import (
 from bandaid.photometry import (
     centroid_stars as real_centroid_stars,
 )
-from bandaid.scripts import estimate_center_from_header
+from bandaid.scripts import BatchPrep, estimate_center_from_header, process_frame
 
 
 def _prepare_without_model(file, radecs, cnn, **kwargs):  # noqa: ANN003
@@ -2094,39 +2094,42 @@ class TestProcessOneImage:
         np.testing.assert_allclose(result["L4"]["tot_count"], rgb_sum)
 
     def test_ra_dec_are_the_input_coordinates_verbatim(self, l4_frame):
-        """Each row's ``ra``/``dec`` are an input target's float64 values, untouched."""
+        """Each row's ``ra``/``dec`` are its target's float64 values, in input order."""
         path, masks = l4_frame
-        # Targets a few arcminutes around the stubbed WCS center, well inside
-        # the frame and its edge margin.
-        center_ra, center_dec = _SYNTHETIC_FIELD_CENTER
-        targets = SkyCoord(
-            center_ra + np.array([0.0, 0.01, 0.0, -0.02, 0.03]),
-            center_dec + np.array([0.0, 0.0, 0.01, 0.02, -0.01]),
-            unit="deg",
+        # The five synthetic sources, so every row survives the quality cuts,
+        # plus a target 5 px from the top edge of the 480 px frame, inside
+        # the 10 px edge margin, so it is dropped before measurement. Sky
+        # positions come from the same stubbed TAN WCS the solve returns.
+        wcs = _make_tan_wcs(crval=_SYNTHETIC_FIELD_CENTER)
+        xs, ys = zip(*_SOURCE_POSITIONS, (200, 475), strict=True)
+        on_sky = wcs.pixel_to_world(
+            np.array(xs, dtype=float), np.array(ys, dtype=float)
         )
-        config = PhotometryConfig(centroid=CentroidConfig(model_faint_positions=False))
+        targets = SkyCoord(on_sky.ra.degree, on_sky.dec.degree, unit="deg")
+        keep = np.array([True, True, True, True, True, False])
+        prep = BatchPrep(
+            radecs=_REF_RADECS,
+            photometry_coords=targets,
+            cnn=None,
+            bayer_masks=masks,
+            center=_SYNTHETIC_FIELD_CENTER,
+            fov_rad=1.0,
+            shape=(480, 480),
+            config=PhotometryConfig(
+                instrument=load_instrument("Seestar50"),
+                centroid=CentroidConfig(model_faint_positions=False),
+            ),
+        )
 
-        result = process_one_image(
-            path,
-            {},
-            _REF_RADECS,
-            None,
-            masks,
-            config=config,
-            input_photometry_coords=targets,
-        )
+        result = process_frame(path, prep)
 
-        inputs = set(
-            zip(targets.ra.degree.tolist(), targets.dec.degree.tolist(), strict=True)
-        )
-        for table in result.values():
-            assert len(table) > 0
+        assert result.ok, result.error
+        assert result.qa["n_edge_dropped"] == 1
+        for table in result.by_filter.values():
             assert table["ra"].dtype == np.float64
             assert table["dec"].dtype == np.float64
-            measured = set(
-                zip(table["ra"].tolist(), table["dec"].tolist(), strict=True)
-            )
-            assert measured <= inputs
+            np.testing.assert_array_equal(table["ra"], targets.ra.degree[keep])
+            np.testing.assert_array_equal(table["dec"], targets.dec.degree[keep])
 
     def test_tables_carry_the_solved_scale_and_offset(self, l4_frame):
         """

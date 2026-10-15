@@ -4,6 +4,7 @@ import csv
 import dataclasses
 import json
 import logging
+import weakref
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +20,7 @@ from bandaid.exceptions import (
     FrameError,
     FrameMetadataError,
     NoUsableStarsError,
+    StarListValidationError,
     TooFewStarsError,
     WCSScaleError,
     WCSSolveError,
@@ -31,6 +33,7 @@ from bandaid.scripts import (
     process_frame,
     write_qa_manifest,
 )
+from bandaid.writers import write_starlist_set
 
 
 def _read_manifest(tmp_path):
@@ -1120,41 +1123,40 @@ class TestProcessBatchToDisk:
         StarListSet.model_validate_json((tmp_path / "frame1.star").read_text())
 
     def test_writer_frame_error_skips_frame_not_batch(
-        self, mocker, tmp_path, by_filter
+        self, patched_process_one_image, tmp_path, by_filter
     ):
-        """A no-usable-stars frame at write time is skipped, not batch-fatal (#78)."""
+        """A ``FrameError`` raised at write time is skipped, not batch-fatal."""
+        patched_process_one_image(by_filter())
 
-        def _maybe(file, *_args: object, **_kwargs: object):
-            result = by_filter()
-            if file == "starless.fits":
-                # No row survives good_star_mask (it requires tot_count > 0),
-                # so the default writer raises NoUsableStarsError at write time.
-                for table in result.values():
-                    table["tot_count"] = [-1.0, 0.0]
-            return result
+        def rejecting(frame_result, output_path):
+            # The one FrameError the default writer can still raise after
+            # process_frame reported the frame ok: a schema rejection.
+            if output_path.stem == "rejected":
+                msg = "schema rejected a row"
+                raise StarListValidationError(msg)
+            return write_starlist_set(frame_result, output_path)
 
-        mocker.patch("bandaid.scripts.process_one_image", side_effect=_maybe)
-
-        inputs = ["starless.fits", "good.fits"]
+        inputs = ["rejected.fits", "good.fits"]
         results = scripts.process_batch(
             inputs,
             _dummy_prep(),
             user_specific_metadata={},
             output_dir=tmp_path,
+            write_frame=rejecting,
         )
 
-        # The batch survives the starless frame: the later frame is still
+        # The batch survives the rejected frame: the later frame is still
         # written, and only it appears in the results.
         assert results == {"good.fits": tmp_path / "good.star"}
         assert _starlist_names(tmp_path) == ["good.star"]
 
         rows = _read_manifest(tmp_path)
 
-        # One row per input frame: the starless frame's provisional ok record
-        # is replaced by the skip, not duplicated alongside it.
+        # One row per input frame: the rejected frame's ok record from
+        # process_frame is replaced by the skip, not duplicated alongside it.
         by_file = {row["file"]: row for row in rows}
         assert len(rows) == len(by_file) == len(inputs)
-        assert by_file["starless.fits"]["status"] == "skipped: NoUsableStarsError"
+        assert by_file["rejected.fits"]["status"] == "skipped: StarListValidationError"
         assert by_file["good.fits"]["status"] == "ok"
 
     def test_writer_non_frame_error_still_propagates(
@@ -1249,6 +1251,130 @@ class TestProcessFrame:
         assert by_path.qa["file"] == str(Path("night/a.fits"))
         assert labelled.file == str(Path("p/q.fits"))
         assert labelled.qa["file"] == str(Path("p/q.fits"))
+
+    def test_label_names_the_frame_on_the_error_and_in_the_log(self, mocker, caplog):
+        """A label, not the path, reaches the skipped error, the log and the steps."""
+        error = TooFewStarsError("too few stars")
+        process_one_image = mocker.patch(
+            "bandaid.scripts.process_one_image", side_effect=error
+        )
+        consistency = mocker.patch(
+            "bandaid.scripts.check_frame_consistency", return_value=0.0
+        )
+
+        with caplog.at_level(logging.WARNING, logger="bandaid"):
+            result = process_frame(
+                "/data/night/a.fits",
+                _dummy_prep(),
+                user_specific_metadata={},
+                label="night/a.fits",
+            )
+
+        assert result.error.file == "night/a.fits"
+        assert "skipping night/a.fits: too few stars" in caplog.text
+        assert "/data/" not in caplog.text
+        assert consistency.call_args.args[0] == "night/a.fits"
+        assert process_one_image.call_args.args[0] == "night/a.fits"
+
+    def test_label_names_the_frame_in_the_unexpected_error_log(self, mocker, caplog):
+        """The ``error`` outcome's log line names the label too."""
+        mocker.patch(
+            "bandaid.scripts.process_one_image", side_effect=RuntimeError("a bug")
+        )
+
+        with caplog.at_level(logging.ERROR, logger="bandaid"):
+            process_frame(
+                "/data/night/a.fits",
+                _dummy_prep(),
+                user_specific_metadata={},
+                label="night/a.fits",
+                fail_fast=False,
+            )
+
+        assert "unexpected error on night/a.fits" in caplog.text
+        assert "/data/" not in caplog.text
+
+    @pytest.mark.parametrize(
+        ("error", "fail_fast"),
+        [(TooFewStarsError("too few stars"), True), (RuntimeError("a bug"), False)],
+        ids=["skipped", "error"],
+    )
+    def test_failed_frame_does_not_keep_the_pixels_alive(
+        self, mocker, error, fail_fast
+    ):
+        """A skip or error releases the pixels; the error keeps its traceback."""
+        data = np.zeros((2, 2))
+        pixels = weakref.ref(data)
+        frame = scripts.LoadedFrame(data, dict(_CONSISTENT_HEADER))
+
+        def failing(_file, *_args: object, frame, **_kwargs: object):
+            # A local holding the pixels, as the real pipeline's frames do; an
+            # uncleared traceback would keep it, and the array, alive.
+            held = frame.data
+            assert held.shape == (2, 2)
+            raise error
+
+        mocker.patch("bandaid.scripts.process_one_image", new=failing)
+
+        result = process_frame(
+            "a.fits",
+            _dummy_prep(),
+            user_specific_metadata={},
+            frame=frame,
+            fail_fast=fail_fast,
+        )
+        del data, frame
+
+        assert result.error is error
+        assert result.error.__traceback__ is not None
+        assert pixels() is None
+
+    def test_pointing_drift_skip_reports_the_offset(self, mocker):
+        """A drift rejection's offset reaches both the result and its QA row."""
+        offset = 1.5
+        error = FrameError("frame pointing drifted")
+        error.pointing_offset = offset
+        mocker.patch("bandaid.scripts.check_frame_consistency", side_effect=error)
+
+        result = process_frame("a.fits", _dummy_prep(), user_specific_metadata={})
+
+        assert result.outcome is FrameOutcome.SKIPPED
+        assert result.pointing_offset == offset
+        assert result.qa["pointing_offset_deg"] == offset
+
+    def test_qa_manifest_columns_are_the_schema(self):
+        """The manifest columns are fixed; a change here bumps ``schema_version``."""
+        assert scripts.QA_MANIFEST_COLUMNS == (
+            "file",
+            "status",
+            "n_detected",
+            "sky_median",
+            "fwhm",
+            "wcs_solved",
+            "pointing_offset_deg",
+            "wcs_pixscale",
+            "solve_offset_deg",
+            "n_good_stars",
+            "n_snr20",
+            "dropped_filters",
+            "n_centroid_drift",
+            "n_drift_rejected",
+            "n_forced_measured",
+            "n_edge_dropped",
+            "g_cut",
+            "n_cnn_class",
+            "plane_fallback",
+            "plane_n_used",
+            "plane_n_clipped",
+            "plane_rms",
+            "plane_dx_center",
+            "plane_dy_center",
+            "plane_dx_slope_x",
+            "plane_dx_slope_y",
+            "plane_dy_slope_x",
+            "plane_dy_slope_y",
+        )
+        assert FrameResult.schema_version == 1
 
     def test_dropped_filters_names_the_starved_filter(
         self, patched_process_one_image, by_filter
@@ -1430,21 +1556,39 @@ class TestProcessFrame:
             result.outcome = FrameOutcome.ERROR
 
     def test_qa_is_json_native_for_every_outcome(self, mocker, by_filter):
-        """The QA row serialises as JSON whichever way the frame ended."""
+        """Every QA value is a plain Python type, keyed exactly by the columns."""
+        drift = FrameError("frame pointing drifted")
+        drift.pointing_offset = np.float64(1.5)
+        # The skipped cases carry numpy scalars on the error, as the real
+        # raisers stamp them, so the record builder's coercion is exercised.
         mocker.patch(
             "bandaid.scripts.process_one_image",
             side_effect=[
                 by_filter(),
-                WCSSolveError("twirl found no match"),
+                WCSScaleError("out of tolerance", measured_scale=np.float64(2.4)),
+                CentroidPlaneError("plane too loose", plane_rms=np.float64(0.3)),
                 RuntimeError("a real bug"),
             ],
         )
         prep = _dummy_prep()
+        results = [
+            process_frame(file, prep, user_specific_metadata={}, fail_fast=False)
+            for file in ("ok.fits", "scale.fits", "plane.fits", "error.fits")
+        ]
+        mocker.patch("bandaid.scripts.check_frame_consistency", side_effect=drift)
+        results.append(process_frame("drift.fits", prep, user_specific_metadata={}))
 
-        for file in ("ok.fits", "skipped.fits", "error.fits"):
-            result = process_frame(
-                file, prep, user_specific_metadata={}, fail_fast=False
-            )
+        assert [r.outcome for r in results] == [
+            FrameOutcome.OK,
+            FrameOutcome.SKIPPED,
+            FrameOutcome.SKIPPED,
+            FrameOutcome.ERROR,
+            FrameOutcome.SKIPPED,
+        ]
+        for result in results:
+            assert tuple(result.qa) == scripts.QA_MANIFEST_COLUMNS
+            for value in result.qa.values():
+                assert type(value) in {str, int, float, bool, type(None)}, result.qa
             json.dumps(result.qa)
 
 
