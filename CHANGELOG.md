@@ -15,8 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     as a `FrameOutcome`, the tables, the error, the elapsed time and the
     frame's QA record at full precision, JSON-native). The QA record builders
     `qa_record_ok`/`qa_record_skipped`/`qa_record_error`, `write_qa_manifest`,
-    `QA_MANIFEST_COLUMNS` and the writer's keep-or-drop rule `usable_filters`
-    are public, and `CentroidPlaneError`, `WCSScaleError`, `WCSPointingError`,
+    `QA_MANIFEST_COLUMNS`, the writer's keep-or-drop rule `usable_filters` and
+    the per-row quality cut `good_star_mask` are public, and `CentroidPlaneError`, `WCSScaleError`, `WCSPointingError`,
     `StarListValidationError`, `DegenerateBayerChannelError` and
     `CatalogTruncationError` are exported from the top-level package.
 - `photutils-dev` extra: `uv sync --extra photutils-dev` builds photutils from a

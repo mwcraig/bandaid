@@ -1199,6 +1199,10 @@ class TestProcessFrame:
         )
         assert bandaid.CatalogTruncationError is exceptions.CatalogTruncationError
 
+    def test_the_row_filter_the_docstrings_point_to_is_a_root_export(self):
+        """``good_star_mask``, named as the way to filter ``by_filter``, is public."""
+        assert bandaid.good_star_mask is bandaid.photometry.good_star_mask
+
     def test_ok_outcome_carries_tables_and_qa(
         self, patched_process_one_image, by_filter
     ):
@@ -1303,18 +1307,27 @@ class TestProcessFrame:
         assert "unexpected error on night/a.fits" in caplog.text
         assert "/data/" not in caplog.text
 
+    @pytest.mark.parametrize("given", [True, False], ids=["frame_given", "loaded"])
     @pytest.mark.parametrize(
         ("error", "fail_fast"),
         [(TooFewStarsError("too few stars"), True), (RuntimeError("a bug"), False)],
         ids=["skipped", "error"],
     )
     def test_failed_frame_does_not_keep_the_pixels_alive(
-        self, mocker, error, fail_fast
+        self, mocker, error, fail_fast, given
     ):
         """A skip or error releases the pixels; the error keeps its traceback."""
         data = np.zeros((2, 2))
         pixels = weakref.ref(data)
         frame = scripts.LoadedFrame(data, dict(_CONSISTENT_HEADER))
+        # The frame is either handed in or loaded inside process_frame; the
+        # one-shot loader keeps no reference of its own once it has run.
+        loaded = [] if given else [frame]
+
+        def load_once(_file):
+            return loaded.pop()
+
+        mocker.patch("bandaid.scripts._load_frame", new=load_once)
 
         def failing(_file, *_args: object, frame, **_kwargs: object):
             # A local holding the pixels, as the real pipeline's frames do; an
@@ -1329,7 +1342,7 @@ class TestProcessFrame:
             "a.fits",
             _dummy_prep(),
             user_specific_metadata={},
-            frame=frame,
+            frame=frame if given else None,
             fail_fast=fail_fast,
         )
         del data, frame
@@ -1339,15 +1352,17 @@ class TestProcessFrame:
         assert pixels() is None
 
     def test_pointing_drift_skip_reports_the_offset(self, mocker):
-        """A drift rejection's offset reaches both the result and its QA row."""
+        """A drift rejection's offset reaches the result and its QA row as a float."""
         offset = 1.5
         error = FrameError("frame pointing drifted")
-        error.pointing_offset = offset
+        # Stamped as a numpy scalar to show the result coerces like the QA row.
+        error.pointing_offset = np.float64(offset)
         mocker.patch("bandaid.scripts.check_frame_consistency", side_effect=error)
 
         result = process_frame("a.fits", _dummy_prep(), user_specific_metadata={})
 
         assert result.outcome is FrameOutcome.SKIPPED
+        assert type(result.pointing_offset) is float
         assert result.pointing_offset == offset
         assert result.qa["pointing_offset_deg"] == offset
 

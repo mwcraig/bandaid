@@ -1643,9 +1643,9 @@ class FrameResult:
         The photometry tables, one per filter; empty unless ``ok``. The
         tables are unfiltered: every measured target has a row, whether or
         not it passes the quality cuts. A consumer that wants only the rows
-        the ``.star`` writer keeps applies
+        the ``.star`` writer keeps applies `good_star_mask` itself, as
         ``good_star_mask(table, table.meta["full_image_meta"],
-        min_snr=table.meta.get("min_snr"))`` itself.
+        min_snr=table.meta.get("min_snr"))``.
     dropped_filters : tuple of str
         The filters of ``by_filter`` with no star surviving the quality cuts
         (see `~bandaid.writers.usable_filters`); empty unless ``ok``.
@@ -1769,8 +1769,9 @@ def process_frame(
     aligned and photometered (`process_one_image`), and then checked for
     stars surviving the quality cuts: a frame with none in any filter is
     reported ``skipped`` for `NoUsableStarsError` here rather than by the
-    writer. The one `FrameError` a write can still raise afterwards is
-    `StarListValidationError`, a row the AAVSO starlist schema rejects.
+    writer. The one `FrameError` the default writer can still raise
+    afterwards is `StarListValidationError`, a row the AAVSO starlist schema
+    rejects; a custom ``write_frame`` may raise any.
 
     ``file`` is opened only when ``frame`` is None; with a loaded frame it is
     just the name the frame is reported under, like ``label``.
@@ -1834,8 +1835,11 @@ def process_frame(
         # traceback holds (the line numbers still format): they reference the
         # pixel array and the images derived from it.
         traceback.clear_frames(exc.__traceback__)
-        # A pointing-drift rejection carries the offset on the error.
-        pointing_offset = getattr(exc, "pointing_offset", pointing_offset)
+        # A pointing-drift rejection carries the offset on the error; coerced
+        # as the QA row coerces it, so the two agree in type too.
+        pointing_offset = _float_or_none(
+            getattr(exc, "pointing_offset", pointing_offset)
+        )
         return FrameResult(
             file=name,
             outcome=FrameOutcome.SKIPPED,

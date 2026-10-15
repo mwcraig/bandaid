@@ -29,7 +29,8 @@ one at a time. `process_frame` reports a `FrameResult` whose `qa` record is
 the frame's QA-manifest row, keyed by `QA_MANIFEST_COLUMNS`; a change to those
 columns bumps `FrameResult.schema_version`. `write_qa_manifest` writes such
 records as the CSV manifest, and `usable_filters` is the per-filter
-keep-or-drop rule of the default writer.
+keep-or-drop rule of the default writer, built on the per-row quality cut
+`good_star_mask` that a consumer of `FrameResult.by_filter` applies itself.
 
 ::: bandaid.process_frame
 
@@ -48,6 +49,8 @@ keep-or-drop rule of the default writer.
 ::: bandaid.qa_record_error
 
 ::: bandaid.usable_filters
+
+::: bandaid.good_star_mask
 
 ## Configuration
 

@@ -79,6 +79,7 @@ from .photometry import (
     centroid_drift_flag,
     centroid_stars,
     eloy_to_starlist,
+    good_star_mask,
     measure_photometry,
     metadata_from_header,
     neighbor_contamination_flag,
