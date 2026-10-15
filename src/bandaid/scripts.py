@@ -1432,7 +1432,7 @@ def _log_frame_stages(file, record):
     file : str or pathlib.Path
         The processed input frame.
     record : dict
-        The frame's QA manifest row from `_qa_record_ok`.
+        The frame's QA manifest row from `qa_record_ok`.
 
     Notes
     -----
