@@ -241,6 +241,9 @@ exclude = [
 
 [tool.ruff.lint]
 select = ["ALL"]
+# pydoclint's DOC codes are not ruff's; without this, ruff's unused-noqa fix
+# strips a `# noqa: DOCxxx` meant for pydoclint.
+external = ["DOC"]
 ignore = [
     "D107",  # 'Missing docstring in __init__' ignored because pydoclint wants us to document the class instead.
     "D203",  # '1 blank line required before class docstring' ignored because we want no blank line.

@@ -1124,9 +1124,11 @@ def qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None):
 
     Notes
     -----
-    Diagnostics are pulled defensively from a representative channel (L4 if
-    present, else the first), so a frame missing a given column simply records
-    a blank for it rather than failing the whole manifest.
+    Diagnostics are pulled from a representative channel (L4 if present, else
+    the first). Every table must carry the columns and ``full_image_meta``
+    bounds `~bandaid.photometry.good_star_mask` needs; a column that is only
+    sometimes present (``stars_in_exp``, ``bkgd_count``, ``snr``,
+    ``centroid_drift``) records a blank when missing.
 
     ``dropped_filters`` names the filters `~bandaid.writers.usable_filters`
     rejects, evaluated across every filter and not just the representative
@@ -1150,17 +1152,14 @@ def qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None):
     sky position within a generous 1 arcsec tolerance -- photometry runs at
     the catalog positions themselves, so a real match is essentially exact
     and 1 arcsec is only slack for float precision, not a real search radius.
-    It is None (blank) when the batch was prepared without forced targets,
-    and also None -- rather than a misleadingly precise 0 -- when the
-    representative channel lacks the columns/bounds needed to evaluate
-    `good_star_mask` in the first place.
+    It is None (blank) when the batch was prepared without forced targets.
 
     ``wcs_pixscale`` (solved plate scale, arcsec/pixel) and ``solve_offset_deg``
     (solved frame center to the frame's own header center, in degrees) are read
     from the table ``meta`` that `process_one_image` stamps; either is blank
     when absent. ``n_snr20`` counts the
     representative channel's `good_star_mask`-passing rows with ``snr >= 20``,
-    and is blank under the same conditions as ``n_good_stars``.
+    and is blank when the table has no ``snr`` column.
 
     ``n_edge_dropped`` is the number of catalog stars the frame's edge margin
     removed before measurement, read from the table ``meta`` like
@@ -1193,21 +1192,16 @@ def qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None):
         finite = bkgd[np.isfinite(bkgd)]
         if len(finite):
             sky_median = float(np.median(finite))
-    n_good_stars = None
+    # min_snr is read from table meta on purpose, not threaded in from the
+    # run config: the writer applies the stamped value, and reading the
+    # same stamp here keeps the QA count aligned with what was actually
+    # written -- even for tables produced under a different config.
+    good = good_star_mask(representative, full_meta, min_snr=meta.get("min_snr"))
+    n_good_stars = int(np.sum(good))
     n_snr20 = None
-    has_phot_cols = {"tot_count", "count_err", "x", "y"} <= cols
-    has_bounds = {"width", "height"} <= set(full_meta)
-    good = None
-    if has_phot_cols and has_bounds:
-        # min_snr is read from table meta on purpose, not threaded in from the
-        # run config: the writer applies the stamped value, and reading the
-        # same stamp here keeps the QA count aligned with what was actually
-        # written -- even for tables produced under a different config.
-        good = good_star_mask(representative, full_meta, min_snr=meta.get("min_snr"))
-        n_good_stars = int(np.sum(good))
-        if "snr" in cols:
-            snr = np.asarray(representative["snr"])
-            n_snr20 = int(np.sum(good & (snr >= QA_SNR_THRESHOLD)))
+    if "snr" in cols:
+        snr = np.asarray(representative["snr"])
+        n_snr20 = int(np.sum(good & (snr >= QA_SNR_THRESHOLD)))
 
     usable = usable_filters(by_filter)
     dropped_filters_value = ";".join(name for name in by_filter if name not in usable)
@@ -1220,11 +1214,10 @@ def qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None):
     if "centroid_drift" in cols:
         drift = np.asarray(representative["centroid_drift"], dtype=bool)
         n_centroid_drift = int(np.sum(drift))
-        if good is not None:
-            n_drift_rejected = int(np.sum(drift & good))
+        n_drift_rejected = int(np.sum(drift & good))
 
     n_forced_measured = None
-    if forced_targets is not None and good is not None and {"ra", "dec"} <= cols:
+    if forced_targets is not None and {"ra", "dec"} <= cols:
         good_rows = representative[good]
         if len(good_rows) == 0:
             n_forced_measured = 0
@@ -1713,32 +1706,9 @@ class FrameResult:
         return None if self.error is None else type(self.error).__name__
 
 
-def _check_usable_filters(by_filter):
-    """
-    Name the filters with a surviving star, requiring at least one.
-
-    Parameters
-    ----------
-    by_filter : dict of {str: astropy.table.Table}
-        The ``process_one_image`` result for one frame.
-
-    Returns
-    -------
-    list of str
-        `~bandaid.writers.usable_filters` of ``by_filter``.
-
-    Raises
-    ------
-    NoUsableStarsError
-        If no filter keeps a star, so there is nothing to write.
-    """
-    usable = usable_filters(by_filter)
-    if not usable:
-        msg = "no stars survived photometry filtering in any filter"
-        raise NoUsableStarsError(msg)
-    return usable
-
-
+# pydoclint's DOC503 is silenced on the docstring because the NoUsableStarsError
+# raised in the body is caught by the except FrameError below, so it never
+# leaves this function and does not belong in the Raises section.
 def process_frame(
     file,
     prep,
@@ -1799,7 +1769,7 @@ def process_frame(
     targets the frame's edge margin dropped have no row). A copy that went
     through a text format such as CSV should be matched by tolerance
     instead.
-    """
+    """  # noqa: DOC503
     started = time.perf_counter()
     name = str(file) if label is None else str(label)
     # Stays None for a frame that fails before its pointing offset is known.
@@ -1834,7 +1804,13 @@ def process_frame(
         # Logged before the usable-filters check so a starless frame still
         # reports its stage counts ahead of the skip warning.
         _log_frame_stages(name, qa)
-        usable = _check_usable_filters(by_filter)
+        usable = usable_filters(by_filter)
+        if not usable:
+            # Raised inside the try on purpose: a starless frame is an
+            # expected per-frame failure and takes the same FrameError path as
+            # the other skips below, so the outcome is final on return.
+            msg = "no stars survived photometry filtering in any filter"
+            raise NoUsableStarsError(msg)  # noqa: TRY301
     except FrameError as exc:
         # Expected per-frame failure: report the skip.
         _warn_frame_skip(file, exc)
