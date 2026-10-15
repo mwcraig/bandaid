@@ -159,7 +159,7 @@ class TestPhotometerFrames:
             output_dir=str(tmp_path / "out"),
             output_suffix=".sl",
             fail_fast=True,
-            write_qa_manifest=False,
+            write_manifest=False,
         )
 
         expected = sorted(str(p.resolve()) for p in night.glob("*.fit"))
@@ -184,7 +184,7 @@ class TestPhotometerFrames:
         assert kwargs["output_dir"] == str(tmp_path / "out")
         assert kwargs["output_suffix"] == ".sl"
         assert kwargs["fail_fast"] is True
-        assert kwargs["write_qa_manifest"] is False
+        assert kwargs["write_manifest"] is False
         assert results == {f: f + ".star" for f in expected}
 
     def test_no_frames_raises_value_error(self, tmp_path):
@@ -215,7 +215,7 @@ class TestPhotometerFrames:
         kwargs = process_batch.call_args.kwargs
         assert kwargs["user_specific_metadata"] == {}
         assert kwargs["fail_fast"] is False
-        assert kwargs["write_qa_manifest"] is True
+        assert kwargs["write_manifest"] is True
         assert kwargs["output_dir"] == "."
         assert kwargs["output_suffix"] == ".star"
 

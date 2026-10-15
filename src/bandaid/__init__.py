@@ -90,6 +90,9 @@ from .scripts import (
     prepare_batch,
     process_batch,
     process_frame,
+    qa_record_error,
+    qa_record_ok,
+    qa_record_skipped,
     write_qa_manifest,
 )
 from .writers import (

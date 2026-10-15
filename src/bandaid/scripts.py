@@ -1558,10 +1558,6 @@ def _manifest_cell(column, value):
     return value
 
 
-# process_batch's ``write_qa_manifest`` keyword shadows the function inside it.
-_write_manifest_csv = write_qa_manifest
-
-
 def _unique_output_paths(files, output_dir, suffix):
     """
     Map each input frame to a unique output path under ``output_dir``.
@@ -1896,7 +1892,7 @@ def process_batch(
     output_suffix=".star",
     write_frame=write_starlist_set,
     fail_fast=True,
-    write_qa_manifest=True,
+    write_manifest=True,
     qa_manifest_name=QA_MANIFEST_FILENAME,
     first_frame=None,
 ):
@@ -1941,7 +1937,7 @@ def process_batch(
         and continue with the next frame -- the robust mode for unattended
         runs. Expected per-frame failures (`FrameError` and its subclasses)
         are always logged and skipped regardless of this flag.
-    write_qa_manifest : bool, optional
+    write_manifest : bool, optional
         Whether to write the per-frame QA manifest in write-to-disk mode.
         Default True -- the manifest is cheap and makes a degrading night
         self-evident the first time it goes bad, before anyone thinks to ask
@@ -1966,7 +1962,7 @@ def process_batch(
         star surviving the quality cuts in any filter, ...) are skipped with a
         logged warning and omitted from the result.
 
-        In write-to-disk mode, unless ``write_qa_manifest`` is False, a
+        In write-to-disk mode, unless ``write_manifest`` is False, a
         per-frame QA manifest (``qa_manifest_name``) is also written to
         ``output_dir``, with one row per input frame recording its status
         (``ok`` / ``skipped: <FrameError type>`` / ``error: <type>``) and the
@@ -1982,7 +1978,6 @@ def process_batch(
     results = {}
     # One QA record per frame (ok/skipped/error), written to a manifest at the
     # end when in write-to-disk mode and the caller has not opted out.
-    write_manifest = output_dir is not None and write_qa_manifest
     manifest_records = []
     # Materialize the frames so the output names can be planned up front: two
     # frames sharing a basename must not collide on disk (see _unique_output_paths).
@@ -2046,8 +2041,8 @@ def process_batch(
     # Persist the per-frame QA manifest next to the starlists. Only written in
     # write-to-disk mode (in-memory mode has no directory to write it to) and
     # only when the caller has not opted out.
-    if write_manifest:
-        _write_manifest_csv(Path(output_dir) / qa_manifest_name, manifest_records)
+    if output_dir is not None and write_manifest:
+        write_qa_manifest(Path(output_dir) / qa_manifest_name, manifest_records)
         logger.debug("wrote the QA manifest to %s", Path(output_dir) / qa_manifest_name)
     logger.info("finished: %d of %d frames photometered", len(results), len(files))
     return results
@@ -2065,7 +2060,7 @@ def photometer_frames(
     output_suffix=".star",
     write_frame=write_starlist_set,
     fail_fast=False,
-    write_qa_manifest=True,
+    write_manifest=True,
     forced_targets=None,
 ):
     """
@@ -2115,7 +2110,7 @@ def photometer_frames(
     fail_fast : bool, optional
         Whether to re-raise unexpected per-frame errors instead of skipping the
         frame. Default False (the robust mode for unattended runs).
-    write_qa_manifest : bool, optional
+    write_manifest : bool, optional
         Whether to write a per-frame QA manifest alongside the outputs. Default
         True.
     forced_targets : astropy.coordinates.SkyCoord or None, optional
@@ -2178,7 +2173,7 @@ def photometer_frames(
         output_suffix=output_suffix,
         write_frame=write_frame,
         fail_fast=fail_fast,
-        write_qa_manifest=write_qa_manifest,
+        write_manifest=write_manifest,
         first_frame=first_frame,
     )
     return frames, results

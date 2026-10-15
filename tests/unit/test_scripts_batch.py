@@ -12,6 +12,7 @@ from _helpers import _CONSISTENT_HEADER, _dummy_prep
 from aavso_starlist_schema import StarListSet
 from astropy.table import Table
 
+import bandaid
 from bandaid import scripts
 from bandaid.exceptions import (
     CentroidPlaneError,
@@ -993,7 +994,7 @@ class TestProcessBatchToDisk:
     def test_qa_manifest_can_be_disabled(
         self, patched_process_one_image, tmp_path, by_filter
     ):
-        """``write_qa_manifest=False`` writes only starlists, no manifest."""
+        """``write_manifest=False`` writes only starlists, no manifest."""
         patched_process_one_image(by_filter())
 
         scripts.process_batch(
@@ -1001,7 +1002,7 @@ class TestProcessBatchToDisk:
             _dummy_prep(),
             user_specific_metadata={},
             output_dir=tmp_path,
-            write_qa_manifest=False,
+            write_manifest=False,
         )
 
         assert not (tmp_path / scripts.QA_MANIFEST_FILENAME).exists()
@@ -1180,6 +1181,12 @@ class TestProcessBatchToDisk:
 @pytest.mark.usefixtures("_consistent_headers")
 class TestProcessFrame:
     """Unit tests for ``process_frame``, the per-frame public API."""
+
+    def test_qa_record_builders_are_root_exports(self):
+        """The QA record builders import from the package root."""
+        assert bandaid.qa_record_ok is scripts.qa_record_ok
+        assert bandaid.qa_record_skipped is scripts.qa_record_skipped
+        assert bandaid.qa_record_error is scripts.qa_record_error
 
     def test_ok_outcome_carries_tables_and_qa(
         self, patched_process_one_image, by_filter

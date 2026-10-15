@@ -257,6 +257,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- The `write_qa_manifest` keyword of `process_batch` and `photometer_frames` is
+    now `write_manifest`, so it no longer shadows the `write_qa_manifest`
+    function.
 - `calibration_sequence` returns a `CalibrationResult` instead of a 5-tuple, and
     its `detection_image_out` parameter is removed; read `result.detection_image`
     for the array detection ran on. Pipeline output is unchanged (#123).

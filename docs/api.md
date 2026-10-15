@@ -40,6 +40,12 @@ default writer.
 
 ::: bandaid.write_qa_manifest
 
+::: bandaid.qa_record_ok
+
+::: bandaid.qa_record_skipped
+
+::: bandaid.qa_record_error
+
 ::: bandaid.usable_filters
 
 ## Configuration
