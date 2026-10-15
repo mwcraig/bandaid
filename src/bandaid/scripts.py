@@ -1237,7 +1237,7 @@ def qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None):
         "status": "ok",
         "n_detected": n_detected,
         "sky_median": sky_median,
-        "fwhm": meta.get("fwhm"),
+        "fwhm": _plain(meta.get("fwhm")),
         "wcs_solved": True,
         "pointing_offset_deg": _float_or_none(pointing_offset),
         "wcs_pixscale": _float_or_none(meta.get("wcs_pixscale")),
@@ -1248,7 +1248,7 @@ def qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None):
         "n_centroid_drift": n_centroid_drift,
         "n_drift_rejected": n_drift_rejected,
         "n_forced_measured": n_forced_measured,
-        "n_edge_dropped": meta.get("n_edge_dropped"),
+        "n_edge_dropped": _plain(meta.get("n_edge_dropped")),
         **_centroid_model_record(meta.get("centroid_model")),
     }
 
@@ -1270,11 +1270,28 @@ def _centroid_model_record(summary):
         and every value None (blank) when there is no summary.
     """
     summary = summary or {}
-    record = {column: summary.get(column) for column in _CENTROID_MODEL_COLUMNS}
+    record = {column: _plain(summary.get(column)) for column in _CENTROID_MODEL_COLUMNS}
     return {
         column: float(value) if isinstance(value, float) else value
         for column, value in record.items()
     }
+
+
+def _plain(value):
+    """
+    Convert a numpy scalar to the equivalent plain Python value.
+
+    Parameters
+    ----------
+    value : object
+        A value taken from table metadata.
+
+    Returns
+    -------
+    object
+        ``value.item()`` for a `numpy.generic`, otherwise ``value`` unchanged.
+    """
+    return value.item() if isinstance(value, np.generic) else value
 
 
 def _float_or_none(value):
@@ -1687,6 +1704,20 @@ class FrameResult:
         Seconds the frame took, loading included.
     schema_version : int
         The version of this result's layout, 1.
+
+    Notes
+    -----
+    ``qa`` and ``by_filter`` are ordinary mutable containers handed to the
+    caller. The dataclass is frozen, so the fields cannot be rebound, but their
+    contents can be changed; `process_batch` uses ``qa`` as the manifest row as
+    is.
+
+    The values of ``qa`` are plain Python types, but a float may be non-finite:
+    ``g_cut`` is ``inf`` when fewer targets than the CNN class size fall on the
+    frame, and ``fwhm`` can be NaN. Python's `json.dumps` writes them as
+    ``Infinity`` and ``NaN``, which JavaScript's ``JSON.parse`` rejects, so a
+    consumer that needs strict JSON should map non-finite floats to null
+    (``json.dumps(qa, allow_nan=False)`` raises instead).
     """
 
     file: str
@@ -1773,7 +1804,7 @@ def process_frame(
         empty dict.
     frame : LoadedFrame or None, optional
         The already-loaded contents of ``file``. None (default) loads it here.
-    label : str or None, optional
+    label : str or os.PathLike or None, optional
         The name to report the frame under, in `FrameResult.file` and the QA
         record. None (default) uses ``str(file)``.
     fail_fast : bool, optional
@@ -1812,7 +1843,7 @@ def process_frame(
     instead.
     """
     started = time.perf_counter()
-    name = str(file) if label is None else label
+    name = str(file) if label is None else str(label)
     # Stays None for a frame that fails before its pointing offset is known.
     pointing_offset = None
     try:
@@ -1836,6 +1867,15 @@ def process_frame(
         # reference now so it does not stay alive through the caller's write
         # step.
         del frame
+        qa = qa_record_ok(
+            name,
+            by_filter,
+            forced_targets=prep.forced_targets,
+            pointing_offset=pointing_offset,
+        )
+        # Logged before the usable-filters check so a starless frame still
+        # reports its stage counts ahead of the skip warning.
+        _log_frame_stages(name, qa)
         usable = _check_usable_filters(by_filter)
     except FrameError as exc:
         # Expected per-frame failure: report the skip.
@@ -1872,12 +1912,7 @@ def process_frame(
         by_filter,
         tuple(filter_name for filter_name in by_filter if filter_name not in usable),
         None,
-        qa_record_ok(
-            name,
-            by_filter,
-            forced_targets=prep.forced_targets,
-            pointing_offset=pointing_offset,
-        ),
+        qa,
         pointing_offset,
         time.perf_counter() - started,
     )
@@ -2016,7 +2051,6 @@ def process_batch(
         )
         record = result.qa
         if result.ok:
-            _log_frame_stages(file, record)
             if output_dir is not None:
                 # A write failure (bad output_dir, permissions, full disk) is
                 # systemic, not a property of this frame, so it must abort the

@@ -136,6 +136,10 @@ def write_csv(frame_result, output_path):
 photometer_frames(["night/"], write_frame=write_csv, output_suffix="")
 ```
 
+A frame with no star passing the quality cuts in any filter is skipped before the
+writer is called, so a writer that dumps unfiltered tables will not see such
+frames; `bandaid.writers.usable_filters` is the rule.
+
 A writer that wants AAVSO-starlist semantics can still call
 `good_star_mask` / `eloy_to_starlist` itself (see `bandaid.writers` for the
 default `write_starlist_set`). Pass `min_snr=table.meta.get("min_snr")` when you

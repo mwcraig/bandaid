@@ -1314,6 +1314,65 @@ class TestProcessFrame:
         assert result.by_filter == {}
         assert result.qa["status"] == "skipped: NoUsableStarsError"
 
+    def test_starless_frame_logs_its_stages_before_the_skip(
+        self, patched_process_one_image, by_filter, caplog
+    ):
+        """A starless frame still logs its stage counts, ahead of the skip warning."""
+        tables = by_filter()
+        for table in tables.values():
+            table["tot_count"] = [-1.0, 0.0]
+        patched_process_one_image(tables)
+
+        with caplog.at_level(logging.DEBUG, logger="bandaid"):
+            process_frame("a.fits", _dummy_prep(), user_specific_metadata={})
+
+        messages = [record.getMessage() for record in caplog.records]
+        stages = [
+            i
+            for i, m in enumerate(messages)
+            if m.startswith("a.fits: ") and "pass the quality cuts" in m
+        ]
+        skips = [i for i, m in enumerate(messages) if "skipping" in m]
+        assert stages
+        assert skips
+        assert stages[0] < skips[0]
+
+    def test_label_is_coerced_to_str(self, patched_process_one_image, by_filter):
+        """A path-like label is reported as its string."""
+        patched_process_one_image(by_filter())
+
+        result = process_frame(
+            "a.fits",
+            _dummy_prep(),
+            user_specific_metadata={},
+            label=Path("p/q.fits"),
+        )
+
+        assert result.file == str(Path("p/q.fits"))
+        assert result.qa["file"] == str(Path("p/q.fits"))
+
+    def test_qa_values_are_plain_python_types(
+        self, patched_process_one_image, by_filter
+    ):
+        """Numpy scalars stamped in table meta come out as plain Python types."""
+        tables = by_filter()
+        for table in tables.values():
+            table.meta["fwhm"] = np.float64(2.5)
+            table.meta["n_edge_dropped"] = np.int64(3)
+            table.meta["centroid_model"] = {
+                "n_cnn_class": np.int64(26),
+                "plane_fallback": np.False_,
+            }
+        patched_process_one_image(tables)
+
+        result = process_frame("a.fits", _dummy_prep(), user_specific_metadata={})
+
+        assert type(result.qa["fwhm"]) is float
+        assert type(result.qa["n_edge_dropped"]) is int
+        assert type(result.qa["n_cnn_class"]) is int
+        assert type(result.qa["plane_fallback"]) is bool
+        assert json.dumps(result.qa)
+
     def test_unexpected_error_propagates_by_default(self, mocker):
         """A non-``FrameError`` is re-raised when ``fail_fast`` is on."""
         mocker.patch(
