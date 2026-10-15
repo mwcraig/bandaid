@@ -2007,6 +2007,9 @@ def process_batch(
         # NullHandler); `bandaid process --verbose` routes it to the terminal via
         # configure_logging, alongside the skip/error warnings process_frame logs.
         logger.debug("processing %d/%d: %s", idx, len(files), file)
+        # The summary line times the whole iteration, write included, so it
+        # keeps meaning what it meant before the per-frame step was lifted out.
+        started = time.perf_counter()
         # Reuse the caller's already-opened first frame when given -- exactly
         # one open per frame for the whole run (issue #44).
         result = process_frame(
@@ -2038,7 +2041,7 @@ def process_batch(
             else:
                 results[file] = result.by_filter
         manifest_records.append(record)
-        _log_frame_summary(file, record, result.elapsed_s, idx, len(files))
+        _log_frame_summary(file, record, time.perf_counter() - started, idx, len(files))
 
     # Persist the per-frame QA manifest next to the starlists. Only written in
     # write-to-disk mode (in-memory mode has no directory to write it to) and

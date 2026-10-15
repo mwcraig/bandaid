@@ -158,7 +158,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `process_batch` in in-memory mode now skips a frame with no star surviving
     the quality cuts in any filter (`skipped: NoUsableStarsError`), as
     write-to-disk mode always did; before, such a frame's tables were
-    returned. The QA manifest is unchanged.
+    returned. A custom `write_frame` is no longer called for such a frame
+    either. The QA manifest is unchanged.
 - Only the brightest catalog stars keep their CNN centroid; the rest are output at
     their projected position plus a per-frame fitted plane, which moves faint-star
     positions by about 1 to 1.5 px and tightens their light curves. Set
