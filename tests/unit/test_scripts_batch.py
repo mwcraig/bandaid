@@ -1190,6 +1190,15 @@ class TestProcessFrame:
         assert bandaid.qa_record_skipped is scripts.qa_record_skipped
         assert bandaid.qa_record_error is scripts.qa_record_error
 
+    def test_every_frame_error_a_result_can_carry_is_a_root_export(self):
+        """Every error a result or a write can carry imports from the root."""
+        exceptions = bandaid.exceptions
+        assert bandaid.StarListValidationError is exceptions.StarListValidationError
+        assert bandaid.DegenerateBayerChannelError is (
+            exceptions.DegenerateBayerChannelError
+        )
+        assert bandaid.CatalogTruncationError is exceptions.CatalogTruncationError
+
     def test_ok_outcome_carries_tables_and_qa(
         self, patched_process_one_image, by_filter
     ):

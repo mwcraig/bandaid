@@ -107,6 +107,12 @@ stop. See [Troubleshooting](troubleshooting.md) for what triggers each.
 
 ::: bandaid.CentroidPlaneError
 
+::: bandaid.StarListValidationError
+
+::: bandaid.DegenerateBayerChannelError
+
 ::: bandaid.BatchPrepError
+
+::: bandaid.CatalogTruncationError
 
 ::: bandaid.InstrumentDetectionError

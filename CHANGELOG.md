@@ -16,8 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     frame's QA record at full precision, JSON-native). The QA record builders
     `qa_record_ok`/`qa_record_skipped`/`qa_record_error`, `write_qa_manifest`,
     `QA_MANIFEST_COLUMNS` and the writer's keep-or-drop rule `usable_filters`
-    are public, and `CentroidPlaneError`, `WCSScaleError` and
-    `WCSPointingError` are exported from the top-level package.
+    are public, and `CentroidPlaneError`, `WCSScaleError`, `WCSPointingError`,
+    `StarListValidationError`, `DegenerateBayerChannelError` and
+    `CatalogTruncationError` are exported from the top-level package.
 - `photutils-dev` extra: `uv sync --extra photutils-dev` builds photutils from a
     commit pinned on photutils main, for the compiled sigma-clipped
     `ApertureStats` (about 26 % less time per frame, output differs only at the
