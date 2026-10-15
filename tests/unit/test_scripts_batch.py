@@ -1236,19 +1236,19 @@ class TestProcessFrame:
     def test_file_is_the_path_unless_a_label_is_given(
         self, patched_process_one_image, by_filter
     ):
-        """``file`` and the QA row name the frame by path, or by the label."""
+        """``file`` and the QA row name the frame by path, or by the label's string."""
         patched_process_one_image(by_filter())
         prep = _dummy_prep()
 
         by_path = process_frame(Path("night/a.fits"), prep, user_specific_metadata={})
         labelled = process_frame(
-            "a.fits", prep, user_specific_metadata={}, label="frame 3"
+            "a.fits", prep, user_specific_metadata={}, label=Path("p/q.fits")
         )
 
         assert by_path.file == str(Path("night/a.fits"))
         assert by_path.qa["file"] == str(Path("night/a.fits"))
-        assert labelled.file == "frame 3"
-        assert labelled.qa["file"] == "frame 3"
+        assert labelled.file == str(Path("p/q.fits"))
+        assert labelled.qa["file"] == str(Path("p/q.fits"))
 
     def test_dropped_filters_names_the_starved_filter(
         self, patched_process_one_image, by_filter
@@ -1336,20 +1336,6 @@ class TestProcessFrame:
         assert stages
         assert skips
         assert stages[0] < skips[0]
-
-    def test_label_is_coerced_to_str(self, patched_process_one_image, by_filter):
-        """A path-like label is reported as its string."""
-        patched_process_one_image(by_filter())
-
-        result = process_frame(
-            "a.fits",
-            _dummy_prep(),
-            user_specific_metadata={},
-            label=Path("p/q.fits"),
-        )
-
-        assert result.file == str(Path("p/q.fits"))
-        assert result.qa["file"] == str(Path("p/q.fits"))
 
     def test_qa_values_are_plain_python_types(
         self, patched_process_one_image, by_filter

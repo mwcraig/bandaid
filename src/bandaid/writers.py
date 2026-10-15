@@ -122,11 +122,10 @@ def write_starlist_set(frame_result, output_path):
         raise NoUsableStarsError(msg)
     star_lists = [
         eloy_to_starlist(
-            frame_result[filter_name],
-            frame_result[filter_name].meta["full_image_meta"],
-            min_snr=frame_result[filter_name].meta.get("min_snr"),
+            table, table.meta["full_image_meta"], min_snr=table.meta.get("min_snr")
         )
-        for filter_name in usable
+        for filter_name, table in frame_result.items()
+        if filter_name in usable
     ]
     dropped = [name for name in frame_result if name not in usable]
     if dropped:

@@ -1270,11 +1270,7 @@ def _centroid_model_record(summary):
         and every value None (blank) when there is no summary.
     """
     summary = summary or {}
-    record = {column: _plain(summary.get(column)) for column in _CENTROID_MODEL_COLUMNS}
-    return {
-        column: float(value) if isinstance(value, float) else value
-        for column, value in record.items()
-    }
+    return {column: _plain(summary.get(column)) for column in _CENTROID_MODEL_COLUMNS}
 
 
 def _plain(value):
@@ -1311,51 +1307,6 @@ def _float_or_none(value):
     return None if value is None else float(value)
 
 
-def _round_or_none(value, ndigits=4):
-    """
-    Round a QA manifest value, passing None through.
-
-    Parameters
-    ----------
-    value : float or None
-        The value to record, or None when it was not measured.
-    ndigits : int, optional
-        Decimal places to keep. By default 4.
-
-    Returns
-    -------
-    float or None
-        The rounded value, or None.
-    """
-    return None if value is None else round(float(value), ndigits)
-
-
-def _qa_record_failed(file, status, *, pointing_offset=None):
-    """
-    Build the QA record of a frame that was not photometered, diagnostics blank.
-
-    Parameters
-    ----------
-    file : str or Path
-        The input frame, or its label.
-    status : str
-        Outcome label, e.g. ``"skipped: WCSSolveError"`` or ``"error: KeyError"``.
-    pointing_offset : float or None, optional
-        The frame's header-center offset from the batch center in degrees, when
-        it got past the pointing comparison; None (default) leaves it blank.
-
-    Returns
-    -------
-    dict
-        One record keyed by `QA_MANIFEST_COLUMNS`.
-    """
-    record = dict.fromkeys(QA_MANIFEST_COLUMNS)
-    record["file"] = str(file)
-    record["status"] = status
-    record["pointing_offset_deg"] = _float_or_none(pointing_offset)
-    return record
-
-
 def qa_record_skipped(file, exc, *, pointing_offset=None):
     """
     Build the QA record of a frame skipped for a `FrameError`.
@@ -1384,15 +1335,17 @@ def qa_record_skipped(file, exc, *, pointing_offset=None):
     rejected for its offset plane records its ``plane_rms``, read from the
     error.
     """
-    record = _qa_record_failed(
-        file,
-        f"skipped: {type(exc).__name__}",
-        pointing_offset=getattr(exc, "pointing_offset", pointing_offset),
-    )
-    record["wcs_solved"] = False if isinstance(exc, WCSSolveError) else None
-    record["wcs_pixscale"] = _float_or_none(getattr(exc, "measured_scale", None))
-    record["plane_rms"] = _float_or_none(getattr(exc, "plane_rms", None))
-    return record
+    return {
+        **dict.fromkeys(QA_MANIFEST_COLUMNS),
+        "file": str(file),
+        "status": f"skipped: {type(exc).__name__}",
+        "wcs_solved": False if isinstance(exc, WCSSolveError) else None,
+        "pointing_offset_deg": _float_or_none(
+            getattr(exc, "pointing_offset", pointing_offset)
+        ),
+        "wcs_pixscale": _float_or_none(getattr(exc, "measured_scale", None)),
+        "plane_rms": _float_or_none(getattr(exc, "plane_rms", None)),
+    }
 
 
 def qa_record_error(file, exc, *, pointing_offset=None):
@@ -1414,9 +1367,12 @@ def qa_record_error(file, exc, *, pointing_offset=None):
     dict
         One ``error: <type>`` record keyed by `QA_MANIFEST_COLUMNS`.
     """
-    return _qa_record_failed(
-        file, f"error: {type(exc).__name__}", pointing_offset=pointing_offset
-    )
+    return {
+        **dict.fromkeys(QA_MANIFEST_COLUMNS),
+        "file": str(file),
+        "status": f"error: {type(exc).__name__}",
+        "pointing_offset_deg": _float_or_none(pointing_offset),
+    }
 
 
 def _warn_frame_skip(file, exc):
@@ -1458,6 +1414,7 @@ def _log_frame_stages(file, record):
     the edge margin, stars passing the quality cuts, stars with a signal-to-noise
     of at least `QA_SNR_THRESHOLD` and the median background count.
     """
+    sky_median = record.get("sky_median")
     logger.debug(
         "%s: %s detected, %s catalog stars dropped at the edge, %s pass the "
         "quality cuts (%s with SNR >= %g), median background %s",
@@ -1467,7 +1424,7 @@ def _log_frame_stages(file, record):
         record.get("n_good_stars"),
         record.get("n_snr20"),
         QA_SNR_THRESHOLD,
-        _round_or_none(record.get("sky_median"), 1),
+        None if sky_median is None else round(sky_median, 1),
     )
 
 
@@ -2008,7 +1965,7 @@ def process_batch(
     Each frame goes through `process_frame`; this function adds the output
     naming, the writer and the QA manifest. Each frame is opened exactly once:
     the first frame reuses ``first_frame`` when the caller provides it, and
-    every other frame is loaded fresh here (issue #44).
+    every other frame is loaded fresh here.
     """
     results = {}
     # One QA record per frame (ok/skipped/error), written to a manifest at the
@@ -2041,7 +1998,7 @@ def process_batch(
         # keeps meaning what it meant before the per-frame step was lifted out.
         started = time.perf_counter()
         # Reuse the caller's already-opened first frame when given -- exactly
-        # one open per frame for the whole run (issue #44).
+        # one open per frame for the whole run.
         result = process_frame(
             file,
             prep,
