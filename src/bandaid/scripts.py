@@ -1815,14 +1815,14 @@ def process_frame(
         # Expected per-frame failure: report the skip.
         _warn_frame_skip(file, exc)
         return FrameResult(
-            name,
-            FrameOutcome.SKIPPED,
-            {},
-            (),
-            exc,
-            qa_record_skipped(name, exc, pointing_offset=pointing_offset),
-            pointing_offset,
-            time.perf_counter() - started,
+            file=name,
+            outcome=FrameOutcome.SKIPPED,
+            by_filter={},
+            dropped_filters=(),
+            error=exc,
+            qa=qa_record_skipped(name, exc, pointing_offset=pointing_offset),
+            pointing_offset=pointing_offset,
+            elapsed_s=time.perf_counter() - started,
         )
     except Exception as exc:
         # Unexpected error (a bug, not a bad frame): surface it by default;
@@ -1831,24 +1831,26 @@ def process_frame(
             raise
         logger.exception("unexpected error on %s", file)
         return FrameResult(
-            name,
-            FrameOutcome.ERROR,
-            {},
-            (),
-            exc,
-            qa_record_error(name, exc, pointing_offset=pointing_offset),
-            pointing_offset,
-            time.perf_counter() - started,
+            file=name,
+            outcome=FrameOutcome.ERROR,
+            by_filter={},
+            dropped_filters=(),
+            error=exc,
+            qa=qa_record_error(name, exc, pointing_offset=pointing_offset),
+            pointing_offset=pointing_offset,
+            elapsed_s=time.perf_counter() - started,
         )
     return FrameResult(
-        name,
-        FrameOutcome.OK,
-        by_filter,
-        tuple(filter_name for filter_name in by_filter if filter_name not in usable),
-        None,
-        qa,
-        pointing_offset,
-        time.perf_counter() - started,
+        file=name,
+        outcome=FrameOutcome.OK,
+        by_filter=by_filter,
+        dropped_filters=tuple(
+            filter_name for filter_name in by_filter if filter_name not in usable
+        ),
+        error=None,
+        qa=qa,
+        pointing_offset=pointing_offset,
+        elapsed_s=time.perf_counter() - started,
     )
 
 
