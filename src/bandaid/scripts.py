@@ -1139,8 +1139,9 @@ def qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None):
     filtering: ``n_centroid_drift`` is every flagged star in the frame, and
     ``n_drift_rejected`` is the subset that is also `good_star_mask`-passing --
     the marginal effect a future gate would have, since most drifted stars are
-    already dropped by the flux/error/bounds cuts. Data recorded before the
-    proper-motion fix (#56) overcounts both: the flag fired preferentially on
+    already dropped by the flux/error/bounds cuts. Data recorded before catalog
+    positions were propagated for proper motion overcounts both: the flag fired
+    preferentially on
     high-proper-motion stars whose *catalog* position was stale, not on genuine
     drift.
 
