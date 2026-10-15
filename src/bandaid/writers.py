@@ -31,16 +31,52 @@ list of Path``:
 
 import logging
 
+import numpy as np
 from aavso_starlist_schema import StarListSet
 
 from .exceptions import NoUsableStarsError
-from .photometry import eloy_to_starlist
+from .photometry import eloy_to_starlist, good_star_mask
 
 logger = logging.getLogger(__name__)
 
 # User-registered writers, keyed by name. The bundled ``starlist`` writer is
 # registered at import (see bottom of module); re-registering a name overrides it.
 _WRITERS = {}
+
+
+def usable_filters(frame_result):
+    """
+    Name the filters of a frame result that keep at least one star.
+
+    Parameters
+    ----------
+    frame_result : dict
+        The frame's ``{filter: astropy.table.Table}`` photometry result. Each
+        table must carry ``meta["full_image_meta"]``.
+
+    Returns
+    -------
+    list of str
+        The filters, in ``frame_result`` order, whose table has at least one
+        `~bandaid.photometry.good_star_mask` survivor.
+
+    Notes
+    -----
+    This is the per-filter keep-or-drop rule of `write_starlist_set` and of
+    the QA manifest's ``dropped_filters`` column: a filter with no survivor
+    is dropped from the ``.star`` output, and a frame with no usable filter
+    at all is skipped. A ``min_snr`` stamped on a table's ``meta`` is applied
+    to that filter, so the answer matches what the writer would record.
+    """
+    return [
+        filter_name
+        for filter_name, table in frame_result.items()
+        if np.any(
+            good_star_mask(
+                table, table.meta["full_image_meta"], min_snr=table.meta.get("min_snr")
+            )
+        )
+    ]
 
 
 def write_starlist_set(frame_result, output_path):
@@ -80,22 +116,19 @@ def write_starlist_set(frame_result, output_path):
     data. ``StarListSet`` puts no per-filter requirement on its ``star_lists``,
     so a partial set is schema-valid.
     """
-    star_lists = []
-    dropped = []
-    for filter_name, table in frame_result.items():
-        try:
-            star_lists.append(
-                eloy_to_starlist(
-                    table,
-                    table.meta["full_image_meta"],
-                    min_snr=table.meta.get("min_snr"),
-                )
-            )
-        except NoUsableStarsError:
-            dropped.append(filter_name)
-    if not star_lists:
+    usable = usable_filters(frame_result)
+    if not usable:
         msg = "no stars survived photometry filtering in any filter"
         raise NoUsableStarsError(msg)
+    star_lists = [
+        eloy_to_starlist(
+            frame_result[filter_name],
+            frame_result[filter_name].meta["full_image_meta"],
+            min_snr=frame_result[filter_name].meta.get("min_snr"),
+        )
+        for filter_name in usable
+    ]
+    dropped = [name for name in frame_result if name not in usable]
     if dropped:
         logger.warning(
             "%s: dropping filter(s) %s with no stars surviving filtering; "
