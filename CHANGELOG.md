@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `process_frame`, the per-frame step behind `process_batch`, for a caller
+    that gets frames one at a time: it photometers one frame against a
+    `BatchPrep` and returns a `FrameResult` (outcome `ok`/`skipped`/`error`
+    as a `FrameOutcome`, the tables, the error, the elapsed time and the
+    frame's QA record at full precision, JSON-native). The QA record builders
+    `qa_record_ok`/`qa_record_skipped`/`qa_record_error`, `write_qa_manifest`,
+    `QA_MANIFEST_COLUMNS` and the writer's keep-or-drop rule `usable_filters`
+    are public, and `CentroidPlaneError`, `WCSScaleError` and
+    `WCSPointingError` are exported from the top-level package.
 - `photutils-dev` extra: `uv sync --extra photutils-dev` builds photutils from a
     commit pinned on photutils main, for the compiled sigma-clipped
     `ApertureStats` (about 26 % less time per frame, output differs only at the
@@ -146,6 +155,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `process_batch` in in-memory mode now skips a frame with no star surviving
+    the quality cuts in any filter (`skipped: NoUsableStarsError`), as
+    write-to-disk mode always did; before, such a frame's tables were
+    returned. The QA manifest is unchanged.
 - Only the brightest catalog stars keep their CNN centroid; the rest are output at
     their projected position plus a per-frame fitted plane, which moves faint-star
     positions by about 1 to 1.5 px and tightens their light curves. Set

@@ -2093,6 +2093,41 @@ class TestProcessOneImage:
         rgb_sum = sum(result[name]["tot_count"] for name in ("TR", "TG", "TB"))
         np.testing.assert_allclose(result["L4"]["tot_count"], rgb_sum)
 
+    def test_ra_dec_are_the_input_coordinates_verbatim(self, l4_frame):
+        """Each row's ``ra``/``dec`` are an input target's float64 values, untouched."""
+        path, masks = l4_frame
+        # Targets a few arcminutes around the stubbed WCS center, well inside
+        # the frame and its edge margin.
+        center_ra, center_dec = _SYNTHETIC_FIELD_CENTER
+        targets = SkyCoord(
+            center_ra + np.array([0.0, 0.01, 0.0, -0.02, 0.03]),
+            center_dec + np.array([0.0, 0.0, 0.01, 0.02, -0.01]),
+            unit="deg",
+        )
+        config = PhotometryConfig(centroid=CentroidConfig(model_faint_positions=False))
+
+        result = process_one_image(
+            path,
+            {},
+            _REF_RADECS,
+            None,
+            masks,
+            config=config,
+            input_photometry_coords=targets,
+        )
+
+        inputs = set(
+            zip(targets.ra.degree.tolist(), targets.dec.degree.tolist(), strict=True)
+        )
+        for table in result.values():
+            assert len(table) > 0
+            assert table["ra"].dtype == np.float64
+            assert table["dec"].dtype == np.float64
+            measured = set(
+                zip(table["ra"].tolist(), table["dec"].tolist(), strict=True)
+            )
+            assert measured <= inputs
+
     def test_tables_carry_the_solved_scale_and_offset(self, l4_frame):
         """
         Every table's meta carries the solved plate scale and solve offset.

@@ -1806,13 +1806,14 @@ def process_frame(
     reported ``skipped`` for `NoUsableStarsError` here, so the outcome is
     final on return and does not change when the tables are written.
 
-    In every table of an ``ok`` result the ``ra`` and ``dec`` columns are
+    In every table of an ``ok`` result the ``ra`` and ``dec`` of a row are
     the very ``float64`` values of ``prep.photometry_coords.ra.degree`` and
-    ``prep.photometry_coords.dec.degree``, row for row, with no
+    ``prep.photometry_coords.dec.degree`` for that target, with no
     `~astropy.coordinates.SkyCoord` transform or unit conversion in between,
-    so they are an exact join key to the batch's photometry targets. A copy
-    that went through a text format such as CSV should be matched by
-    tolerance instead.
+    so they are an exact join key to the batch's photometry targets (the
+    targets the frame's edge margin dropped have no row). A copy that went
+    through a text format such as CSV should be matched by tolerance
+    instead.
     """
     started = time.perf_counter()
     name = str(file) if label is None else label

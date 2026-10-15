@@ -29,7 +29,8 @@ photometry -- `.star` files -- by doing forced photometry at the positions of a
 magnitude-limited Gaia catalog, rather than detecting sources in the image.
 `photometer_frames` is the top-level entry point; it wraps a one-time
 `prepare_batch` (Gaia catalog, plate scale, Bayer masks, centroiding model) and
-a fast per-frame `process_batch` loop. See the project documentation
+a fast per-frame `process_batch` loop over `process_frame`, which photometers
+one frame and reports a `FrameResult`. See the project documentation
 (https://bandaid.readthedocs.io/) for the full guide.
 """
 
@@ -48,11 +49,14 @@ from .config import (
 from .exceptions import (
     BandaidError,
     BatchPrepError,
+    CentroidPlaneError,
     FrameError,
     FrameMetadataError,
     InstrumentDetectionError,
     NoUsableStarsError,
     TooFewStarsError,
+    WCSPointingError,
+    WCSScaleError,
     WCSSolveError,
 )
 from .image2sl_qt import bayer_balance_image, generate_bayer_masks
@@ -78,15 +82,21 @@ from .photometry import (
     prepare_image,
 )
 from .scripts import (
+    QA_MANIFEST_COLUMNS,
+    FrameOutcome,
+    FrameResult,
     expand_frame_paths,
     photometer_frames,
     prepare_batch,
     process_batch,
+    process_frame,
+    write_qa_manifest,
 )
 from .writers import (
     available_writers,
     get_writer,
     register_writer,
+    usable_filters,
     write_starlist_set,
 )
 

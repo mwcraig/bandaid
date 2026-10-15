@@ -22,6 +22,26 @@ The high-level convenience and the two functions it is built from. See
 
 ::: bandaid.expand_frame_paths
 
+## Processing one frame
+
+The per-frame step `process_batch` loops over, for a caller that gets frames
+one at a time. `process_frame` reports a `FrameResult` whose `qa` record is
+the frame's QA-manifest row; `write_qa_manifest` writes such records as the
+CSV manifest, and `usable_filters` is the per-filter keep-or-drop rule of the
+default writer.
+
+::: bandaid.process_frame
+
+::: bandaid.FrameResult
+
+::: bandaid.FrameOutcome
+
+::: bandaid.QA_MANIFEST_COLUMNS
+
+::: bandaid.write_qa_manifest
+
+::: bandaid.usable_filters
+
 ## Configuration
 
 The immutable, validated configuration objects. See
@@ -70,9 +90,15 @@ stop. See [Troubleshooting](troubleshooting.md) for what triggers each.
 
 ::: bandaid.WCSSolveError
 
+::: bandaid.WCSScaleError
+
+::: bandaid.WCSPointingError
+
 ::: bandaid.FrameMetadataError
 
 ::: bandaid.NoUsableStarsError
+
+::: bandaid.CentroidPlaneError
 
 ::: bandaid.BatchPrepError
 
