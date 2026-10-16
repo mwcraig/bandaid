@@ -111,8 +111,10 @@ _CENTROID_MODEL_COLUMNS = (
     "plane_dy_slope_y",
 )
 
-# The manifest columns written rounded to 4 decimals; every other column is
-# written as recorded.
+# The manifest columns written with 6 significant figures; every other column
+# is written as recorded. Significant figures rather than fixed decimals
+# because the columns span magnitudes, from a Gaia cut near 12 to plane slopes
+# near 1e-3.
 _ROUNDED_COLUMNS = frozenset(
     (
         "pointing_offset_deg",
@@ -1489,8 +1491,9 @@ def write_qa_manifest(path, records):
     Notes
     -----
     ``None`` is written as an empty cell. The pointing offset, solved scale,
-    solve offset and the plane columns are written rounded to 4 decimals;
-    every other value is written as recorded.
+    solve offset and the plane columns are written with 6 significant figures
+    (``format(value, ".6g")``, so a trailing ``.0`` is dropped and a value
+    below 1e-4 takes exponent form); every other value is written as recorded.
     """
     with path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=QA_MANIFEST_COLUMNS)
@@ -1518,13 +1521,13 @@ def _manifest_cell(column, value):
     Returns
     -------
     object
-        ``""`` for None, the value rounded to 4 decimals for a float in one of
-        the rounded columns, otherwise the value itself.
+        ``""`` for None, the value formatted to 6 significant figures for a
+        float in one of the rounded columns, otherwise the value itself.
     """
     if value is None:
         return ""
     if column in _ROUNDED_COLUMNS and isinstance(value, float):
-        return round(value, 4)
+        return f"{value:.6g}"
     return value
 
 

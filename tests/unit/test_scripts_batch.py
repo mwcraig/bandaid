@@ -631,16 +631,10 @@ class TestProcessBatchToDisk:
         )
 
         by_file = {row["file"]: row for row in _read_manifest(tmp_path)}
-        assert float(by_file["good.fits"]["pointing_offset_deg"]) == pytest.approx(
-            0.1235
-        )
-        assert float(by_file["nosolve.fits"]["pointing_offset_deg"]) == pytest.approx(
-            0.1235
-        )
+        assert by_file["good.fits"]["pointing_offset_deg"] == "0.123456"
+        assert by_file["nosolve.fits"]["pointing_offset_deg"] == "0.123456"
         assert by_file["drifted.fits"]["status"].startswith("skipped")
-        assert float(by_file["drifted.fits"]["pointing_offset_deg"]) == pytest.approx(
-            1.2346
-        )
+        assert by_file["drifted.fits"]["pointing_offset_deg"] == "1.23457"
         assert by_file["nopointing.fits"]["status"].startswith("skipped")
         assert by_file["nopointing.fits"]["pointing_offset_deg"] == ""
 
@@ -705,12 +699,12 @@ class TestProcessBatchToDisk:
         assert row["plane_fallback"] == "False"
         assert row["plane_n_used"] == "28"
         assert row["plane_n_clipped"] == "2"
-        assert float(row["g_cut"]) == pytest.approx(12.1234)
-        assert float(row["plane_rms"]) == pytest.approx(0.1235)
-        assert float(row["plane_dx_center"]) == pytest.approx(0.3012)
-        assert float(row["plane_dy_center"]) == pytest.approx(-0.2012)
-        assert float(row["plane_dx_slope_x"]) == pytest.approx(0.1012)
-        assert float(row["plane_dy_slope_y"]) == pytest.approx(0.0812)
+        assert row["g_cut"] == "12.1234"
+        assert row["plane_rms"] == "0.123456"
+        assert row["plane_dx_center"] == "0.301234"
+        assert row["plane_dy_center"] == "-0.201234"
+        assert row["plane_dx_slope_x"] == "0.101234"
+        assert row["plane_dy_slope_y"] == "0.081234"
 
     def test_centroid_model_columns_are_manifest_columns(self):
         """Every policy column is a manifest column, and the record has all of them."""
@@ -779,15 +773,15 @@ class TestProcessBatchToDisk:
 
         by_file = {row["file"]: row for row in _read_manifest(tmp_path)}
         good = by_file["good.fits"]
-        assert float(good["wcs_pixscale"]) == pytest.approx(2.3765)
-        assert float(good["solve_offset_deg"]) == pytest.approx(0.0432)
+        assert good["wcs_pixscale"] == "2.37654"
+        assert good["solve_offset_deg"] == "0.04321"
         assert good["n_snr20"] == "1"
         nosolve = by_file["nosolve.fits"]
         assert nosolve["wcs_pixscale"] == ""
         assert nosolve["solve_offset_deg"] == ""
         assert nosolve["n_snr20"] == ""
         badscale = by_file["badscale.fits"]
-        assert float(badscale["wcs_pixscale"]) == pytest.approx(2.4322)
+        assert badscale["wcs_pixscale"] == "2.43217"
         assert badscale["solve_offset_deg"] == ""
 
     def test_a_poorly_fitting_plane_skips_the_frame_and_the_batch_continues(
@@ -1617,21 +1611,31 @@ class TestProcessFrame:
 
 
 class TestWriteQaManifest:
-    """Unit tests for ``write_qa_manifest``'s rounding and blanks."""
+    """Unit tests for ``write_qa_manifest``'s number formatting and blanks."""
 
-    def test_rounds_the_solve_and_plane_columns_only(self, tmp_path):
-        """Solve offsets, scale and plane values get 4 decimals; the rest is as is."""
+    def test_formats_the_solve_and_plane_columns_to_six_figures(self, tmp_path):
+        """
+        Solve offsets, scale and plane values get 6 significant figures.
+
+        Every other value is written as recorded. Significant figures rather
+        than fixed decimals, so a plane slope near 1e-4 keeps its precision
+        while a Gaia magnitude near 12 is not padded.
+        """
         record = dict.fromkeys(scripts.QA_MANIFEST_COLUMNS)
         record.update(
             {
                 "file": "a.fits",
                 "status": "ok",
-                "pointing_offset_deg": 0.123456,
-                "wcs_pixscale": 2.37654,
-                "solve_offset_deg": 0.04321,
+                "pointing_offset_deg": 0.123456789,
+                "wcs_pixscale": 2.37654321,
+                "solve_offset_deg": 0.0432109876,
                 "sky_median": 5.123456789,
                 "fwhm": 2.123456789,
+                "g_cut": 12.3456789,
                 "plane_rms": 0.123456,
+                "plane_dx_slope_x": 0.000123456789,
+                "plane_dx_slope_y": 1.23456789e-05,
+                "plane_dy_slope_x": 0.5,
                 "plane_fallback": False,
                 "plane_n_used": 28,
             }
@@ -1642,10 +1646,14 @@ class TestWriteQaManifest:
 
         with path.open(newline="") as f:
             row = next(csv.DictReader(f))
-        assert row["pointing_offset_deg"] == "0.1235"
-        assert row["wcs_pixscale"] == "2.3765"
-        assert row["solve_offset_deg"] == "0.0432"
-        assert row["plane_rms"] == "0.1235"
+        assert row["pointing_offset_deg"] == "0.123457"
+        assert row["wcs_pixscale"] == "2.37654"
+        assert row["solve_offset_deg"] == "0.043211"
+        assert row["g_cut"] == "12.3457"
+        assert row["plane_rms"] == "0.123456"
+        assert row["plane_dx_slope_x"] == "0.000123457"
+        assert row["plane_dx_slope_y"] == "1.23457e-05"
+        assert row["plane_dy_slope_x"] == "0.5"
         assert row["sky_median"] == "5.123456789"
         assert row["fwhm"] == "2.123456789"
         assert row["plane_fallback"] == "False"

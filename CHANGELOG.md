@@ -156,6 +156,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The QA manifest writes the pointing offset, plate scale, solve offset and
+    plane columns with 6 significant figures instead of 4 decimals, so a plane
+    slope near 1e-3 keeps its precision and a trailing `.0` is dropped. Every
+    other column is written as before.
 - `process_batch` in in-memory mode now skips a frame with no star surviving
     the quality cuts in any filter (`skipped: NoUsableStarsError`), as
     write-to-disk mode always did, and no longer calls a custom `write_frame`
