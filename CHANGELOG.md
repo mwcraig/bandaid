@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `process_frame`, the per-frame step behind `process_batch`: photometers one
+    frame against a `BatchPrep` and returns a `FrameResult` with the outcome
+    (`ok`/`skipped`/`error`), the tables, the error, the elapsed time and the
+    frame's QA record.
+- The QA record builders `qa_record_ok`/`qa_record_skipped`/`qa_record_error`,
+    `write_qa_manifest`, `QA_MANIFEST_COLUMNS`, the writer's keep-or-drop rule
+    `usable_filters` and the per-row quality cut `good_star_mask` are public.
+- `CentroidPlaneError`, `WCSScaleError`, `WCSPointingError`,
+    `StarListValidationError`, `DegenerateBayerChannelError` and
+    `CatalogTruncationError` are exported from the top-level package.
 - `photutils-dev` extra: `uv sync --extra photutils-dev` builds photutils from a
     commit pinned on photutils main, for the compiled sigma-clipped
     `ApertureStats` (about 26 % less time per frame, output differs only at the
@@ -146,6 +156,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The QA manifest writes the pointing offset, plate scale, solve offset and
+    plane columns with 6 significant figures instead of 4 decimals, so a plane
+    slope near 1e-3 keeps its precision and a trailing `.0` is dropped. Every
+    other column is written as before.
+- `process_batch` in in-memory mode now skips a frame with no star surviving
+    the quality cuts in any filter (`skipped: NoUsableStarsError`), as
+    write-to-disk mode always did, and no longer calls a custom `write_frame`
+    for it. The manifest is unchanged for the default writer.
 - Only the brightest catalog stars keep their CNN centroid; the rest are output at
     their projected position plus a per-frame fitted plane, which moves faint-star
     positions by about 1 to 1.5 px and tightens their light curves. Set
@@ -243,6 +261,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- The `write_qa_manifest` keyword of `process_batch` and `photometer_frames` is
+    now `write_manifest`, so it no longer shadows the `write_qa_manifest`
+    function.
 - `calibration_sequence` returns a `CalibrationResult` instead of a 5-tuple, and
     its `detection_image_out` parameter is removed; read `result.detection_image`
     for the array detection ran on. Pipeline output is unchanged (#123).

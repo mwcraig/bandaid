@@ -128,7 +128,7 @@ def test_process_forwards_every_flag(runner, patched_photometer, tmp_path):
     # --output-format resolves to the registered writer callable, not the name.
     assert call_kwargs["write_frame"] is write_starlist_set
     assert call_kwargs["output_suffix"] == ".starlist"
-    assert call_kwargs["write_qa_manifest"] is False
+    assert call_kwargs["write_manifest"] is False
     # No --instrument/--profile/--config flag: the config carries instrument=None,
     # meaning "resolve from the frame header" (auto-detect), not a hard default.
     config = call_kwargs["config"]
@@ -322,7 +322,7 @@ def test_process_uses_robust_defaults(runner, patched_photometer, tmp_path):
     # build_l4 now defaults ON.
     assert call_kwargs["build_l4"] is True
     assert call_kwargs["fail_fast"] is False
-    assert call_kwargs["write_qa_manifest"] is True
+    assert call_kwargs["write_manifest"] is True
 
 
 def test_process_omitted_forced_targets_defaults_to_none(

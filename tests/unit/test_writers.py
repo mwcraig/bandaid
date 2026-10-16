@@ -18,6 +18,7 @@ from bandaid.writers import (
     available_writers,
     get_writer,
     register_writer,
+    usable_filters,
     write_starlist_set,
 )
 
@@ -151,3 +152,36 @@ class TestWriteStarlistSet:
             write_starlist_set(frame_result, output_path)
 
         assert not output_path.exists()
+
+
+class TestUsableFilters:
+    """``usable_filters`` names the filters with at least one surviving star."""
+
+    def test_names_every_filter_with_a_survivor_in_order(self, by_filter):
+        """Both fixture rows are good in both filters, in ``by_filter`` order."""
+        assert usable_filters(by_filter(("TG", "TR"))) == ["TG", "TR"]
+
+    def test_omits_a_filter_with_no_survivor(self, by_filter):
+        """A filter whose rows all fail ``good_star_mask`` is left out."""
+        frame_result = by_filter(("TR", "TG"))
+        frame_result["TR"]["tot_count"] = [-1.0, 0.0]
+
+        assert usable_filters(frame_result) == ["TG"]
+
+    def test_honors_table_meta_min_snr(self, by_filter):
+        """The ``min_snr`` stamped on a table's meta is applied per filter."""
+        frame_result = by_filter(("TR", "TG"))
+        # SNR 3 clears the default floor; only TR raises its own to 5.
+        for table in frame_result.values():
+            table["snr"] = [3.0, 3.0]
+        frame_result["TR"].meta["min_snr"] = 5.0
+
+        assert usable_filters(frame_result) == ["TG"]
+
+    def test_empty_when_nothing_survives(self, by_filter):
+        """Every filter starved gives an empty list, the writer's skip condition."""
+        frame_result = by_filter()
+        for table in frame_result.values():
+            table["tot_count"] = [-1.0, 0.0]
+
+        assert usable_filters(frame_result) == []

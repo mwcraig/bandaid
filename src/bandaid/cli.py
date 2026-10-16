@@ -620,7 +620,7 @@ def process(
             output_suffix=output_suffix,
             write_frame=write_frame,
             fail_fast=fail_fast,
-            write_qa_manifest=qa_manifest,
+            write_manifest=qa_manifest,
             forced_targets=forced_targets,
         )
     except (ValueError, FileNotFoundError, BatchPrepError, FrameError) as exc:

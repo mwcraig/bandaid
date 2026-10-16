@@ -49,6 +49,13 @@ class FrameError(BandaidError):
     file : str or pathlib.Path or None, optional
         The offending frame. Raisers that do not know the path (e.g. `align`)
         leave it None; the caller that does attaches it before re-raising.
+
+    Notes
+    -----
+    A pointing rejection raised by ``check_frame_consistency`` carries the
+    frame's offset from the batch center in degrees as a ``pointing_offset``
+    attribute, which `process_frame` reports on its result and in the QA
+    record. Other frame errors have no such attribute.
     """
 
     def __init__(self, reason, *, file=None) -> None:
