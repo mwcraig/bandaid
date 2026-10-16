@@ -1645,7 +1645,11 @@ class FrameResult:
         not it passes the quality cuts. A consumer that wants only the rows
         the ``.star`` writer keeps applies `good_star_mask` itself, as
         ``good_star_mask(table, table.meta["full_image_meta"],
-        min_snr=table.meta.get("min_snr"))``.
+        min_snr=table.meta.get("min_snr"))``. A row's ``ra`` and ``dec`` are
+        the ``float64`` values of ``prep.photometry_coords`` for its target,
+        untouched, so they are an exact join key to the batch's targets; a
+        copy that went through a text format such as CSV should be matched by
+        tolerance instead.
     dropped_filters : tuple of str
         The filters of ``by_filter`` with no star surviving the quality cuts
         (see `~bandaid.writers.usable_filters`); empty unless ``ok``.
@@ -1766,28 +1770,14 @@ def process_frame(
     Notes
     -----
     The frame is checked against the batch (`check_frame_consistency`),
-    aligned and photometered (`process_one_image`), and then checked for
-    stars surviving the quality cuts: a frame with none in any filter is
-    reported ``skipped`` for `NoUsableStarsError` here rather than by the
-    writer. The one `FrameError` the default writer can still raise
-    afterwards is `StarListValidationError`, a row the AAVSO starlist schema
-    rejects; a custom ``write_frame`` may raise any.
+    aligned and photometered (`process_one_image`), and reported ``skipped``
+    for `NoUsableStarsError` when no star survives the quality cuts in any
+    filter. The default writer can still raise `StarListValidationError`
+    afterwards; a custom ``write_frame`` may raise any `FrameError`.
 
-    ``file`` is opened only when ``frame`` is None; with a loaded frame it is
-    just the name the frame is reported under, like ``label``.
-
-    A ``skipped`` or ``error`` result keeps its error with the traceback, but
-    the traceback's frames are cleared and the loaded frame is dropped, so
-    holding on to the result does not hold the pixel data.
-
-    In every table of an ``ok`` result the ``ra`` and ``dec`` of a row are
-    the very ``float64`` values of ``prep.photometry_coords.ra.degree`` and
-    ``prep.photometry_coords.dec.degree`` for that target, with no
-    `~astropy.coordinates.SkyCoord` transform or unit conversion in between,
-    so they are an exact join key to the batch's photometry targets (the
-    targets the frame's edge margin dropped have no row). A copy that went
-    through a text format such as CSV should be matched by tolerance
-    instead.
+    A ``skipped`` or ``error`` result keeps its error and traceback, but the
+    traceback's frames are cleared and the loaded frame is dropped, so holding
+    the result does not hold the pixels.
     """  # noqa: DOC503
     started = time.perf_counter()
     name = str(file) if label is None else str(label)
