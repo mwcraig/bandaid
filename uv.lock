@@ -213,8 +213,8 @@ dependencies = [
     { name = "click" },
     { name = "eloy" },
     { name = "huggingface-hub" },
-    { name = "photutils", version = "3.0.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-7-bandaid-photutils-release' or extra != 'extra-7-bandaid-photutils-dev'" },
-    { name = "photutils", version = "3.0.1.dev1404+ga6acb06a2", source = { git = "https://github.com/astropy/photutils?rev=a6acb06a2cc1f910548ab60bd572b6dfaf865cc7#a6acb06a2cc1f910548ab60bd572b6dfaf865cc7" }, marker = "extra == 'extra-7-bandaid-photutils-dev'" },
+    { name = "photutils", version = "3.1.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-7-bandaid-photutils-release' or extra != 'extra-7-bandaid-photutils-dev'" },
+    { name = "photutils", version = "3.1.1.dev11+g02b7355a4", source = { git = "https://github.com/astropy/photutils?rev=02b7355a412789f2a226dab52ac71d7ad6ed71ff#02b7355a412789f2a226dab52ac71d7ad6ed71ff" }, marker = "extra == 'extra-7-bandaid-photutils-dev'" },
     { name = "pydantic" },
     { name = "python-dateutil" },
     { name = "scikit-image" },
@@ -230,10 +230,10 @@ jax = [
     { name = "jax", version = "0.7.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13' or (extra == 'extra-7-bandaid-photutils-dev' and extra == 'extra-7-bandaid-photutils-release')" },
 ]
 photutils-dev = [
-    { name = "photutils", version = "3.0.1.dev1404+ga6acb06a2", source = { git = "https://github.com/astropy/photutils?rev=a6acb06a2cc1f910548ab60bd572b6dfaf865cc7#a6acb06a2cc1f910548ab60bd572b6dfaf865cc7" } },
+    { name = "photutils", version = "3.1.1.dev11+g02b7355a4", source = { git = "https://github.com/astropy/photutils?rev=02b7355a412789f2a226dab52ac71d7ad6ed71ff#02b7355a412789f2a226dab52ac71d7ad6ed71ff" } },
 ]
 photutils-release = [
-    { name = "photutils", version = "3.0.0", source = { registry = "https://pypi.org/simple" } },
+    { name = "photutils", version = "3.1.0", source = { registry = "https://pypi.org/simple" } },
 ]
 train = [
     { name = "flax", version = "0.10.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.13' or (extra == 'extra-7-bandaid-photutils-dev' and extra == 'extra-7-bandaid-photutils-release')" },
@@ -302,8 +302,8 @@ requires-dist = [
     { name = "jax", marker = "extra == 'jax'" },
     { name = "jax", marker = "extra == 'train'" },
     { name = "optax", marker = "extra == 'train'" },
-    { name = "photutils" },
-    { name = "photutils", marker = "extra == 'photutils-dev'", git = "https://github.com/astropy/photutils?rev=a6acb06a2cc1f910548ab60bd572b6dfaf865cc7" },
+    { name = "photutils", specifier = ">=3.1" },
+    { name = "photutils", marker = "extra == 'photutils-dev'", git = "https://github.com/astropy/photutils?rev=02b7355a412789f2a226dab52ac71d7ad6ed71ff" },
     { name = "photutils", marker = "extra == 'photutils-release'", index = "https://pypi.org/simple", conflict = { package = "bandaid", extra = "photutils-release" } },
     { name = "pydantic", specifier = ">=2" },
     { name = "python-dateutil" },
@@ -830,8 +830,8 @@ source = { git = "https://github.com/mwcraig/eloy?rev=a056c91a945772e0520a89695f
 dependencies = [
     { name = "astropy" },
     { name = "numpy" },
-    { name = "photutils", version = "3.0.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-7-bandaid-photutils-release' or extra != 'extra-7-bandaid-photutils-dev'" },
-    { name = "photutils", version = "3.0.1.dev1404+ga6acb06a2", source = { git = "https://github.com/astropy/photutils?rev=a6acb06a2cc1f910548ab60bd572b6dfaf865cc7#a6acb06a2cc1f910548ab60bd572b6dfaf865cc7" }, marker = "extra == 'extra-7-bandaid-photutils-dev'" },
+    { name = "photutils", version = "3.1.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-7-bandaid-photutils-release' or extra != 'extra-7-bandaid-photutils-dev'" },
+    { name = "photutils", version = "3.1.1.dev11+g02b7355a4", source = { git = "https://github.com/astropy/photutils?rev=02b7355a412789f2a226dab52ac71d7ad6ed71ff#02b7355a412789f2a226dab52ac71d7ad6ed71ff" }, marker = "extra == 'extra-7-bandaid-photutils-dev'" },
     { name = "scikit-image" },
     { name = "scipy" },
     { name = "twirl" },
@@ -2249,29 +2249,31 @@ wheels = [
 
 [[package]]
 name = "photutils"
-version = "3.0.0"
+version = "3.1.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.13'",
     "python_full_version < '3.13'",
 ]
 dependencies = [
-    { name = "astropy" },
-    { name = "numpy" },
-    { name = "scipy" },
+    { name = "astropy", marker = "extra == 'extra-7-bandaid-photutils-release' or extra != 'extra-7-bandaid-photutils-dev'" },
+    { name = "numpy", marker = "extra == 'extra-7-bandaid-photutils-release' or extra != 'extra-7-bandaid-photutils-dev'" },
+    { name = "scipy", marker = "extra == 'extra-7-bandaid-photutils-release' or extra != 'extra-7-bandaid-photutils-dev'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2c/54/9eb5c73edb7fe3b911af0c64e8022f5b629444e34816a975bd0efa60b758/photutils-3.0.0.tar.gz", hash = "sha256:5e1ca2be9433e1e1f9f6d477e1e6c8029755caceefb4e349048955e3cb825529", size = 969607, upload-time = "2026-04-17T22:14:25.206Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2d/16/a867a840aa7c92c6cadc1adbdc8bb6948d9e62ad2831aa71584d38189b22/photutils-3.1.0.tar.gz", hash = "sha256:4d0b77027ac16f22973f4ff9a89f3a3ca26766299606528caf32ced4e803608e", size = 1772054, upload-time = "2026-10-13T23:36:20.081Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/61/38/48ed724a8c49eb0dac8a636913092ace4b31da356e2ee8fb0f0b0ff89c08/photutils-3.0.0-cp311-abi3-macosx_10_9_x86_64.whl", hash = "sha256:60767e0bc8ef963561a73252c878b9348450cab0a1a1a85729f621410cc4a395", size = 1041439, upload-time = "2026-04-17T22:14:19.668Z" },
-    { url = "https://files.pythonhosted.org/packages/a4/c3/6d336daae0c0406e586183ce3f1f3ba97f78344574be5883c6ae6f184efa/photutils-3.0.0-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:1faa9da37a2fb46c2ef527bf2bba00df268553635758032497163ef2c5e83c4a", size = 1044718, upload-time = "2026-04-17T22:14:21.145Z" },
-    { url = "https://files.pythonhosted.org/packages/23/6b/d4bd67d23c0ca12f5307ee12edca7c5e1d4da7747ab67322d5e65c476c07/photutils-3.0.0-cp311-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:6e0ccb7361144f8f220c8d852c01678661bc7ed5a1e1378b39c8bf78a479efc4", size = 1766023, upload-time = "2026-04-17T22:14:22.78Z" },
-    { url = "https://files.pythonhosted.org/packages/2e/ab/067fedf9c63cd8c80ad4ced4935189590b7a35dc0f3196f5a50c5a951eb1/photutils-3.0.0-cp311-abi3-win_amd64.whl", hash = "sha256:112ab07628f0b1d8bb6e70c926279a867e6bb57eea82f8141410b155a00e73d1", size = 1052065, upload-time = "2026-04-17T22:14:24.044Z" },
+    { url = "https://files.pythonhosted.org/packages/43/11/2c04af0adb3bcd99debf05e9942d84adb29e8e0b8fa27ef7c2757fab9e06/photutils-3.1.0-cp312-abi3-macosx_10_13_x86_64.whl", hash = "sha256:b05cf2e73add78d347d2bcae5478ea16f137551f037e418a623876e1225c8477", size = 2922375, upload-time = "2026-10-13T23:36:08.598Z" },
+    { url = "https://files.pythonhosted.org/packages/42/09/160765e80bf6ac41fd75006d2017d1d9edca56d0a30480b3345a2e6fd4e9/photutils-3.1.0-cp312-abi3-macosx_11_0_arm64.whl", hash = "sha256:9c81ace15964f1e9c3c2841ec21afe15ed507fee29ec9ef6cf22f24c640c1cb5", size = 2842493, upload-time = "2026-10-13T23:36:10.749Z" },
+    { url = "https://files.pythonhosted.org/packages/38/0c/cb042f887dc52dc31991bb50d8b1ddfce5a829035ac4e8272a8188a308c6/photutils-3.1.0-cp312-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:2264ab12aed4845a6f5091e2d7585e923419f3c887f026491401b473741295bc", size = 9944201, upload-time = "2026-10-13T23:36:12.295Z" },
+    { url = "https://files.pythonhosted.org/packages/95/53/4c17335fc0a3f3f8aa1b6d3b2e6d0886e9e1b639ad33190980dba41ba33c/photutils-3.1.0-cp312-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f23762b9574097efc40137569e27e7ef91705a8093a41f37c82a1f02988a82e4", size = 10069185, upload-time = "2026-10-13T23:36:14.819Z" },
+    { url = "https://files.pythonhosted.org/packages/c2/16/3b297ab7a1fb5dc4402e807fcd12e9e00b6b958d214fc929811288d94030/photutils-3.1.0-cp312-abi3-win_amd64.whl", hash = "sha256:296714a230989ea12d91d09234739bd75ba40aae31df4d78ac8c45598ff87277", size = 2738697, upload-time = "2026-10-13T23:36:16.691Z" },
+    { url = "https://files.pythonhosted.org/packages/d1/03/397774ea3e670dbea27dbcd36944f53cbbf41a9161e6060f443f018d4a1e/photutils-3.1.0-cp312-abi3-win_arm64.whl", hash = "sha256:247e72d69ffe8965b7c6c56d9db515825422d28acc63ccc097d273512d47584f", size = 2579187, upload-time = "2026-10-13T23:36:18.194Z" },
 ]
 
 [[package]]
 name = "photutils"
-version = "3.0.1.dev1404+ga6acb06a2"
-source = { git = "https://github.com/astropy/photutils?rev=a6acb06a2cc1f910548ab60bd572b6dfaf865cc7#a6acb06a2cc1f910548ab60bd572b6dfaf865cc7" }
+version = "3.1.1.dev11+g02b7355a4"
+source = { git = "https://github.com/astropy/photutils?rev=02b7355a412789f2a226dab52ac71d7ad6ed71ff#02b7355a412789f2a226dab52ac71d7ad6ed71ff" }
 resolution-markers = [
     "python_full_version >= '3.13'",
     "python_full_version < '3.13'",

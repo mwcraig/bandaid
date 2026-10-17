@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- photutils 3.1 is now the minimum version. It is the first release with the
+    compiled sigma-clipped `ApertureStats` (about 26 % less time per frame,
+    output differs only at the last bit).
+
 ### Added
 
 - `process_frame`, the per-frame step behind `process_batch`: photometers one
@@ -20,11 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `StarListValidationError`, `DegenerateBayerChannelError` and
     `CatalogTruncationError` are exported from the top-level package.
 - `photutils-dev` extra: `uv sync --extra photutils-dev` builds photutils from a
-    commit pinned on photutils main, for the compiled sigma-clipped
-    `ApertureStats` (about 26 % less time per frame, output differs only at the
-    last bit). Opt-in and for developers only; the default install, pip and the
-    browser build stay on the released photutils. Goes away with photutils 3.1
-    (#103).
+    commit pinned on photutils main, to test against unreleased photutils.
+    Opt-in and for developers only; the default install, pip and the browser
+    build stay on the released photutils (#103).
 - `bandaid process -v` now logs the frame and photometry-target counts, one outcome line
     per frame (WCS solved or the skip reason, stars measured, FWHM, elapsed time)
     and a closing total; `-vv` adds per-stage detail for each frame (plate-solve
