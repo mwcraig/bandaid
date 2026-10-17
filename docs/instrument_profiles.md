@@ -143,7 +143,7 @@ resolves the directives against a frame's FITS header.
 | ---------------- | ----------------------------------- | -------------------------------------------------------------------------------------------- |
 | `"@KEY"`         | `"obs_time": "@DATE-OBS"`           | Take the value of FITS header keyword `KEY`. Falls back to a `#`-default (below) if missing. |
 | `"!KEY index N"` | `"tel_manufac": "!CREATOR index 0"` | Split header keyword `KEY` on whitespace and take the `N`-th token (0-based).                |
-| literal          | `"egain": 0.3116`                   | Use the literal value as-is. Used for hardware constants the header does not carry.          |
+| literal          | `"egain": 0.046`                    | Use the literal value as-is. Used for hardware constants the header does not carry.          |
 | `"#key": value`  | `"#stack": 1`                       | A **fallback** for `key`: used only when the `@` lookup for `key` finds nothing.             |
 | `"_anything"`    | `"_note": "..."`                    | A comment. Ignored entirely.                                                                 |
 
@@ -372,7 +372,11 @@ resolve them:
 
 - `egain` — system gain; feeds the photometry noise model. A missing/`None`
     value fails the frame, so provide it as a literal (or a header lookup that is
-    always present).
+    always present). It is in e-/ADU in the file's own units (16-bit for the
+    Seestar). The bundled Seestar50 profile uses the red-channel photon-transfer
+    value, 0.046, for every Bayer channel as the conservative choice: the
+    Poisson error scales as 1/sqrt(egain), so the smallest gain gives the
+    largest uncertainty. Green and blue measure about 0.075.
 - `largest_usable_adu_value` — saturation cut.
 - `pixscale`, `fov_rad` — plate scale and field of view used for Gaia matching
     and FWHM-in-arcsec reporting.
