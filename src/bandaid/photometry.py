@@ -2467,7 +2467,7 @@ def _centroid_model_summary(result, g_cut):
 
 def annulus_sigma_clip_stats(data, coords, r_in, r_out, input_mask=None, sigma=3):
     """
-    Compute the sigma-clipped median and standard deviation in an annulus.
+    Compute the sigma-clipped mean and standard deviation in an annulus.
 
     Parameters
     ----------
@@ -2486,16 +2486,26 @@ def annulus_sigma_clip_stats(data, coords, r_in, r_out, input_mask=None, sigma=3
 
     Returns
     -------
-    bkg_median : numpy.ndarray
-        Sigma-clipped median background per pixel for each coordinate.
+    bkg_mean : numpy.ndarray
+        Sigma-clipped mean background per pixel for each coordinate.
     bkg_std : numpy.ndarray
         Sigma-clipped standard deviation per pixel for each coordinate.
+
+    Notes
+    -----
+    The sigma clip is what rejects contaminating stars in the annulus. With
+    the outliers removed, the mean is the unbiased estimate of the remaining
+    sky level, while the median of a skewed, low-count sample sits below it
+    and, on integer-valued ADU data, is quantised to integer or half-integer
+    levels. On a Bayer-masked channel only a quarter (red, blue) or half
+    (green) of the annulus pixels are available, which makes both effects
+    larger than on a full-resolution image.
     """
     annulus = CircularAnnulus(coords, r_in, r_out)
     sigclip = SigmaClip(sigma=sigma)
     aperstats = ApertureStats(data, annulus, mask=input_mask, sigma_clip=sigclip)
 
-    return aperstats.median, aperstats.std
+    return aperstats.mean, aperstats.std
 
 
 def _peak_box_side(fwhm):

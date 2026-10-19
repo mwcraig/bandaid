@@ -156,6 +156,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The per-star background is the sigma-clipped mean of the annulus instead of
+    the sigma-clipped median. The clip already rejects neighbouring stars; after
+    it the mean is the unbiased sky estimate, and unlike the median it is not
+    quantised to the integer ADU grid, which matters on a Bayer-masked channel
+    where only a quarter or half of the annulus pixels are available. Every
+    `bkgd_count`, `total_bkg`, flux and `sky` value shifts by a fraction of an
+    ADU per pixel.
 - The Seestar50 profile's `egain` is now 0.046 e-/ADU, the measured red-channel
     value, instead of the 0.3116 placeholder. It is used for every Bayer channel
     as the conservative choice (green and blue measure about 0.075). Fluxes are
