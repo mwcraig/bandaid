@@ -156,6 +156,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The Seestar50 profile's `egain` is now 0.046 e-/ADU, the measured red-channel
+    value, instead of the 0.3116 placeholder. It is used for every Bayer channel
+    as the conservative choice (green and blue measure about 0.075). Fluxes are
+    unchanged; `count_err` grows and `snr` falls, which can change which rows
+    pass `min_snr`.
 - The QA manifest writes the pointing offset, plate scale, solve offset and
     plane columns with 6 significant figures instead of 4 decimals, so a plane
     slope near 1e-3 keeps its precision and a trailing `.0` is dropped. Every
