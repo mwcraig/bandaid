@@ -13,6 +13,7 @@ from _helpers import (
 )
 from astropy.stats import gaussian_fwhm_to_sigma, sigma_clipped_stats
 from astropy.table import Table
+from photutils.aperture import CircularAnnulus
 
 from bandaid import measure_photometry
 from bandaid.photometry import (
@@ -22,6 +23,7 @@ from bandaid.photometry import (
     _finite_centroids,
     _peak_box_cutouts,
     _peak_box_side,
+    annulus_sigma_clip_stats,
 )
 
 
@@ -105,7 +107,10 @@ def test_measure_photometry_single_source(make_test_image, include_noise, noise_
     # proportional to noise_stddev, so absolute tolerances scale with
     # noise_error (= noise_stddev * sqrt(aperture_area)).
     # The factor 0.06 accounts for the finite annulus size and sigma-clipping.
-    count_err_tol = 0.06 * noise_error
+    # The Poisson term is evaluated at the measured net count, which the
+    # assertion above lets sit 2 sigma (2 * noise_error) from the analytic
+    # count; propagate that through d(err) = d(count) / (2 * egain * err).
+    count_err_tol = 0.06 * noise_error + 2 * noise_error / (2 * egain * expected_error)
     assert photom["count_err"][0] == pytest.approx(
         expected_error,
         rel=0.04,
@@ -758,4 +763,76 @@ def test_measure_photometry_peak_cutouts_cast_to_float_not_image_dtype(make_test
 
     np.testing.assert_array_equal(
         expected["peak_count"], from_int_image_with_precomputed["peak_count"]
+    )
+
+
+def _annulus_pixels(image, coords, r_in, r_out, mask=None):
+    """Return the annulus pixel values around the single star in ``coords``."""
+    annulus = CircularAnnulus(coords, r_in, r_out)
+    annulus_mask = annulus.to_mask(method="center")[0]
+    inside = annulus_mask.to_image(image.shape).astype(bool)
+    if mask is not None:
+        inside &= ~mask
+    return image[inside]
+
+
+def test_annulus_background_is_the_sigma_clipped_mean(bayer_masks_rggb):
+    """
+    The per-star background is the sigma-clipped mean of the annulus, not the median.
+
+    On an integer-valued, skewed annulus sample the median sits on an integer
+    level below the mean, so the two estimators disagree by a measurable amount.
+    The sigma clip is what rejects contaminants; after it, the mean is the
+    unbiased estimate of the remaining sky level and is not quantised to the
+    ADU grid the way the median is.
+    """
+    rng = np.random.default_rng(SEED)
+    shape = (64, 64)
+    # Low-count Poisson sky is right-skewed and integer valued.
+    image = rng.poisson(3.0, size=shape).astype(float)
+    coords = np.array([[31.6, 32.3]])
+    r_in, r_out = 6.0, 9.0
+    # Red channel: only a quarter of the annulus pixels survive the mask.
+    mask = bayer_masks_rggb(shape)["TR"]
+
+    bkg, bkg_std = annulus_sigma_clip_stats(image, coords, r_in, r_out, input_mask=mask)
+
+    pixels = _annulus_pixels(image, coords, r_in, r_out, mask=mask)
+    clipped_mean, clipped_median, clipped_std = sigma_clipped_stats(pixels, sigma=3)
+
+    # The test only means something if the two estimators actually differ here.
+    min_estimator_gap = 0.05
+    assert abs(clipped_mean - clipped_median) > min_estimator_gap
+    assert bkg[0] == pytest.approx(clipped_mean, rel=1e-6)
+    assert bkg_std[0] == pytest.approx(clipped_std, rel=1e-6)
+
+
+def test_annulus_background_still_rejects_a_neighbor_in_the_annulus():
+    """
+    A bright star inside the annulus is clipped out before the mean is taken.
+
+    The mean is more sensitive than the median to anything the clip lets
+    through, so this pins that the clip still removes a neighbour's core and
+    wings well enough that the background stays within a small fraction of the
+    sky sigma of the true level.
+    """
+    rng = np.random.default_rng(SEED)
+    shape = (80, 80)
+    sky, sky_sigma = 50.0, 2.0
+    image = rng.normal(sky, sky_sigma, size=shape)
+    coords = np.array([[40.0, 40.0]])
+    r_in, r_out = 8.0, 12.0
+
+    # Neighbour sitting in the middle of the annulus, 200 sigma above sky.
+    yy, xx = np.mgrid[: shape[0], : shape[1]]
+    neighbor = 400.0 * np.exp(-(((xx - 50.0) ** 2 + (yy - 40.0) ** 2) / (2 * 1.2**2)))
+    image += neighbor
+
+    bkg, _ = annulus_sigma_clip_stats(image, coords, r_in, r_out)
+
+    n_annulus = np.pi * (r_out**2 - r_in**2)
+    # Allow the clip's residual (the neighbour's sub-sigma wings) plus the
+    # statistical scatter of the mean over the annulus.
+    assert bkg[0] == pytest.approx(
+        sky, abs=0.3 * sky_sigma + 3 * sky_sigma / np.sqrt(n_annulus)
     )
