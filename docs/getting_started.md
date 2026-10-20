@@ -1,106 +1,69 @@
 # Getting started
 
-This is the ~10-minute end-to-end run: point bandaid at a folder of Seestar
-frames and read the photometry back out. If you have not installed it yet, see
-[Installation](installation.md).
+## Install
 
-## Three ideas to keep in mind
+bandaid needs Python ≥ 3.12. Install it into a recent virtual environment:
 
-bandaid works a little differently from a "detect the stars in my image" tool.
-Three ideas explain almost everything you'll see:
+```bash
+$ pip install bandaid
+```
 
-1. **Positions come from Gaia, not from your image.** bandaid does *forced*
-    photometry: it measures flux at the positions of a magnitude-limited Gaia
-    catalog rather than detecting your own sources. You do not give it a target
-    list — it builds one from Gaia for wherever the telescope was pointed.
-1. **It works in batches.** One slow preparation pass on the first frame
-    (`prepare_batch`) sets up the Gaia catalog, plate scale, field of view, Bayer
-    masks, and centroiding model; then a fast per-frame loop (`process_batch`)
-    reuses all of that for every remaining frame.
-1. **The output is one `.star` file per frame** — each file bundles a separate
-    star list for every Bayer filter (red/green/blue, plus a luminance channel) —
-    plus a single `qa_manifest.csv` summarizing the whole run.
+or, with uv, `uv add bandaid`. Check the install:
 
-## Run it (CLI)
+```pycon
+>>> import bandaid
+>>> bandaid.available_instruments()
+['Seestar50']
+```
 
-Point `bandaid process` at a directory of frames and give it somewhere to write:
+### Optional jax acceleration
+
+The base install is numpy-only so that bandaid also runs where jax is
+unavailable, such as the browser (Pyodide). On a regular machine the `jax` extra
+makes centroiding faster on CPU with results that agree to float32 round-off:
+
+```bash
+$ pip install "bandaid[jax]"
+```
+
+bandaid uses jax automatically once jax and flax are importable. Set
+`BANDAID_BALLET_BACKEND=numpy` to force the numpy path, or
+`BANDAID_BALLET_BACKEND=jax` to make a missing jax an error instead of a silent
+fallback. The backend chosen is logged once at INFO.
+
+### Ballet weights
+
+The Ballet centroider needs trained weights. The first photometry run downloads
+the default weights from HuggingFace; the hub caches them, so later runs need no
+network. `bandaid weights` pre-fetches them and prints the cached path. For
+offline use see [Troubleshooting](howto/troubleshooting.md).
+
+## Run it
+
+Point `bandaid process` at a folder of frames and give it an output directory:
 
 ```bash
 $ bandaid process night-of-2026-06-27/ -o out/ -v
 ```
 
-`-v` streams a one-line outcome per frame so you can watch the batch move (use
-`-vv` for per-stage detail such as the plate solve and star counts). The first
-frame takes the longest — that is the once-per-batch preparation (instrument
-detection, a detection pass on the first frame, the Gaia query and contamination
-flagging) — and the rest follow quickly.
-
-## The Ballet weights (first run)
-
-The Ballet centroider needs trained weights. The **first** time you run a
-photometry batch, bandaid downloads the default weights from HuggingFace and the
-HuggingFace hub caches them, so subsequent runs reuse the cached copy with no
-network access. Centroiding runs through `bandaid.ballet.Ballet`, which picks
-eloy's jax/flax model when the optional `jax` extra is installed and falls
-back to a pure-numpy forward pass otherwise — no GPU or JAX stack is required
-by default. See [Optional jax acceleration](installation.md#optional-jax-acceleration)
-to opt into the faster path.
-
-To pre-fetch the weights (handy before going offline, or to confirm the download
-works) use the `weights` command, which prints the cached path:
-
-```bash
-$ bandaid weights
-/Users/you/.cache/huggingface/.../ballet_weights.npz
-```
-
-If you trained or downloaded your own weights, point any run at them with
-`--weights` (CLI) or `weights=` (Python) — see
-[Training the Ballet centroider](training_the_ballet_centroider.md).
+`-v` prints one line per frame; `-vv` adds per-stage detail. The first frame takes
+longest because it carries the once-per-batch preparation.
 
 ## What lands in `out/`
 
 ```text
 out/
-├── frame_0001.star      # one file per frame; bundles all Bayer filters inside
+├── frame_0001.star
 ├── frame_0002.star
 │   ...
-└── qa_manifest.csv      # one row per input frame
+└── qa_manifest.csv
 ```
 
-You get **one `.star` file per frame** that processed cleanly, plus one
-`qa_manifest.csv` for the run. Each `.star` file is a JSON document holding a
-separate star list for each Bayer filter — red (`TR`), green (`TG`), blue
-(`TB`), and a full-frame luminance channel (`L4`) unless you pass
-`--no-build-l4`. The per-star fields are covered in
-[Understanding the output](outputs.md).
-
-## Read the QA manifest
-
-`qa_manifest.csv` has one row per input frame and is the fastest way to check a
-night at a glance. The columns:
-
-| Column                | What it tells you                                                                                                    |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `file`                | The input frame.                                                                                                     |
-| `status`              | `ok`, `skipped: <reason>`, or `error: <type>`.                                                                       |
-| `n_detected`          | How many stars were detected in the frame.                                                                           |
-| `sky_median`          | Median sky background — climbs as clouds or moonlight roll in.                                                       |
-| `fwhm`                | Measured FWHM (seeing). A spike flags a soft/trailed frame.                                                          |
-| `wcs_solved`          | Whether a WCS was solved (`False` on a plate-solve failure).                                                         |
-| `pointing_offset_deg` | How far (degrees) the frame's header center is from the batch center.                                                |
-| `n_good_stars`        | Stars that survived photometry filtering and reached the output.                                                     |
-| `n_centroid_drift`    | Stars whose measured centroid wandered too far from its expected position (flagged, not dropped).                    |
-| `n_drift_rejected`    | Of those, how many also passed filtering and reached the output — the count a future gate on this flag would remove. |
-
-A healthy night is mostly `status=ok` with steady `fwhm` and `sky_median`. Rows
-with `status` other than `ok`, or a sudden jump in `fwhm`/`sky_median`, point you
-straight at the bad frames — see [Troubleshooting](troubleshooting.md).
-
-`n_centroid_drift` and `n_drift_rejected` are diagnostic only — see
-[Understanding the output](outputs.md#qa_manifestcsv) for the full
-interpretation, including the note that manifest data from before the
-proper-motion fix (#56) overcounts both.
+Each frame that processes cleanly gets one `.star` file holding a star list per
+Bayer filter — `TR`, `TG`, `TB` and a luminance channel `L4` (omit it with
+`--no-build-l4`). `qa_manifest.csv` has one row per input frame; mostly
+`status=ok` with steady `fwhm` and `sky_median` means a healthy night. Every
+field and column is described in [Output files](reference/outputs.md).
 
 ## The same run from Python
 
@@ -115,15 +78,14 @@ frames, results = photometer_frames(
 # results -> {input frame: written .star path} for each frame that succeeded
 ```
 
-`photometer_frames` does the same file expansion, `prepare_batch`, and
-`process_batch` the CLI runs. Pass `config=` to tune it (see
-[Configuration](configuration.md)) or `weights=` to use your own Ballet weights.
+`photometer_frames` does the file expansion, `prepare_batch` and `process_batch`
+that the CLI runs. Pass `config=` to tune the run or `weights=` (for example
+`weights="path/to/centroid_15x15.npz"`) to use your own Ballet weights.
 
-## Where to go next
+## Next steps
 
-- **[Configuration](configuration.md)** — the knobs an intermediate user
-    actually changes (aperture sizes, Gaia magnitude limit, drift cuts).
-- **[Instrument profiles](instrument_profiles.md)** — point bandaid at a
-    telescope other than the Seestar50.
-- **[Understanding the output](outputs.md)** — what every `.star` and
-    `qa_manifest.csv` column means, and how to spot untrustworthy measurements.
+- [Tune a run](howto/tune_a_run.md) — apertures, Gaia magnitude limit, centroid policy.
+- [Add a telescope](howto/add_a_telescope.md) — use something other than the
+    Seestar50.
+- [Troubleshooting](howto/troubleshooting.md) — skipped and failed frames.
+- [Command line](reference/command_line.md) — every option of `bandaid`.
