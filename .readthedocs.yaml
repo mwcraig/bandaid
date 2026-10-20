@@ -3,13 +3,15 @@
 version: 2
 
 build:
-  os: ubuntu-lts-latest
+  os: ubuntu-24.04
   tools:
     python: "3.12"
+  # The docs build from uv.lock with only the `docs` dependency group. The
+  # package itself is not installed: mkdocstrings reads the source statically.
   commands:
-    - pip install --upgrade pip
-    - pip install -e '.[docs]'
-    - hatch run docs:build -- --strict --site-dir "${READTHEDOCS_OUTPUT}/html"
+    - python -m pip install uv
+    - UV_PROJECT_ENVIRONMENT="$READTHEDOCS_VIRTUALENV_PATH" uv sync --frozen --only-group docs --inexact
+    - python -m mkdocs build --strict --site-dir "$READTHEDOCS_OUTPUT/html"
 
 mkdocs:
   configuration: mkdocs.yml
