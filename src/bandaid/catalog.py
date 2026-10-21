@@ -6,7 +6,7 @@ images and to drive forced photometry. ``twirl.gaia_radecs`` does this by hittin
 the Gaia TAP archive on *every* call, which is slow and occasionally times out.
 
 This module provides :func:`cached_gaia_radecs`, a drop-in replacement that queries
-the same Gaia DR2 data through VizieR (catalog ``I/345/gaia2``) using
+Gaia DR3 data through VizieR (catalog ``I/355/gaiadr3``) using
 ``astroquery.vizier``. astroquery caches VizieR query results automatically (on by
 default, one-week timeout, persisted under :attr:`Vizier.cache_location`), so
 repeated calls with identical parameters are served from disk with no network
@@ -35,11 +35,11 @@ from bandaid.exceptions import CatalogTruncationError
 
 logger = logging.getLogger(__name__)
 
-# Gaia DR2 in VizieR and the reference epoch (Julian year) of its positions.
-GAIA_DR2_VIZIER_CATALOG = "I/345/gaia2"
-GAIA_DR2_EPOCH = 2015.5
+# Gaia DR3 in VizieR and the reference epoch (Julian year) of its positions.
+GAIA_DR3_VIZIER_CATALOG = "I/355/gaiadr3"
+GAIA_DR3_EPOCH = 2016.0
 
-# VizieR column labels for the I/345/gaia2 table.
+# VizieR column labels for the I/355/gaiadr3 table.
 _RA_COL = "RA_ICRS"
 _DEC_COL = "DE_ICRS"
 _PMRA_COL = "pmRA"
@@ -107,7 +107,7 @@ def cached_gaia_radecs(
     center, fov, *, limit=10000, magnitude=True, obs_epoch=None, mag_limit=None
 ):
     """
-    Return Gaia DR2 RA/Dec (and magnitudes) in a field, cached via VizieR.
+    Return Gaia DR3 RA/Dec (and magnitudes) in a field, cached via VizieR.
 
     Drop-in replacement for ``twirl.gaia_radecs`` as used by the bandaid
     pipeline. Results are cached automatically by astroquery's VizieR cache, so
@@ -125,7 +125,7 @@ def cached_gaia_radecs(
     magnitude : bool, optional
         If ``True`` (default), also return the Gaia G magnitudes.
     obs_epoch : astropy.time.Time or str, optional
-        If given, propagate positions from the Gaia DR2 epoch (2015.5) to this
+        If given, propagate positions from the Gaia DR3 epoch (2016.0) to this
         epoch using proper motions via
         :meth:`~astropy.coordinates.SkyCoord.apply_space_motion`. If ``None``
         (default), positions are returned at the catalog epoch with no
@@ -160,7 +160,7 @@ def cached_gaia_radecs(
         **vizier_kwargs,
     )
     result = vizier.query_region(
-        center, radius=radius * u.deg, catalog=GAIA_DR2_VIZIER_CATALOG
+        center, radius=radius * u.deg, catalog=GAIA_DR3_VIZIER_CATALOG
     )
 
     # VizieR returns an empty TableList when nothing matches (or the server
@@ -176,7 +176,7 @@ def cached_gaia_radecs(
         ra = np.asarray(table[_RA_COL].value, dtype=float)
         dec = np.asarray(table[_DEC_COL].value, dtype=float)
     else:
-        # Some DR2 sources lack proper motions; treat missing PM as zero so the
+        # Some Gaia sources lack proper motions; treat missing PM as zero so the
         # space-motion calculation does not fail.
         pmra = _pm_or_zero(table[_PMRA_COL])
         pmdec = _pm_or_zero(table[_PMDEC_COL])
@@ -185,7 +185,7 @@ def cached_gaia_radecs(
             dec=table[_DEC_COL].quantity,
             pm_ra_cosdec=pmra,
             pm_dec=pmdec,
-            obstime=Time(GAIA_DR2_EPOCH, format="jyear"),
+            obstime=Time(GAIA_DR3_EPOCH, format="jyear"),
         )
         # No parallax or radial velocity is supplied, so ERFA substitutes a
         # default distance and warns once per call. That substitution is
@@ -198,7 +198,7 @@ def cached_gaia_radecs(
         ra = coords.ra.deg
         dec = coords.dec.deg
         # Defensive final guard: if propagation still produced a non-finite
-        # position, fall back to that row's catalog (J2015.5) position --
+        # position, fall back to that row's catalog (J2016.0) position --
         # semantically the same as "no usable proper motion", and immune to
         # upstream surprises like the masked-to-NaN quantity conversion above.
         nonfinite = ~(np.isfinite(ra) & np.isfinite(dec))
