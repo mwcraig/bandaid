@@ -910,7 +910,12 @@ class TestPrepareBatch:
             scripts.prepare_batch("frame1.fits", cnn=object())
 
     def test_gaia_network_error_raises_batchpreperror(self, mocker):
-        """A Gaia query failure is surfaced as a fatal BatchPrepError."""
+        """
+        A Gaia query failure is surfaced as a fatal BatchPrepError.
+
+        The message carries the underlying failure, since a command-line user
+        or a browser front end sees only ``str(exc)``, not the chained cause.
+        """
         mocker.patch(
             "bandaid.scripts.calibration_sequence",
             return_value=CalibrationResult(
@@ -929,8 +934,10 @@ class TestPrepareBatch:
             raise ConnectionError(msg)
 
         mocker.patch("bandaid.scripts.query_field_catalog", side_effect=_boom)
-        with pytest.raises(BatchPrepError, match="could not query Gaia"):
+        with pytest.raises(BatchPrepError, match="could not query Gaia") as excinfo:
             scripts.prepare_batch("frame1.fits", cnn=object())
+        assert "no network" in str(excinfo.value)
+        assert isinstance(excinfo.value.__cause__, ConnectionError)
 
     def test_forced_targets_appended_to_photometry_coords_only(self, mocker):
         """A forced target lands in ``photometry_coords`` but not ``radecs``."""
