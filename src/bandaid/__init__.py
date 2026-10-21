@@ -55,7 +55,6 @@ from .exceptions import (
     FrameError,
     FrameMetadataError,
     GaiaQueryError,
-    GaiaServiceError,
     InstrumentDetectionError,
     NoUsableStarsError,
     StarListValidationError,

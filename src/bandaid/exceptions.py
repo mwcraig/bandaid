@@ -22,7 +22,6 @@ __all__ = [
     "FrameError",
     "FrameMetadataError",
     "GaiaQueryError",
-    "GaiaServiceError",
     "InstrumentDetectionError",
     "NoUsableStarsError",
     "StarListValidationError",
@@ -194,42 +193,22 @@ class CatalogTruncationError(BatchPrepError):
 
 class GaiaQueryError(BandaidError):
     """
-    No Gaia server returned a usable catalog for the field.
+    A Gaia catalog query failed.
 
-    Raised by `~bandaid.catalog.cached_gaia_radecs` after every server in its
+    `~bandaid.catalog.cached_gaia_radecs` raises it after every server in its
     fallback list has failed. The message names the servers tried; the chained
     ``__cause__`` is the last server's failure.
 
     Notes
     -----
-    The chained cause tells the failure modes apart: a `GaiaServiceError` is a
-    server that answered with an error document, a `TimeoutError` or
-    ``requests`` exception is a network failure, and in the browser kernel a
-    ``pyodide.ffi.JsException`` is a timeout or blocked (CORS) request. Earlier
-    servers' failures are logged at warning level as each one is skipped.
+    The same class reports one server's error document, with the server's
+    text in the message, so the chained cause tells the failure modes apart: a
+    ``GaiaQueryError`` is a server that answered with an error, a ``requests``
+    exception such as ``ConnectTimeout`` or ``ReadTimeout`` is a network
+    failure, and in the browser kernel a ``pyodide.ffi.JsException`` is a
+    timeout or blocked (CORS) request. Earlier servers' failures are logged at
+    warning level as each one is skipped.
     """
-
-
-class GaiaServiceError(GaiaQueryError):
-    """
-    A Gaia server answered with an error document instead of a catalog.
-
-    VizieR reports an outage with HTTP 200 and a VOTable holding only an
-    ``INFO name="Error"`` element, which would otherwise parse as an empty
-    field.
-
-    Parameters
-    ----------
-    server : str
-        The server that answered.
-    server_message : str
-        The error text the server sent.
-    """
-
-    def __init__(self, server, server_message) -> None:
-        self.server = server
-        self.server_message = server_message
-        super().__init__(f"{server} answered with an error: {server_message}")
 
 
 class InstrumentDetectionError(FrameMetadataError):

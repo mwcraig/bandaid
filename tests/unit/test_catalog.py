@@ -29,7 +29,6 @@ from bandaid.exceptions import (
     BatchPrepError,
     CatalogTruncationError,
     GaiaQueryError,
-    GaiaServiceError,
 )
 
 # Gaia DR3 in VizieR and the reference epoch (Julian year) of its positions.
@@ -290,8 +289,6 @@ class TestServerFallback:
         assert _servers_tried(fake_vizier) == [CDS]
         fake_gavo.assert_not_called()
         assert fake_vizier.call_args.kwargs["timeout"] == SERVER_TIMEOUT
-        query_kwargs = fake_vizier.return_value.query_region_async.call_args.kwargs
-        assert query_kwargs["cache"] is True
 
     @pytest.mark.parametrize(
         "payload",
@@ -438,9 +435,9 @@ class TestServerFallback:
             cached_gaia_radecs(center, 0.2)
 
         cause = excinfo.value.__cause__
-        assert isinstance(cause, GaiaServiceError)
-        assert cause.server == GAVO
-        assert cause.server_message == TAP_ERROR_MESSAGE
+        assert isinstance(cause, GaiaQueryError)
+        assert GAVO in str(cause)
+        assert TAP_ERROR_MESSAGE in str(cause)
 
 
 # Field geometry and magnitude limits used by the field-catalog tests.
