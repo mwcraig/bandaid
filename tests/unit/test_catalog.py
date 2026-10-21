@@ -342,6 +342,23 @@ class TestServerFallback:
             for r in caplog.records
         )
 
+    def test_missing_cache_file_does_not_mask_the_failure(
+        self, fake_vizier, center, gaia_table, votable_response, caplog
+    ):
+        """An already-missing cache entry leaves the server's error as the reason."""
+        _cache_removal(fake_vizier).side_effect = FileNotFoundError("no pickle")
+        fake_vizier.return_value.query_region_async.side_effect = [
+            votable_response(OUTAGE_VOTABLE),
+            votable_response(gaia_table),
+        ]
+
+        with caplog.at_level(logging.WARNING, logger="bandaid.catalog"):
+            cached_gaia_radecs(center, 0.2)
+
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(OUTAGE_MESSAGE in m for m in messages)
+        assert not any("FileNotFoundError" in m for m in messages)
+
     @pytest.mark.parametrize(
         ("mag_limit", "mag_condition"),
         [(17.5, "phot_g_mean_mag <= 17.5"), (None, None)],
