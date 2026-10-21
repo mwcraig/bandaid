@@ -24,7 +24,14 @@ import pytest
 from astropy.coordinates import SkyCoord
 from astropy.time import Time
 
-from bandaid.catalog import cached_gaia_radecs, query_field_catalog
+from bandaid.catalog import (
+    GAVO_TAP_SERVER,
+    GAVO_TAP_SYNC_URL,
+    SERVER_TIMEOUT,
+    VIZIER_SERVERS,
+    cached_gaia_radecs,
+    query_field_catalog,
+)
 from bandaid.exceptions import (
     BatchPrepError,
     CatalogTruncationError,
@@ -62,10 +69,6 @@ ERROR_WITH_EMPTY_TABLE_VOTABLE = f"""<?xml version="1.0" encoding="UTF-8"?>
 </RESOURCE>
 </VOTABLE>
 """.encode()
-CDS = "vizier.cds.unistra.fr"
-IDIA = "vizier.idia.ac.za"
-GAVO = "dc.g-vo.org"
-GAVO_TAP_SYNC_URL = "https://dc.g-vo.org/tap/sync"
 # How a TAP service reports a failed query.
 TAP_ERROR_MESSAGE = "Field query: No such field known"
 TAP_ERROR_VOTABLE = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -75,8 +78,6 @@ TAP_ERROR_VOTABLE = f"""<?xml version="1.0" encoding="UTF-8"?>
 </RESOURCE>
 </VOTABLE>
 """.encode()
-# Per-server timeout in seconds.
-SERVER_TIMEOUT = 30
 # Arbitrary row limit used to assert it is forwarded to Vizier unchanged.
 ROW_LIMIT_PROBE = 1234
 # Floor (deg) the proper-motion shift must exceed; nine years of ~10 mas/yr is
@@ -120,6 +121,7 @@ def test_query_uses_catalog_row_limit_and_brightness_sort(fake_vizier, center):
     query_kwargs = fake_vizier.return_value.query_region_async.call_args.kwargs
     assert query_kwargs["catalog"] == GAIA_DR3_CATALOG
     assert init_kwargs["row_limit"] == ROW_LIMIT_PROBE
+    assert init_kwargs["timeout"] == SERVER_TIMEOUT
     # "+Gmag" requests an ascending (brightest-first) sort from VizieR.
     assert "+Gmag" in init_kwargs["columns"]
 
@@ -239,14 +241,22 @@ def test_literal_nonfinite_pm_treated_as_zero(fake_vizier, center, gaia_table):
 
 
 def test_empty_result_returns_shaped_empties(fake_vizier, center, votable_response):
-    """A field with no Gaia sources yields (0, 2) / (0,) arrays, not an IndexError."""
-    fake_vizier.return_value.query_region_async.side_effect = lambda *args, **kwargs: (
-        votable_response(EMPTY_FIELD_VOTABLE)
+    """
+    A field with no Gaia sources yields (0, 2) / (0,) arrays, not an IndexError.
+
+    The healthy empty answer is final: no other server is tried, since every
+    mirror would return the same empty field, and its cache entry is kept.
+    """
+    fake_vizier.return_value.query_region_async.side_effect = None
+    fake_vizier.return_value.query_region_async.return_value = votable_response(
+        EMPTY_FIELD_VOTABLE
     )
 
     radecs, mags = cached_gaia_radecs(center, 0.2, magnitude=True)
     assert radecs.shape == (0, 2)
     assert mags.shape == (0,)
+    assert _servers_tried(fake_vizier) == [VIZIER_SERVERS[0]]
+    _cache_removal(fake_vizier).assert_not_called()
     assert cached_gaia_radecs(center, 0.2, magnitude=False).shape == (0, 2)
 
 
@@ -280,102 +290,77 @@ def _cache_removal(fake_vizier):
 class TestServerFallback:
     """A failing server is skipped, and an error answer is kept out of the cache."""
 
-    def test_first_server_is_cds_with_timeout_and_cache(
-        self, fake_vizier, fake_gavo, center
-    ):
-        """A healthy CDS answers alone, with a timeout and astroquery's cache."""
-        cached_gaia_radecs(center, 0.2)
-
-        assert _servers_tried(fake_vizier) == [CDS]
-        fake_gavo.assert_not_called()
-        assert fake_vizier.call_args.kwargs["timeout"] == SERVER_TIMEOUT
-
     @pytest.mark.parametrize(
-        "payload",
-        [OUTAGE_VOTABLE, ERROR_WITH_EMPTY_TABLE_VOTABLE],
-        ids=["no-table", "empty-table"],
+        ("first_answer", "expect_eviction", "logged"),
+        [
+            ((OUTAGE_VOTABLE, 200), True, OUTAGE_MESSAGE),
+            ((ERROR_WITH_EMPTY_TABLE_VOTABLE, 200), True, OUTAGE_MESSAGE),
+            ((b"Service Unavailable", 503), True, "503"),
+            (BrowserTimeoutError("XMLHttpRequest timed out"), False, "timed out"),
+        ],
+        ids=["error-no-table", "error-empty-table", "http-503", "exception"],
     )
-    def test_error_votable_evicts_cache_and_falls_back(
-        self, fake_vizier, center, gaia_table, votable_response, caplog, payload
+    def test_failed_server_is_skipped(
+        self,
+        fake_vizier,
+        center,
+        gaia_table,
+        votable_response,
+        caplog,
+        first_answer,
+        expect_eviction,
+        logged,
     ):
-        """An error-only VOTable is a failed server: uncached, logged, skipped."""
-        instance = fake_vizier.return_value
-        instance.query_region_async.side_effect = [
-            votable_response(payload),
+        """
+        A failed first server is logged and skipped; a failed answer is uncached.
+
+        An error-only VOTable, a failure status, or any exception (the browser
+        kernel's timeout is not a ``requests`` one) all move on to the next
+        server.
+        """
+        if isinstance(first_answer, tuple):
+            first_answer = votable_response(*first_answer)
+        fake_vizier.return_value.query_region_async.side_effect = [
+            first_answer,
             votable_response(gaia_table),
         ]
 
         with caplog.at_level(logging.WARNING, logger="bandaid.catalog"):
             radecs, mags = cached_gaia_radecs(center, 0.2)
 
-        assert _servers_tried(fake_vizier) == [CDS, IDIA]
-        _cache_removal(fake_vizier).assert_called_once_with(instance.cache_location)
+        assert _servers_tried(fake_vizier) == list(VIZIER_SERVERS)
+        if expect_eviction:
+            _cache_removal(fake_vizier).assert_called_once_with(
+                fake_vizier.return_value.cache_location
+            )
+        else:
+            _cache_removal(fake_vizier).assert_not_called()
         np.testing.assert_allclose(mags, gaia_table["Gmag"].value)
         assert radecs.shape == (len(gaia_table), 2)
         assert any(
-            CDS in r.getMessage() and OUTAGE_MESSAGE in r.getMessage()
+            VIZIER_SERVERS[0] in r.getMessage() and logged in r.getMessage()
             for r in caplog.records
         )
 
-    def test_empty_field_is_cached_and_not_a_failure(
-        self, fake_vizier, center, votable_response
-    ):
-        """A healthy answer with no sources is final: no fallback, cache kept."""
-        instance = fake_vizier.return_value
-        instance.query_region_async.side_effect = [
-            votable_response(EMPTY_FIELD_VOTABLE)
-        ]
-
-        radecs, mags = cached_gaia_radecs(center, 0.2)
-
-        assert radecs.shape == (0, 2)
-        assert mags.shape == (0,)
-        assert _servers_tried(fake_vizier) == [CDS]
-        _cache_removal(fake_vizier).assert_not_called()
-
-    def test_http_error_status_evicts_cache_and_falls_back(
-        self, fake_vizier, center, gaia_table, votable_response
-    ):
-        """A non-success HTTP status is a failed server and is not cached."""
-        instance = fake_vizier.return_value
-        instance.query_region_async.side_effect = [
-            votable_response(b"Service Unavailable", status_code=503),
-            votable_response(gaia_table),
-        ]
-
-        _, mags = cached_gaia_radecs(center, 0.2)
-
-        assert _servers_tried(fake_vizier) == [CDS, IDIA]
-        _cache_removal(fake_vizier).assert_called_once_with(instance.cache_location)
-        assert len(mags) == len(gaia_table)
-
-    def test_any_exception_falls_back(
-        self, fake_vizier, center, gaia_table, votable_response, caplog
-    ):
-        """A non-requests exception (the browser's timeout) also moves on."""
-        fake_vizier.return_value.query_region_async.side_effect = [
-            BrowserTimeoutError("XMLHttpRequest timed out"),
-            votable_response(gaia_table),
-        ]
-
-        with caplog.at_level(logging.WARNING, logger="bandaid.catalog"):
-            _, mags = cached_gaia_radecs(center, 0.2)
-
-        assert _servers_tried(fake_vizier) == [CDS, IDIA]
-        assert len(mags) == len(gaia_table)
-        assert any("timed out" in r.getMessage() for r in caplog.records)
-
+    @pytest.mark.parametrize(
+        ("mag_limit", "mag_condition"),
+        [(17.5, "phot_g_mean_mag <= 17.5"), (None, None)],
+        ids=["mag-limit", "no-mag-limit"],
+    )
     def test_gavo_tap_is_the_last_resort(
-        self, fake_vizier, fake_gavo, center, gaia_table, votable_response
+        self,
+        fake_vizier,
+        fake_gavo,
+        center,
+        gaia_table,
+        mag_limit,
+        mag_condition,
     ):
-        """With both VizieR servers down, GAVO's TAP service answers the query."""
-        fake_vizier.return_value.query_region_async.side_effect = [
-            votable_response(OUTAGE_VOTABLE),
-            TimeoutError("read timed out"),
-        ]
+        """With every VizieR server down, GAVO's TAP service answers the query."""
+        fake_vizier.return_value.query_region_async.side_effect = TimeoutError
 
         radecs, mags = cached_gaia_radecs(
-            center, 0.2, limit=ROW_LIMIT_PROBE, mag_limit=17.5
+            center, 0.2, limit=ROW_LIMIT_PROBE, mag_limit=mag_limit
         )
 
         np.testing.assert_allclose(mags, gaia_table["Gmag"].value)
@@ -387,56 +372,36 @@ class TestServerFallback:
         assert "gaia.dr3lite" in query
         assert "POINT('ICRS', 239.9, 25.9)" in query
         assert f"TOP {ROW_LIMIT_PROBE}" in query
-        assert "phot_g_mean_mag <= 17.5" in query
         assert query.rstrip().endswith("ORDER BY phot_g_mean_mag")
-
-    def test_gavo_query_has_no_mag_cut_without_mag_limit(
-        self, fake_vizier, fake_gavo, center
-    ):
-        """Without mag_limit the ADQL has no magnitude condition."""
-        fake_vizier.return_value.query_region_async.side_effect = TimeoutError
-
-        cached_gaia_radecs(center, 0.2)
-
-        query = fake_gavo.call_args.kwargs["data"]["QUERY"]
-        assert "DISTANCE" in query
-        assert "phot_g_mean_mag <=" not in query
+        if mag_condition is None:
+            assert "phot_g_mean_mag <=" not in query
+        else:
+            assert mag_condition in query
 
     def test_all_servers_failing_raises_with_last_cause(
         self, fake_vizier, fake_gavo, center, votable_response
     ):
-        """When every server fails, one error names them and chains the last cause."""
-        last = TimeoutError("read timed out")
+        """
+        When every server fails, one error names them and chains the last cause.
+
+        GAVO sends a failed query's TAP error document with HTTP 500; the
+        server's text must survive into the chained cause.
+        """
         fake_vizier.return_value.query_region_async.side_effect = [
             votable_response(OUTAGE_VOTABLE),
             TimeoutError("connect timed out"),
         ]
-        fake_gavo.side_effect = last
+        fake_gavo.side_effect = None
+        fake_gavo.return_value = votable_response(TAP_ERROR_VOTABLE, status_code=500)
 
         with pytest.raises(GaiaQueryError) as excinfo:
             cached_gaia_radecs(center, 0.2)
 
-        for server in (CDS, IDIA, GAVO):
+        for server in (*VIZIER_SERVERS, GAVO_TAP_SERVER):
             assert server in str(excinfo.value)
-        assert excinfo.value.__cause__ is last
-
-    def test_error_answer_cause_carries_server_message(
-        self, fake_vizier, fake_gavo, center, votable_response
-    ):
-        """A TAP error document, sent with HTTP 500, keeps the server's text."""
-        fake_vizier.return_value.query_region_async.side_effect = (
-            lambda *args, **kwargs: votable_response(OUTAGE_VOTABLE)
-        )
-        fake_gavo.side_effect = lambda *args, **kwargs: votable_response(
-            TAP_ERROR_VOTABLE, status_code=500
-        )
-
-        with pytest.raises(GaiaQueryError) as excinfo:
-            cached_gaia_radecs(center, 0.2)
-
         cause = excinfo.value.__cause__
         assert isinstance(cause, GaiaQueryError)
-        assert GAVO in str(cause)
+        assert GAVO_TAP_SERVER in str(cause)
         assert TAP_ERROR_MESSAGE in str(cause)
 
 

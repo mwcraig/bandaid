@@ -20,6 +20,7 @@ from astropy.time import Time
 from dateutil import parser
 
 from bandaid import instruments, scripts
+from bandaid.catalog import GAIA_DR3_EPOCH
 from bandaid.config import (
     ApertureConfig,
     CentroidConfig,
@@ -43,8 +44,6 @@ from bandaid.photometry import (
     neighbor_contamination_flag_sky,
 )
 
-# Reference epoch (Julian year) of Gaia DR3 positions.
-GAIA_DR3_EPOCH = 2016.0
 # FK5(J2000) differs from ICRS by well under a tenth of an arcsecond; 25 years of
 # precession moves a pointing by about a third of a degree.
 FRAME_TIE_ARCSEC = 0.1
