@@ -58,7 +58,7 @@ VIZIER_SERVERS = ("vizier.cds.unistra.fr", "vizier.idia.ac.za")
 GAVO_TAP_SYNC_URL = "https://dc.g-vo.org/tap/sync"
 GAVO_GAIA_TABLE = "gaia.dr3lite"
 GAVO_TAP_SERVER = "dc.g-vo.org"
-# Seconds to wait for one server before moving on to the next.
+# Seconds to wait to connect to a server, and for each read from it.
 SERVER_TIMEOUT = 30
 
 # VizieR column labels for the I/355/gaiadr3 table.
@@ -348,7 +348,10 @@ def cached_gaia_radecs(
     Notes
     -----
     Servers are tried in order, each with a :data:`SERVER_TIMEOUT` second
-    timeout, and every skipped server is logged at warning level. An error
+    timeout, and every skipped server is logged at warning level. The timeout
+    applies to connecting and to each wait for data, not to the whole answer,
+    so a slow server can take longer than that and a query that falls through
+    to the last server can take more than three times as long. An error
     answer is never left in astroquery's cache, while a healthy answer for an
     empty field is cached and returned as shaped empties without trying
     another server, since every mirror would return the same empty field.
