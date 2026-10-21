@@ -1,8 +1,10 @@
 from contextlib import contextmanager
+from io import BytesIO
 
 import astropy.units as u
 import numpy as np
 import pytest
+import requests
 from astropy.modeling.models import Gaussian2D
 from astropy.table import MaskedColumn, Table
 from astropy.utils.iers import conf as iers_conf
@@ -48,15 +50,47 @@ def gaia_table():
 
 
 @pytest.fixture
-def fake_vizier(mocker, gaia_table):
+def votable_response():
     """
-    Patch in a Vizier stand-in returning ``gaia_table``; yield the class mock.
+    Factory for HTTP responses carrying a VOTable, as a server would send them.
 
-    The returned mock records construction args in ``fake_vizier.call_args`` and
-    the query call in ``fake_vizier.return_value.query_region.call_args``.
+    Returns
+    -------
+    callable
+        ``make(payload, status_code=200)`` returns a `requests.Response` whose
+        body is ``payload``: bytes are used as is, an `~astropy.table.Table` is
+        serialized to VOTable bytes.
+    """
+
+    def make(payload, status_code=200):
+        if isinstance(payload, Table):
+            buffer = BytesIO()
+            payload.write(buffer, format="votable")
+            payload = buffer.getvalue()
+        response = requests.Response()
+        response.status_code = status_code
+        response.raw = BytesIO(payload)
+        return response
+
+    return make
+
+
+@pytest.fixture
+def fake_vizier(mocker, gaia_table, votable_response):
+    """
+    Patch in a Vizier stand-in answering with ``gaia_table``; yield the class mock.
+
+    The returned mock records construction args in ``fake_vizier.call_args`` (one
+    entry per server tried in ``fake_vizier.call_args_list``) and the query call
+    in ``fake_vizier.return_value.query_region_async.call_args``. Each query
+    serializes ``gaia_table`` at call time, so a test may modify the table first.
+    Set ``query_region_async.side_effect`` to a list to script one answer per
+    server.
     """
     vizier = mocker.patch("bandaid.catalog.Vizier")
-    vizier.return_value.query_region.return_value = [gaia_table]
+    vizier.return_value.query_region_async.side_effect = lambda *args, **kwargs: (
+        votable_response(gaia_table)
+    )
     return vizier
 
 
