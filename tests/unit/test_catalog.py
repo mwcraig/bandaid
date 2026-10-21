@@ -17,13 +17,16 @@ than any side-effect state.
 import logging
 import math
 import warnings
+from contextlib import nullcontext
 
 import astropy.units as u
 import numpy as np
 import pytest
+import requests
 from astropy.coordinates import SkyCoord
 from astropy.time import Time
 
+from bandaid import catalog
 from bandaid.catalog import (
     GAVO_TAP_SERVER,
     GAVO_TAP_SYNC_URL,
@@ -423,6 +426,32 @@ class TestServerFallback:
         assert isinstance(cause, GaiaQueryError)
         assert GAVO_TAP_SERVER in str(cause)
         assert TAP_ERROR_MESSAGE in str(cause)
+
+
+@pytest.mark.parametrize(
+    ("payload", "cached"),
+    [(OUTAGE_VOTABLE, False), (EMPTY_FIELD_VOTABLE, True)],
+    ids=["error-evicted", "empty-field-kept"],
+)
+def test_real_astroquery_cache_eviction(
+    mocker, tmp_path, center, votable_response, payload, cached
+):
+    """With astroquery's real cache, an error answer leaves no pickle behind."""
+    mocker.patch(
+        "astroquery.query.BaseQuery.cache_location",
+        new_callable=mocker.PropertyMock,
+        return_value=tmp_path,
+    )
+    response = votable_response(payload)
+    response.request = requests.PreparedRequest()  # astroquery strips its hooks
+    mocker.patch("requests.Session.request", return_value=response)
+
+    with nullcontext() if cached else pytest.raises(GaiaQueryError):
+        catalog._query_vizier(  # noqa: SLF001
+            VIZIER_SERVERS[0], center, 0.1, limit=10, mag_limit=None
+        )
+
+    assert bool(list(tmp_path.glob("*.pickle"))) is cached
 
 
 # Field geometry and magnitude limits used by the field-catalog tests.
