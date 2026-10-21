@@ -428,6 +428,14 @@ class TestServerFallback:
         assert TAP_ERROR_MESSAGE in str(cause)
 
 
+# astroquery formats the cone center with astropy's vectorized Angle.to_string,
+# which on the x86_64 Linux CPython builds that uv installs reports a
+# floating-point flag that plain float formatting leaves set, although nothing
+# is wrong (https://github.com/astropy/astropy/issues/18989). Only this test
+# reaches that code; the others replace Vizier entirely.
+@pytest.mark.filterwarnings(
+    "ignore:invalid value encountered in do_format:RuntimeWarning"
+)
 @pytest.mark.parametrize(
     ("payload", "cached"),
     [(OUTAGE_VOTABLE, False), (EMPTY_FIELD_VOTABLE, True)],
