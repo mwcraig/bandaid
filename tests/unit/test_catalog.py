@@ -65,6 +65,17 @@ ERROR_WITH_EMPTY_TABLE_VOTABLE = f"""<?xml version="1.0" encoding="UTF-8"?>
 """.encode()
 CDS = "vizier.cds.unistra.fr"
 IDIA = "vizier.idia.ac.za"
+GAVO = "dc.g-vo.org"
+GAVO_TAP_SYNC_URL = "https://dc.g-vo.org/tap/sync"
+# How a TAP service reports a failed query.
+TAP_ERROR_MESSAGE = "Field query: No such field known"
+TAP_ERROR_VOTABLE = f"""<?xml version="1.0" encoding="UTF-8"?>
+<VOTABLE version="1.5" xmlns="http://www.ivoa.net/xml/VOTable/v1.3">
+<RESOURCE type="results">
+<INFO name="QUERY_STATUS" value="ERROR">{TAP_ERROR_MESSAGE}</INFO>
+</RESOURCE>
+</VOTABLE>
+""".encode()
 # Per-server timeout in seconds.
 SERVER_TIMEOUT = 30
 # Arbitrary row limit used to assert it is forwarded to Vizier unchanged.
@@ -270,11 +281,14 @@ def _cache_removal(fake_vizier):
 class TestServerFallback:
     """A failing server is skipped, and an error answer is kept out of the cache."""
 
-    def test_first_server_is_cds_with_timeout_and_cache(self, fake_vizier, center):
+    def test_first_server_is_cds_with_timeout_and_cache(
+        self, fake_vizier, fake_gavo, center
+    ):
         """A healthy CDS answers alone, with a timeout and astroquery's cache."""
         cached_gaia_radecs(center, 0.2)
 
         assert _servers_tried(fake_vizier) == [CDS]
+        fake_gavo.assert_not_called()
         assert fake_vizier.call_args.kwargs["timeout"] == SERVER_TIMEOUT
         query_kwargs = fake_vizier.return_value.query_region_async.call_args.kwargs
         assert query_kwargs["cache"] is True
@@ -354,29 +368,69 @@ class TestServerFallback:
         assert len(mags) == len(gaia_table)
         assert any("timed out" in r.getMessage() for r in caplog.records)
 
+    def test_gavo_tap_is_the_last_resort(
+        self, fake_vizier, fake_gavo, center, gaia_table, votable_response
+    ):
+        """With both VizieR servers down, GAVO's TAP service answers the query."""
+        fake_vizier.return_value.query_region_async.side_effect = [
+            votable_response(OUTAGE_VOTABLE),
+            TimeoutError("read timed out"),
+        ]
+
+        radecs, mags = cached_gaia_radecs(
+            center, 0.2, limit=ROW_LIMIT_PROBE, mag_limit=17.5
+        )
+
+        np.testing.assert_allclose(mags, gaia_table["Gmag"].value)
+        np.testing.assert_allclose(radecs[:, 0], gaia_table["RA_ICRS"].value)
+        fake_gavo.assert_called_once()
+        assert fake_gavo.call_args.args[0] == GAVO_TAP_SYNC_URL
+        assert fake_gavo.call_args.kwargs["timeout"] == SERVER_TIMEOUT
+        query = fake_gavo.call_args.kwargs["data"]["QUERY"]
+        assert "gaia.dr3lite" in query
+        assert f"TOP {ROW_LIMIT_PROBE}" in query
+        assert "phot_g_mean_mag <= 17.5" in query
+        assert query.rstrip().endswith("ORDER BY phot_g_mean_mag")
+
+    def test_gavo_query_has_no_mag_cut_without_mag_limit(
+        self, fake_vizier, fake_gavo, center
+    ):
+        """Without mag_limit the ADQL has no magnitude condition."""
+        fake_vizier.return_value.query_region_async.side_effect = TimeoutError
+
+        cached_gaia_radecs(center, 0.2)
+
+        query = fake_gavo.call_args.kwargs["data"]["QUERY"]
+        assert "DISTANCE" in query
+        assert "phot_g_mean_mag <=" not in query
+
     def test_all_servers_failing_raises_with_last_cause(
-        self, fake_vizier, center, votable_response
+        self, fake_vizier, fake_gavo, center, votable_response
     ):
         """When every server fails, one error names them and chains the last cause."""
         last = TimeoutError("read timed out")
         fake_vizier.return_value.query_region_async.side_effect = [
             votable_response(OUTAGE_VOTABLE),
-            last,
+            TimeoutError("connect timed out"),
         ]
+        fake_gavo.side_effect = last
 
         with pytest.raises(GaiaQueryError) as excinfo:
             cached_gaia_radecs(center, 0.2)
 
-        assert CDS in str(excinfo.value)
-        assert IDIA in str(excinfo.value)
+        for server in (CDS, IDIA, GAVO):
+            assert server in str(excinfo.value)
         assert excinfo.value.__cause__ is last
 
-    def test_error_votable_cause_carries_server_message(
-        self, fake_vizier, center, votable_response
+    def test_error_answer_cause_carries_server_message(
+        self, fake_vizier, fake_gavo, center, votable_response
     ):
-        """An error answer surfaces as a GaiaServiceError with the server's text."""
+        """A TAP error answer surfaces as a GaiaServiceError with the server's text."""
         fake_vizier.return_value.query_region_async.side_effect = (
             lambda *args, **kwargs: votable_response(OUTAGE_VOTABLE)
+        )
+        fake_gavo.side_effect = lambda *args, **kwargs: votable_response(
+            TAP_ERROR_VOTABLE
         )
 
         with pytest.raises(GaiaQueryError) as excinfo:
@@ -384,8 +438,8 @@ class TestServerFallback:
 
         cause = excinfo.value.__cause__
         assert isinstance(cause, GaiaServiceError)
-        assert cause.server == IDIA
-        assert cause.server_message == OUTAGE_MESSAGE
+        assert cause.server == GAVO
+        assert cause.server_message == TAP_ERROR_MESSAGE
 
 
 # Field geometry and magnitude limits used by the field-catalog tests.

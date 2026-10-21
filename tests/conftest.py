@@ -95,6 +95,19 @@ def fake_vizier(mocker, gaia_table, votable_response):
 
 
 @pytest.fixture
+def fake_gavo(mocker, gaia_table, votable_response):
+    """
+    Patch ``requests.post`` to answer the GAVO TAP query with ``gaia_table``.
+
+    The returned mock records the POST in ``fake_gavo.call_args``; its
+    ``data["QUERY"]`` is the ADQL. Set ``side_effect`` to script another answer.
+    """
+    post = mocker.patch("requests.post")
+    post.side_effect = lambda *args, **kwargs: votable_response(gaia_table)
+    return post
+
+
+@pytest.fixture
 def starlist_metadata():
     """
     A metadata dict covering every StarList field except fwhm (set on table meta).
