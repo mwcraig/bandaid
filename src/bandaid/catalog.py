@@ -24,6 +24,7 @@ manual proper-motion correction, propagation to an observation epoch is done wit
 astropy's :meth:`~astropy.coordinates.SkyCoord.apply_space_motion`.
 """
 
+import contextlib
 import logging
 import math
 import warnings
@@ -230,8 +231,11 @@ def _query_vizier(server, center, radius, *, limit, mag_limit):
     try:
         return _read_votable(server, response)
     except Exception:
-        # astroquery exposes cache-entry removal only on the last query.
-        vizier._last_query.remove_cache_file(vizier.cache_location)  # noqa: SLF001
+        # astroquery exposes cache-entry removal only on the last query, and
+        # raises FileNotFoundError when the entry is already gone (it tests
+        # ``Path.exists`` without calling it), which must not mask this error.
+        with contextlib.suppress(FileNotFoundError):
+            vizier._last_query.remove_cache_file(vizier.cache_location)  # noqa: SLF001
         raise
 
 
