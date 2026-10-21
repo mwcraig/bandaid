@@ -757,7 +757,7 @@ def prepare_batch(
     except BatchPrepError:
         raise
     except Exception as exc:
-        msg = f"could not query Gaia for the field at {center}"
+        msg = f"could not query Gaia for the field at {center}: {exc}"
         raise BatchPrepError(msg) from exc
     # Decouple the stars we *measure* (targets, cut at gaia_mag_limit) from the
     # stars that can *contaminate* them (a deeper list down to

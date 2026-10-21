@@ -15,7 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     When every server fails, the new `GaiaQueryError`, exported from the
     top-level package, names the servers tried and chains the last failure; a
     server that answered with an error document is also reported as a
-    `GaiaQueryError` carrying the server's text (#169).
+    `GaiaQueryError` carrying the server's text. The batch-prep error
+    "could not query Gaia for the field at ..." now ends with that failure, so
+    the one-line message says what went wrong (#169).
 - `process_frame`, the per-frame step behind `process_batch`: photometers one
     frame against a `BatchPrep` and returns a `FrameResult` with the outcome
     (`ok`/`skipped`/`error`), the tables, the error, the elapsed time and the
