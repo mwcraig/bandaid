@@ -20,7 +20,6 @@ from astropy.time import Time
 from dateutil import parser
 
 from bandaid import instruments, scripts
-from bandaid.catalog import GAIA_DR2_EPOCH
 from bandaid.config import (
     ApertureConfig,
     CentroidConfig,
@@ -44,6 +43,8 @@ from bandaid.photometry import (
     neighbor_contamination_flag_sky,
 )
 
+# Reference epoch (Julian year) of Gaia DR3 positions.
+GAIA_DR3_EPOCH = 2016.0
 # FK5(J2000) differs from ICRS by well under a tenth of an arcsecond; 25 years of
 # precession moves a pointing by about a third of a degree.
 FRAME_TIE_ARCSEC = 0.1
@@ -499,7 +500,7 @@ class TestPrepareBatch:
         """
         The first frame's ``obs_time`` is forwarded to Gaia as ``obs_epoch``.
 
-        Gaia DR2 positions are J2015.5; without the epoch, ``query_field_catalog``
+        Gaia DR3 positions are J2016.0; without the epoch, ``query_field_catalog``
         returns catalog-epoch positions and every high-proper-motion star is
         mis-placed in the forced-photometry target list. Fixes
         https://github.com/mwcraig/bandaid/issues/56.
@@ -581,10 +582,10 @@ class TestPrepareBatch:
 
         Runs the *real* ``query_field_catalog`` with only ``catalog.Vizier``
         patched (network-free). The brightest fixture star is given an extreme
-        proper motion (1000 mas/yr, ~10.9 arcsec over 2015.5 -> 2026.3) and the
+        proper motion (1000 mas/yr, ~10.3 arcsec over 2016.0 -> 2026.3) and the
         faintest a *masked* one. The prep's positions must match an independent
         ``SkyCoord.apply_space_motion`` computation -- so the high-PM star has
-        moved well off its raw J2015.5 catalog position and the masked-PM star
+        moved well off its raw J2016.0 catalog position and the masked-PM star
         is propagated with zero proper motion. Fixes
         https://github.com/mwcraig/bandaid/issues/56.
         """
@@ -626,7 +627,7 @@ class TestPrepareBatch:
             dec=gaia_table["DE_ICRS"],
             pm_ra_cosdec=[1000.0, -0.957, 0.0] * (u.mas / u.yr),
             pm_dec=[12.364, -1.993, 0.0] * (u.mas / u.yr),
-            obstime=Time(GAIA_DR2_EPOCH, format="jyear"),
+            obstime=Time(GAIA_DR3_EPOCH, format="jyear"),
         ).apply_space_motion(new_obstime=Time(parser.parse(metadata["obs_time"])))
         np.testing.assert_allclose(
             prep.radecs[:, 0], expected.ra.deg, rtol=0, atol=1e-9

@@ -26,10 +26,10 @@ def _no_iers_download():
 @pytest.fixture
 def gaia_table():
     """
-    A table shaped like the real ``I/345/gaia2`` result, brightest-first.
+    A table shaped like the real ``I/355/gaiadr3`` result, brightest-first.
 
     The faintest star has *masked* proper motions with NaN beneath the mask,
-    mirroring the astroquery round-trip for DR2 sources without a PM solution:
+    mirroring the astroquery round-trip for Gaia sources without a PM solution:
     ``MaskedColumn.quantity`` yields a NaN-bearing plain ``Quantity`` for such
     rows -- not a ``numpy.ma.MaskedArray``, so ``np.ma.filled`` on it is a
     no-op (https://github.com/mwcraig/bandaid/issues/80).

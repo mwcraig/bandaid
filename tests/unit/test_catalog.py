@@ -3,7 +3,7 @@ Unit tests for the cached Gaia catalog query in :mod:`bandaid.catalog`.
 
 These tests never touch the network: they patch ``bandaid.catalog.Vizier`` with a
 ``unittest.mock`` stand-in whose ``query_region`` returns a small in-memory table
-shaped like the real VizieR ``I/345/gaia2`` result (columns ``Gmag, RA_ICRS,
+shaped like the real VizieR ``I/355/gaiadr3`` result (columns ``Gmag, RA_ICRS,
 DE_ICRS, pmRA, pmDE``) -- the shared ``gaia_table`` / ``fake_vizier`` fixtures
 from ``tests/conftest.py``. They check the reshaping contract that the notebook
 relies on (matching ``twirl.gaia_radecs``), the optional proper-motion
@@ -23,14 +23,12 @@ import pytest
 from astropy.coordinates import SkyCoord
 from astropy.time import Time
 
-from bandaid.catalog import (
-    GAIA_DR2_EPOCH,
-    GAIA_DR2_VIZIER_CATALOG,
-    cached_gaia_radecs,
-    query_field_catalog,
-)
+from bandaid.catalog import cached_gaia_radecs, query_field_catalog
 from bandaid.exceptions import BatchPrepError, CatalogTruncationError
 
+# Gaia DR3 in VizieR and the reference epoch (Julian year) of its positions.
+GAIA_DR3_CATALOG = "I/355/gaiadr3"
+GAIA_DR3_EPOCH = 2016.0
 # Arbitrary row limit used to assert it is forwarded to Vizier unchanged.
 ROW_LIMIT_PROBE = 1234
 # Floor (deg) the proper-motion shift must exceed; nine years of ~10 mas/yr is
@@ -67,12 +65,12 @@ def test_magnitude_false_returns_only_radecs(fake_vizier, center, gaia_table):
 
 
 def test_query_uses_catalog_row_limit_and_brightness_sort(fake_vizier, center):
-    """The query targets I/345/gaia2 with the given row limit and a Gmag sort."""
+    """The query targets I/355/gaiadr3 with the given row limit and a Gmag sort."""
     cached_gaia_radecs(center, 0.2, limit=ROW_LIMIT_PROBE)
 
     init_kwargs = fake_vizier.call_args.kwargs
     query_kwargs = fake_vizier.return_value.query_region.call_args.kwargs
-    assert query_kwargs["catalog"] == GAIA_DR2_VIZIER_CATALOG
+    assert query_kwargs["catalog"] == GAIA_DR3_CATALOG
     assert init_kwargs["row_limit"] == ROW_LIMIT_PROBE
     # "+Gmag" requests an ascending (brightest-first) sort from VizieR.
     assert "+Gmag" in init_kwargs["columns"]
@@ -87,7 +85,7 @@ def test_radius_is_half_the_min_fov(fake_vizier, center):
 
 
 def test_no_proper_motion_by_default(fake_vizier, center, gaia_table):
-    """With obs_epoch=None, positions are returned at the DR2 epoch unchanged."""
+    """With obs_epoch=None, positions are returned at the DR3 epoch unchanged."""
     radecs, _ = cached_gaia_radecs(center, 0.2, magnitude=True)
 
     fake_vizier.return_value.query_region.assert_called_once()
@@ -109,7 +107,7 @@ def test_proper_motion_applied_matches_apply_space_motion(
         dec=gaia_table["DE_ICRS"],
         pm_ra_cosdec=gaia_table["pmRA"].filled(0).quantity,
         pm_dec=gaia_table["pmDE"].filled(0).quantity,
-        obstime=Time(GAIA_DR2_EPOCH, format="jyear"),
+        obstime=Time(GAIA_DR3_EPOCH, format="jyear"),
     ).apply_space_motion(new_obstime=obs_epoch)
 
     np.testing.assert_allclose(radecs[:, 0], expected.ra.deg, rtol=0, atol=1e-9)
@@ -141,7 +139,7 @@ def test_masked_pm_yields_finite_catalog_epoch_positions(
 
     On a real VizieR result, ``MaskedColumn.quantity`` converts masked proper
     motions to NaN in a *plain* ``Quantity`` -- ``np.ma.filled`` on it is a
-    no-op -- so DR2 sources without PM solutions used to come back with NaN
+    no-op -- so Gaia sources without PM solutions used to come back with NaN
     positions and crash ``search_around_sky`` downstream in ``prepare_batch``.
     Fixes https://github.com/mwcraig/bandaid/issues/80.
     """
@@ -160,7 +158,7 @@ def test_masked_pm_yields_finite_catalog_epoch_positions(
     fake_vizier.return_value.query_region.assert_called_once()
     assert np.isfinite(radecs).all()
     assert mags.shape == (len(gaia_table),)
-    # Zero PM means the masked star stays at its J2015.5 catalog position.
+    # Zero PM means the masked star stays at its J2016.0 catalog position.
     np.testing.assert_allclose(
         radecs[2],
         [gaia_table["RA_ICRS"][2], gaia_table["DE_ICRS"][2]],
