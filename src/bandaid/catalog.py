@@ -286,6 +286,9 @@ def _query_gavo_tap(center, radius, *, limit, mag_limit):
             "REQUEST": "doQuery",
             "LANG": "ADQL",
             "FORMAT": "votable",
+            # Without MAXREC the service caps the answer at its own default
+            # (20000 rows) instead of at TOP.
+            "MAXREC": limit,
             "QUERY": query,
         },
         timeout=SERVER_TIMEOUT,
