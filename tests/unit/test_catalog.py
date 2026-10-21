@@ -368,6 +368,9 @@ class TestServerFallback:
         fake_gavo.assert_called_once()
         assert fake_gavo.call_args.args[0] == GAVO_TAP_SYNC_URL
         assert fake_gavo.call_args.kwargs["timeout"] == SERVER_TIMEOUT
+        # GAVO otherwise caps the answer at its own 20000-row default, so a
+        # truncated dense field would slip past the row-limit check.
+        assert fake_gavo.call_args.kwargs["data"]["MAXREC"] == ROW_LIMIT_PROBE
         query = fake_gavo.call_args.kwargs["data"]["QUERY"]
         assert "gaia.dr3lite" in query
         assert "POINT('ICRS', 239.9, 25.9)" in query
