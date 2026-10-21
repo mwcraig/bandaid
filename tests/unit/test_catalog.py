@@ -388,6 +388,7 @@ class TestServerFallback:
         assert fake_gavo.call_args.kwargs["timeout"] == SERVER_TIMEOUT
         query = fake_gavo.call_args.kwargs["data"]["QUERY"]
         assert "gaia.dr3lite" in query
+        assert "POINT('ICRS', 239.9, 25.9)" in query
         assert f"TOP {ROW_LIMIT_PROBE}" in query
         assert "phot_g_mean_mag <= 17.5" in query
         assert query.rstrip().endswith("ORDER BY phot_g_mean_mag")
@@ -425,12 +426,12 @@ class TestServerFallback:
     def test_error_answer_cause_carries_server_message(
         self, fake_vizier, fake_gavo, center, votable_response
     ):
-        """A TAP error answer surfaces as a GaiaServiceError with the server's text."""
+        """A TAP error document, sent with HTTP 500, keeps the server's text."""
         fake_vizier.return_value.query_region_async.side_effect = (
             lambda *args, **kwargs: votable_response(OUTAGE_VOTABLE)
         )
         fake_gavo.side_effect = lambda *args, **kwargs: votable_response(
-            TAP_ERROR_VOTABLE
+            TAP_ERROR_VOTABLE, status_code=500
         )
 
         with pytest.raises(GaiaQueryError) as excinfo:
