@@ -13,6 +13,10 @@ repeated calls with identical parameters are served from disk with no network
 access and no caching code of our own. Inspect the cache with
 ``Vizier.cache_location`` and clear it with ``Vizier.clear_cache()``.
 
+When a server times out or answers with an error, the query moves on to the
+next server in :data:`VIZIER_SERVERS`, and the failed answer is removed from
+astroquery's cache so a retry asks the server again.
+
 The return value matches ``twirl.gaia_radecs``: an ``(n, 2)`` array of RA/Dec in
 degrees, optionally paired with the Gaia G magnitudes. Unlike twirl's optional
 manual proper-motion correction, propagation to an observation epoch is done with
@@ -22,22 +26,34 @@ astropy's :meth:`~astropy.coordinates.SkyCoord.apply_space_motion`.
 import logging
 import math
 import warnings
+from io import BytesIO
 
 import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
+from astropy.io import votable
 from astropy.table import MaskedColumn
 from astropy.time import Time
 from astroquery.vizier import Vizier
 from erfa import ErfaWarning
 
-from bandaid.exceptions import CatalogTruncationError
+from bandaid.exceptions import (
+    CatalogTruncationError,
+    GaiaQueryError,
+    GaiaServiceError,
+)
 
 logger = logging.getLogger(__name__)
 
 # Gaia DR3 in VizieR and the reference epoch (Julian year) of its positions.
 GAIA_DR3_VIZIER_CATALOG = "I/355/gaiadr3"
 GAIA_DR3_EPOCH = 2016.0
+
+# VizieR servers tried in order. The CfA mirror is not listed because it
+# redirects every query to CDS.
+VIZIER_SERVERS = ("vizier.cds.unistra.fr", "vizier.idia.ac.za")
+# Seconds to wait for one server before moving on to the next.
+SERVER_TIMEOUT = 30
 
 # VizieR column labels for the I/355/gaiadr3 table.
 _RA_COL = "RA_ICRS"
@@ -103,6 +119,154 @@ def _pm_or_zero(column):
     return np.where(np.isfinite(values), values, 0.0) * column.unit
 
 
+def _table_from_votable(server, content):
+    """
+    Return the first non-empty table in a VOTable response.
+
+    Parameters
+    ----------
+    server : str
+        The server that sent the response, for the error message.
+    content : bytes
+        The response body.
+
+    Returns
+    -------
+    astropy.table.Table or None
+        The first table with rows, or ``None`` when the response holds no rows
+        and no error, which is how a healthy VizieR reports an empty field.
+
+    Raises
+    ------
+    GaiaServiceError
+        If the response holds no rows and an ``INFO name="Error"`` element.
+
+    Notes
+    -----
+    VizieR answers an empty cone with no ``TABLE`` at all, so a missing table
+    alone does not mean failure; the error ``INFO`` does. A body that is not a
+    VOTable raises from the parser.
+    """
+    tree = votable.parse(BytesIO(content), verify="ignore")
+    for table in tree.iter_tables():
+        if len(table.array):
+            return table.to_table(use_names_over_ids=True)
+    errors = [info for info in tree.iter_info() if info.name == "Error"]
+    if errors:
+        texts = [(info.value or info.content or "").strip() for info in errors]
+        message = "; ".join(text for text in texts if text) or "unspecified error"
+        raise GaiaServiceError(server, message)
+    return None
+
+
+# pydoclint's DOC501/DOC503 are silenced on the docstring because the bare
+# raise only re-raises a server failure after evicting its cache entry.
+def _query_vizier(server, center, radius, *, limit, mag_limit):
+    """
+    Run the Gaia cone search on one VizieR server.
+
+    Parameters
+    ----------
+    server : str
+        VizieR host name.
+    center : astropy.coordinates.SkyCoord
+        Cone center.
+    radius : float
+        Cone radius in degrees.
+    limit : int
+        Maximum number of (brightest) sources to retrieve.
+    mag_limit : float or None
+        Faintest G magnitude to return, or ``None`` for no cut.
+
+    Returns
+    -------
+    astropy.table.Table or None
+        The sources, brightest first, or ``None`` for an empty field.
+
+    Notes
+    -----
+    astroquery caches every response it receives, including an error answer,
+    so a failed response is removed from the cache before the error is
+    re-raised; otherwise the same query would return the cached failure for
+    a week. Removing it also clears a failure cached by an earlier run. A
+    genuine empty field stays cached.
+    """  # noqa: DOC501, DOC503
+    # "+Gmag" asks VizieR to sort ascending (brightest first); combined with
+    # row_limit this returns the N brightest sources in the cone, matching
+    # twirl's "SELECT top N ... ORDER BY phot_g_mean_mag".
+    vizier_kwargs = {}
+    if mag_limit is not None:
+        vizier_kwargs["column_filters"] = {_MAG_COL: f"<={mag_limit}"}
+    vizier = Vizier(
+        columns=["+" + _MAG_COL, _RA_COL, _DEC_COL, _PMRA_COL, _PMDEC_COL],
+        row_limit=limit,
+        timeout=SERVER_TIMEOUT,
+        vizier_server=server,
+        **vizier_kwargs,
+    )
+    response = vizier.query_region_async(
+        center, radius=radius * u.deg, catalog=GAIA_DR3_VIZIER_CATALOG, cache=True
+    )
+    try:
+        response.raise_for_status()
+        return _table_from_votable(server, response.content)
+    except Exception:
+        # astroquery exposes cache-entry removal only on the last query.
+        vizier._last_query.remove_cache_file(vizier.cache_location)  # noqa: SLF001
+        raise
+
+
+def _query_gaia(center, radius, *, limit, mag_limit):
+    """
+    Run the Gaia cone search, falling back from one server to the next.
+
+    Parameters
+    ----------
+    center : astropy.coordinates.SkyCoord
+        Cone center.
+    radius : float
+        Cone radius in degrees.
+    limit : int
+        Maximum number of (brightest) sources to retrieve.
+    mag_limit : float or None
+        Faintest G magnitude to return, or ``None`` for no cut.
+
+    Returns
+    -------
+    astropy.table.Table or None
+        The sources, brightest first, or ``None`` for an empty field.
+
+    Raises
+    ------
+    GaiaQueryError
+        If every server failed; the last failure is chained as the cause.
+
+    Notes
+    -----
+    Every exception counts as a server failure, not only ``requests`` ones: in
+    the browser kernel a timeout or blocked request surfaces as
+    ``pyodide.ffi.JsException``.
+    """
+    last_error = None
+    for server in VIZIER_SERVERS:
+        try:
+            return _query_vizier(
+                server, center, radius, limit=limit, mag_limit=mag_limit
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Gaia query to %s failed, skipping it: %s: %s",
+                server,
+                type(exc).__name__,
+                exc,
+            )
+            last_error = exc
+    msg = f"no Gaia server answered the query; tried {', '.join(VIZIER_SERVERS)}"
+    raise GaiaQueryError(msg) from last_error
+
+
+# pydoclint's DOC502 is silenced on the docstring because GaiaQueryError is
+# raised by the _query_gaia helper, not in this function's body.
 def cached_gaia_radecs(
     center, fov, *, limit=10000, magnitude=True, obs_epoch=None, mag_limit=None
 ):
@@ -141,36 +305,33 @@ def cached_gaia_radecs(
         An ``(n, 2)`` array of RA/Dec in degrees. If ``magnitude`` is ``True``,
         a ``(radecs, mags)`` tuple where ``mags`` is the length-``n`` array of
         Gaia G magnitudes.
-    """
+
+    Raises
+    ------
+    GaiaQueryError
+        If no server returned a catalog. Its message names the servers tried
+        and its ``__cause__`` is the last server's failure.
+
+    Notes
+    -----
+    Servers are tried in order, each with a :data:`SERVER_TIMEOUT` second
+    timeout, and every skipped server is logged at warning level. An error
+    answer is never left in astroquery's cache, while a healthy answer for an
+    empty field is cached and returned as shaped empties without trying
+    another server, since every mirror would return the same empty field.
+    """  # noqa: DOC502
     if not isinstance(center, SkyCoord):
         ra, dec = center
         center = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
 
     radius = _fov_to_radius_deg(fov)
 
-    # "+Gmag" asks VizieR to sort ascending (brightest first); combined with
-    # row_limit this returns the N brightest sources in the cone, matching
-    # twirl's "SELECT top N ... ORDER BY phot_g_mean_mag".
-    vizier_kwargs = {}
-    if mag_limit is not None:
-        vizier_kwargs["column_filters"] = {_MAG_COL: f"<={mag_limit}"}
-    vizier = Vizier(
-        columns=["+" + _MAG_COL, _RA_COL, _DEC_COL, _PMRA_COL, _PMDEC_COL],
-        row_limit=limit,
-        **vizier_kwargs,
-    )
-    result = vizier.query_region(
-        center, radius=radius * u.deg, catalog=GAIA_DR3_VIZIER_CATALOG
-    )
+    table = _query_gaia(center, radius, limit=limit, mag_limit=mag_limit)
 
-    # VizieR returns an empty TableList when nothing matches (or the server
-    # returns no tables); guard so an empty/sparse field yields correctly shaped
-    # empties instead of an IndexError on result[0].
-    if len(result) == 0 or len(result[0]) == 0:
+    # An empty field yields correctly shaped empties.
+    if table is None:
         radecs = np.empty((0, 2))
         return (radecs, np.empty(0)) if magnitude else radecs
-
-    table = result[0]
 
     if obs_epoch is None:
         ra = np.asarray(table[_RA_COL].value, dtype=float)
