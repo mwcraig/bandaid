@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Gaia query falls back from one server to the next: CDS VizieR, then the
+    IDIA VizieR mirror, then the GAVO Heidelberg TAP service (`gaia.dr3lite`),
+    each with a 30 s timeout. Each skipped server is logged at warning level.
+    When every server fails, the new `GaiaQueryError` names the servers tried
+    and chains the last failure; a server that answered with an error document
+    is a `GaiaServiceError` carrying the server's text. Both are exported from the
+    top-level package (#169).
 - `process_frame`, the per-frame step behind `process_batch`: photometers one
     frame against a `BatchPrep` and returns a `FrameResult` with the outcome
     (`ok`/`skipped`/`error`), the tables, the error, the elapsed time and the
@@ -156,6 +163,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The Gaia catalog is Gaia DR3 (VizieR `I/355/gaiadr3`, epoch J2016.0) instead
+    of DR2 (`I/345/gaia2`, J2015.5). The column names are unchanged; the
+    constants are now `GAIA_DR3_VIZIER_CATALOG` and `GAIA_DR3_EPOCH`. Positions
+    and magnitudes shift at the DR2-to-DR3 level (#169).
 - The per-star background is the sigma-clipped mean of the annulus instead of
     the sigma-clipped median. The clip already rejects neighbouring stars; after
     it the mean is the unbiased sky estimate, and unlike the median it is not
@@ -345,6 +356,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A VizieR outage answer (HTTP 200 with only an `INFO name="Error"`, such as
+    "The database is not currently reachable") is no longer read as an empty
+    field and cached for a week, which made every retry report "Gaia returned
+    only 0 stars". Error answers and failure statuses are now removed from
+    astroquery's cache, including one cached by an earlier run, while a genuine
+    empty field is still cached (#169).
 - The per-frame FWHM fit is now stable: the Gaussian fit of the stacked PSF runs
     scipy's L-BFGS-B to floating-point noise (`ftol=1e-15`, `gtol=1e-12`, `maxcor=30`)
     instead of eloy's default tolerances, under which the fitted width tracked
