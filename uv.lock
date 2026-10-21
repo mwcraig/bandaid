@@ -217,6 +217,7 @@ dependencies = [
     { name = "photutils", version = "3.0.1.dev1404+ga6acb06a2", source = { git = "https://github.com/astropy/photutils?rev=a6acb06a2cc1f910548ab60bd572b6dfaf865cc7#a6acb06a2cc1f910548ab60bd572b6dfaf865cc7" }, marker = "extra == 'extra-7-bandaid-photutils-dev'" },
     { name = "pydantic" },
     { name = "python-dateutil" },
+    { name = "requests" },
     { name = "scikit-image" },
     { name = "scipy" },
     { name = "twirl" },
@@ -307,6 +308,7 @@ requires-dist = [
     { name = "photutils", marker = "extra == 'photutils-release'", index = "https://pypi.org/simple", conflict = { package = "bandaid", extra = "photutils-release" } },
     { name = "pydantic", specifier = ">=2" },
     { name = "python-dateutil" },
+    { name = "requests" },
     { name = "scikit-image" },
     { name = "scipy" },
     { name = "tqdm", marker = "extra == 'train'" },
@@ -2256,9 +2258,9 @@ resolution-markers = [
     "python_full_version < '3.13'",
 ]
 dependencies = [
-    { name = "astropy" },
-    { name = "numpy" },
-    { name = "scipy" },
+    { name = "astropy", marker = "extra == 'extra-7-bandaid-photutils-release' or extra != 'extra-7-bandaid-photutils-dev'" },
+    { name = "numpy", marker = "extra == 'extra-7-bandaid-photutils-release' or extra != 'extra-7-bandaid-photutils-dev'" },
+    { name = "scipy", marker = "extra == 'extra-7-bandaid-photutils-release' or extra != 'extra-7-bandaid-photutils-dev'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/2c/54/9eb5c73edb7fe3b911af0c64e8022f5b629444e34816a975bd0efa60b758/photutils-3.0.0.tar.gz", hash = "sha256:5e1ca2be9433e1e1f9f6d477e1e6c8029755caceefb4e349048955e3cb825529", size = 969607, upload-time = "2026-04-17T22:14:25.206Z" }
 wheels = [
