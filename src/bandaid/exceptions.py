@@ -21,6 +21,7 @@ __all__ = [
     "DegenerateBayerChannelError",
     "FrameError",
     "FrameMetadataError",
+    "GaiaQueryError",
     "InstrumentDetectionError",
     "NoUsableStarsError",
     "StarListValidationError",
@@ -187,6 +188,26 @@ class CatalogTruncationError(BatchPrepError):
 
     Photometry targets brighter than ``gaia_mag_limit`` were dropped, so the
     batch cannot be trusted.
+    """
+
+
+class GaiaQueryError(BandaidError):
+    """
+    A Gaia catalog query failed.
+
+    `~bandaid.catalog.cached_gaia_radecs` raises it after every server in its
+    fallback list has failed. The message names the servers tried; the chained
+    ``__cause__`` is the last server's failure.
+
+    Notes
+    -----
+    The same class reports one server's error document, with the server's
+    text in the message, so the chained cause tells the failure modes apart: a
+    ``GaiaQueryError`` is a server that answered with an error, a ``requests``
+    exception such as ``ConnectTimeout`` or ``ReadTimeout`` is a network
+    failure, and in the browser kernel a ``pyodide.ffi.JsException`` is a
+    timeout or blocked (CORS) request. Earlier servers' failures are logged at
+    warning level as each one is skipped.
     """
 
 

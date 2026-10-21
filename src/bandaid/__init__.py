@@ -54,6 +54,7 @@ from .exceptions import (
     DegenerateBayerChannelError,
     FrameError,
     FrameMetadataError,
+    GaiaQueryError,
     InstrumentDetectionError,
     NoUsableStarsError,
     StarListValidationError,

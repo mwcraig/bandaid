@@ -598,8 +598,8 @@ def prepare_batch(
     Compute the once-per-batch photometry inputs from the first frame.
 
     Runs a single detection pass on ``first_file`` (no WCS solve) to obtain the
-    FWHM and image metadata, queries Gaia for the field (propagating the J2015.5
-    DR2 positions to the frame's observation epoch via proper motions), drops
+    FWHM and image metadata, queries Gaia for the field (propagating the J2016.0
+    DR3 positions to the frame's observation epoch via proper motions), drops
     contaminated sources, and builds the Bayer masks. The query cone is the
     field radius widened by the instrument's ``cone_radius_margin``; it is
     filtered to ``contaminant_mag_limit`` and carries a row limit with a
@@ -706,7 +706,7 @@ def prepare_batch(
 
     _check_edge_margin_fits_frame(config.edge_margin_px, metadata)
 
-    # Gaia DR2 positions are J2015.5; propagate them to the observation epoch so
+    # Gaia DR3 positions are J2016.0; propagate them to the observation epoch so
     # high-proper-motion stars are placed where the frames actually see them.
     # https://github.com/mwcraig/bandaid/issues/56
     # Validate obs_time up front: a frame without DATE-OBS resolves it to None,
@@ -757,7 +757,7 @@ def prepare_batch(
     except BatchPrepError:
         raise
     except Exception as exc:
-        msg = f"could not query Gaia for the field at {center}"
+        msg = f"could not query Gaia for the field at {center}: {exc}"
         raise BatchPrepError(msg) from exc
     # Decouple the stars we *measure* (targets, cut at gaia_mag_limit) from the
     # stars that can *contaminate* them (a deeper list down to
