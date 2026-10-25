@@ -15,7 +15,8 @@ access and no caching code of our own. Inspect the cache with
 
 When a server times out or answers with an error, the query moves on to the
 next server in :data:`VIZIER_SERVERS`, and the failed answer is removed from
-astroquery's cache so a retry asks the server again.
+astroquery's cache so a retry asks the server again. If every VizieR server
+fails, the GAVO Heidelberg TAP service is the last resort.
 
 The return value matches ``twirl.gaia_radecs``: an ``(n, 2)`` array of RA/Dec in
 degrees, optionally paired with the Gaia G magnitudes. Unlike twirl's optional
@@ -27,10 +28,12 @@ import contextlib
 import logging
 import math
 import warnings
+from functools import partial
 from io import BytesIO
 
 import astropy.units as u
 import numpy as np
+import requests
 from astropy.coordinates import SkyCoord
 from astropy.io import votable
 from astropy.table import MaskedColumn
@@ -63,6 +66,12 @@ VIZIER_SERVERS = (
     "vizier.cfa.harvard.edu",
     "vizier.idia.ac.za",
 )
+# Last resort when every VizieR server fails: the GAVO Heidelberg TAP service,
+# which is outside CDS and VizieR. Its gaia.dr3lite table has DR3 positions at
+# the same 2016.0 epoch.
+GAVO_TAP_SYNC_URL = "https://dc.g-vo.org/tap/sync"
+GAVO_GAIA_TABLE = "gaia.dr3lite"
+GAVO_TAP_SERVER = "dc.g-vo.org"
 # Seconds to wait to connect to a server, then for each read from it. A host
 # that is down is skipped after the first; a slow but healthy query gets the
 # second, which is astroquery's default, since CDS sends nothing until a cone
@@ -158,11 +167,12 @@ def _read_votable(server, response):
 
     Notes
     -----
-    The body is read before the HTTP status so that an error document is
-    reported with the server's own text whatever the status; a failure status
-    without an error document raises ``requests.HTTPError``. VizieR answers an
-    empty cone with no ``TABLE`` at all, so a missing table alone does not
-    mean failure; the ``INFO`` element named ``Error`` does.
+    The body is read before the HTTP status because a TAP service sends its
+    error document with an error status; a failure status without an error
+    document raises ``requests.HTTPError``. VizieR answers an empty cone with
+    no ``TABLE`` at all, so a missing table alone does not mean failure; the
+    error ``INFO`` does. VizieR names that element ``Error``; a TAP service
+    sends ``QUERY_STATUS`` with value ``ERROR``.
     """
     try:
         tree = votable.parse(BytesIO(response.content), verify="ignore")
@@ -173,7 +183,12 @@ def _read_votable(server, response):
     for table in tree.iter_tables():
         if len(table.array):
             return table.to_table(use_names_over_ids=True)
-    errors = [info for info in tree.iter_info() if info.name == "Error"]
+    errors = [
+        info
+        for info in tree.iter_info()
+        if info.name == "Error"
+        or (info.name == "QUERY_STATUS" and info.value == "ERROR")
+    ]
     if errors:
         text = (errors[0].content or errors[0].value or "").strip()
         msg = f"{server} answered with an error: {text}"
@@ -239,6 +254,67 @@ def _query_vizier(server, center, radius, *, limit, mag_limit):
         with contextlib.suppress(FileNotFoundError):
             vizier._last_query.remove_cache_file(vizier.cache_location)  # noqa: SLF001
         raise
+
+
+def _query_gavo_tap(center, radius, *, limit, mag_limit):
+    """
+    Run the Gaia cone search on the GAVO Heidelberg TAP service.
+
+    Parameters
+    ----------
+    center : astropy.coordinates.SkyCoord
+        Cone center.
+    radius : float
+        Cone radius in degrees.
+    limit : int
+        Maximum number of (brightest) sources to retrieve.
+    mag_limit : float or None
+        Faintest G magnitude to return, or ``None`` for no cut.
+
+    Returns
+    -------
+    astropy.table.Table or None
+        The sources, brightest first, with the VizieR column names, or
+        ``None`` for an empty field.
+
+    Notes
+    -----
+    The ADQL renames the columns to the VizieR labels, so the result is
+    handled exactly like a VizieR one. The query is a plain synchronous POST
+    through ``requests``, which has a timeout and works in the browser kernel;
+    astroquery's ``TapPlus`` uses raw ``http.client`` connections with no
+    timeout. Nothing is cached, which is acceptable for a last resort.
+    """
+    ra = float(center.icrs.ra.deg)
+    dec = float(center.icrs.dec.deg)
+    conditions = [
+        f"DISTANCE(POINT('ICRS', ra, dec), POINT('ICRS', {ra!r}, {dec!r})) "
+        f"<= {float(radius)!r}"
+    ]
+    if mag_limit is not None:
+        conditions.append(f"phot_g_mean_mag <= {mag_limit}")
+    # Every interpolated value is a number or a module constant.
+    query = (
+        f'SELECT TOP {limit} phot_g_mean_mag AS "{_MAG_COL}", '  # noqa: S608
+        f'ra AS "{_RA_COL}", dec AS "{_DEC_COL}", '
+        f'pmra AS "{_PMRA_COL}", pmdec AS "{_PMDEC_COL}" '
+        f"FROM {GAVO_GAIA_TABLE} WHERE {' AND '.join(conditions)} "
+        "ORDER BY phot_g_mean_mag"
+    )
+    response = requests.post(
+        GAVO_TAP_SYNC_URL,
+        data={
+            "REQUEST": "doQuery",
+            "LANG": "ADQL",
+            "FORMAT": "votable",
+            # Without MAXREC the service caps the answer at its own default
+            # (20000 rows) instead of at TOP.
+            "MAXREC": limit,
+            "QUERY": query,
+        },
+        timeout=SERVER_TIMEOUT,
+    )
+    return _read_votable(GAVO_TAP_SERVER, response)
 
 
 def cached_gaia_radecs(
@@ -308,12 +384,12 @@ def cached_gaia_radecs(
 
     radius = _fov_to_radius_deg(fov)
 
+    servers = [(server, partial(_query_vizier, server)) for server in VIZIER_SERVERS]
+    servers.append((GAVO_TAP_SERVER, _query_gavo_tap))
     last_error = None
-    for server in VIZIER_SERVERS:
+    for server, query in servers:
         try:
-            table = _query_vizier(
-                server, center, radius, limit=limit, mag_limit=mag_limit
-            )
+            table = query(center, radius, limit=limit, mag_limit=mag_limit)
             break
         except (OSError, GaiaQueryError, JsException) as exc:
             logger.warning(
@@ -324,7 +400,7 @@ def cached_gaia_radecs(
             )
             last_error = exc
     else:
-        tried = ", ".join(VIZIER_SERVERS)
+        tried = ", ".join(server for server, _ in servers)
         msg = (
             f"no Gaia server answered the query; tried {tried}; "
             f"last error: {type(last_error).__name__}: {last_error}"

@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Gaia query falls back when a server fails: CDS VizieR, then the CfA
     and IDIA mirrors. Failed answers are not cached. If every server fails,
     `GaiaQueryError` names the servers and the last error (#169).
+- The GAVO Heidelberg TAP service (`gaia.dr3lite`) is the last resort for the
+    Gaia query when every VizieR server fails.
 - `process_frame`, the per-frame step behind `process_batch`: photometers one
     frame against a `BatchPrep` and returns a `FrameResult` with the outcome
     (`ok`/`skipped`/`error`), the tables, the error, the elapsed time and the
