@@ -47,9 +47,13 @@ logger = logging.getLogger(__name__)
 GAIA_DR3_VIZIER_CATALOG = "I/355/gaiadr3"
 GAIA_DR3_EPOCH = 2016.0
 
-# VizieR servers tried in order. The CfA mirror is not listed because it
-# redirects every query to CDS.
-VIZIER_SERVERS = ("vizier.cds.unistra.fr", "vizier.idia.ac.za")
+# VizieR servers tried in order: CDS, then the two mirrors that answer Gaia
+# DR3 cones themselves and send CORS headers (the others hang or are gone).
+VIZIER_SERVERS = (
+    "vizier.cds.unistra.fr",
+    "vizier.cfa.harvard.edu",
+    "vizier.idia.ac.za",
+)
 # Seconds to wait to connect to a server, and for each read from it.
 SERVER_TIMEOUT = 30
 
