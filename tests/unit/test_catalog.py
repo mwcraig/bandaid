@@ -268,10 +268,6 @@ def test_no_mag_limit_passes_no_column_filter(fake_vizier, center):
     assert "column_filters" not in fake_vizier.call_args.kwargs
 
 
-class BrowserTimeoutError(Exception):
-    """Stands in for ``pyodide.ffi.JsException``, a browser-kernel timeout."""
-
-
 def _servers_tried(fake_vizier):
     return [c.kwargs["vizier_server"] for c in fake_vizier.call_args_list]
 
@@ -293,7 +289,8 @@ class TestServerFallback:
             # IDIA's error document for a bad catalog arrives as HTTP 200 with a
             # BEL control character in it, which the VOTable parser rejects.
             ((b"<VOTABLE>\x07", 200), True, "other than a VOTable"),
-            (BrowserTimeoutError("XMLHttpRequest timed out"), False, "timed out"),
+            # The browser kernel's timeout, which is not a requests exception.
+            (catalog.JsException("XMLHttpRequest timed out"), False, "timed out"),
         ],
         ids=[
             "error-no-table",

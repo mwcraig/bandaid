@@ -41,6 +41,16 @@ from erfa import ErfaWarning
 
 from bandaid.exceptions import CatalogTruncationError, GaiaQueryError
 
+try:
+    # In the browser kernel a timed-out or blocked request is expected to
+    # surface as this, not as a requests exception.
+    from pyodide.ffi import JsException
+except ImportError:
+
+    class JsException(Exception):  # noqa: N818 (must match the pyodide name)
+        """Stand-in outside the browser kernel, where nothing raises it."""
+
+
 logger = logging.getLogger(__name__)
 
 # Gaia DR3 in VizieR and the reference epoch (Julian year) of its positions.
@@ -154,7 +164,7 @@ def _read_votable(server, response):
     """
     try:
         tree = votable.parse(BytesIO(response.content), verify="ignore")
-    except Exception as exc:
+    except ValueError as exc:
         response.raise_for_status()
         msg = f"{server} answered with something other than a VOTable"
         raise GaiaQueryError(msg) from exc
@@ -285,9 +295,10 @@ def cached_gaia_radecs(
     answer is never left in astroquery's cache, while a healthy answer for an
     empty field is cached and returned as shaped empties without trying
     another server, since every mirror would return the same empty field.
-    Every exception counts as a server failure, not only ``requests`` ones: in
-    the browser kernel a timeout or blocked request surfaces as
-    ``pyodide.ffi.JsException``.
+    A server failure is an ``OSError`` (every ``requests`` exception is one),
+    a `GaiaQueryError`, or, in the browser kernel, the ``pyodide.ffi.JsException``
+    that a timed-out or blocked request is expected to surface as. Anything
+    else is a fault in this code and propagates at once.
     """
     if not isinstance(center, SkyCoord):
         ra, dec = center
@@ -301,7 +312,7 @@ def cached_gaia_radecs(
         try:
             table = query(center, radius, limit=limit, mag_limit=mag_limit)
             break
-        except Exception as exc:  # noqa: BLE001
+        except (OSError, GaiaQueryError, JsException) as exc:
             logger.warning(
                 "Gaia query to %s failed, skipping it: %s: %s",
                 server,
