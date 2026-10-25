@@ -6,6 +6,7 @@ import dataclasses
 import astropy.units as u
 import numpy as np
 import pytest
+import requests
 from _helpers import (
     SEESTAR_RULE,
     _batch_metadata,
@@ -34,6 +35,7 @@ from bandaid.exceptions import (
     CatalogTruncationError,
     FrameError,
     FrameMetadataError,
+    GaiaQueryError,
     InstrumentDetectionError,
     TooFewStarsError,
 )
@@ -911,10 +913,11 @@ class TestPrepareBatch:
 
     def test_gaia_network_error_raises_batchpreperror(self, mocker):
         """
-        A Gaia query failure is surfaced as a fatal BatchPrepError.
+        A Gaia query failure is surfaced as a one-line, fatal BatchPrepError.
 
-        The message carries the underlying failure, since a command-line user
-        or a browser front end sees only ``str(exc)``, not the chained cause.
+        The message carries the catalog's own text, which ends with the last
+        server's failure, and names the field center on the same line, since a
+        command-line user or a browser front end sees only ``str(exc)``.
         """
         mocker.patch(
             "bandaid.scripts.calibration_sequence",
@@ -929,15 +932,29 @@ class TestPrepareBatch:
         )
         _stub_load_frame(mocker)
 
-        def _boom(*_args: object, **_kwargs: object):
-            msg = "no network"
-            raise ConnectionError(msg)
+        centers = []
+
+        def _boom(center, *_args: object, **_kwargs: object):
+            centers.append(center)
+            timeout = requests.exceptions.ReadTimeout(
+                "Read timed out. (read timeout=60)"
+            )
+            msg = (
+                "no Gaia server answered the query; tried vizier.cds.unistra.fr, "
+                f"vizier.cfa.harvard.edu, vizier.idia.ac.za; last error: "
+                f"ReadTimeout: {timeout}"
+            )
+            raise GaiaQueryError(msg) from timeout
 
         mocker.patch("bandaid.scripts.query_field_catalog", side_effect=_boom)
         with pytest.raises(BatchPrepError, match="could not query Gaia") as excinfo:
             scripts.prepare_batch("frame1.fits", cnn=object())
-        assert "no network" in str(excinfo.value)
-        assert isinstance(excinfo.value.__cause__, ConnectionError)
+        message = str(excinfo.value)
+        assert "ReadTimeout: Read timed out" in message
+        assert "\n" not in message
+        ((ra, dec),) = centers
+        assert f"({ra:.4f}, {dec:.4f})" in message
+        assert isinstance(excinfo.value.__cause__, GaiaQueryError)
 
     def test_forced_targets_appended_to_photometry_coords_only(self, mocker):
         """A forced target lands in ``photometry_coords`` but not ``radecs``."""

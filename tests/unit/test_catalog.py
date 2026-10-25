@@ -357,10 +357,11 @@ class TestServerFallback:
         self, fake_vizier, center, votable_response
     ):
         """
-        When every server fails, one error names them and chains the last cause.
+        When every server fails, one error names them and carries the last cause.
 
-        The last server answers with an error document; the server's text must
-        survive into the chained cause.
+        The last server answers with an error document. Its text must be in
+        the message itself, since a CLI or browser user sees only ``str(exc)``,
+        and in the chained cause.
         """
         fake_vizier.return_value.query_region_async.side_effect = [
             TimeoutError("connect timed out"),
@@ -372,8 +373,11 @@ class TestServerFallback:
             cached_gaia_radecs(center, 0.2)
 
         assert _servers_tried(fake_vizier) == SERVER_ORDER
+        message = str(excinfo.value)
         for server in SERVER_ORDER:
-            assert server in str(excinfo.value)
+            assert server in message
+        assert f"last error: GaiaQueryError: {SERVER_ORDER[-1]}" in message
+        assert OUTAGE_MESSAGE in message
         cause = excinfo.value.__cause__
         assert isinstance(cause, GaiaQueryError)
         assert SERVER_ORDER[-1] in str(cause)
