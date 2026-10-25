@@ -46,12 +46,13 @@ processed in sorted order). Point `bandaid process` at a cleaner starting frame,
 or prune the obviously bad frames before the run.
 
 If the message is "could not query Gaia for the field at ...", the catalog
-query failed on every server. bandaid tries CDS VizieR, then the IDIA VizieR
-mirror, giving each about 30 s. A warning
-is logged as each server is skipped, saying why (a timeout, a failure status, or
-the server's own error text), and the final message ends with the last server's
-failure. This is an outage on the catalog side: wait and run again. A failed
-answer is never cached, so the retry asks the servers afresh.
+query failed on every server. bandaid tries CDS VizieR, then the CfA and IDIA
+mirrors, giving each 10 s to connect and 60 s to answer. A warning is logged as
+each server is skipped, saying why (a timeout, a failure status, or the server's
+own error text), and the final message ends with the last server's failure.
+Usually this is an outage on the catalog side; check the warnings for the
+reason (no network, a timeout, or the server's error text), then run again. A
+failed answer is never cached, so the retry asks the servers afresh.
 
 ### `--fail-fast` vs the default
 

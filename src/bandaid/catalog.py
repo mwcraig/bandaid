@@ -428,6 +428,15 @@ def query_field_catalog(
 
     Notes
     -----
+    A `~bandaid.exceptions.GaiaQueryError` from `cached_gaia_radecs` (no Gaia
+    server answered) propagates unchanged. It is not a
+    `~bandaid.exceptions.BatchPrepError`, while `CatalogTruncationError` is,
+    so ``except BatchPrepError`` around this call sees the second and not the
+    first. The query is a plain catalog lookup usable outside batch
+    preparation, so its failure does not claim batch semantics;
+    `~bandaid.scripts.prepare_batch` wraps it in a
+    `~bandaid.exceptions.BatchPrepError` itself.
+
     The VizieR magnitude filter returns the same rows in the same order as an
     unfiltered query cut at the same G, but moves 3-4 times less data. The row
     limit is scaled with the cone area so the per-area depth stays constant

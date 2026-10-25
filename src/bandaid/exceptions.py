@@ -9,6 +9,9 @@ Two failure classes are distinguished so the batch driver can react correctly:
 * `BatchPrepError` is **fatal**: the once-per-batch preparation could not be
   built (e.g. no usable Gaia catalog), so the whole run must stop.
 
+`GaiaQueryError` is neither: the catalog query raises it when every Gaia server
+has failed, and `prepare_batch` wraps it in a `BatchPrepError`.
+
 Anything that is *not* one of these (a genuine bug) is deliberately left to
 propagate, so it is not silently swallowed as a "bad frame".
 """

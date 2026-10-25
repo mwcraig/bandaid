@@ -9,15 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- The Gaia query falls back from one server to the next: CDS VizieR, then the
-    IDIA VizieR mirror, each with a 30 s timeout. Each skipped server is
-    logged at warning level.
-    When every server fails, the new `GaiaQueryError`, exported from the
-    top-level package, names the servers tried and chains the last failure; a
-    server that answered with an error document is also reported as a
-    `GaiaQueryError` carrying the server's text. The batch-prep error
-    "could not query Gaia for the field at ..." now ends with that failure, so
-    the one-line message says what went wrong (#169).
+- The Gaia query falls back when a server fails: CDS VizieR, then the CfA
+    and IDIA mirrors. Failed answers are not cached. If every server fails,
+    `GaiaQueryError` names the servers and the last error (#169).
 - `process_frame`, the per-frame step behind `process_batch`: photometers one
     frame against a `BatchPrep` and returns a `FrameResult` with the outcome
     (`ok`/`skipped`/`error`), the tables, the error, the elapsed time and the
@@ -165,10 +159,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The Gaia catalog is Gaia DR3 (VizieR `I/355/gaiadr3`, epoch J2016.0) instead
-    of DR2 (`I/345/gaia2`, J2015.5). The column names are unchanged; the
-    constants are now `GAIA_DR3_VIZIER_CATALOG` and `GAIA_DR3_EPOCH`. Positions
-    and magnitudes shift at the DR2-to-DR3 level (#169).
 - The per-star background is the sigma-clipped mean of the annulus instead of
     the sigma-clipped median. The clip already rejects neighbouring stars; after
     it the mean is the unbiased sky estimate, and unlike the median it is not
@@ -286,6 +276,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- The Gaia catalog is Gaia DR3 (VizieR `I/355/gaiadr3`, epoch J2016.0) instead
+    of DR2 (`I/345/gaia2`, J2015.5). The column names are unchanged; the
+    constants are now `GAIA_DR3_VIZIER_CATALOG` and `GAIA_DR3_EPOCH`. Positions
+    and magnitudes shift at the DR2-to-DR3 level (#169).
 - The `write_qa_manifest` keyword of `process_batch` and `photometer_frames` is
     now `write_manifest`, so it no longer shadows the `write_qa_manifest`
     function.
