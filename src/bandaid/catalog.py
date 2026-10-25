@@ -64,8 +64,11 @@ VIZIER_SERVERS = (
     "vizier.cfa.harvard.edu",
     "vizier.idia.ac.za",
 )
-# Seconds to wait to connect to a server, and for each read from it.
-SERVER_TIMEOUT = 30
+# Seconds to wait to connect to a server, then for each read from it. A host
+# that is down is skipped after the first; a slow but healthy query gets the
+# second, which is astroquery's default, since CDS sends nothing until a cone
+# query has finished.
+SERVER_TIMEOUT = (10, 60)
 
 # VizieR column labels for the I/355/gaiadr3 table.
 _RA_COL = "RA_ICRS"
@@ -287,11 +290,11 @@ def cached_gaia_radecs(
 
     Notes
     -----
-    Servers are tried in order, each with a :data:`SERVER_TIMEOUT` second
-    timeout, and every skipped server is logged at warning level. The timeout
-    applies to connecting and to each wait for data, not to the whole answer,
-    so a slow server can take longer than that and a query that falls through
-    every server can take that many times as long. An error
+    Servers are tried in order with the :data:`SERVER_TIMEOUT` connect and
+    read timeouts, and every skipped server is logged at warning level. The
+    read timeout applies to each wait for data, not to the whole answer, so a
+    slow server can take longer than that and a query that falls through every
+    server can take that many times as long. An error
     answer is never left in astroquery's cache, while a healthy answer for an
     empty field is cached and returned as shaped empties without trying
     another server, since every mirror would return the same empty field.
