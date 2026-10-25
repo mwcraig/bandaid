@@ -29,7 +29,6 @@ from astropy.time import Time
 from bandaid import catalog
 from bandaid.catalog import (
     SERVER_TIMEOUT,
-    VIZIER_SERVERS,
     cached_gaia_radecs,
     query_field_catalog,
 )
@@ -70,6 +69,8 @@ ERROR_WITH_EMPTY_TABLE_VOTABLE = f"""<?xml version="1.0" encoding="UTF-8"?>
 </RESOURCE>
 </VOTABLE>
 """.encode()
+# The documented server order: CDS first, then its two independent mirrors.
+SERVER_ORDER = ["vizier.cds.unistra.fr", "vizier.cfa.harvard.edu", "vizier.idia.ac.za"]
 # Arbitrary row limit used to assert it is forwarded to Vizier unchanged.
 ROW_LIMIT_PROBE = 1234
 # Floor (deg) the proper-motion shift must exceed; nine years of ~10 mas/yr is
@@ -87,7 +88,8 @@ def test_returns_radecs_and_mags_with_correct_shapes(fake_vizier, center, gaia_t
     """magnitude=True returns (radecs, mags) with twirl's shapes and order."""
     radecs, mags = cached_gaia_radecs(center, 0.2, magnitude=True)
 
-    fake_vizier.return_value.query_region_async.assert_called_once()
+    # A healthy answer from CDS means no mirror is asked.
+    assert _servers_tried(fake_vizier) == SERVER_ORDER[:1]
     assert radecs.shape == (len(gaia_table), 2)
     assert mags.shape == (len(gaia_table),)
     # Order is preserved (brightest-first, as returned by VizieR's "+Gmag").
@@ -247,7 +249,7 @@ def test_empty_result_returns_shaped_empties(fake_vizier, center, votable_respon
     radecs, mags = cached_gaia_radecs(center, 0.2, magnitude=True)
     assert radecs.shape == (0, 2)
     assert mags.shape == (0,)
-    assert _servers_tried(fake_vizier) == [VIZIER_SERVERS[0]]
+    assert _servers_tried(fake_vizier) == SERVER_ORDER[:1]
     _cache_removal(fake_vizier).assert_not_called()
     assert cached_gaia_radecs(center, 0.2, magnitude=False).shape == (0, 2)
 
@@ -320,7 +322,7 @@ class TestServerFallback:
         with caplog.at_level(logging.WARNING, logger="bandaid.catalog"):
             radecs, mags = cached_gaia_radecs(center, 0.2)
 
-        assert _servers_tried(fake_vizier) == list(VIZIER_SERVERS)
+        assert _servers_tried(fake_vizier) == SERVER_ORDER[:2]
         if expect_eviction:
             _cache_removal(fake_vizier).assert_called_once_with(
                 fake_vizier.return_value.cache_location
@@ -330,7 +332,7 @@ class TestServerFallback:
         np.testing.assert_allclose(mags, gaia_table["Gmag"].value)
         assert radecs.shape == (len(gaia_table), 2)
         assert any(
-            VIZIER_SERVERS[0] in r.getMessage() and logged in r.getMessage()
+            SERVER_ORDER[0] in r.getMessage() and logged in r.getMessage()
             for r in caplog.records
         )
 
@@ -362,17 +364,19 @@ class TestServerFallback:
         """
         fake_vizier.return_value.query_region_async.side_effect = [
             TimeoutError("connect timed out"),
+            TimeoutError("connect timed out"),
             votable_response(OUTAGE_VOTABLE),
         ]
 
         with pytest.raises(GaiaQueryError) as excinfo:
             cached_gaia_radecs(center, 0.2)
 
-        for server in VIZIER_SERVERS:
+        assert _servers_tried(fake_vizier) == SERVER_ORDER
+        for server in SERVER_ORDER:
             assert server in str(excinfo.value)
         cause = excinfo.value.__cause__
         assert isinstance(cause, GaiaQueryError)
-        assert VIZIER_SERVERS[-1] in str(cause)
+        assert SERVER_ORDER[-1] in str(cause)
         assert OUTAGE_MESSAGE in str(cause)
 
 
@@ -404,7 +408,7 @@ def test_real_astroquery_cache_eviction(
 
     with nullcontext() if cached else pytest.raises(GaiaQueryError):
         catalog._query_vizier(  # noqa: SLF001
-            VIZIER_SERVERS[0], center, 0.1, limit=10, mag_limit=None
+            SERVER_ORDER[0], center, 0.1, limit=10, mag_limit=None
         )
 
     assert bool(list(tmp_path.glob("*.pickle"))) is cached
