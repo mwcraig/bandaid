@@ -28,7 +28,6 @@ from astropy.time import Time
 
 from bandaid import catalog
 from bandaid.catalog import (
-    SERVER_TIMEOUT,
     cached_gaia_radecs,
     query_field_catalog,
 )
@@ -115,7 +114,9 @@ def test_query_uses_catalog_row_limit_and_brightness_sort(fake_vizier, center):
     query_kwargs = fake_vizier.return_value.query_region_async.call_args.kwargs
     assert query_kwargs["catalog"] == GAIA_DR3_CATALOG
     assert init_kwargs["row_limit"] == ROW_LIMIT_PROBE
-    assert init_kwargs["timeout"] == SERVER_TIMEOUT
+    # Fail over fast from a host that is down, but give a slow, healthy query
+    # astroquery's default 60 s to answer: CDS sends nothing until it is done.
+    assert init_kwargs["timeout"] == (10, 60)
     # "+Gmag" requests an ascending (brightest-first) sort from VizieR.
     assert "+Gmag" in init_kwargs["columns"]
 
