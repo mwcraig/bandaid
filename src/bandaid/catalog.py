@@ -272,7 +272,8 @@ def cached_gaia_radecs(
     ------
     GaiaQueryError
         If no server returned a catalog. Its message names the servers tried
-        and its ``__cause__`` is the last server's failure.
+        and ends with the last server's failure, which is also its
+        ``__cause__``.
 
     Notes
     -----
@@ -310,7 +311,10 @@ def cached_gaia_radecs(
             last_error = exc
     else:
         tried = ", ".join(server for server, _ in servers)
-        msg = f"no Gaia server answered the query; tried {tried}"
+        msg = (
+            f"no Gaia server answered the query; tried {tried}; "
+            f"last error: {type(last_error).__name__}: {last_error}"
+        )
         raise GaiaQueryError(msg) from last_error
 
     if table is None:
