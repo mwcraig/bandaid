@@ -28,8 +28,6 @@ from astropy.time import Time
 
 from bandaid import catalog
 from bandaid.catalog import (
-    GAVO_TAP_SERVER,
-    GAVO_TAP_SYNC_URL,
     SERVER_TIMEOUT,
     VIZIER_SERVERS,
     cached_gaia_radecs,
@@ -69,15 +67,6 @@ ERROR_WITH_EMPTY_TABLE_VOTABLE = f"""<?xml version="1.0" encoding="UTF-8"?>
 <RESOURCE>
 <INFO name="Error" value="{OUTAGE_MESSAGE}"/>
 <TABLE><FIELD name="Gmag" datatype="double"/><DATA><TABLEDATA/></DATA></TABLE>
-</RESOURCE>
-</VOTABLE>
-""".encode()
-# How a TAP service reports a failed query.
-TAP_ERROR_MESSAGE = "Field query: No such field known"
-TAP_ERROR_VOTABLE = f"""<?xml version="1.0" encoding="UTF-8"?>
-<VOTABLE version="1.5" xmlns="http://www.ivoa.net/xml/VOTable/v1.3">
-<RESOURCE type="results">
-<INFO name="QUERY_STATUS" value="ERROR">{TAP_ERROR_MESSAGE}</INFO>
 </RESOURCE>
 </VOTABLE>
 """.encode()
@@ -362,70 +351,29 @@ class TestServerFallback:
         assert any(OUTAGE_MESSAGE in m for m in messages)
         assert not any("FileNotFoundError" in m for m in messages)
 
-    @pytest.mark.parametrize(
-        ("mag_limit", "mag_condition"),
-        [(17.5, "phot_g_mean_mag <= 17.5"), (None, None)],
-        ids=["mag-limit", "no-mag-limit"],
-    )
-    def test_gavo_tap_is_the_last_resort(
-        self,
-        fake_vizier,
-        fake_gavo,
-        center,
-        gaia_table,
-        mag_limit,
-        mag_condition,
-    ):
-        """With every VizieR server down, GAVO's TAP service answers the query."""
-        fake_vizier.return_value.query_region_async.side_effect = TimeoutError
-
-        radecs, mags = cached_gaia_radecs(
-            center, 0.2, limit=ROW_LIMIT_PROBE, mag_limit=mag_limit
-        )
-
-        np.testing.assert_allclose(mags, gaia_table["Gmag"].value)
-        np.testing.assert_allclose(radecs[:, 0], gaia_table["RA_ICRS"].value)
-        fake_gavo.assert_called_once()
-        assert fake_gavo.call_args.args[0] == GAVO_TAP_SYNC_URL
-        assert fake_gavo.call_args.kwargs["timeout"] == SERVER_TIMEOUT
-        # GAVO otherwise caps the answer at its own 20000-row default, so a
-        # truncated dense field would slip past the row-limit check.
-        assert fake_gavo.call_args.kwargs["data"]["MAXREC"] == ROW_LIMIT_PROBE
-        query = fake_gavo.call_args.kwargs["data"]["QUERY"]
-        assert "gaia.dr3lite" in query
-        assert "POINT('ICRS', 239.9, 25.9)" in query
-        assert f"TOP {ROW_LIMIT_PROBE}" in query
-        assert query.rstrip().endswith("ORDER BY phot_g_mean_mag")
-        if mag_condition is None:
-            assert "phot_g_mean_mag <=" not in query
-        else:
-            assert mag_condition in query
-
     def test_all_servers_failing_raises_with_last_cause(
-        self, fake_vizier, fake_gavo, center, votable_response
+        self, fake_vizier, center, votable_response
     ):
         """
         When every server fails, one error names them and chains the last cause.
 
-        GAVO sends a failed query's TAP error document with HTTP 500; the
-        server's text must survive into the chained cause.
+        The last server answers with an error document; the server's text must
+        survive into the chained cause.
         """
         fake_vizier.return_value.query_region_async.side_effect = [
-            votable_response(OUTAGE_VOTABLE),
             TimeoutError("connect timed out"),
+            votable_response(OUTAGE_VOTABLE),
         ]
-        fake_gavo.side_effect = None
-        fake_gavo.return_value = votable_response(TAP_ERROR_VOTABLE, status_code=500)
 
         with pytest.raises(GaiaQueryError) as excinfo:
             cached_gaia_radecs(center, 0.2)
 
-        for server in (*VIZIER_SERVERS, GAVO_TAP_SERVER):
+        for server in VIZIER_SERVERS:
             assert server in str(excinfo.value)
         cause = excinfo.value.__cause__
         assert isinstance(cause, GaiaQueryError)
-        assert GAVO_TAP_SERVER in str(cause)
-        assert TAP_ERROR_MESSAGE in str(cause)
+        assert VIZIER_SERVERS[-1] in str(cause)
+        assert OUTAGE_MESSAGE in str(cause)
 
 
 # astroquery formats the cone center with astropy's vectorized Angle.to_string,

@@ -47,7 +47,7 @@ or prune the obviously bad frames before the run.
 
 If the message is "could not query Gaia for the field at ...", the catalog
 query failed on every server. bandaid tries CDS VizieR, then the IDIA VizieR
-mirror, then the GAVO Heidelberg TAP service, giving each about 30 s. A warning
+mirror, giving each about 30 s. A warning
 is logged as each server is skipped, saying why (a timeout, a failure status, or
 the server's own error text), and the final message ends with the last server's
 failure. This is an outage on the catalog side: wait and run again. A failed

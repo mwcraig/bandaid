@@ -10,8 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - The Gaia query falls back from one server to the next: CDS VizieR, then the
-    IDIA VizieR mirror, then the GAVO Heidelberg TAP service (`gaia.dr3lite`),
-    each with a 30 s timeout. Each skipped server is logged at warning level.
+    IDIA VizieR mirror, each with a 30 s timeout. Each skipped server is
+    logged at warning level.
     When every server fails, the new `GaiaQueryError`, exported from the
     top-level package, names the servers tried and chains the last failure; a
     server that answered with an error document is also reported as a
