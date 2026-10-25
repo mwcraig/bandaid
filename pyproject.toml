@@ -194,6 +194,7 @@ minversion = "9"
 testpaths = ["tests"] # Tells pytest what directory tests are in
 log_level = "INFO" # Show logs on test failures
 strict = true # Error on unknown markers, misspelled config keys, and passing xfails
+remote_data_strict = true # A test that reaches the network without @remote_data fails
 addopts = ["-ra"] # Summarize all non-passing outcomes at the end of a run
 filterwarnings = [
     "error",
