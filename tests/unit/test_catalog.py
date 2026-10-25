@@ -290,9 +290,18 @@ class TestServerFallback:
             ((OUTAGE_VOTABLE, 200), True, OUTAGE_MESSAGE),
             ((ERROR_WITH_EMPTY_TABLE_VOTABLE, 200), True, OUTAGE_MESSAGE),
             ((b"Service Unavailable", 503), True, "503"),
+            # IDIA's error document for a bad catalog arrives as HTTP 200 with a
+            # BEL control character in it, which the VOTable parser rejects.
+            ((b"<VOTABLE>\x07", 200), True, "other than a VOTable"),
             (BrowserTimeoutError("XMLHttpRequest timed out"), False, "timed out"),
         ],
-        ids=["error-no-table", "error-empty-table", "http-503", "exception"],
+        ids=[
+            "error-no-table",
+            "error-empty-table",
+            "http-503",
+            "not-a-votable",
+            "exception",
+        ],
     )
     def test_failed_server_is_skipped(
         self,
@@ -308,9 +317,9 @@ class TestServerFallback:
         """
         A failed first server is logged and skipped; a failed answer is uncached.
 
-        An error-only VOTable, a failure status, or any exception (the browser
-        kernel's timeout is not a ``requests`` one) all move on to the next
-        server.
+        An error-only VOTable, a failure status, an unparsable body, or the
+        browser kernel's timeout (which is not a ``requests`` exception) all
+        move on to the next server.
         """
         if isinstance(first_answer, tuple):
             first_answer = votable_response(*first_answer)
@@ -335,6 +344,19 @@ class TestServerFallback:
             SERVER_ORDER[0] in r.getMessage() and logged in r.getMessage()
             for r in caplog.records
         )
+
+    def test_local_error_propagates_instead_of_trying_the_next_server(
+        self, fake_vizier, center
+    ):
+        """A fault in our own code is not a server failure: it propagates as is."""
+        fake_vizier.return_value.query_region_async.side_effect = TypeError(
+            "got an unexpected keyword argument"
+        )
+
+        with pytest.raises(TypeError, match="unexpected keyword"):
+            cached_gaia_radecs(center, 0.2)
+
+        assert _servers_tried(fake_vizier) == SERVER_ORDER[:1]
 
     def test_missing_cache_file_does_not_mask_the_failure(
         self, fake_vizier, center, gaia_table, votable_response, caplog
