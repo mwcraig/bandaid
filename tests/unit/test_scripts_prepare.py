@@ -6,6 +6,7 @@ import dataclasses
 import astropy.units as u
 import numpy as np
 import pytest
+import requests
 from _helpers import (
     SEESTAR_RULE,
     _batch_metadata,
@@ -20,7 +21,7 @@ from astropy.time import Time
 from dateutil import parser
 
 from bandaid import instruments, scripts
-from bandaid.catalog import GAIA_DR2_EPOCH
+from bandaid.catalog import GAIA_DR3_EPOCH
 from bandaid.config import (
     ApertureConfig,
     CentroidConfig,
@@ -34,6 +35,7 @@ from bandaid.exceptions import (
     CatalogTruncationError,
     FrameError,
     FrameMetadataError,
+    GaiaQueryError,
     InstrumentDetectionError,
     TooFewStarsError,
 )
@@ -499,7 +501,7 @@ class TestPrepareBatch:
         """
         The first frame's ``obs_time`` is forwarded to Gaia as ``obs_epoch``.
 
-        Gaia DR2 positions are J2015.5; without the epoch, ``query_field_catalog``
+        Gaia DR3 positions are J2016.0; without the epoch, ``query_field_catalog``
         returns catalog-epoch positions and every high-proper-motion star is
         mis-placed in the forced-photometry target list. Fixes
         https://github.com/mwcraig/bandaid/issues/56.
@@ -581,10 +583,10 @@ class TestPrepareBatch:
 
         Runs the *real* ``query_field_catalog`` with only ``catalog.Vizier``
         patched (network-free). The brightest fixture star is given an extreme
-        proper motion (1000 mas/yr, ~10.9 arcsec over 2015.5 -> 2026.3) and the
+        proper motion (1000 mas/yr, ~10.3 arcsec over 2016.0 -> 2026.3) and the
         faintest a *masked* one. The prep's positions must match an independent
         ``SkyCoord.apply_space_motion`` computation -- so the high-PM star has
-        moved well off its raw J2015.5 catalog position and the masked-PM star
+        moved well off its raw J2016.0 catalog position and the masked-PM star
         is propagated with zero proper motion. Fixes
         https://github.com/mwcraig/bandaid/issues/56.
         """
@@ -626,7 +628,7 @@ class TestPrepareBatch:
             dec=gaia_table["DE_ICRS"],
             pm_ra_cosdec=[1000.0, -0.957, 0.0] * (u.mas / u.yr),
             pm_dec=[12.364, -1.993, 0.0] * (u.mas / u.yr),
-            obstime=Time(GAIA_DR2_EPOCH, format="jyear"),
+            obstime=Time(GAIA_DR3_EPOCH, format="jyear"),
         ).apply_space_motion(new_obstime=Time(parser.parse(metadata["obs_time"])))
         np.testing.assert_allclose(
             prep.radecs[:, 0], expected.ra.deg, rtol=0, atol=1e-9
@@ -910,7 +912,13 @@ class TestPrepareBatch:
             scripts.prepare_batch("frame1.fits", cnn=object())
 
     def test_gaia_network_error_raises_batchpreperror(self, mocker):
-        """A Gaia query failure is surfaced as a fatal BatchPrepError."""
+        """
+        A Gaia query failure is surfaced as a one-line, fatal BatchPrepError.
+
+        The message carries the catalog's own text, which ends with the last
+        server's failure, and names the field center on the same line, since a
+        command-line user or a browser front end sees only ``str(exc)``.
+        """
         mocker.patch(
             "bandaid.scripts.calibration_sequence",
             return_value=CalibrationResult(
@@ -924,13 +932,29 @@ class TestPrepareBatch:
         )
         _stub_load_frame(mocker)
 
-        def _boom(*_args: object, **_kwargs: object):
-            msg = "no network"
-            raise ConnectionError(msg)
+        centers = []
+
+        def _boom(center, *_args: object, **_kwargs: object):
+            centers.append(center)
+            timeout = requests.exceptions.ReadTimeout(
+                "Read timed out. (read timeout=60)"
+            )
+            msg = (
+                "no Gaia server answered the query; tried vizier.cds.unistra.fr, "
+                f"vizier.cfa.harvard.edu, vizier.idia.ac.za; last error: "
+                f"ReadTimeout: {timeout}"
+            )
+            raise GaiaQueryError(msg) from timeout
 
         mocker.patch("bandaid.scripts.query_field_catalog", side_effect=_boom)
-        with pytest.raises(BatchPrepError, match="could not query Gaia"):
+        with pytest.raises(BatchPrepError, match="could not query Gaia") as excinfo:
             scripts.prepare_batch("frame1.fits", cnn=object())
+        message = str(excinfo.value)
+        assert "ReadTimeout: Read timed out" in message
+        assert "\n" not in message
+        ((ra, dec),) = centers
+        assert f"({ra:.4f}, {dec:.4f})" in message
+        assert isinstance(excinfo.value.__cause__, GaiaQueryError)
 
     def test_forced_targets_appended_to_photometry_coords_only(self, mocker):
         """A forced target lands in ``photometry_coords`` but not ``radecs``."""

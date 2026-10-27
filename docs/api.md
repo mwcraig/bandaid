@@ -91,6 +91,8 @@ subclasses) is **recoverable per-frame** — the frame is skipped and the batch
 continues — so it is safe to catch around a single-frame call. A `BatchPrepError`
 is **fatal**: the once-per-batch preparation could not be built, so the run must
 stop. See [Troubleshooting](troubleshooting.md) for what triggers each.
+`GaiaQueryError` is neither: it is what the catalog query itself raises when
+every Gaia server has failed, and `prepare_batch` wraps it in a `BatchPrepError`.
 
 ::: bandaid.BandaidError
 
@@ -119,3 +121,5 @@ stop. See [Troubleshooting](troubleshooting.md) for what triggers each.
 ::: bandaid.CatalogTruncationError
 
 ::: bandaid.InstrumentDetectionError
+
+::: bandaid.GaiaQueryError

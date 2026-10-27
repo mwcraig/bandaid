@@ -9,6 +9,9 @@ Two failure classes are distinguished so the batch driver can react correctly:
 * `BatchPrepError` is **fatal**: the once-per-batch preparation could not be
   built (e.g. no usable Gaia catalog), so the whole run must stop.
 
+`GaiaQueryError` is neither: the catalog query raises it when every Gaia server
+has failed, and `prepare_batch` wraps it in a `BatchPrepError`.
+
 Anything that is *not* one of these (a genuine bug) is deliberately left to
 propagate, so it is not silently swallowed as a "bad frame".
 """
@@ -21,6 +24,7 @@ __all__ = [
     "DegenerateBayerChannelError",
     "FrameError",
     "FrameMetadataError",
+    "GaiaQueryError",
     "InstrumentDetectionError",
     "NoUsableStarsError",
     "StarListValidationError",
@@ -187,6 +191,26 @@ class CatalogTruncationError(BatchPrepError):
 
     Photometry targets brighter than ``gaia_mag_limit`` were dropped, so the
     batch cannot be trusted.
+    """
+
+
+class GaiaQueryError(BandaidError):
+    """
+    A Gaia catalog query failed.
+
+    `~bandaid.catalog.cached_gaia_radecs` raises it after every server in its
+    fallback list has failed. The message names the servers tried; the chained
+    ``__cause__`` is the last server's failure.
+
+    Notes
+    -----
+    The same class reports one server's error document, with the server's
+    text in the message, so the chained cause tells the failure modes apart: a
+    ``GaiaQueryError`` is a server that answered with an error, a ``requests``
+    exception such as ``ConnectTimeout`` or ``ReadTimeout`` is a network
+    failure, and in the browser kernel a ``pyodide.ffi.JsException`` is a
+    timeout or blocked (CORS) request. Earlier servers' failures are logged at
+    warning level as each one is skipped.
     """
 
 

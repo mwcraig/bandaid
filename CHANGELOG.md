@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Gaia query falls back when a server fails: CDS VizieR, then the CfA
+    and IDIA mirrors. Failed answers are not cached. If every server fails,
+    `GaiaQueryError` names the servers and the last error (#169).
 - `process_frame`, the per-frame step behind `process_batch`: photometers one
     frame against a `BatchPrep` and returns a `FrameResult` with the outcome
     (`ok`/`skipped`/`error`), the tables, the error, the elapsed time and the
@@ -273,6 +276,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 
+- The Gaia catalog is Gaia DR3 (VizieR `I/355/gaiadr3`, epoch J2016.0) instead
+    of DR2 (`I/345/gaia2`, J2015.5). The column names are unchanged; the
+    constants are now `GAIA_DR3_VIZIER_CATALOG` and `GAIA_DR3_EPOCH`. Positions
+    and magnitudes shift at the DR2-to-DR3 level (#169).
 - The `write_qa_manifest` keyword of `process_batch` and `photometer_frames` is
     now `write_manifest`, so it no longer shadows the `write_qa_manifest`
     function.
@@ -345,6 +352,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A VizieR outage answer (HTTP 200 with only an `INFO name="Error"`, such as
+    "The database is not currently reachable") is no longer read as an empty
+    field and cached for a week, which made every retry report "Gaia returned
+    only 0 stars". Error answers and failure statuses are now removed from
+    astroquery's cache, including one cached by an earlier run, while a genuine
+    empty field is still cached (#169).
 - The per-frame FWHM fit is now stable: the Gaussian fit of the stacked PSF runs
     scipy's L-BFGS-B to floating-point noise (`ftol=1e-15`, `gtol=1e-12`, `maxcor=30`)
     instead of eloy's default tolerances, under which the fitted width tracked
