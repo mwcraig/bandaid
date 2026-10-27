@@ -9,11 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- The Gaia query falls back when a server fails: CDS VizieR, then the CfA
-    and IDIA mirrors. Failed answers are not cached. If every server fails,
+- The Gaia query falls back when a server fails: CDS VizieR, then the IDIA
+    and CfA mirrors. Failed answers are not cached. If every server fails,
     `GaiaQueryError` names the servers and the last error (#169).
 - The GAVO Heidelberg TAP service (`gaia.dr3lite`) is the last resort for the
     Gaia query when every VizieR server fails.
+- In the browser, a failed Gaia request is reported by the first line of its
+    JavaScript error, not its stack, in both the per-server warning and the
+    `GaiaQueryError` message.
 - An instrument profile's `egain` may be one number or a mapping of Bayer
     filter name to gain. Each channel is measured with its own gain, the `L4`
     list records the median per-star effective gain (`l4_effective_egain`) and
