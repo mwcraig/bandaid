@@ -21,6 +21,13 @@ through astroquery's cache too, in a separate ``_GavoTap`` directory next to
 the VizieR one that ``Vizier.clear_cache()`` does not touch, and a failed one
 is removed the same way.
 
+In the browser kernel a refused connection, a request blocked for want of
+CORS headers and an error status sent without them all raise the same
+JavaScript ``NetworkError``: the browser does not say which. The per-server
+timeout there is a single 70 s wall-clock cap rather than separate connect and
+read timeouts, and a request that passes it is expected to raise a
+``TimeoutError`` instead (not yet observed).
+
 The return value matches ``twirl.gaia_radecs``: an ``(n, 2)`` array of RA/Dec in
 degrees, optionally paired with the Gaia G magnitudes. Unlike twirl's optional
 manual proper-motion correction, propagation to an observation epoch is done with
@@ -28,6 +35,7 @@ astropy's :meth:`~astropy.coordinates.SkyCoord.apply_space_motion`.
 """
 
 import contextlib
+import json
 import logging
 import math
 import warnings
@@ -47,8 +55,8 @@ from erfa import ErfaWarning
 from bandaid.exceptions import CatalogTruncationError, GaiaQueryError
 
 try:
-    # In the browser kernel a timed-out or blocked request is expected to
-    # surface as this, not as a requests exception.
+    # In the browser kernel a failed request surfaces as this (pyjs raises
+    # its subclass JsGenericError), not as a requests exception.
     from pyodide.ffi import JsException
 except ImportError:
 
@@ -147,6 +155,73 @@ def _pm_or_zero(column):
         column = column.filled(0)
     values = np.asarray(column, dtype=float)
     return np.where(np.isfinite(values), values, 0.0) * column.unit
+
+
+def _js_error_line(exc):
+    """
+    Return the first line of a browser kernel exception's JavaScript error.
+
+    Parameters
+    ----------
+    exc : JsException
+        The exception.
+
+    Returns
+    -------
+    str
+        ``"<name>: <message>"`` of the JavaScript error when the exception
+        hands out the error object, else the first line of its ``stack`` when
+        ``str(exc)`` is JSON with one, else the first line of ``str(exc)``.
+
+    Notes
+    -----
+    pyjs, in the xeus-python kernel, keeps the JavaScript error behind
+    ``get_js_proxy()`` and sets ``str(exc)`` to JSON of the error's own
+    properties. For the ``DOMException`` of a failed ``XMLHttpRequest`` that
+    is only ``stack``: the message line followed by about ten JavaScript and
+    WebAssembly frames.
+    """
+    with contextlib.suppress(Exception):
+        error = exc.get_js_proxy()
+        name, message = error.name, error.message
+        if all(isinstance(part, str) and part.strip() for part in (name, message)):
+            return f"{name.strip()}: {message.strip().splitlines()[0]}"
+    text = str(exc)
+    with contextlib.suppress(Exception):
+        stack = json.loads(text)["stack"]
+        if isinstance(stack, str) and stack.strip():
+            return stack.strip().splitlines()[0]
+    lines = text.strip().splitlines()
+    return lines[0] if lines else text
+
+
+def _describe_failure(exc):
+    """
+    Return the one-line reason a server is skipped, for the log and the error.
+
+    Parameters
+    ----------
+    exc : Exception
+        The server's failure.
+
+    Returns
+    -------
+    str
+        ``"<exception type>: <text>"``. The text of a browser kernel
+        `JsException` is cut to the first line of its JavaScript error; any
+        other exception's text is kept whole. If the text cannot be formed at
+        all, the exception type alone.
+    """
+    text = None
+    if isinstance(exc, JsException):
+        with contextlib.suppress(Exception):
+            text = _js_error_line(exc)
+    if text is None:
+        with contextlib.suppress(Exception):
+            text = str(exc)
+    if text is None:
+        return type(exc).__name__
+    return f"{type(exc).__name__}: {text}"
 
 
 def _read_votable(server, response):
@@ -412,8 +487,12 @@ def cached_gaia_radecs(
     another server, since every mirror would return the same empty field.
     A server failure is an ``OSError`` (every ``requests`` exception is one),
     a `GaiaQueryError`, or, in the browser kernel, the ``pyodide.ffi.JsException``
-    that a timed-out or blocked request is expected to surface as. Anything
-    else is a fault in this code and propagates at once.
+    that a timed-out or blocked request surfaces as. Anything else is a fault
+    in this code and propagates at once. In the browser the reason logged and
+    put in the message is the first line of the JavaScript error. A refused
+    connection, a CORS block and an error status without CORS headers all
+    give the same ``NetworkError`` line; a request past the single 70 s cap
+    there is expected to give ``TimeoutError`` (not yet observed).
     """
     if not isinstance(center, SkyCoord):
         ra, dec = center
@@ -430,17 +509,16 @@ def cached_gaia_radecs(
             break
         except (OSError, GaiaQueryError, JsException) as exc:
             logger.warning(
-                "Gaia query to %s failed, skipping it: %s: %s",
+                "Gaia query to %s failed, skipping it: %s",
                 server,
-                type(exc).__name__,
-                exc,
+                _describe_failure(exc),
             )
             last_error = exc
     else:
         tried = ", ".join(server for server, _ in servers)
         msg = (
             f"no Gaia server answered the query; tried {tried}; "
-            f"last error: {type(last_error).__name__}: {last_error}"
+            f"last error: {_describe_failure(last_error)}"
         )
         raise GaiaQueryError(msg) from last_error
 

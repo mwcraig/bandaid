@@ -211,6 +211,13 @@ class GaiaQueryError(BandaidError):
     failure, and in the browser kernel a ``pyodide.ffi.JsException`` is a
     timeout or blocked (CORS) request. Earlier servers' failures are logged at
     warning level as each one is skipped.
+
+    In the browser the message keeps only the first line of the JavaScript
+    error, and that line cannot tell a refused connection, a request blocked
+    for want of CORS headers and an error status sent without them apart: all
+    give the same ``NetworkError``. The per-server timeout there is a single
+    70 s wall-clock cap; a request that passes it is expected to give
+    ``TimeoutError`` instead (not yet observed).
     """
 
 
