@@ -70,12 +70,15 @@ logger = logging.getLogger(__name__)
 GAIA_DR3_VIZIER_CATALOG = "I/355/gaiadr3"
 GAIA_DR3_EPOCH = 2016.0
 
-# VizieR servers tried in order: CDS, then the two mirrors that answer Gaia
-# DR3 cones themselves and send CORS headers (the others hang or are gone).
+# VizieR servers tried in order. CDS first; then IDIA, which answers Gaia DR3
+# cones itself and sends CORS headers (about 4 s for a cone on 2026-10-27,
+# with CDS blocked); then CfA as the last resort, since on 2026-10-27 it
+# answered HTTP 504 without CORS headers after about 60 s and on 2026-10-20 it
+# redirected to CDS. The other mirrors hang or are gone.
 VIZIER_SERVERS = (
     "vizier.cds.unistra.fr",
-    "vizier.cfa.harvard.edu",
     "vizier.idia.ac.za",
+    "vizier.cfa.harvard.edu",
 )
 # Last resort when every VizieR server fails: the GAVO Heidelberg TAP service,
 # which is outside CDS and VizieR. Its gaia.dr3lite table has DR3 positions at
