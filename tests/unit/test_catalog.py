@@ -106,8 +106,9 @@ BROWSER_ERROR_JSON = json.dumps(
     },
     separators=(",", ":"),
 )
-# The documented server order: CDS first, then its two independent mirrors.
-SERVER_ORDER = ["vizier.cds.unistra.fr", "vizier.cfa.harvard.edu", "vizier.idia.ac.za"]
+# The documented VizieR server order: CDS first, then IDIA, then CfA. The GAVO
+# TAP service is tried after all three (see ALL_SERVERS_TRIED).
+SERVER_ORDER = ["vizier.cds.unistra.fr", "vizier.idia.ac.za", "vizier.cfa.harvard.edu"]
 # How a TAP service reports a failed query.
 TAP_ERROR_MESSAGE = "Field query: No such field known"
 TAP_ERROR_VOTABLE = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -171,9 +172,10 @@ GAVO_MID_STREAM_ERROR_VOTABLE = GAVO_VOTABLE.replace(
     + MID_STREAM_ERROR_MESSAGE.encode()
     + b"</INFO>",
 )
-# Every server in the order tried, as the all-servers-failed message lists them.
+# Every server in the order tried, as the all-servers-failed message lists them:
+# the three VizieR servers, then GAVO.
 ALL_SERVERS_TRIED = (
-    "tried vizier.cds.unistra.fr, vizier.cfa.harvard.edu, vizier.idia.ac.za, "
+    "tried vizier.cds.unistra.fr, vizier.idia.ac.za, vizier.cfa.harvard.edu, "
     "dc.g-vo.org;"
 )
 # Arbitrary row limit used to assert it is forwarded to Vizier unchanged.

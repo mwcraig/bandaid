@@ -941,7 +941,7 @@ class TestPrepareBatch:
             )
             msg = (
                 "no Gaia server answered the query; tried vizier.cds.unistra.fr, "
-                f"vizier.cfa.harvard.edu, vizier.idia.ac.za; last error: "
+                "vizier.idia.ac.za, vizier.cfa.harvard.edu; last error: "
                 f"ReadTimeout: {timeout}"
             )
             raise GaiaQueryError(msg) from timeout
