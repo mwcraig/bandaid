@@ -53,11 +53,11 @@ mirrors, then the GAVO Heidelberg TAP service, giving each 10 s to connect and
 skipped, saying why (a timeout, a failure status, or the server's own error
 text), and the final message ends with the last server's failure.
 In the browser each server, GAVO included, instead gets a single 70 s limit for
-the whole request. A refused connection, a request blocked for want of the CORS
-headers that let the page read the answer, and an error status sent without
-them all give the same `NetworkError` ("Failed to execute 'send' on
-'XMLHttpRequest'"), so the browser does not say which; a request that runs past
-the limit should give `TimeoutError` instead.
+the whole request, and a request that runs past it fails with `TimeoutError`. A
+refused connection, a request blocked for want of the CORS headers that let the
+page read the answer, and an error status sent without them all give the same
+`NetworkError` ("Failed to execute 'send' on 'XMLHttpRequest'"), so the
+browser does not say which of those three it was.
 Usually this is an outage on the catalog side; check the warnings for the
 reason (no network, a timeout, or the server's error text), then run again. A
 failed answer is never cached, so the retry asks the servers afresh.

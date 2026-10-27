@@ -21,12 +21,11 @@ through astroquery's cache too, in a separate ``_GavoTap`` directory next to
 the VizieR one that ``Vizier.clear_cache()`` does not touch, and a failed one
 is removed the same way.
 
-In the browser kernel a refused connection, a request blocked for want of
-CORS headers and an error status sent without them all raise the same
-JavaScript ``NetworkError``: the browser does not say which. The per-server
-timeout there is a single 70 s wall-clock cap rather than separate connect and
-read timeouts, and a request that passes it is expected to raise a
-``TimeoutError`` instead (not yet observed).
+In the browser kernel the per-server timeout is a single 70 s wall-clock cap
+rather than separate connect and read timeouts, and a request that passes it
+raises a JavaScript ``TimeoutError``. A refused connection, a request blocked
+for want of CORS headers and an error status sent without them all raise the
+same ``NetworkError``: the browser does not say which of those it was.
 
 The return value matches ``twirl.gaia_radecs``: an ``(n, 2)`` array of RA/Dec in
 degrees, optionally paired with the Gaia G magnitudes. Unlike twirl's optional
@@ -71,10 +70,11 @@ GAIA_DR3_VIZIER_CATALOG = "I/355/gaiadr3"
 GAIA_DR3_EPOCH = 2016.0
 
 # VizieR servers tried in order. CDS first; then IDIA, which answers Gaia DR3
-# cones itself and sends CORS headers (about 4 s for a cone on 2026-10-27,
-# with CDS blocked); then CfA as the last resort, since on 2026-10-27 it
-# answered HTTP 504 without CORS headers after about 60 s and on 2026-10-20 it
-# redirected to CDS. The other mirrors hang or are gone.
+# cones itself and sends CORS headers (about 4 s for a cone, with CDS blocked,
+# both times it was tried on 2026-10-27); then CfA as the last resort, since
+# its behaviour varies: on 2026-10-27 it answered HTTP 504 without CORS
+# headers after about 60 s and a few hours later HTTP 200 in about 6 s, and on
+# 2026-10-20 it redirected to CDS. The other mirrors hang or are gone.
 VIZIER_SERVERS = (
     "vizier.cds.unistra.fr",
     "vizier.idia.ac.za",
@@ -492,10 +492,10 @@ def cached_gaia_radecs(
     a `GaiaQueryError`, or, in the browser kernel, the ``pyodide.ffi.JsException``
     that a timed-out or blocked request surfaces as. Anything else is a fault
     in this code and propagates at once. In the browser the reason logged and
-    put in the message is the first line of the JavaScript error. A refused
+    put in the message is the first line of the JavaScript error. A request
+    past the single 70 s cap there gives ``TimeoutError``; a refused
     connection, a CORS block and an error status without CORS headers all
-    give the same ``NetworkError`` line; a request past the single 70 s cap
-    there is expected to give ``TimeoutError`` (not yet observed).
+    give the same ``NetworkError`` line.
     """
     if not isinstance(center, SkyCoord):
         ra, dec = center

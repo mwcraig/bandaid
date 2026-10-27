@@ -213,11 +213,11 @@ class GaiaQueryError(BandaidError):
     warning level as each one is skipped.
 
     In the browser the message keeps only the first line of the JavaScript
-    error, and that line cannot tell a refused connection, a request blocked
-    for want of CORS headers and an error status sent without them apart: all
-    give the same ``NetworkError``. The per-server timeout there is a single
-    70 s wall-clock cap; a request that passes it is expected to give
-    ``TimeoutError`` instead (not yet observed).
+    error. The per-server timeout there is a single 70 s wall-clock cap, and
+    a request that passes it gives ``TimeoutError``. A refused connection, a
+    request blocked for want of CORS headers and an error status sent without
+    them all give the same ``NetworkError``, so the message cannot tell those
+    three apart.
     """
 
 
