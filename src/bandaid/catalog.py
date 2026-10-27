@@ -27,7 +27,6 @@ import contextlib
 import logging
 import math
 import warnings
-from functools import partial
 from io import BytesIO
 
 import astropy.units as u
@@ -309,11 +308,12 @@ def cached_gaia_radecs(
 
     radius = _fov_to_radius_deg(fov)
 
-    servers = [(server, partial(_query_vizier, server)) for server in VIZIER_SERVERS]
     last_error = None
-    for server, query in servers:
+    for server in VIZIER_SERVERS:
         try:
-            table = query(center, radius, limit=limit, mag_limit=mag_limit)
+            table = _query_vizier(
+                server, center, radius, limit=limit, mag_limit=mag_limit
+            )
             break
         except (OSError, GaiaQueryError, JsException) as exc:
             logger.warning(
@@ -324,7 +324,7 @@ def cached_gaia_radecs(
             )
             last_error = exc
     else:
-        tried = ", ".join(server for server, _ in servers)
+        tried = ", ".join(VIZIER_SERVERS)
         msg = (
             f"no Gaia server answered the query; tried {tried}; "
             f"last error: {type(last_error).__name__}: {last_error}"
