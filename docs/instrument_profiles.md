@@ -376,8 +376,9 @@ resolve them:
     Seestar). Either one number for every channel, or — when the Bayer channels
     have different gains — a mapping of filter name to gain, e.g.
     `{"TR": 0.046, "TG": 0.075, "TB": 0.075}`. With the mapping each channel is
-    measured with its own gain and its star list records that gain; a channel
-    the frame is measured in that has no entry fails the frame. The `L4` list
+    measured with its own gain and its star list records that gain; an entry
+    with no value, or a channel the frame is measured in that has no entry,
+    fails the frame. The `L4` list
     records the median over the frame's stars of the per-star effective gain
     (`l4_effective_egain`), since a sum of channels with different gains has
     no single exact gain; L4's `count_err` is built from the per-channel terms

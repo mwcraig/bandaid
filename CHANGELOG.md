@@ -18,8 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     gain (`{"TR": ..., "TG": ..., "TB": ...}`) as well as a single number. Each
     channel is then measured with its own gain and its star list records it;
     the `L4` list records the median per-star effective gain of the summed
-    channels, and its Poisson term is summed per channel. `channel_egain` and
-    `l4_effective_egain` are public.
+    channels, and its Poisson term is summed per channel. A mapping entry
+    with no value, or a channel measured without an entry, fails the frame
+    with `FrameMetadataError`. `channel_egain` and `l4_effective_egain` are
+    public.
 - `process_frame`, the per-frame step behind `process_batch`: photometers one
     frame against a `BatchPrep` and returns a `FrameResult` with the outcome
     (`ok`/`skipped`/`error`), the tables, the error, the elapsed time and the
