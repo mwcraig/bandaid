@@ -12,6 +12,7 @@ import contextlib
 import io
 import logging
 import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
@@ -1306,6 +1307,54 @@ def _resolve_template_value(key, value, header, defaults):
     return value
 
 
+def channel_egain(egain, filter_name):
+    """
+    Return the system gain of one Bayer channel.
+
+    Parameters
+    ----------
+    egain : float or collections.abc.Mapping
+        The frame's ``egain`` metadata: one gain for every channel, or a
+        mapping of filter name (``"TR"``, ``"TG"``, ``"TB"``) to that
+        channel's gain, both in e-/ADU.
+    filter_name : str or None
+        The channel whose gain is wanted. Ignored when `egain` is a single
+        number.
+
+    Returns
+    -------
+    float
+        The gain of `filter_name`.
+
+    Raises
+    ------
+    FrameMetadataError
+        If `egain` is a mapping with no entry for `filter_name`.
+    ValueError
+        If `egain` is a mapping and `filter_name` is None.
+
+    Notes
+    -----
+    On a colour sensor the channels can have different gains (on the Seestar
+    S50 the red channel's is about 0.046 e-/ADU and the green and blue
+    channels' about 0.075), so a profile may give one per channel. Every
+    consumer of the gain goes through this function so that both forms work.
+    """
+    if not isinstance(egain, Mapping):
+        return float(egain)
+    if filter_name is None:
+        msg = "a per-channel egain mapping needs the filter name to pick a gain"
+        raise ValueError(msg)
+    try:
+        return float(egain[filter_name])
+    except KeyError as exc:
+        msg = (
+            f"system gain (egain) has no entry for channel {filter_name!r}; "
+            f"the mapping covers {sorted(egain)}"
+        )
+        raise FrameMetadataError(msg) from exc
+
+
 def metadata_from_header(header, *, profile=None):
     """
     Build a metadata dictionary from an instrument's header dialect and a header.
@@ -1360,9 +1409,15 @@ def metadata_from_header(header, *, profile=None):
 
     # egain feeds the photometry noise model; a None value would silently poison
     # every SNR downstream, so fail the frame here with a clear message.
-    if metadata.get("egain") is None:
+    egain = metadata.get("egain")
+    if egain is None:
         msg = "system gain (egain) is missing from the header and has no default"
         raise FrameMetadataError(msg)
+    if isinstance(egain, Mapping):
+        missing = sorted(name for name, value in egain.items() if value is None)
+        if missing:
+            msg = f"system gain (egain) has no value for channel(s) {missing}"
+            raise FrameMetadataError(msg)
 
     return metadata
 
