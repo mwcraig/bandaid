@@ -3911,6 +3911,29 @@ def build_photometry_table(
     return data
 
 
+def _starlist_metadata(metadata, egain):
+    """
+    Return the frame metadata a channel's star list is built from.
+
+    Parameters
+    ----------
+    metadata : dict
+        The frame metadata (``ImageData.metadata``).
+    egain : float
+        The gain of the channel the star list describes.
+
+    Returns
+    -------
+    dict
+        `metadata` itself when its ``egain`` is already that single number;
+        otherwise a shallow copy with ``egain`` replaced by `egain`, since the
+        star-list schema holds one gain per list.
+    """
+    if not isinstance(metadata["egain"], Mapping):
+        return metadata
+    return {**metadata, "egain": egain}
+
+
 def process_one_image(
     file,
     user_specific_metadata,
@@ -3991,6 +4014,9 @@ def process_one_image(
         `input_photometry_coords` is given with
         ``config.centroid.model_faint_positions`` True but `input_gaia_g` or
         `g_cut` is None.
+    FrameMetadataError
+        Raised with `file` attached when the frame's ``egain`` metadata is a
+        per-channel mapping that lacks one of the channels in ``bayer_masks``.
     InstrumentDetectionError
         A `FrameMetadataError` subclass, raised with `file` attached when
         ``config.instrument`` is None and the frame's header matches zero or
@@ -4047,11 +4073,24 @@ def process_one_image(
 
     # Solve-quality numbers for the QA manifest, stamped on every table below
     # (the manifest builder only sees the tables).
+    # With one gain per channel, every channel the frame is measured in needs
+    # its own entry; check before the first channel is photometered.
+    egain = img.metadata["egain"]
+    if isinstance(egain, Mapping) and (
+        missing := sorted(set(bayer_masks) - set(egain))
+    ):
+        msg = (
+            f"system gain (egain) has no entry for channel(s) {missing}; "
+            f"the mapping covers {sorted(egain)}"
+        )
+        raise FrameMetadataError(msg, file=file)
     by_filter_data = {}
     for filter_name, mask in bayer_masks.items():
-        data = build_photometry_table(img, mask, config=config)
+        data = build_photometry_table(img, mask, filter_name=filter_name, config=config)
         data.meta["filter"] = filter_name
-        data.meta["full_image_meta"] = img.metadata
+        data.meta["full_image_meta"] = _starlist_metadata(
+            img.metadata, channel_egain(egain, filter_name)
+        )
         data.meta["wcs_pixscale"] = img.wcs_pixscale
         data.meta["solve_offset_deg"] = img.solve_offset_deg
         data.meta["n_edge_dropped"] = img.n_edge_dropped
@@ -4064,9 +4103,11 @@ def process_one_image(
     # L4 is a recombination of the RGB tables, so it is built once they all
     # exist; the caller's dict is read, never mutated.
     if build_l4:
-        l4 = calculate_l4_quantities(by_filter_data, img.metadata["egain"])
+        l4 = calculate_l4_quantities(by_filter_data, egain)
         l4.meta["filter"] = "L4"
-        l4.meta["full_image_meta"] = img.metadata
+        l4.meta["full_image_meta"] = _starlist_metadata(
+            img.metadata, l4_effective_egain(by_filter_data, egain)
+        )
         l4.meta["wcs_pixscale"] = img.wcs_pixscale
         l4.meta["solve_offset_deg"] = img.solve_offset_deg
         l4.meta["n_edge_dropped"] = img.n_edge_dropped
