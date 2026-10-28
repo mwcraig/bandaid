@@ -30,6 +30,7 @@ from bandaid.photometry import (
     _peak_box_cutouts,
     build_photometry_table,
     calculate_l4_quantities,
+    l4_effective_egain,
     metadata_from_header,
 )
 
@@ -298,6 +299,37 @@ class TestBuildPhotometryTable:
 
         assert time == pytest.approx(start_jd, abs=1e-9)
 
+    def _egain_passed_to_measure(self, mocker, egain, filter_name=None):
+        """Build a one-star table and return the egain handed to measure_photometry."""
+        stub = mocker.patch(
+            "bandaid.photometry.measure_photometry",
+            side_effect=_fake_phot_factory(1),
+        )
+        img = _make_image_data(_make_tan_wcs(), np.array([[250.0, 250.0]]), None)
+        img.metadata = {**img.metadata, "egain": egain}
+        build_photometry_table(img, mask=None, filter_name=filter_name)
+        return stub.call_args.args[3]
+
+    def test_filter_name_picks_the_channel_egain(self, mocker):
+        """With a per-channel egain mapping, the named channel's gain is used."""
+        egain = {"TR": 0.046, "TG": 0.075, "TB": 0.07}
+
+        used = self._egain_passed_to_measure(mocker, egain, filter_name="TB")
+
+        assert used == pytest.approx(0.07)
+
+    def test_scalar_egain_ignores_the_filter_name(self, mocker):
+        """A single egain applies whichever channel is being measured."""
+        used = self._egain_passed_to_measure(mocker, 0.3, filter_name="TB")
+
+        assert used == pytest.approx(0.3)
+
+    def test_per_channel_egain_needs_a_filter_name(self, mocker):
+        """A mapping egain without a filter name cannot be reduced to one gain."""
+        egain = {"TR": 0.046, "TG": 0.075, "TB": 0.07}
+        with pytest.raises(ValueError, match="filter"):
+            self._egain_passed_to_measure(mocker, egain)
+
     def test_time_comes_from_resolved_obs_time(self, mocker):
         """``time`` uses the header_map-resolved obs_time, not raw DATE-OBS (#59)."""
         # A dialect whose observation time lives under DATE-LOC; the raw header
@@ -539,6 +571,33 @@ class TestCalculateL4Quantities:
         np.testing.assert_allclose(final_data["count_err"], expected_err)
         np.testing.assert_allclose(final_data["snr"], expected_snr)
 
+    def test_per_channel_egain_sums_the_channel_poisson_terms(self):
+        """With one gain per channel the Poisson variance is summed per channel."""
+        egain = {"TR": 0.046, "TG": 0.075, "TB": 0.07}
+        by_filter = {
+            "TR": filter_table([100, 200], [10, 12], [5, 6], [2, 3], [50, 90]),
+            "TG": filter_table([110, 210], [11, 13], [4, 7], [1, 2], [70, 80]),
+            "TB": filter_table([120, 220], [9, 14], [6, 5], [3, 1], [60, 95]),
+        }
+        final_data = calculate_l4_quantities(by_filter, egain)
+
+        tr, tg, tb = by_filter["TR"], by_filter["TG"], by_filter["TB"]
+        expected_tot = tr["tot_count"] + tg["tot_count"] + tb["tot_count"]
+        poisson = (
+            tr["tot_count"] / egain["TR"]
+            + tg["tot_count"] / egain["TG"]
+            + tb["tot_count"] / egain["TB"]
+        )
+        expected_err = np.sqrt(
+            tr["bkgd_std"] ** 2 * tr["aperture_area"]
+            + tg["bkgd_std"] ** 2 * tg["aperture_area"]
+            + tb["bkgd_std"] ** 2 * tb["aperture_area"]
+            + poisson
+        )
+
+        np.testing.assert_allclose(final_data["count_err"], expected_err)
+        np.testing.assert_allclose(final_data["snr"], expected_tot / expected_err)
+
     def test_peak_count_is_a_real_cross_channel_max(
         self, make_test_image, bayer_masks_rggb
     ):
@@ -648,3 +707,49 @@ class TestCalculateL4Quantities:
 
         assert np.isnan(final_data["bkgd_count"][0])
         assert np.isnan(final_data["snr"][0])
+
+
+class TestL4EffectiveEgain:
+    """``l4_effective_egain`` summarises the L4 channel's gain in one number."""
+
+    @staticmethod
+    def _rgb(tr, tg, tb) -> dict:
+        ones = [1.0] * len(tr)
+        return {
+            "TR": filter_table(tr, ones, ones, ones, ones),
+            "TG": filter_table(tg, ones, ones, ones, ones),
+            "TB": filter_table(tb, ones, ones, ones, ones),
+        }
+
+    def test_scalar_egain_is_returned_unchanged(self):
+        """With one gain for every channel, L4 has that gain too."""
+        by_filter = self._rgb([300, 100], [100, 100], [50, 100])
+
+        assert l4_effective_egain(by_filter, 0.5) == pytest.approx(0.5)
+
+    def test_median_of_the_per_star_effective_gain(self):
+        """L4 takes the median of the per-star gains that reproduce the variance."""
+        egain = {"TR": 0.046, "TG": 0.075, "TB": 0.075}
+        tr, tg, tb = [300.0, 100.0, 50.0], [100.0, 100.0, 100.0], [50.0, 100.0, 300.0]
+        by_filter = self._rgb(tr, tg, tb)
+
+        tr, tg, tb = np.array(tr), np.array(tg), np.array(tb)
+        per_star = (tr + tg + tb) / (tr / 0.046 + tg / 0.075 + tb / 0.075)
+        expected = np.median(per_star)
+        # The median is the balanced star, and differs from the mean.
+        assert expected == pytest.approx(per_star[1])
+        assert expected != pytest.approx(per_star.mean())
+
+        assert l4_effective_egain(by_filter, egain) == pytest.approx(expected)
+
+    def test_stars_without_a_positive_count_in_every_channel_are_left_out(self):
+        """A star with a non-positive channel count has no gain and is skipped."""
+        egain = {"TR": 0.046, "TG": 0.075, "TB": 0.075}
+        tr, tg, tb = [300.0, -5.0, 50.0], [100.0, 100.0, 100.0], [50.0, 100.0, 300.0]
+        by_filter = self._rgb(tr, tg, tb)
+
+        tr, tg, tb = np.array(tr), np.array(tg), np.array(tb)
+        per_star = (tr + tg + tb) / (tr / 0.046 + tg / 0.075 + tb / 0.075)
+        expected = np.median(per_star[[0, 2]])
+
+        assert l4_effective_egain(by_filter, egain) == pytest.approx(expected)
