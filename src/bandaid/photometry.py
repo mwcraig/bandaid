@@ -1407,8 +1407,33 @@ def metadata_from_header(header, *, profile=None):
         msg = f"missing required header keyword {exc.args[0]!r}"
         raise FrameMetadataError(msg) from exc
 
-    # egain feeds the photometry noise model; a None value would silently poison
-    # every SNR downstream, so fail the frame here with a clear message.
+    _check_egain(metadata)
+
+    return metadata
+
+
+def _check_egain(metadata):
+    """
+    Fail the frame if its ``egain`` metadata has no usable value.
+
+    Parameters
+    ----------
+    metadata : dict
+        Frame metadata, as built by `metadata_from_header` and possibly
+        updated with user-supplied values.
+
+    Raises
+    ------
+    FrameMetadataError
+        If ``egain`` is missing or None, or is a per-channel mapping with a
+        None entry.
+
+    Notes
+    -----
+    egain feeds the photometry noise model; a None value would silently
+    poison every SNR downstream, so the frame fails here with a clear
+    message instead.
+    """
     egain = metadata.get("egain")
     if egain is None:
         msg = "system gain (egain) is missing from the header and has no default"
@@ -1418,8 +1443,6 @@ def metadata_from_header(header, *, profile=None):
         if missing:
             msg = f"system gain (egain) has no value for channel(s) {missing}"
             raise FrameMetadataError(msg)
-
-    return metadata
 
 
 def eloy_to_starlist(eloy_table, metadata, *, min_snr=None):
@@ -3450,6 +3473,36 @@ def _require_model_inputs(centroid_config, photometry_coords, gaia_g, g_cut):
         raise ValueError(msg)
 
 
+def _apply_metadata_override(metadata, user_specific_metadata, file):
+    """
+    Overlay user-supplied values on the frame metadata, in place.
+
+    Parameters
+    ----------
+    metadata : dict
+        Frame metadata from `metadata_from_header`; updated in place.
+    user_specific_metadata : dict or None
+        Values that take precedence over the header's. None leaves
+        `metadata` untouched.
+    file : str or pathlib.Path
+        The frame, attached to any error raised.
+
+    Raises
+    ------
+    FrameMetadataError
+        If the override leaves ``egain`` without a usable value (see
+        `_check_egain`); the header check ran before the override and
+        cannot see what it replaced.
+    """
+    if user_specific_metadata is not None:
+        metadata.update(user_specific_metadata)
+        try:
+            _check_egain(metadata)
+        except FrameMetadataError as exc:
+            exc.file = file
+            raise
+
+
 def prepare_image(
     file,
     radecs,
@@ -3588,8 +3641,7 @@ def prepare_image(
     metadata = calibration.metadata
     coords, fwhm = calibration.coords, calibration.fwhm
 
-    if user_specific_metadata is not None:
-        metadata.update(user_specific_metadata)
+    _apply_metadata_override(metadata, user_specific_metadata, file)
 
     # Balanced or not per detect_on_bayer_balanced; reusing calibration_sequence's
     # own detection-time array avoids balancing a second copy.
@@ -4163,9 +4215,10 @@ def l4_effective_egain(by_filter_data, egain):
     -------
     float
         `egain` itself when it is a single number. Otherwise the median, over
-        the stars with a positive count in every channel, of the per-star
-        gain ``(N_R + N_G + N_B) / (N_R/g_R + N_G/g_G + N_B/g_B)``; NaN when
-        no star qualifies.
+        every measured star with a positive count in each channel (before the
+        star-list quality cuts), of the per-star gain
+        ``(N_R + N_G + N_B) / (N_R/g_R + N_G/g_G + N_B/g_B)``; NaN when no
+        star qualifies.
 
     Notes
     -----
