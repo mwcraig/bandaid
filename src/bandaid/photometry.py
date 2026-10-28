@@ -3760,6 +3760,7 @@ def build_photometry_table(
     img,
     mask,
     *,
+    filter_name=None,
     config=None,
     radii=None,
     annulus=None,
@@ -3775,6 +3776,10 @@ def build_photometry_table(
         Per-image detection/alignment results.
     mask : numpy.ndarray or None
         Bayer mask to apply to the image data.
+    filter_name : str or None, optional
+        The channel being measured (``"TR"``, ``"TG"``, ``"TB"``), used to
+        pick its gain when ``img.metadata["egain"]`` is a per-channel mapping
+        (see `channel_egain`). Not needed with a single gain. Default None.
     config : PhotometryConfig or None, optional
         Photometry configuration supplying the apertures/drift defaults. Any of
         the explicit keyword overrides below take precedence over it. If None
@@ -3832,7 +3837,7 @@ def build_photometry_table(
         img.calibrated_data,
         img.centroid_coords,
         img.fwhm,
-        img.metadata["egain"],
+        channel_egain(img.metadata["egain"], filter_name),
         mask,
         peak_cutouts=img.peak_cutouts(),
         geometry=img.aperture_geometry(radii, annulus),
@@ -4071,6 +4076,81 @@ def process_one_image(
     return by_filter_data
 
 
+_L4_CHANNELS = ("TR", "TG", "TB")
+
+
+def _l4_poisson_variance(by_filter_data, egain):
+    """
+    Return the per-star Poisson variance of the L4 count, in ADU squared.
+
+    Parameters
+    ----------
+    by_filter_data : dict
+        Mapping of filter name to photometry table, holding "TR", "TG", "TB".
+    egain : float or collections.abc.Mapping
+        One gain for every channel, or a mapping of filter name to gain.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``sum(N_c / g_c)`` over the three channels, which is ``N / g`` when
+        the gain is the same for every channel.
+    """
+    if not isinstance(egain, Mapping):
+        total = sum(by_filter_data[name]["tot_count"] for name in _L4_CHANNELS)
+        return np.asarray(total) / egain
+    return sum(
+        np.asarray(by_filter_data[name]["tot_count"]) / channel_egain(egain, name)
+        for name in _L4_CHANNELS
+    )
+
+
+def l4_effective_egain(by_filter_data, egain):
+    """
+    Return the single gain that stands for the L4 channel in a star list.
+
+    Parameters
+    ----------
+    by_filter_data : dict
+        Mapping of filter name to photometry table; must hold "TR", "TG" and
+        "TB" as built by `build_photometry_table`.
+    egain : float or collections.abc.Mapping
+        The gain of the image in e-/ADU: one number for every channel, or a
+        mapping of filter name to that channel's gain (see `channel_egain`).
+
+    Returns
+    -------
+    float
+        `egain` itself when it is a single number. Otherwise the median, over
+        the stars with a positive count in every channel, of the per-star
+        gain ``(N_R + N_G + N_B) / (N_R/g_R + N_G/g_G + N_B/g_B)``; NaN when
+        no star qualifies.
+
+    Notes
+    -----
+    L4 sums channels whose gains may differ, so no single gain reproduces
+    every star's Poisson variance: each star has its own effective gain, a
+    count-weighted harmonic mean of the channel gains that depends on the
+    star's colour. The star-list schema stores one gain per list, so the
+    median across the frame's stars is written there. On Seestar S50 frames
+    it sits within a few percent of every star's value, whereas the smallest
+    channel gain would overstate the Poisson variance by a third or more.
+    The L4 ``count_err`` and ``snr`` columns never use this number; they are
+    built from the per-channel terms directly.
+    """
+    if not isinstance(egain, Mapping):
+        return float(egain)
+    counts = np.column_stack(
+        [np.asarray(by_filter_data[name]["tot_count"]) for name in _L4_CHANNELS]
+    )
+    gains = np.array([channel_egain(egain, name) for name in _L4_CHANNELS])
+    usable = np.all(counts > 0, axis=1)
+    per_star = counts[usable].sum(axis=1) / (counts[usable] / gains).sum(axis=1)
+    if per_star.size == 0:
+        return float("nan")
+    return float(np.median(per_star))
+
+
 def calculate_l4_quantities(by_filter_data, egain):
     """
     Build the "L4" photometry table from RGB photometry on a Bayer array.
@@ -4080,8 +4160,9 @@ def calculate_l4_quantities(by_filter_data, egain):
     by_filter_data : dict
         Mapping of filter name to photometry table; must hold "TR", "TG" and
         "TB" as built by `build_photometry_table`.
-    egain : float
-        The gain of the image.
+    egain : float or collections.abc.Mapping
+        The gain of the image in e-/ADU: one number for every channel, or a
+        mapping of filter name to that channel's gain (see `channel_egain`).
 
     Returns
     -------
@@ -4168,7 +4249,7 @@ def calculate_l4_quantities(by_filter_data, egain):
                 + by_filter_data["TB"]["bkgd_std"] ** 2
                 * by_filter_data["TB"]["aperture_area"]
             )
-            + final_data["tot_count"] / egain  # Poisson error from total count
+            + _l4_poisson_variance(by_filter_data, egain)
         )
 
         # SNR from the recombined L4 count and error.
