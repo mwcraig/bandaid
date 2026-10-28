@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `GaiaQueryError` names the servers and the last error (#169).
 - The GAVO Heidelberg TAP service (`gaia.dr3lite`) is the last resort for the
     Gaia query when every VizieR server fails.
+- An instrument profile's `egain` may be a mapping of Bayer filter name to
+    gain (`{"TR": ..., "TG": ..., "TB": ...}`) as well as a single number. Each
+    channel is then measured with its own gain and its star list records it;
+    the `L4` list records the median per-star effective gain of the summed
+    channels, and its Poisson term is summed per channel. `channel_egain` and
+    `l4_effective_egain` are public.
 - `process_frame`, the per-frame step behind `process_batch`: photometers one
     frame against a `BatchPrep` and returns a `FrameResult` with the outcome
     (`ok`/`skipped`/`error`), the tables, the error, the elapsed time and the

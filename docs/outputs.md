@@ -36,6 +36,13 @@ StarListSet
     └── StarList (filter "L4") …
 ```
 
+Each list's `egain` is the gain its channel was measured with. When the
+instrument profile gives one gain per Bayer channel, the `TR`/`TG`/`TB` lists
+carry their own channel's gain and the `L4` list carries the median over the
+frame's stars of the per-star effective gain of the summed channels (see
+`l4_effective_egain`); the `count_err` of `L4` is computed from the per-channel
+terms and does not depend on that single number.
+
 The per-star fields in each `staritems` row:
 
 | Field        | Meaning                                                                                                                                                                                                        |
