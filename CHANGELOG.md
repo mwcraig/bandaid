@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     with no value, or a channel measured without an entry, fails the frame
     with `FrameMetadataError`. `channel_egain` and `l4_effective_egain` are
     public.
+- The bundled Seestar50 profile now carries one gain per Bayer channel,
+    `{"TR": 0.046, "TG": 0.076, "TB": 0.078}` e-/ADU, from photon-transfer
+    curves measured under two light sources, instead of the red value for
+    every channel. Fluxes are unchanged; green, blue and L4 `count_err` shrink
+    (by up to about a fifth for green and blue, 15 % for L4) and their `snr`
+    grow, which can change which rows pass `min_snr`.
 - `process_frame`, the per-frame step behind `process_batch`: photometers one
     frame against a `BatchPrep` and returns a `FrameResult` with the outcome
     (`ok`/`skipped`/`error`), the tables, the error, the elapsed time and the

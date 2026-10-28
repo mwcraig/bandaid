@@ -2316,10 +2316,12 @@ class TestProcessOneImage:
         """
         The columns L4 copies from TR equal a genuine full-frame build's.
 
-        Runs ``build_photometry_table(img, None)`` on the very ``ImageData``
-        ``process_one_image`` used and checks the mask-independent columns and
-        meta the L4 table took from TR are bit-identical to it. (The L4 column
-        set itself is pinned in test_build_table.py.)
+        Runs ``build_photometry_table(img, None, filter_name="TR")`` on the
+        very ``ImageData`` ``process_one_image`` used and checks the
+        mask-independent columns and meta the L4 table took from TR are
+        bit-identical to it. The filter name only picks TR's gain out of the
+        profile's per-channel mapping. (The L4 column set itself is pinned in
+        test_build_table.py.)
         """
         path, masks = l4_frame
         # Spy (not wraps-patch) so spy_return hands back the very ImageData
@@ -2328,7 +2330,9 @@ class TestProcessOneImage:
 
         result = process_one_image(path, {}, _REF_RADECS, None, masks)
 
-        reference = build_photometry_table(prepare_spy.spy_return, None)
+        reference = build_photometry_table(
+            prepare_spy.spy_return, None, filter_name="TR"
+        )
 
         l4 = result["L4"]
         for col in _MASK_INDEPENDENT_COLUMNS:

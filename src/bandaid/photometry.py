@@ -1336,8 +1336,8 @@ def channel_egain(egain, filter_name):
     Notes
     -----
     On a colour sensor the channels can have different gains (on the Seestar
-    S50 the red channel's is about 0.046 e-/ADU and the green and blue
-    channels' about 0.075), so a profile may give one per channel. Every
+    S50 the red channel's is about 0.046 e-/ADU, the green channel's 0.076
+    and the blue channel's 0.078), so a profile may give one per channel. Every
     consumer of the gain goes through this function so that both forms work.
     """
     if not isinstance(egain, Mapping):

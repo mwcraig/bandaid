@@ -375,18 +375,19 @@ resolve them:
     always present). It is in e-/ADU in the file's own units (16-bit for the
     Seestar). Either one number for every channel, or — when the Bayer channels
     have different gains — a mapping of filter name to gain, e.g.
-    `{"TR": 0.046, "TG": 0.075, "TB": 0.075}`. With the mapping each channel is
+    `{"TR": 0.046, "TG": 0.076, "TB": 0.078}`. With the mapping each channel is
     measured with its own gain and its star list records that gain; an entry
     with no value, or a channel the frame is measured in that has no entry,
     fails the frame. The `L4` list
     records the median over the frame's stars of the per-star effective gain
     (`l4_effective_egain`), since a sum of channels with different gains has
     no single exact gain; L4's `count_err` is built from the per-channel terms
-    and does not depend on that number. The bundled Seestar50 profile uses the
-    red-channel photon-transfer value, 0.046, for every Bayer channel as the
-    conservative choice: the Poisson error scales as 1/sqrt(egain), so the
-    smallest gain gives the largest uncertainty. Green and blue measure about
-    0.075.
+    and does not depend on that number. The bundled Seestar50 profile carries
+    the per-channel photon-transfer values above, measured from flat pairs
+    under two light sources (a tungsten-halogen lamp and an electroluminescent
+    panel) and averaged; the two sources agree on red and differ by about 5 %
+    on green and blue. On sky frames the L4 median effective gain comes out
+    near 0.065.
 - `largest_usable_adu_value` — saturation cut.
 - `pixscale`, `fov_rad` — plate scale and field of view used for Gaia matching
     and FWHM-in-arcsec reporting.
