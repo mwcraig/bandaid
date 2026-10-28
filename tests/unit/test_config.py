@@ -9,6 +9,8 @@ exactly (so swapping the constants for the config changes no behaviour), and the
 validators reject the values that would silently break the pipeline.
 """
 
+import json
+
 import numpy as np
 import pytest
 from _helpers import SEESTAR_RULE
@@ -195,6 +197,29 @@ class TestImmutability:
         cfg = InstrumentProfile()
         with pytest.raises(TypeError):
             cfg.header_map["obs_time"] = "@NOPE"
+
+    def test_cannot_mutate_a_per_channel_egain(self):
+        """A per-channel ``egain`` mapping inside ``header_map`` is read-only too."""
+        egain = {"TR": 0.046, "TG": 0.075, "TB": 0.075}
+        cfg = InstrumentProfile(
+            header_map={**InstrumentProfile().header_map, "egain": egain}
+        )
+
+        with pytest.raises(TypeError):
+            cfg.header_map["egain"]["TR"] = 9.0
+        # The caller's own dict was copied, not captured.
+        assert egain == {"TR": 0.046, "TG": 0.075, "TB": 0.075}
+
+    def test_per_channel_egain_round_trips_through_json(self):
+        """A frozen per-channel ``egain`` still serialises to plain JSON and back."""
+        egain = {"TR": 0.046, "TG": 0.075, "TB": 0.075}
+        cfg = InstrumentProfile(
+            header_map={**InstrumentProfile().header_map, "egain": egain}
+        )
+
+        dumped = cfg.model_dump_json()
+        assert json.loads(dumped)["header_map"]["egain"] == egain
+        assert InstrumentProfile.model_validate_json(dumped) == cfg
 
 
 class TestValidators:
