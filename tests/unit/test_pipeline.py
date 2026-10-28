@@ -57,6 +57,7 @@ from bandaid.photometry import (
     _fwhm_from_coords,
     build_photometry_table,
     calibration_sequence,
+    l4_effective_egain,
     measure_photometry,
     metadata_from_header,
     prepare_image,
@@ -2092,6 +2093,56 @@ class TestProcessOneImage:
         assert set(result) == {"TR", "TG", "TB", "L4"}
         rgb_sum = sum(result[name]["tot_count"] for name in ("TR", "TG", "TB"))
         np.testing.assert_allclose(result["L4"]["tot_count"], rgb_sum)
+
+    def test_per_channel_egain_is_stamped_per_filter(self, l4_frame):
+        """Each channel's star-list metadata carries its own gain; L4 the median."""
+        path, masks = l4_frame
+        egain = {"TR": 0.046, "TG": 0.075, "TB": 0.07}
+
+        result = process_one_image(path, {"egain": egain}, _REF_RADECS, None, masks)
+
+        for name in ("TR", "TG", "TB"):
+            stamped = result[name].meta["full_image_meta"]["egain"]
+            assert stamped == pytest.approx(egain[name])
+        l4_egain = result["L4"].meta["full_image_meta"]["egain"]
+        assert l4_egain == pytest.approx(l4_effective_egain(result, egain))
+        assert min(egain.values()) < l4_egain < max(egain.values())
+
+        # Everything but the gain is the one shared frame metadata.
+        def _rest(name):
+            meta = result[name].meta["full_image_meta"]
+            return {k: v for k, v in meta.items() if k != "egain"}
+
+        assert _rest("TR") == _rest("L4")
+
+    def test_per_channel_egain_reaches_each_channels_noise_model(self, l4_frame):
+        """A channel's own gain, not the red one, sets its Poisson noise term."""
+        path, masks = l4_frame
+        egain = {"TR": 0.046, "TG": 0.075, "TB": 0.075}
+
+        single = process_one_image(path, {"egain": 0.046}, _REF_RADECS, None, masks)
+        mapped = process_one_image(path, {"egain": egain}, _REF_RADECS, None, masks)
+
+        np.testing.assert_allclose(mapped["TR"]["count_err"], single["TR"]["count_err"])
+        assert not np.allclose(mapped["TG"]["count_err"], single["TG"]["count_err"])
+        assert not np.allclose(mapped["TB"]["count_err"], single["TB"]["count_err"])
+
+    def test_per_channel_egain_missing_a_channel_fails_before_photometry(
+        self, l4_frame, mocker
+    ):
+        """A mapping that lacks one of the frame's channels fails the frame early."""
+        path, masks = l4_frame
+        mp_spy = mocker.patch(
+            "bandaid.photometry.measure_photometry", wraps=measure_photometry
+        )
+
+        with pytest.raises(FrameMetadataError, match="TB") as excinfo:
+            process_one_image(
+                path, {"egain": {"TR": 0.046, "TG": 0.075}}, _REF_RADECS, None, masks
+            )
+
+        assert excinfo.value.file == path
+        assert mp_spy.call_count == 0
 
     def test_ra_dec_are_the_input_coordinates_verbatim(self, l4_frame):
         """Each row's ``ra``/``dec`` are its target's float64 values, in input order."""
