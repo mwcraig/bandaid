@@ -625,7 +625,9 @@ class InstrumentProfile(BaseModel, frozen=True):
         dict it points at. The bundled profiles are cached and shared, so an
         in-place edit would leak globally; wrapping the mapping in a
         :class:`~types.MappingProxyType` makes such mutation raise. The values
-        are scalars, so a shallow freeze is sufficient.
+        are scalars except for a per-channel ``egain`` mapping, which is
+        frozen the same way (it is handed out as frame metadata, so a frame's
+        caller must not be able to edit the cached profile through it).
 
         Parameters
         ----------
@@ -637,7 +639,12 @@ class InstrumentProfile(BaseModel, frozen=True):
         Mapping
             A read-only view over a private copy of ``value``.
         """
-        return MappingProxyType(dict(value))
+        return MappingProxyType(
+            {
+                key: MappingProxyType(dict(item)) if isinstance(item, Mapping) else item
+                for key, item in value.items()
+            }
+        )
 
     @field_serializer("header_map")
     def _serialize_header_map(self, value) -> dict:
@@ -654,7 +661,10 @@ class InstrumentProfile(BaseModel, frozen=True):
         dict
             A plain dict so :meth:`to_file`/``model_dump_json`` round-trip.
         """
-        return dict(value)
+        return {
+            key: dict(item) if isinstance(item, Mapping) else item
+            for key, item in value.items()
+        }
 
     @classmethod
     def from_file(cls, path) -> "InstrumentProfile":
