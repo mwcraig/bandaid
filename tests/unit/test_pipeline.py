@@ -1967,6 +1967,26 @@ class TestPrepareImageBranches:
         assert img.metadata["observer"] == "XYZ"
         assert img.metadata["egain"] == override_egain
 
+    def test_user_specific_metadata_egain_is_validated_too(
+        self, make_test_image, tmp_path, mocker
+    ):
+        """An override that leaves a channel without a gain fails the frame."""
+        _stub_wcs_and_centroid(mocker)
+        image = _detectable_image(make_test_image)
+        path = _write_seestar_fits(tmp_path / "meta.fits", image)
+
+        with pytest.raises(FrameMetadataError, match="TG") as excinfo:
+            prepare_image(
+                path,
+                _REF_RADECS,
+                None,
+                user_specific_metadata={
+                    "egain": {"TR": 0.046, "TG": None, "TB": 0.075}
+                },
+            )
+
+        assert excinfo.value.file == path
+
     def test_detect_on_bayer_balanced_uses_working_copy(
         self, make_test_image, tmp_path, mocker
     ):
