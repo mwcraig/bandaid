@@ -79,7 +79,6 @@ from .photometry import (
     calibration_sequence,
     centroid_drift_flag,
     centroid_stars,
-    channel_egain,
     eloy_to_starlist,
     good_star_mask,
     l4_effective_egain,

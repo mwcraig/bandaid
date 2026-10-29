@@ -1307,7 +1307,7 @@ def _resolve_template_value(key, value, header, defaults):
     return value
 
 
-def channel_egain(egain, filter_name):
+def _channel_egain(egain, filter_name):
     """
     Return the system gain of one Bayer channel.
 
@@ -3831,7 +3831,7 @@ def build_photometry_table(
     filter_name : str or None, optional
         The channel being measured (``"TR"``, ``"TG"``, ``"TB"``), used to
         pick its gain when ``img.metadata["egain"]`` is a per-channel mapping
-        (see `channel_egain`). Not needed with a single gain. Default None.
+        (see `_channel_egain`). Not needed with a single gain. Default None.
     config : PhotometryConfig or None, optional
         Photometry configuration supplying the apertures/drift defaults. Any of
         the explicit keyword overrides below take precedence over it. If None
@@ -3889,7 +3889,7 @@ def build_photometry_table(
         img.calibrated_data,
         img.centroid_coords,
         img.fwhm,
-        channel_egain(img.metadata["egain"], filter_name),
+        _channel_egain(img.metadata["egain"], filter_name),
         mask,
         peak_cutouts=img.peak_cutouts(),
         geometry=img.aperture_geometry(radii, annulus),
@@ -4141,7 +4141,7 @@ def process_one_image(
         data = build_photometry_table(img, mask, filter_name=filter_name, config=config)
         data.meta["filter"] = filter_name
         data.meta["full_image_meta"] = _starlist_metadata(
-            img.metadata, channel_egain(egain, filter_name)
+            img.metadata, _channel_egain(egain, filter_name)
         )
         data.meta["wcs_pixscale"] = img.wcs_pixscale
         data.meta["solve_offset_deg"] = img.solve_offset_deg
@@ -4193,7 +4193,7 @@ def _l4_poisson_variance(by_filter_data, egain):
         total = sum(by_filter_data[name]["tot_count"] for name in _L4_CHANNELS)
         return np.asarray(total) / egain
     return sum(
-        np.asarray(by_filter_data[name]["tot_count"]) / channel_egain(egain, name)
+        np.asarray(by_filter_data[name]["tot_count"]) / _channel_egain(egain, name)
         for name in _L4_CHANNELS
     )
 
@@ -4209,7 +4209,7 @@ def l4_effective_egain(by_filter_data, egain):
         "TB" as built by `build_photometry_table`.
     egain : float or collections.abc.Mapping
         The gain of the image in e-/ADU: one number for every channel, or a
-        mapping of filter name to that channel's gain (see `channel_egain`).
+        mapping of filter name to that channel's gain (see `_channel_egain`).
 
     Returns
     -------
@@ -4237,7 +4237,7 @@ def l4_effective_egain(by_filter_data, egain):
     counts = np.column_stack(
         [np.asarray(by_filter_data[name]["tot_count"]) for name in _L4_CHANNELS]
     )
-    gains = np.array([channel_egain(egain, name) for name in _L4_CHANNELS])
+    gains = np.array([_channel_egain(egain, name) for name in _L4_CHANNELS])
     usable = np.all(counts > 0, axis=1)
     per_star = counts[usable].sum(axis=1) / (counts[usable] / gains).sum(axis=1)
     if per_star.size == 0:
@@ -4256,7 +4256,7 @@ def calculate_l4_quantities(by_filter_data, egain):
         "TB" as built by `build_photometry_table`.
     egain : float or collections.abc.Mapping
         The gain of the image in e-/ADU: one number for every channel, or a
-        mapping of filter name to that channel's gain (see `channel_egain`).
+        mapping of filter name to that channel's gain (see `_channel_egain`).
 
     Returns
     -------

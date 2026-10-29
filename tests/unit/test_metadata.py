@@ -25,7 +25,7 @@ from bandaid.instruments import load_instrument
 from bandaid.photometry import (
     MIN_SNR,
     _airmass_from_metadata,
-    channel_egain,
+    _channel_egain,
     eloy_to_starlist,
     good_star_mask,
     metadata_from_header,
@@ -647,24 +647,24 @@ class TestMetadataFromHeaderGuard:
 
 
 class TestChannelEgain:
-    """``channel_egain`` picks one channel's gain out of the metadata value."""
+    """``_channel_egain`` picks one channel's gain out of the metadata value."""
 
     def test_scalar_applies_to_every_channel(self):
         """A single number is the gain of every channel."""
-        assert channel_egain(0.046, "TG") == pytest.approx(0.046)
+        assert _channel_egain(0.046, "TG") == pytest.approx(0.046)
 
     def test_mapping_selects_the_channel(self):
         """A per-channel mapping returns the entry for the requested channel."""
         egain = {"TR": 0.046, "TG": 0.075, "TB": 0.07}
-        assert channel_egain(egain, "TG") == pytest.approx(0.075)
-        assert channel_egain(egain, "TB") == pytest.approx(0.07)
+        assert _channel_egain(egain, "TG") == pytest.approx(0.075)
+        assert _channel_egain(egain, "TB") == pytest.approx(0.07)
 
     def test_mapping_without_the_channel_raises(self):
         """A channel absent from the mapping is a frame metadata error naming it."""
         with pytest.raises(FrameMetadataError, match="L4"):
-            channel_egain({"TR": 0.046, "TG": 0.075, "TB": 0.075}, "L4")
+            _channel_egain({"TR": 0.046, "TG": 0.075, "TB": 0.075}, "L4")
 
     def test_mapping_needs_a_channel_name(self):
         """A mapping cannot be reduced to one gain without saying which channel."""
         with pytest.raises(ValueError, match="filter"):
-            channel_egain({"TR": 0.046, "TG": 0.075, "TB": 0.075}, None)
+            _channel_egain({"TR": 0.046, "TG": 0.075, "TB": 0.075}, None)

@@ -52,11 +52,8 @@ keep-or-drop rule of the default writer, built on the per-row quality cut
 
 ::: bandaid.good_star_mask
 
-`channel_egain` reduces a frame's `egain` metadata — one number, or one gain
-per Bayer channel — to the gain of one channel, and `l4_effective_egain` is the
-single gain the `L4` star list records when the channel gains differ.
-
-::: bandaid.channel_egain
+`l4_effective_egain` is the single gain the `L4` star list records when the
+Bayer channels have different gains.
 
 ::: bandaid.l4_effective_egain
 

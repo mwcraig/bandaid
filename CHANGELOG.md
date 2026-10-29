@@ -20,8 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the `L4` list records the median per-star effective gain of the summed
     channels, and its Poisson term is summed per channel. A mapping entry
     with no value, or a channel measured without an entry, fails the frame
-    with `FrameMetadataError`. `channel_egain` and `l4_effective_egain` are
-    public.
+    with `FrameMetadataError`. `l4_effective_egain` is public.
 - The bundled Seestar50 profile now carries one gain per Bayer channel,
     `{"TR": 0.046, "TG": 0.076, "TB": 0.078}` e-/ADU, from photon-transfer
     curves measured under two light sources, instead of the red value for
