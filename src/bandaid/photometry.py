@@ -4160,18 +4160,14 @@ def _l4_poisson_variance(by_filter_data, egain):
     ----------
     by_filter_data : dict
         Mapping of filter name to photometry table, holding "TR", "TG", "TB".
-    egain : float or collections.abc.Mapping
-        One gain for every channel, or a mapping of filter name to gain.
+    egain : collections.abc.Mapping
+        Mapping of filter name to that channel's gain.
 
     Returns
     -------
     numpy.ndarray
-        ``sum(N_c / g_c)`` over the three channels, which is ``N / g`` when
-        the gain is the same for every channel.
+        ``sum(N_c / g_c)`` over the three channels.
     """
-    if not isinstance(egain, Mapping):
-        total = sum(by_filter_data[name]["tot_count"] for name in _L4_CHANNELS)
-        return np.asarray(total) / egain
     return sum(
         np.asarray(by_filter_data[name]["tot_count"]) / _channel_egain(egain, name)
         for name in _L4_CHANNELS
@@ -4313,7 +4309,12 @@ def calculate_l4_quantities(by_filter_data, egain):
 
         # For error, add the individual filter background errors in quadrature,
         # multiplied by the aperture areas, then add in quadrature to the Poisson
-        # error from the total count.
+        # error from the total count (summed per channel when the gains differ).
+        poisson_variance = (
+            _l4_poisson_variance(by_filter_data, egain)
+            if isinstance(egain, Mapping)
+            else final_data["tot_count"] / egain
+        )
         final_data["count_err"] = np.sqrt(
             (
                 by_filter_data["TR"]["bkgd_std"] ** 2
@@ -4323,7 +4324,7 @@ def calculate_l4_quantities(by_filter_data, egain):
                 + by_filter_data["TB"]["bkgd_std"] ** 2
                 * by_filter_data["TB"]["aperture_area"]
             )
-            + _l4_poisson_variance(by_filter_data, egain)
+            + poisson_variance
         )
 
         # SNR from the recombined L4 count and error.
