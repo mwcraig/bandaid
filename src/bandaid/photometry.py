@@ -3962,9 +3962,13 @@ def _starlist_metadata(metadata, egain):
     Returns
     -------
     dict
-        `metadata` itself when its ``egain`` is already that single number;
-        otherwise a shallow copy with ``egain`` replaced by `egain`, since the
-        star-list schema holds one gain per list.
+        `metadata` itself when its ``egain`` is one number, else a shallow
+        copy with ``egain`` set to `egain`.
+
+    Notes
+    -----
+    The star-list schema holds one gain per list. A single gain is passed
+    through untouched rather than copied, so that path stays as it was.
     """
     if not isinstance(metadata["egain"], Mapping):
         return metadata
