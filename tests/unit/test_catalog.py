@@ -438,7 +438,6 @@ class TestServerFallback:
             TimeoutError("connect timed out"),
             TimeoutError("connect timed out"),
             votable_response(OUTAGE_VOTABLE),
-            TimeoutError("connect timed out"),
         ]
         fake_gavo.side_effect = None
         fake_gavo.return_value = votable_response(TAP_ERROR_VOTABLE, status_code=500)
