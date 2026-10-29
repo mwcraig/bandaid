@@ -6,7 +6,7 @@ import warnings
 import astropy.units as u
 import numpy as np
 import pytest
-from _helpers import _seestar_header
+from _helpers import SEESTAR_EGAIN, _seestar_header
 from aavso_starlist_schema import StarItem
 from astropy.coordinates import AltAz, EarthLocation, SkyCoord
 from astropy.io import fits
@@ -280,7 +280,7 @@ class TestMetadataFromHeader:
         # Plain literals pass through untouched.
         assert metadata["adc_depth"] == expected_adc_depth
         assert metadata["largest_usable_adu_value"] == expected_max_adu
-        assert metadata["egain"] == {"TR": 0.046, "TG": 0.076, "TB": 0.078}
+        assert metadata["egain"] == SEESTAR_EGAIN
         assert metadata["roworder"] == "top-down"
         assert metadata["refframe"] == "ICRS"
         # width/height come straight from NAXIS1/NAXIS2.
@@ -324,7 +324,7 @@ class TestMetadataFromHeader:
         resolves to Seestar50 -- but via detection, not a silent fallback.
         """
         metadata = metadata_from_header(_seestar_header())
-        assert metadata["egain"] == {"TR": 0.046, "TG": 0.076, "TB": 0.078}
+        assert metadata["egain"] == SEESTAR_EGAIN
 
     def test_omitted_profile_auto_detection_is_logged(self, caplog):
         """

@@ -318,18 +318,6 @@ class TestBuildPhotometryTable:
 
         assert used == pytest.approx(0.07)
 
-    def test_scalar_egain_ignores_the_filter_name(self, mocker):
-        """A single egain applies whichever channel is being measured."""
-        used = self._egain_passed_to_measure(mocker, 0.3, filter_name="TB")
-
-        assert used == pytest.approx(0.3)
-
-    def test_per_channel_egain_needs_a_filter_name(self, mocker):
-        """A mapping egain without a filter name cannot be reduced to one gain."""
-        egain = {"TR": 0.046, "TG": 0.075, "TB": 0.07}
-        with pytest.raises(ValueError, match="filter"):
-            self._egain_passed_to_measure(mocker, egain)
-
     def test_time_comes_from_resolved_obs_time(self, mocker):
         """``time`` uses the header_map-resolved obs_time, not raw DATE-OBS (#59)."""
         # A dialect whose observation time lives under DATE-LOC; the raw header

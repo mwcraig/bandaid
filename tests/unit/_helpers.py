@@ -33,6 +33,8 @@ SEESTAR_RULE = load_instrument("Seestar50").header_match[0]
 # The bundled Seestar50 plate scale (arcsec/px), read from profile.json so the
 # test WCSs cannot drift from the profile when it is re-measured.
 SEESTAR_PIXSCALE = load_instrument("Seestar50").header_map["pixscale"]
+# The per-channel gains the bundled Seestar50 profile is expected to carry.
+SEESTAR_EGAIN = {"TR": 0.046, "TG": 0.076, "TB": 0.078}
 
 # Fixed random seed for reproducible noise in generated test images.
 SEED = 843032
