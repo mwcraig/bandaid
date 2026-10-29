@@ -61,7 +61,9 @@ These defaults are empirical starting points and are meant to be tuned against
 real frames. Override them per call:
 
 ```python
-table = build_photometry_table(img, mask, drift_tolerance=0.5, drift_cap=3.0)
+table = build_photometry_table(
+    img, mask, filter_name="TG", drift_tolerance=0.5, drift_cap=3.0
+)
 ```
 
 or call the helper directly:

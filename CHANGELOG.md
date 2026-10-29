@@ -14,19 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `GaiaQueryError` names the servers and the last error (#169).
 - The GAVO Heidelberg TAP service (`gaia.dr3lite`) is the last resort for the
     Gaia query when every VizieR server fails.
-- An instrument profile's `egain` may be a mapping of Bayer filter name to
-    gain (`{"TR": ..., "TG": ..., "TB": ...}`) as well as a single number. Each
-    channel is then measured with its own gain and its star list records it;
-    the `L4` list records the median per-star effective gain of the summed
-    channels, and its Poisson term is summed per channel. A mapping entry
-    with no value, or a channel measured without an entry, fails the frame
-    with `FrameMetadataError`. `l4_effective_egain` is public.
-- The bundled Seestar50 profile now carries one gain per Bayer channel,
-    `{"TR": 0.046, "TG": 0.076, "TB": 0.078}` e-/ADU, from photon-transfer
-    curves measured under two light sources, instead of the red value for
-    every channel. Fluxes are unchanged; green, blue and L4 `count_err` shrink
-    (by up to about a fifth for green and blue, 15 % for L4) and their `snr`
-    grow, which can change which rows pass `min_snr`.
+- An instrument profile's `egain` may be one number or a mapping of Bayer
+    filter name to gain. Each channel is measured with its own gain, the `L4`
+    list records the median per-star effective gain (`l4_effective_egain`) and
+    a mapping that cannot serve a frame fails that frame. See
+    `docs/instrument_profiles.md`.
+- The bundled Seestar50 profile ships `{"TR": 0.046, "TG": 0.076, "TB": 0.078}`
+    e-/ADU from photon-transfer curves. Fluxes are unchanged; green, blue and
+    L4 `count_err` shrink and `snr` grows, which can move rows across `min_snr`.
 - `process_frame`, the per-frame step behind `process_batch`: photometers one
     frame against a `BatchPrep` and returns a `FrameResult` with the outcome
     (`ok`/`skipped`/`error`), the tables, the error, the elapsed time and the
@@ -174,6 +169,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `build_photometry_table` needs `filter_name=` when the frame's `egain` is a
+    per-channel mapping.
 - The per-star background is the sigma-clipped mean of the annulus instead of
     the sigma-clipped median. The clip already rejects neighbouring stars; after
     it the mean is the unbiased sky estimate, and unlike the median it is not
