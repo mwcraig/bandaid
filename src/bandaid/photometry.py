@@ -1412,37 +1412,48 @@ def metadata_from_header(header, *, profile=None):
     return metadata
 
 
-def _check_egain(metadata):
+def _check_egain(metadata, file=None, channels=()):
     """
-    Fail the frame if its ``egain`` metadata has no usable value.
+    Fail the frame if its ``egain`` metadata cannot serve every channel.
 
     Parameters
     ----------
     metadata : dict
         Frame metadata, as built by `metadata_from_header` and possibly
         updated with user-supplied values.
+    file : str or pathlib.Path, optional
+        The frame, attached to the error. Default None.
+    channels : iterable of str, optional
+        The filter names the frame will be measured in; a per-channel
+        mapping must have an entry for each. Default (), no coverage check.
 
     Raises
     ------
     FrameMetadataError
         If ``egain`` is missing or None, or is a per-channel mapping with a
-        None entry.
+        None entry or without an entry for one of `channels`.
 
     Notes
     -----
     egain feeds the photometry noise model; a None value would silently
     poison every SNR downstream, so the frame fails here with a clear
-    message instead.
+    message instead. The one function serves the header, the user override
+    in `prepare_image` and the per-frame channel check in `process_one_image`.
     """
     egain = metadata.get("egain")
     if egain is None:
         msg = "system gain (egain) is missing from the header and has no default"
-        raise FrameMetadataError(msg)
+        raise FrameMetadataError(msg, file=file)
     if isinstance(egain, Mapping):
-        missing = sorted(name for name, value in egain.items() if value is None)
-        if missing:
-            msg = f"system gain (egain) has no value for channel(s) {missing}"
-            raise FrameMetadataError(msg)
+        if empty := sorted(name for name, value in egain.items() if value is None):
+            msg = f"system gain (egain) has no value for channel(s) {empty}"
+            raise FrameMetadataError(msg, file=file)
+        if missing := sorted(set(channels) - set(egain)):
+            msg = (
+                f"system gain (egain) has no entry for channel(s) {missing}; "
+                f"the mapping covers {sorted(egain)}"
+            )
+            raise FrameMetadataError(msg, file=file)
 
 
 def eloy_to_starlist(eloy_table, metadata, *, min_snr=None):
@@ -3473,36 +3484,6 @@ def _require_model_inputs(centroid_config, photometry_coords, gaia_g, g_cut):
         raise ValueError(msg)
 
 
-def _apply_metadata_override(metadata, user_specific_metadata, file):
-    """
-    Overlay user-supplied values on the frame metadata, in place.
-
-    Parameters
-    ----------
-    metadata : dict
-        Frame metadata from `metadata_from_header`; updated in place.
-    user_specific_metadata : dict or None
-        Values that take precedence over the header's. None leaves
-        `metadata` untouched.
-    file : str or pathlib.Path
-        The frame, attached to any error raised.
-
-    Raises
-    ------
-    FrameMetadataError
-        If the override leaves ``egain`` without a usable value (see
-        `_check_egain`); the header check ran before the override and
-        cannot see what it replaced.
-    """
-    if user_specific_metadata is not None:
-        metadata.update(user_specific_metadata)
-        try:
-            _check_egain(metadata)
-        except FrameMetadataError as exc:
-            exc.file = file
-            raise
-
-
 def prepare_image(
     file,
     radecs,
@@ -3641,7 +3622,11 @@ def prepare_image(
     metadata = calibration.metadata
     coords, fwhm = calibration.coords, calibration.fwhm
 
-    _apply_metadata_override(metadata, user_specific_metadata, file)
+    # The header check in metadata_from_header cannot see what an override
+    # replaces, so check again after it.
+    if user_specific_metadata is not None:
+        metadata.update(user_specific_metadata)
+        _check_egain(metadata, file)
 
     # Balanced or not per detect_on_bayer_balanced; reusing calibration_sequence's
     # own detection-time array avoids balancing a second copy.
@@ -4066,9 +4051,6 @@ def process_one_image(
         `input_photometry_coords` is given with
         ``config.centroid.model_faint_positions`` True but `input_gaia_g` or
         `g_cut` is None.
-    FrameMetadataError
-        Raised with `file` attached when the frame's ``egain`` metadata is a
-        per-channel mapping that lacks one of the channels in ``bayer_masks``.
     InstrumentDetectionError
         A `FrameMetadataError` subclass, raised with `file` attached when
         ``config.instrument`` is None and the frame's header matches zero or
@@ -4084,6 +4066,10 @@ def process_one_image(
 
     L4 is never photometered itself; `calculate_l4_quantities` builds it from
     the TR/TG/TB tables (see its Notes).
+
+    A per-channel ``egain`` mapping that lacks one of the channels in
+    `bayer_masks` fails the frame with `FrameMetadataError` (`file` attached)
+    before any channel is photometered.
     """
     # Calculate everything we need for all filters at once. prepare_image raises
     # a FrameError (TooFewStarsError / WCSSolveError) when the frame is unusable;
@@ -4123,19 +4109,13 @@ def process_one_image(
     if build_l4 and (msg := _missing_rgb_channels(bayer_masks)):
         raise ValueError(msg)
 
-    # Solve-quality numbers for the QA manifest, stamped on every table below
-    # (the manifest builder only sees the tables).
     # With one gain per channel, every channel the frame is measured in needs
     # its own entry; check before the first channel is photometered.
+    _check_egain(img.metadata, file, channels=bayer_masks)
     egain = img.metadata["egain"]
-    if isinstance(egain, Mapping) and (
-        missing := sorted(set(bayer_masks) - set(egain))
-    ):
-        msg = (
-            f"system gain (egain) has no entry for channel(s) {missing}; "
-            f"the mapping covers {sorted(egain)}"
-        )
-        raise FrameMetadataError(msg, file=file)
+
+    # Solve-quality numbers for the QA manifest, stamped on every table below
+    # (the manifest builder only sees the tables).
     by_filter_data = {}
     for filter_name, mask in bayer_masks.items():
         data = build_photometry_table(img, mask, filter_name=filter_name, config=config)
