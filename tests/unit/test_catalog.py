@@ -10,14 +10,16 @@ contract that the notebook relies on (matching ``twirl.gaia_radecs``), the
 optional proper-motion propagation via ``SkyCoord.apply_space_motion``, the
 empty-result path, that the query is issued against the right catalog with the
 requested row limit and sort, and the fallback from one server to the next when
-a server fails. Recorded calls are inspected via the mock's ``call_args`` rather
-than any side-effect state.
+a server fails. The GAVO TAP last resort is faked by the ``fake_gavo`` fixture
+here, which answers with a trimmed recorded GAVO VOTable. Recorded calls are
+inspected via the mock's ``call_args`` rather than any side-effect state.
 """
 
 import logging
 import math
 import warnings
 from contextlib import nullcontext
+from functools import partial
 
 import astropy.units as u
 import numpy as np
@@ -28,6 +30,9 @@ from astropy.time import Time
 
 from bandaid import catalog
 from bandaid.catalog import (
+    GAVO_TAP_SERVER,
+    GAVO_TAP_SYNC_URL,
+    SERVER_TIMEOUT,
     cached_gaia_radecs,
     query_field_catalog,
 )
@@ -70,6 +75,74 @@ ERROR_WITH_EMPTY_TABLE_VOTABLE = f"""<?xml version="1.0" encoding="UTF-8"?>
 """.encode()
 # The documented server order: CDS first, then its two independent mirrors.
 SERVER_ORDER = ["vizier.cds.unistra.fr", "vizier.cfa.harvard.edu", "vizier.idia.ac.za"]
+# How a TAP service reports a failed query.
+TAP_ERROR_MESSAGE = "Field query: No such field known"
+TAP_ERROR_VOTABLE = f"""<?xml version="1.0" encoding="UTF-8"?>
+<VOTABLE version="1.5" xmlns="http://www.ivoa.net/xml/VOTable/v1.3">
+<RESOURCE type="results">
+<INFO name="QUERY_STATUS" value="ERROR">{TAP_ERROR_MESSAGE}</INFO>
+</RESOURCE>
+</VOTABLE>
+""".encode()
+# How a TAP service reports a failure after it has started sending rows: a
+# QUERY_STATUS ERROR after the table, which overrides the OK before it.
+MID_STREAM_ERROR_MESSAGE = "Query aborted while sending rows"
+# Trimmed from a recorded dc.g-vo.org answer (2026-10-29) to the GAVO query
+# for the three brightest stars within 0.1 deg of (239.9, 25.9). Only the
+# FIELD declarations, the QUERY_STATUS and the rows are kept, and the rows
+# are written as TABLEDATA; the service itself sends BINARY.
+GAVO_VOTABLE = b"""<?xml version='1.0' encoding='utf-8'?>
+<VOTABLE version="1.5" xmlns="http://www.ivoa.net/xml/VOTable/v1.3">
+<RESOURCE type="results">
+<INFO name="QUERY_STATUS" value="OK">Query successful</INFO>
+<COOSYS ID="system" epoch="J2016.0" refposition="BARYCENTER" system="ICRS"/>
+<TABLE name="dr3lite">
+<FIELD ID="Gmag" datatype="float" name="Gmag"
+  ucd="phot.mag;em.opt;stat.mean" unit="mag"/>
+<FIELD ID="RA_ICRS" datatype="double" name="RA_ICRS"
+  ucd="pos.eq.ra;meta.main" unit="deg"/>
+<FIELD ID="DE_ICRS" datatype="double" name="DE_ICRS"
+  ucd="pos.eq.dec;meta.main" unit="deg"/>
+<FIELD ID="pmRA" datatype="float" name="pmRA"
+  ucd="pos.pm;pos.eq.ra" unit="mas/yr"/>
+<FIELD ID="pmDE" datatype="float" name="pmDE"
+  ucd="pos.pm;pos.eq.dec" unit="mas/yr"/>
+<DATA><TABLEDATA>
+<TR><TD>8.724516</TD><TD>239.87565390231384</TD><TD>25.92022378794317</TD>
+  <TD>-4.460514</TD><TD>12.015859</TD></TR>
+<TR><TD>13.505642</TD><TD>239.921962110703</TD><TD>25.893150190427217</TD>
+  <TD>-0.91251844</TD><TD>-1.9135457</TD></TR>
+<TR><TD>14.075624</TD><TD>239.86838050558544</TD><TD>25.869797174834083</TD>
+  <TD>2.8270888</TD><TD>-7.088754</TD></TR>
+</TABLEDATA></DATA>
+</TABLE>
+</RESOURCE>
+</VOTABLE>
+"""
+# The columns of GAVO_VOTABLE.
+GAVO_GMAG = [8.724516, 13.505642, 14.075624]
+GAVO_RA = [239.87565390231384, 239.921962110703, 239.86838050558544]
+GAVO_DEC = [25.92022378794317, 25.893150190427217, 25.869797174834083]
+GAVO_PMRA = [-4.460514, -0.91251844, 2.8270888]
+GAVO_PMDE = [12.015859, -1.9135457, -7.088754]
+# GAVO's answer for an empty field: the same table with no rows.
+GAVO_EMPTY_VOTABLE = (
+    GAVO_VOTABLE.split(b"<TR>")[0]
+    + b"</TABLEDATA>"
+    + (GAVO_VOTABLE.split(b"</TABLEDATA>")[1])
+)
+# The GAVO rows followed by a mid-stream failure.
+GAVO_MID_STREAM_ERROR_VOTABLE = GAVO_VOTABLE.replace(
+    b"</TABLE>",
+    b'</TABLE>\n<INFO name="QUERY_STATUS" value="ERROR">'
+    + MID_STREAM_ERROR_MESSAGE.encode()
+    + b"</INFO>",
+)
+# Every server in the order tried, as the all-servers-failed message lists them.
+ALL_SERVERS_TRIED = (
+    "tried vizier.cds.unistra.fr, vizier.cfa.harvard.edu, vizier.idia.ac.za, "
+    "dc.g-vo.org;"
+)
 # Arbitrary row limit used to assert it is forwarded to Vizier unchanged.
 ROW_LIMIT_PROBE = 1234
 # Floor (deg) the proper-motion shift must exceed; nine years of ~10 mas/yr is
@@ -81,6 +154,32 @@ PM_SHIFT_FLOOR_DEG = 1e-6
 def center():
     """A nominal field center near the fixture stars."""
     return SkyCoord(ra=239.9 * u.deg, dec=25.9 * u.deg)
+
+
+@pytest.fixture
+def fake_gavo(mocker, tmp_path, votable_response):
+    """
+    Patch the GAVO TAP client to answer with ``GAVO_VOTABLE``; return its mock.
+
+    Notes
+    -----
+    The stand-in is a plain mock set on the class, which does not bind like a
+    method, so ``call_args`` holds ``("POST", url)`` and the keyword arguments
+    without ``self``. Set ``side_effect`` to a list to script other answers.
+    ``_GavoTap._last_query`` is a mock too, so `_gavo_cache_removal` shows
+    whether a failed answer was evicted, and ``cache_location`` is
+    ``tmp_path``, so nothing touches the user's astroquery cache.
+    """
+    mocker.patch.object(
+        catalog._GavoTap,  # noqa: SLF001
+        "cache_location",
+        new_callable=mocker.PropertyMock,
+        return_value=tmp_path,
+    )
+    mocker.patch.object(catalog._GavoTap, "_last_query", create=True)  # noqa: SLF001
+    request = mocker.patch.object(catalog._GavoTap, "_request")  # noqa: SLF001
+    request.side_effect = lambda *args, **kwargs: votable_response(GAVO_VOTABLE)
+    return request
 
 
 def test_returns_radecs_and_mags_with_correct_shapes(fake_vizier, center, gaia_table):
@@ -278,6 +377,11 @@ def _cache_removal(fake_vizier):
     return fake_vizier.return_value._last_query.remove_cache_file  # noqa: SLF001
 
 
+def _gavo_cache_removal():
+    # The class-level _last_query mock that fake_gavo installs.
+    return catalog._GavoTap._last_query.remove_cache_file  # noqa: SLF001
+
+
 class TestServerFallback:
     """A failing server is skipped, and an error answer is kept out of the cache."""
 
@@ -373,35 +477,144 @@ class TestServerFallback:
         assert any(OUTAGE_MESSAGE in m for m in messages)
         assert not any("FileNotFoundError" in m for m in messages)
 
+    @pytest.mark.parametrize(
+        ("mag_limit", "mag_cut"),
+        [(17.5, " AND phot_g_mean_mag <= 17.5"), (None, "")],
+        ids=["mag-limit", "no-mag-limit"],
+    )
+    def test_gavo_tap_is_the_last_resort(
+        self, fake_vizier, fake_gavo, center, mag_limit, mag_cut
+    ):
+        """With every VizieR server down, GAVO's TAP service answers the query."""
+        fake_vizier.return_value.query_region_async.side_effect = TimeoutError
+
+        radecs, mags = cached_gaia_radecs(
+            center, 0.2, limit=ROW_LIMIT_PROBE, mag_limit=mag_limit
+        )
+
+        # GAVO otherwise caps the answer at its own 20000-row default, so a
+        # truncated dense field would slip past the row-limit check: MAXREC.
+        fake_gavo.assert_called_once_with(
+            "POST",
+            GAVO_TAP_SYNC_URL,
+            data={
+                "REQUEST": "doQuery",
+                "LANG": "ADQL",
+                "FORMAT": "votable",
+                "MAXREC": ROW_LIMIT_PROBE,
+                "QUERY": (
+                    f'SELECT TOP {ROW_LIMIT_PROBE} phot_g_mean_mag AS "Gmag", '  # noqa: S608
+                    'ra AS "RA_ICRS", dec AS "DE_ICRS", '
+                    'pmra AS "pmRA", pmdec AS "pmDE" FROM gaia.dr3lite '
+                    "WHERE DISTANCE(POINT('ICRS', ra, dec), "
+                    "POINT('ICRS', 239.9, 25.9)) <= 0.1"
+                    f"{mag_cut} ORDER BY phot_g_mean_mag"
+                ),
+            },
+            timeout=SERVER_TIMEOUT,
+        )
+        # Gmag is float32 in GAVO's answer.
+        np.testing.assert_allclose(mags, GAVO_GMAG, rtol=1e-6)
+        np.testing.assert_array_equal(radecs, np.column_stack([GAVO_RA, GAVO_DEC]))
+        _gavo_cache_removal().assert_not_called()
+
+    @pytest.mark.usefixtures("fake_gavo")
+    def test_gavo_tap_positions_are_propagated(self, fake_vizier, center):
+        """obs_epoch moves GAVO's positions with its proper-motion columns."""
+        fake_vizier.return_value.query_region_async.side_effect = TimeoutError
+        obs_epoch = Time("2024-06-01")
+
+        radecs, _ = cached_gaia_radecs(center, 0.2, obs_epoch=obs_epoch)
+
+        expected = SkyCoord(
+            ra=GAVO_RA * u.deg,
+            dec=GAVO_DEC * u.deg,
+            pm_ra_cosdec=GAVO_PMRA * u.mas / u.yr,
+            pm_dec=GAVO_PMDE * u.mas / u.yr,
+            obstime=Time(GAIA_DR3_EPOCH, format="jyear"),
+        ).apply_space_motion(new_obstime=obs_epoch)
+        np.testing.assert_allclose(radecs[:, 0], expected.ra.deg, rtol=0, atol=1e-9)
+        np.testing.assert_allclose(radecs[:, 1], expected.dec.deg, rtol=0, atol=1e-9)
+        shift = np.abs(radecs[:, 1] - GAVO_DEC).max()
+        assert shift > PM_SHIFT_FLOOR_DEG
+
+    def test_gavo_tap_empty_field_returns_shaped_empties(
+        self, fake_vizier, fake_gavo, center, votable_response
+    ):
+        """GAVO's healthy answer for an empty field is final and stays cached."""
+        fake_vizier.return_value.query_region_async.side_effect = TimeoutError
+        fake_gavo.side_effect = [votable_response(GAVO_EMPTY_VOTABLE)]
+
+        radecs, mags = cached_gaia_radecs(center, 0.2)
+
+        assert radecs.shape == (0, 2)
+        assert mags.shape == (0,)
+        fake_gavo.assert_called_once()
+        _gavo_cache_removal().assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("answer", "status_code", "error_text"),
+        [
+            (TAP_ERROR_VOTABLE, 500, TAP_ERROR_MESSAGE),
+            # The rows arrived, but the status after them says they are not
+            # the whole answer.
+            (GAVO_MID_STREAM_ERROR_VOTABLE, 200, MID_STREAM_ERROR_MESSAGE),
+        ],
+        ids=["tap-error", "error-after-rows"],
+    )
+    def test_failed_gavo_answer_is_evicted(
+        self,
+        fake_vizier,
+        fake_gavo,
+        center,
+        tmp_path,
+        votable_response,
+        answer,
+        status_code,
+        error_text,
+    ):
+        """A GAVO error is the final failure, and its answer leaves the cache."""
+        fake_vizier.return_value.query_region_async.side_effect = TimeoutError
+        fake_gavo.side_effect = [votable_response(answer, status_code=status_code)]
+
+        with pytest.raises(GaiaQueryError) as excinfo:
+            cached_gaia_radecs(center, 0.2)
+
+        message = str(excinfo.value)
+        assert ALL_SERVERS_TRIED in message
+        assert f"last error: GaiaQueryError: {GAVO_TAP_SERVER}" in message
+        assert error_text in message
+        _gavo_cache_removal().assert_called_once_with(tmp_path)
+
     def test_all_servers_failing_raises_with_last_cause(
-        self, fake_vizier, center, votable_response
+        self, fake_vizier, fake_gavo, center, votable_response
     ):
         """
         When every server fails, one error names them and carries the last cause.
 
-        The last server answers with an error document. Its text must be in
-        the message itself, since a CLI or browser user sees only ``str(exc)``,
-        and in the chained cause.
+        The last server, GAVO, answers with a TAP error document and HTTP 500.
+        Its text must be in the message itself, since a CLI or browser user
+        sees only ``str(exc)``, and in the chained cause.
         """
         fake_vizier.return_value.query_region_async.side_effect = [
             TimeoutError("connect timed out"),
             TimeoutError("connect timed out"),
             votable_response(OUTAGE_VOTABLE),
         ]
+        fake_gavo.side_effect = [votable_response(TAP_ERROR_VOTABLE, status_code=500)]
 
         with pytest.raises(GaiaQueryError) as excinfo:
             cached_gaia_radecs(center, 0.2)
 
         assert _servers_tried(fake_vizier) == SERVER_ORDER
         message = str(excinfo.value)
-        for server in SERVER_ORDER:
-            assert server in message
-        assert f"last error: GaiaQueryError: {SERVER_ORDER[-1]}" in message
-        assert OUTAGE_MESSAGE in message
+        assert ALL_SERVERS_TRIED in message
+        assert f"last error: GaiaQueryError: {GAVO_TAP_SERVER}" in message
+        assert TAP_ERROR_MESSAGE in message
         cause = excinfo.value.__cause__
         assert isinstance(cause, GaiaQueryError)
-        assert SERVER_ORDER[-1] in str(cause)
-        assert OUTAGE_MESSAGE in str(cause)
+        assert GAVO_TAP_SERVER in str(cause)
+        assert TAP_ERROR_MESSAGE in str(cause)
 
 
 # astroquery formats the cone center with astropy's vectorized Angle.to_string,
@@ -413,12 +626,22 @@ class TestServerFallback:
     "ignore:invalid value encountered in do_format:RuntimeWarning"
 )
 @pytest.mark.parametrize(
-    ("payload", "cached"),
-    [(OUTAGE_VOTABLE, False), (EMPTY_FIELD_VOTABLE, True)],
-    ids=["error-evicted", "empty-field-kept"],
+    ("query", "payload", "cached"),
+    [
+        (partial(catalog._query_vizier, SERVER_ORDER[0]), OUTAGE_VOTABLE, False),  # noqa: SLF001
+        (partial(catalog._query_vizier, SERVER_ORDER[0]), EMPTY_FIELD_VOTABLE, True),  # noqa: SLF001
+        (catalog._query_gavo_tap, TAP_ERROR_VOTABLE, False),  # noqa: SLF001
+        (catalog._query_gavo_tap, GAVO_EMPTY_VOTABLE, True),  # noqa: SLF001
+    ],
+    ids=[
+        "vizier-error-evicted",
+        "vizier-empty-field-kept",
+        "gavo-error-evicted",
+        "gavo-empty-field-kept",
+    ],
 )
 def test_real_astroquery_cache_eviction(
-    mocker, tmp_path, center, votable_response, payload, cached
+    mocker, tmp_path, center, votable_response, query, payload, cached
 ):
     """With astroquery's real cache, an error answer leaves no pickle behind."""
     mocker.patch(
@@ -431,9 +654,7 @@ def test_real_astroquery_cache_eviction(
     mocker.patch("requests.Session.request", return_value=response)
 
     with nullcontext() if cached else pytest.raises(GaiaQueryError):
-        catalog._query_vizier(  # noqa: SLF001
-            SERVER_ORDER[0], center, 0.1, limit=10, mag_limit=None
-        )
+        query(center, 0.1, limit=10, mag_limit=None)
 
     assert bool(list(tmp_path.glob("*.pickle"))) is cached
 
