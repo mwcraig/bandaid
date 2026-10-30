@@ -15,11 +15,13 @@ here, which answers with a trimmed recorded GAVO VOTable. Recorded calls are
 inspected via the mock's ``call_args`` rather than any side-effect state.
 """
 
+import json
 import logging
 import math
 import warnings
 from contextlib import nullcontext
 from functools import partial
+from types import SimpleNamespace
 
 import astropy.units as u
 import numpy as np
@@ -73,8 +75,40 @@ ERROR_WITH_EMPTY_TABLE_VOTABLE = f"""<?xml version="1.0" encoding="UTF-8"?>
 </RESOURCE>
 </VOTABLE>
 """.encode()
-# The documented server order: CDS first, then its two independent mirrors.
-SERVER_ORDER = ["vizier.cds.unistra.fr", "vizier.cfa.harvard.edu", "vizier.idia.ac.za"]
+# What the xeus-python browser kernel (pyjs 4.0.7) raises for a failed
+# XMLHttpRequest, here one to IDIA: str() of the exception is JSON of the
+# JavaScript error's own properties, which for a DOMException is only "stack".
+BROWSER_ERROR_TEXT = (
+    "NetworkError: Failed to execute 'send' on 'XMLHttpRequest': "
+    "Failed to load 'https://vizier.idia.ac.za/viz-bin/votable'."
+)
+_XPYTHON = "http://localhost:8012/xeus/browser-photom/bin/xpython"
+BROWSER_ERROR_JSON = json.dumps(
+    {
+        "stack": "\n".join(
+            [
+                BROWSER_ERROR_TEXT,
+                f" at Module._apply_try_catch ({_XPYTHON}.js:7:1950)",
+                " at methodCaller<(emscripten::val, emscripten::val, "
+                "emscripten::val) => emscripten::val> (eval at "
+                f"__emval_get_method_caller ({_XPYTHON}.js:7:222664), "
+                "<anonymous>:7:17)",
+                f" at __emval_call ({_XPYTHON}.js:7:220678)",
+                f" at {_XPYTHON}.wasm:wasm-function[17014]:0x6e388a",
+                f" at {_XPYTHON}.wasm:wasm-function[17013]:0x6e3765",
+                f" at {_XPYTHON}.wasm:wasm-function[16940]:0x6dd416",
+                f" at {_XPYTHON}.wasm:wasm-function[270]:0x21eb0f",
+                f" at _PyEM_TrampolineCall_JavaScript ({_XPYTHON}.js:7:628185)",
+                f" at {_XPYTHON}.wasm:wasm-function[18806]:0x78f748",
+                f" at _PyEM_TrampolineCall_JavaScript ({_XPYTHON}.js:7:628185)",
+            ]
+        )
+    },
+    separators=(",", ":"),
+)
+# The documented VizieR server order: CDS first, then IDIA, then CfA. The GAVO
+# TAP service is tried after all three (see ALL_SERVERS_TRIED).
+SERVER_ORDER = ["vizier.cds.unistra.fr", "vizier.idia.ac.za", "vizier.cfa.harvard.edu"]
 # How a TAP service reports a failed query.
 TAP_ERROR_MESSAGE = "Field query: No such field known"
 TAP_ERROR_VOTABLE = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -138,9 +172,10 @@ GAVO_MID_STREAM_ERROR_VOTABLE = GAVO_VOTABLE.replace(
     + MID_STREAM_ERROR_MESSAGE.encode()
     + b"</INFO>",
 )
-# Every server in the order tried, as the all-servers-failed message lists them.
+# Every server in the order tried, as the all-servers-failed message lists them:
+# the three VizieR servers, then GAVO.
 ALL_SERVERS_TRIED = (
-    "tried vizier.cds.unistra.fr, vizier.cfa.harvard.edu, vizier.idia.ac.za, "
+    "tried vizier.cds.unistra.fr, vizier.idia.ac.za, vizier.cfa.harvard.edu, "
     "dc.g-vo.org;"
 )
 # Arbitrary row limit used to assert it is forwarded to Vizier unchanged.
@@ -366,6 +401,80 @@ def test_no_mag_limit_passes_no_column_filter(fake_vizier, center):
     cached_gaia_radecs(center, 0.2)
 
     assert "column_filters" not in fake_vizier.call_args.kwargs
+
+
+class DOMException:
+    """
+    Stand-in for the JavaScript error of a failed ``XMLHttpRequest``.
+
+    A ``DOMException``'s ``name`` and ``message`` are getters on its
+    prototype, not properties of its own, which is why pyjs's JSON text of
+    the error holds only ``stack``. Class-level properties model that.
+    """
+
+    name = property(lambda _self: "NetworkError")
+    message = property(lambda _self: BROWSER_ERROR_TEXT.removeprefix("NetworkError: "))
+
+
+class JsGenericError(catalog.JsException):
+    """
+    Stand-in for pyjs's exception for a JavaScript error that is no ``Error``.
+
+    Parameters
+    ----------
+    text : str
+        What ``str()`` of the exception gives.
+    js_error : object, optional
+        What ``get_js_proxy`` hands out, as pyjs's ``JsHolder`` does. ``None``
+        has no ``name``, so the JSON text is used.
+    """
+
+    def __init__(self, text, js_error=None) -> None:
+        super().__init__(text)
+        self._js_error = js_error
+
+    def get_js_proxy(self):
+        """
+        Return the JavaScript error.
+
+        Returns
+        -------
+        object
+            The stand-in JavaScript error.
+        """
+        return self._js_error
+
+
+class BrokenProxyError(JsGenericError):
+    """A browser kernel exception whose JavaScript error cannot be reached."""
+
+    def get_js_proxy(self):
+        """
+        Fail to return the JavaScript error.
+
+        Raises
+        ------
+        RuntimeError
+            Always.
+        """
+        msg = "proxy is gone"
+        raise RuntimeError(msg)
+
+
+class UnprintableError(catalog.JsException):
+    """A browser kernel exception whose text cannot even be formed."""
+
+    def __str__(self) -> str:
+        """
+        Fail to give the text.
+
+        Raises
+        ------
+        RuntimeError
+            Always.
+        """  # noqa: DOC201 (never returns)
+        msg = "no text"
+        raise RuntimeError(msg)
 
 
 def _servers_tried(fake_vizier):
@@ -615,6 +724,111 @@ class TestServerFallback:
         assert isinstance(cause, GaiaQueryError)
         assert GAVO_TAP_SERVER in str(cause)
         assert TAP_ERROR_MESSAGE in str(cause)
+
+    @pytest.mark.parametrize(
+        "js_error", [DOMException(), None], ids=["js-error-object", "json-stack"]
+    )
+    def test_browser_failure_is_reported_by_its_first_line(
+        self, fake_vizier, fake_gavo, center, caplog, js_error
+    ):
+        """
+        A browser request failure is logged and reported without its JS stack.
+
+        The browser kernel's exception text is a kilobyte of JSON holding the
+        JavaScript stack; only its first line says what failed. The line comes
+        from the JavaScript error object when the exception hands it out, as
+        pyjs's does, and from the JSON otherwise.
+        """
+        fake_vizier.return_value.query_region_async.side_effect = [
+            JsGenericError(BROWSER_ERROR_JSON, js_error) for _ in SERVER_ORDER
+        ]
+        fake_gavo.side_effect = [JsGenericError(BROWSER_ERROR_JSON, js_error)]
+
+        with (
+            caplog.at_level(logging.WARNING, logger="bandaid.catalog"),
+            pytest.raises(GaiaQueryError) as excinfo,
+        ):
+            cached_gaia_radecs(center, 0.2)
+
+        expected = f"JsGenericError: {BROWSER_ERROR_TEXT}"
+        message = str(excinfo.value)
+        assert message.endswith(f"last error: {expected}")
+        assert "at Module" not in message
+        warnings_logged = [r.getMessage() for r in caplog.records]
+        # One warning per VizieR server, then one for GAVO.
+        assert len(warnings_logged) == len(SERVER_ORDER) + 1
+        for logged in warnings_logged:
+            assert logged.endswith(f"failed, skipping it: {expected}")
+            assert "at Module" not in logged
+        # The chained cause keeps the whole text for anyone who wants the stack.
+        assert str(excinfo.value.__cause__) == BROWSER_ERROR_JSON
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (
+            JsGenericError(BROWSER_ERROR_JSON, DOMException()),
+            f"JsGenericError: {BROWSER_ERROR_TEXT}",
+        ),
+        (
+            JsGenericError(BROWSER_ERROR_JSON),
+            f"JsGenericError: {BROWSER_ERROR_TEXT}",
+        ),
+        (
+            JsGenericError(
+                BROWSER_ERROR_JSON, SimpleNamespace(name=None, message=None)
+            ),
+            f"JsGenericError: {BROWSER_ERROR_TEXT}",
+        ),
+        (
+            JsGenericError(BROWSER_ERROR_JSON, SimpleNamespace(name="", message="m")),
+            f"JsGenericError: {BROWSER_ERROR_TEXT}",
+        ),
+        (
+            JsGenericError(BROWSER_ERROR_JSON, SimpleNamespace(name=1, message=b"m")),
+            f"JsGenericError: {BROWSER_ERROR_TEXT}",
+        ),
+        (
+            BrokenProxyError(BROWSER_ERROR_JSON),
+            f"BrokenProxyError: {BROWSER_ERROR_TEXT}",
+        ),
+        (
+            catalog.JsException("XMLHttpRequest timed out\n at send (x.js:1:2)"),
+            "JsException: XMLHttpRequest timed out",
+        ),
+        (
+            JsGenericError('{"name": "NetworkError"}'),
+            'JsGenericError: {"name": "NetworkError"}',
+        ),
+        (JsGenericError('{"stack": 5}'), 'JsGenericError: {"stack": 5}'),
+        (JsGenericError('{"stack": "  "}'), 'JsGenericError: {"stack": "  "}'),
+        (JsGenericError(""), "JsGenericError: "),
+        (UnprintableError(), "UnprintableError"),
+        (
+            requests.ConnectTimeout("connect timed out\nafter 10 s"),
+            "ConnectTimeout: connect timed out\nafter 10 s",
+        ),
+    ],
+    ids=[
+        "js-error-object",
+        "json-stack",
+        "js-error-object-without-message",
+        "js-error-object-with-empty-name",
+        "js-error-object-with-non-str",
+        "get-js-proxy-raises",
+        "plain-text",
+        "json-without-stack",
+        "json-stack-not-str",
+        "json-stack-blank",
+        "empty",
+        "unprintable",
+        "requests-unchanged",
+    ],
+)
+def test_describe_failure(exc, expected):
+    """A browser failure is cut to its first line; any other text is kept whole."""
+    assert catalog._describe_failure(exc) == expected  # noqa: SLF001
 
 
 # astroquery formats the cone center with astropy's vectorized Angle.to_string,
