@@ -1,0 +1,6 @@
+nav:
+  - Command line: command_line.md
+  - Output files: outputs.md
+  - Configuration: configuration.md
+  - Instrument profiles: instrument_profiles.md
+  - API: api.md

@@ -1,0 +1,6 @@
+nav:
+  - Tune a run: tune_a_run.md
+  - Add a telescope: add_a_telescope.md
+  - Troubleshoot: troubleshooting.md
+  - Write a custom output format: custom_writer.md
+  - Train your own weights: train_weights.md
