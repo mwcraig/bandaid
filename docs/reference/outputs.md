@@ -29,7 +29,10 @@ for star_list in star_set.star_lists:
 Per-list fields: `obs_time`, `site_lat`, `site_lon`, `site_elev`, `observer`,
 `filter`, `block_filter`, `exposure`, `tel_manufac`, `tel_model`, `tel_firmware`,
 `width`, `height`, `stack`, `adc_depth`, `largest_usable_adu_value`, `egain`,
-`fwhm` (measured per frame and filter), `refframe`, `staritems`.
+`fwhm` (measured per frame and filter), `refframe`, `staritems`. Each list's
+`egain` is the gain its channel was measured with; with one gain per Bayer
+channel, the `L4` list records the median per-star effective gain (see
+`l4_effective_egain`).
 
 Per-star fields (`staritems` rows):
 
