@@ -57,6 +57,7 @@ from bandaid.photometry import (
     _fwhm_from_coords,
     build_photometry_table,
     calibration_sequence,
+    l4_effective_egain,
     measure_photometry,
     metadata_from_header,
     prepare_image,
@@ -1966,6 +1967,26 @@ class TestPrepareImageBranches:
         assert img.metadata["observer"] == "XYZ"
         assert img.metadata["egain"] == override_egain
 
+    def test_user_specific_metadata_egain_is_validated_too(
+        self, make_test_image, tmp_path, mocker
+    ):
+        """An override that leaves a channel without a gain fails the frame."""
+        _stub_wcs_and_centroid(mocker)
+        image = _detectable_image(make_test_image)
+        path = _write_seestar_fits(tmp_path / "meta.fits", image)
+
+        with pytest.raises(FrameMetadataError, match="TG") as excinfo:
+            prepare_image(
+                path,
+                _REF_RADECS,
+                None,
+                user_specific_metadata={
+                    "egain": {"TR": 0.046, "TG": None, "TB": 0.075}
+                },
+            )
+
+        assert excinfo.value.file == path
+
     def test_detect_on_bayer_balanced_uses_working_copy(
         self, make_test_image, tmp_path, mocker
     ):
@@ -2092,6 +2113,56 @@ class TestProcessOneImage:
         assert set(result) == {"TR", "TG", "TB", "L4"}
         rgb_sum = sum(result[name]["tot_count"] for name in ("TR", "TG", "TB"))
         np.testing.assert_allclose(result["L4"]["tot_count"], rgb_sum)
+
+    def test_per_channel_egain_is_stamped_per_filter(self, l4_frame):
+        """Each channel's star-list metadata carries its own gain; L4 the median."""
+        path, masks = l4_frame
+        egain = {"TR": 0.046, "TG": 0.075, "TB": 0.07}
+
+        result = process_one_image(path, {"egain": egain}, _REF_RADECS, None, masks)
+
+        for name in ("TR", "TG", "TB"):
+            stamped = result[name].meta["full_image_meta"]["egain"]
+            assert stamped == pytest.approx(egain[name])
+        l4_egain = result["L4"].meta["full_image_meta"]["egain"]
+        assert l4_egain == pytest.approx(l4_effective_egain(result, egain))
+        assert min(egain.values()) < l4_egain < max(egain.values())
+
+        # Everything but the gain is the one shared frame metadata.
+        def _rest(name):
+            meta = result[name].meta["full_image_meta"]
+            return {k: v for k, v in meta.items() if k != "egain"}
+
+        assert _rest("TR") == _rest("L4")
+
+    def test_per_channel_egain_reaches_each_channels_noise_model(self, l4_frame):
+        """A channel's own gain, not the red one, sets its Poisson noise term."""
+        path, masks = l4_frame
+        egain = {"TR": 0.046, "TG": 0.075, "TB": 0.075}
+
+        single = process_one_image(path, {"egain": 0.046}, _REF_RADECS, None, masks)
+        mapped = process_one_image(path, {"egain": egain}, _REF_RADECS, None, masks)
+
+        np.testing.assert_allclose(mapped["TR"]["count_err"], single["TR"]["count_err"])
+        assert not np.allclose(mapped["TG"]["count_err"], single["TG"]["count_err"])
+        assert not np.allclose(mapped["TB"]["count_err"], single["TB"]["count_err"])
+
+    def test_per_channel_egain_missing_a_channel_fails_before_photometry(
+        self, l4_frame, mocker
+    ):
+        """A mapping that lacks one of the frame's channels fails the frame early."""
+        path, masks = l4_frame
+        mp_spy = mocker.patch(
+            "bandaid.photometry.measure_photometry", wraps=measure_photometry
+        )
+
+        with pytest.raises(FrameMetadataError, match="TB") as excinfo:
+            process_one_image(
+                path, {"egain": {"TR": 0.046, "TG": 0.075}}, _REF_RADECS, None, masks
+            )
+
+        assert excinfo.value.file == path
+        assert mp_spy.call_count == 0
 
     def test_ra_dec_are_the_input_coordinates_verbatim(self, l4_frame):
         """Each row's ``ra``/``dec`` are its target's float64 values, in input order."""
@@ -2245,10 +2316,12 @@ class TestProcessOneImage:
         """
         The columns L4 copies from TR equal a genuine full-frame build's.
 
-        Runs ``build_photometry_table(img, None)`` on the very ``ImageData``
-        ``process_one_image`` used and checks the mask-independent columns and
-        meta the L4 table took from TR are bit-identical to it. (The L4 column
-        set itself is pinned in test_build_table.py.)
+        Runs ``build_photometry_table(img, None, filter_name="TR")`` on the
+        very ``ImageData`` ``process_one_image`` used and checks the
+        mask-independent columns and meta the L4 table took from TR are
+        bit-identical to it. The filter name only picks TR's gain out of the
+        profile's per-channel mapping. (The L4 column set itself is pinned in
+        test_build_table.py.)
         """
         path, masks = l4_frame
         # Spy (not wraps-patch) so spy_return hands back the very ImageData
@@ -2257,7 +2330,9 @@ class TestProcessOneImage:
 
         result = process_one_image(path, {}, _REF_RADECS, None, masks)
 
-        reference = build_photometry_table(prepare_spy.spy_return, None)
+        reference = build_photometry_table(
+            prepare_spy.spy_return, None, filter_name="TR"
+        )
 
         l4 = result["L4"]
         for col in _MASK_INDEPENDENT_COLUMNS:

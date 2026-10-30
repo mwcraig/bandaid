@@ -52,6 +52,11 @@ keep-or-drop rule of the default writer, built on the per-row quality cut
 
 ::: bandaid.good_star_mask
 
+`l4_effective_egain` is the single gain the `L4` star list records when the
+Bayer channels have different gains.
+
+::: bandaid.l4_effective_egain
+
 ## Configuration
 
 The immutable, validated configuration objects. See

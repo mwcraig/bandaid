@@ -81,6 +81,7 @@ from .photometry import (
     centroid_stars,
     eloy_to_starlist,
     good_star_mask,
+    l4_effective_egain,
     measure_photometry,
     metadata_from_header,
     neighbor_contamination_flag,

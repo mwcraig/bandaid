@@ -12,6 +12,7 @@ import contextlib
 import io
 import logging
 import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
@@ -1306,6 +1307,54 @@ def _resolve_template_value(key, value, header, defaults):
     return value
 
 
+def _channel_egain(egain, filter_name):
+    """
+    Return the system gain of one Bayer channel.
+
+    Parameters
+    ----------
+    egain : float or collections.abc.Mapping
+        The frame's ``egain`` metadata: one gain for every channel, or a
+        mapping of filter name (``"TR"``, ``"TG"``, ``"TB"``) to that
+        channel's gain, both in e-/ADU.
+    filter_name : str or None
+        The channel whose gain is wanted. Ignored when `egain` is a single
+        number.
+
+    Returns
+    -------
+    float
+        The gain of `filter_name`.
+
+    Raises
+    ------
+    FrameMetadataError
+        If `egain` is a mapping with no entry for `filter_name`.
+    ValueError
+        If `egain` is a mapping and `filter_name` is None.
+
+    Notes
+    -----
+    On a colour sensor the channels can have different gains (on the Seestar
+    S50 the red channel's is about 0.046 e-/ADU, the green channel's 0.076
+    and the blue channel's 0.078), so a profile may give one per channel. Every
+    consumer of the gain goes through this function so that both forms work.
+    """
+    if not isinstance(egain, Mapping):
+        return float(egain)
+    if filter_name is None:
+        msg = "a per-channel egain mapping needs the filter name to pick a gain"
+        raise ValueError(msg)
+    try:
+        return float(egain[filter_name])
+    except KeyError as exc:
+        msg = (
+            f"system gain (egain) has no entry for channel {filter_name!r}; "
+            f"the mapping covers {sorted(egain)}"
+        )
+        raise FrameMetadataError(msg) from exc
+
+
 def metadata_from_header(header, *, profile=None):
     """
     Build a metadata dictionary from an instrument's header dialect and a header.
@@ -1358,13 +1407,53 @@ def metadata_from_header(header, *, profile=None):
         msg = f"missing required header keyword {exc.args[0]!r}"
         raise FrameMetadataError(msg) from exc
 
-    # egain feeds the photometry noise model; a None value would silently poison
-    # every SNR downstream, so fail the frame here with a clear message.
-    if metadata.get("egain") is None:
-        msg = "system gain (egain) is missing from the header and has no default"
-        raise FrameMetadataError(msg)
+    _check_egain(metadata)
 
     return metadata
+
+
+def _check_egain(metadata, file=None, channels=()):
+    """
+    Fail the frame if its ``egain`` metadata cannot serve every channel.
+
+    Parameters
+    ----------
+    metadata : dict
+        Frame metadata, as built by `metadata_from_header` and possibly
+        updated with user-supplied values.
+    file : str or pathlib.Path, optional
+        The frame, attached to the error. Default None.
+    channels : iterable of str, optional
+        The filter names the frame will be measured in; a per-channel
+        mapping must have an entry for each. Default (), no coverage check.
+
+    Raises
+    ------
+    FrameMetadataError
+        If ``egain`` is missing or None, or is a per-channel mapping with a
+        None entry or without an entry for one of `channels`.
+
+    Notes
+    -----
+    egain feeds the photometry noise model; a None value would silently
+    poison every SNR downstream, so the frame fails here with a clear
+    message instead. The one function serves the header, the user override
+    in `prepare_image` and the per-frame channel check in `process_one_image`.
+    """
+    egain = metadata.get("egain")
+    if egain is None:
+        msg = "system gain (egain) is missing from the header and has no default"
+        raise FrameMetadataError(msg, file=file)
+    if isinstance(egain, Mapping):
+        if empty := sorted(name for name, value in egain.items() if value is None):
+            msg = f"system gain (egain) has no value for channel(s) {empty}"
+            raise FrameMetadataError(msg, file=file)
+        if missing := sorted(set(channels) - set(egain)):
+            msg = (
+                f"system gain (egain) has no entry for channel(s) {missing}; "
+                f"the mapping covers {sorted(egain)}"
+            )
+            raise FrameMetadataError(msg, file=file)
 
 
 def eloy_to_starlist(eloy_table, metadata, *, min_snr=None):
@@ -3533,8 +3622,11 @@ def prepare_image(
     metadata = calibration.metadata
     coords, fwhm = calibration.coords, calibration.fwhm
 
+    # The header check in metadata_from_header cannot see what an override
+    # replaces, so check again after it.
     if user_specific_metadata is not None:
         metadata.update(user_specific_metadata)
+        _check_egain(metadata, file)
 
     # Balanced or not per detect_on_bayer_balanced; reusing calibration_sequence's
     # own detection-time array avoids balancing a second copy.
@@ -3705,6 +3797,7 @@ def build_photometry_table(
     img,
     mask,
     *,
+    filter_name=None,
     config=None,
     radii=None,
     annulus=None,
@@ -3720,6 +3813,10 @@ def build_photometry_table(
         Per-image detection/alignment results.
     mask : numpy.ndarray or None
         Bayer mask to apply to the image data.
+    filter_name : str or None, optional
+        The channel being measured (``"TR"``, ``"TG"``, ``"TB"``), used to
+        pick its gain when ``img.metadata["egain"]`` is a per-channel mapping
+        (see `_channel_egain`). Not needed with a single gain. Default None.
     config : PhotometryConfig or None, optional
         Photometry configuration supplying the apertures/drift defaults. Any of
         the explicit keyword overrides below take precedence over it. If None
@@ -3777,7 +3874,7 @@ def build_photometry_table(
         img.calibrated_data,
         img.centroid_coords,
         img.fwhm,
-        img.metadata["egain"],
+        _channel_egain(img.metadata["egain"], filter_name),
         mask,
         peak_cutouts=img.peak_cutouts(),
         geometry=img.aperture_geometry(radii, annulus),
@@ -3849,6 +3946,33 @@ def build_photometry_table(
     data.meta["min_snr"] = config.source_selection.min_snr
 
     return data
+
+
+def _starlist_metadata(metadata, egain):
+    """
+    Return the frame metadata a channel's star list is built from.
+
+    Parameters
+    ----------
+    metadata : dict
+        The frame metadata (``ImageData.metadata``).
+    egain : float
+        The gain of the channel the star list describes.
+
+    Returns
+    -------
+    dict
+        `metadata` itself when its ``egain`` is one number, else a shallow
+        copy with ``egain`` set to `egain`.
+
+    Notes
+    -----
+    The star-list schema holds one gain per list. A single gain is passed
+    through untouched rather than copied, so that path stays as it was.
+    """
+    if not isinstance(metadata["egain"], Mapping):
+        return metadata
+    return {**metadata, "egain": egain}
 
 
 def process_one_image(
@@ -3946,6 +4070,10 @@ def process_one_image(
 
     L4 is never photometered itself; `calculate_l4_quantities` builds it from
     the TR/TG/TB tables (see its Notes).
+
+    A per-channel ``egain`` mapping that lacks one of the channels in
+    `bayer_masks` fails the frame with `FrameMetadataError` (`file` attached)
+    before any channel is photometered.
     """
     # Calculate everything we need for all filters at once. prepare_image raises
     # a FrameError (TooFewStarsError / WCSSolveError) when the frame is unusable;
@@ -3985,13 +4113,20 @@ def process_one_image(
     if build_l4 and (msg := _missing_rgb_channels(bayer_masks)):
         raise ValueError(msg)
 
+    # With one gain per channel, every channel the frame is measured in needs
+    # its own entry; check before the first channel is photometered.
+    _check_egain(img.metadata, file, channels=bayer_masks)
+    egain = img.metadata["egain"]
+
     # Solve-quality numbers for the QA manifest, stamped on every table below
     # (the manifest builder only sees the tables).
     by_filter_data = {}
     for filter_name, mask in bayer_masks.items():
-        data = build_photometry_table(img, mask, config=config)
+        data = build_photometry_table(img, mask, filter_name=filter_name, config=config)
         data.meta["filter"] = filter_name
-        data.meta["full_image_meta"] = img.metadata
+        data.meta["full_image_meta"] = _starlist_metadata(
+            img.metadata, _channel_egain(egain, filter_name)
+        )
         data.meta["wcs_pixscale"] = img.wcs_pixscale
         data.meta["solve_offset_deg"] = img.solve_offset_deg
         data.meta["n_edge_dropped"] = img.n_edge_dropped
@@ -4004,9 +4139,11 @@ def process_one_image(
     # L4 is a recombination of the RGB tables, so it is built once they all
     # exist; the caller's dict is read, never mutated.
     if build_l4:
-        l4 = calculate_l4_quantities(by_filter_data, img.metadata["egain"])
+        l4 = calculate_l4_quantities(by_filter_data, egain)
         l4.meta["filter"] = "L4"
-        l4.meta["full_image_meta"] = img.metadata
+        l4.meta["full_image_meta"] = _starlist_metadata(
+            img.metadata, l4_effective_egain(by_filter_data, egain)
+        )
         l4.meta["wcs_pixscale"] = img.wcs_pixscale
         l4.meta["solve_offset_deg"] = img.solve_offset_deg
         l4.meta["n_edge_dropped"] = img.n_edge_dropped
@@ -4014,6 +4151,78 @@ def process_one_image(
         by_filter_data["L4"] = l4
 
     return by_filter_data
+
+
+_L4_CHANNELS = ("TR", "TG", "TB")
+
+
+def _l4_poisson_variance(by_filter_data, egain):
+    """
+    Return the per-star Poisson variance of the L4 count, in ADU squared.
+
+    Parameters
+    ----------
+    by_filter_data : dict
+        Mapping of filter name to photometry table, holding "TR", "TG", "TB".
+    egain : collections.abc.Mapping
+        Mapping of filter name to that channel's gain.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``sum(N_c / g_c)`` over the three channels.
+    """
+    return sum(
+        np.asarray(by_filter_data[name]["tot_count"]) / _channel_egain(egain, name)
+        for name in _L4_CHANNELS
+    )
+
+
+def l4_effective_egain(by_filter_data, egain):
+    """
+    Return the single gain that stands for the L4 channel in a star list.
+
+    Parameters
+    ----------
+    by_filter_data : dict
+        Mapping of filter name to photometry table; must hold "TR", "TG" and
+        "TB" as built by `build_photometry_table`.
+    egain : float or collections.abc.Mapping
+        The gain of the image in e-/ADU: one number for every channel, or a
+        mapping of filter name to that channel's gain (see `_channel_egain`).
+
+    Returns
+    -------
+    float
+        `egain` itself when it is a single number. Otherwise the median, over
+        every measured star with a positive count in each channel (before the
+        star-list quality cuts), of the per-star gain
+        ``(N_R + N_G + N_B) / (N_R/g_R + N_G/g_G + N_B/g_B)``; NaN when no
+        star qualifies.
+
+    Notes
+    -----
+    L4 sums channels whose gains may differ, so no single gain reproduces
+    every star's Poisson variance: each star has its own effective gain, a
+    count-weighted harmonic mean of the channel gains that depends on the
+    star's colour. The star-list schema stores one gain per list, so the
+    median across the frame's stars is written there. On Seestar S50 frames
+    it sits within a few percent of every star's value, whereas the smallest
+    channel gain would overstate the Poisson variance by a third or more.
+    The L4 ``count_err`` and ``snr`` columns never use this number; they are
+    built from the per-channel terms directly.
+    """
+    if not isinstance(egain, Mapping):
+        return float(egain)
+    counts = np.column_stack(
+        [np.asarray(by_filter_data[name]["tot_count"]) for name in _L4_CHANNELS]
+    )
+    gains = np.array([_channel_egain(egain, name) for name in _L4_CHANNELS])
+    usable = np.all(counts > 0, axis=1)
+    per_star = counts[usable].sum(axis=1) / (counts[usable] / gains).sum(axis=1)
+    if per_star.size == 0:
+        return float("nan")
+    return float(np.median(per_star))
 
 
 def calculate_l4_quantities(by_filter_data, egain):
@@ -4025,8 +4234,9 @@ def calculate_l4_quantities(by_filter_data, egain):
     by_filter_data : dict
         Mapping of filter name to photometry table; must hold "TR", "TG" and
         "TB" as built by `build_photometry_table`.
-    egain : float
-        The gain of the image.
+    egain : float or collections.abc.Mapping
+        The gain of the image in e-/ADU: one number for every channel, or a
+        mapping of filter name to that channel's gain (see `_channel_egain`).
 
     Returns
     -------
@@ -4103,7 +4313,12 @@ def calculate_l4_quantities(by_filter_data, egain):
 
         # For error, add the individual filter background errors in quadrature,
         # multiplied by the aperture areas, then add in quadrature to the Poisson
-        # error from the total count.
+        # error from the total count (summed per channel when the gains differ).
+        poisson_variance = (
+            _l4_poisson_variance(by_filter_data, egain)
+            if isinstance(egain, Mapping)
+            else final_data["tot_count"] / egain
+        )
         final_data["count_err"] = np.sqrt(
             (
                 by_filter_data["TR"]["bkgd_std"] ** 2
@@ -4113,7 +4328,7 @@ def calculate_l4_quantities(by_filter_data, egain):
                 + by_filter_data["TB"]["bkgd_std"] ** 2
                 * by_filter_data["TB"]["aperture_area"]
             )
-            + final_data["tot_count"] / egain  # Poisson error from total count
+            + poisson_variance
         )
 
         # SNR from the recombined L4 count and error.

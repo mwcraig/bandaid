@@ -139,13 +139,13 @@ pipeline wants (lower-case, e.g. `obs_time`, `egain`, `pixscale`) to a
 **directive** describing where its value comes from. `metadata_from_header`
 resolves the directives against a frame's FITS header.
 
-| Directive form   | Example                             | Meaning                                                                                      |
-| ---------------- | ----------------------------------- | -------------------------------------------------------------------------------------------- |
-| `"@KEY"`         | `"obs_time": "@DATE-OBS"`           | Take the value of FITS header keyword `KEY`. Falls back to a `#`-default (below) if missing. |
-| `"!KEY index N"` | `"tel_manufac": "!CREATOR index 0"` | Split header keyword `KEY` on whitespace and take the `N`-th token (0-based).                |
-| literal          | `"egain": 0.046`                    | Use the literal value as-is. Used for hardware constants the header does not carry.          |
-| `"#key": value`  | `"#stack": 1`                       | A **fallback** for `key`: used only when the `@` lookup for `key` finds nothing.             |
-| `"_anything"`    | `"_note": "..."`                    | A comment. Ignored entirely.                                                                 |
+| Directive form   | Example                             | Meaning                                                                                                               |
+| ---------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `"@KEY"`         | `"obs_time": "@DATE-OBS"`           | Take the value of FITS header keyword `KEY`. Falls back to a `#`-default (below) if missing.                          |
+| `"!KEY index N"` | `"tel_manufac": "!CREATOR index 0"` | Split header keyword `KEY` on whitespace and take the `N`-th token (0-based).                                         |
+| literal          | `"egain": 0.046`                    | Use the literal value as-is (a number, string or JSON object). Used for hardware constants the header does not carry. |
+| `"#key": value`  | `"#stack": 1`                       | A **fallback** for `key`: used only when the `@` lookup for `key` finds nothing.                                      |
+| `"_anything"`    | `"_note": "..."`                    | A comment. Ignored entirely.                                                                                          |
 
 Notes:
 
@@ -373,10 +373,21 @@ resolve them:
 - `egain` — system gain; feeds the photometry noise model. A missing/`None`
     value fails the frame, so provide it as a literal (or a header lookup that is
     always present). It is in e-/ADU in the file's own units (16-bit for the
-    Seestar). The bundled Seestar50 profile uses the red-channel photon-transfer
-    value, 0.046, for every Bayer channel as the conservative choice: the
-    Poisson error scales as 1/sqrt(egain), so the smallest gain gives the
-    largest uncertainty. Green and blue measure about 0.075.
+    Seestar). Either one number for every channel, or — when the Bayer channels
+    have different gains — a mapping of filter name to gain, e.g.
+    `{"TR": 0.046, "TG": 0.076, "TB": 0.078}`. With the mapping each channel is
+    measured with its own gain and its star list records that gain; an entry
+    with no value, or a channel the frame is measured in that has no entry,
+    fails the frame. The `L4` list
+    records the median over the frame's stars of the per-star effective gain
+    (`l4_effective_egain`), since a sum of channels with different gains has
+    no single exact gain; L4's `count_err` is built from the per-channel terms
+    and does not depend on that number. The bundled Seestar50 profile carries
+    the per-channel photon-transfer values above, measured from flat pairs
+    under two light sources (a tungsten-halogen lamp and an electroluminescent
+    panel) and averaged; the two sources agree on red and differ by about 5 %
+    on green and blue. On sky frames the L4 median effective gain comes out
+    near 0.065.
 - `largest_usable_adu_value` — saturation cut.
 - `pixscale`, `fov_rad` — plate scale and field of view used for Gaia matching
     and FWHM-in-arcsec reporting.

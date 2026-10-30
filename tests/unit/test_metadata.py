@@ -6,7 +6,7 @@ import warnings
 import astropy.units as u
 import numpy as np
 import pytest
-from _helpers import _seestar_header
+from _helpers import SEESTAR_EGAIN, _seestar_header
 from aavso_starlist_schema import StarItem
 from astropy.coordinates import AltAz, EarthLocation, SkyCoord
 from astropy.io import fits
@@ -25,6 +25,7 @@ from bandaid.instruments import load_instrument
 from bandaid.photometry import (
     MIN_SNR,
     _airmass_from_metadata,
+    _channel_egain,
     eloy_to_starlist,
     good_star_mask,
     metadata_from_header,
@@ -279,7 +280,7 @@ class TestMetadataFromHeader:
         # Plain literals pass through untouched.
         assert metadata["adc_depth"] == expected_adc_depth
         assert metadata["largest_usable_adu_value"] == expected_max_adu
-        assert metadata["egain"] == pytest.approx(0.046)
+        assert metadata["egain"] == SEESTAR_EGAIN
         assert metadata["roworder"] == "top-down"
         assert metadata["refframe"] == "ICRS"
         # width/height come straight from NAXIS1/NAXIS2.
@@ -323,7 +324,7 @@ class TestMetadataFromHeader:
         resolves to Seestar50 -- but via detection, not a silent fallback.
         """
         metadata = metadata_from_header(_seestar_header())
-        assert metadata["egain"] == pytest.approx(0.046)
+        assert metadata["egain"] == SEESTAR_EGAIN
 
     def test_omitted_profile_auto_detection_is_logged(self, caplog):
         """
@@ -631,3 +632,39 @@ class TestMetadataFromHeaderGuard:
         # concern): the point here is the *template* keyword resolution.
         with pytest.raises(FrameMetadataError):
             metadata_from_header(fits.Header(), profile=InstrumentProfile())
+
+    def test_per_channel_egain_with_a_missing_value_raises(self):
+        """A per-channel ``egain`` mapping with a None entry names the channel."""
+        header = _seestar_header()
+        header_map = {
+            **load_instrument("Seestar50").header_map,
+            "egain": {"TR": 0.046, "TG": None, "TB": 0.075},
+        }
+        profile = InstrumentProfile(name="Gappy", header_map=header_map)
+
+        with pytest.raises(FrameMetadataError, match="TG"):
+            metadata_from_header(header, profile=profile)
+
+
+class TestChannelEgain:
+    """``_channel_egain`` picks one channel's gain out of the metadata value."""
+
+    def test_scalar_applies_to_every_channel(self):
+        """A single number is the gain of every channel."""
+        assert _channel_egain(0.046, "TG") == pytest.approx(0.046)
+
+    def test_mapping_selects_the_channel(self):
+        """A per-channel mapping returns the entry for the requested channel."""
+        egain = {"TR": 0.046, "TG": 0.075, "TB": 0.07}
+        assert _channel_egain(egain, "TG") == pytest.approx(0.075)
+        assert _channel_egain(egain, "TB") == pytest.approx(0.07)
+
+    def test_mapping_without_the_channel_raises(self):
+        """A channel absent from the mapping is a frame metadata error naming it."""
+        with pytest.raises(FrameMetadataError, match="L4"):
+            _channel_egain({"TR": 0.046, "TG": 0.075, "TB": 0.075}, "L4")
+
+    def test_mapping_needs_a_channel_name(self):
+        """A mapping cannot be reduced to one gain without saying which channel."""
+        with pytest.raises(ValueError, match="filter"):
+            _channel_egain({"TR": 0.046, "TG": 0.075, "TB": 0.075}, None)

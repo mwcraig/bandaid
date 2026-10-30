@@ -10,7 +10,7 @@ extended, and that a profile round-trips through ``to_file``/``from_file``.
 """
 
 import pytest
-from _helpers import SEESTAR_RULE
+from _helpers import SEESTAR_EGAIN, SEESTAR_RULE
 from pydantic import ValidationError
 
 from bandaid import instruments
@@ -150,7 +150,7 @@ class TestLoadInstrument:
         """The bundled profile carries the Seestar header dialect."""
         profile = load_instrument("Seestar50")
         assert profile.header_map["obs_time"] == "@DATE-OBS"
-        assert profile.header_map["egain"] == pytest.approx(0.046)
+        assert profile.header_map["egain"] == SEESTAR_EGAIN
         assert profile.header_map["pixscale"] == pytest.approx(
             EXPECTED_SEESTAR_PIXSCALE
         )
