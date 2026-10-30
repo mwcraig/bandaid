@@ -15,9 +15,11 @@ needs. The profile format is specified in the
 - `wcs_scale_tolerance`: once `pixscale` is measured, tighten the default `0.05` to
     the spread of the good solves.
 - `egain` (e-/ADU in the file's own units): measure it by photon transfer. A
-    missing gain fails every frame. Where channels differ, the smallest gain gives
-    the largest, most conservative uncertainty; the Seestar50 profile uses its red
-    channel value, 0.046, for all channels.
+    missing gain fails every frame. Give one number for every channel or, where
+    the Bayer channels differ, a mapping of filter name to gain; the Seestar50
+    profile ships `{"TR": 0.046, "TG": 0.076, "TB": 0.078}`, measured from flat
+    pairs. With a mapping each channel's star list records its own gain and the
+    `L4` list records the median per-star effective gain (`l4_effective_egain`).
 
 ## 2. Write a profile
 

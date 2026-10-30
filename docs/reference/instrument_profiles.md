@@ -36,20 +36,20 @@ a frame's header.
 | ---------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `"@KEY"`         | `"obs_time": "@DATE-OBS"`           | Header value of `KEY`; falls back to the `#` default for that key if absent.                                                               |
 | `"!KEY index N"` | `"tel_manufac": "!CREATOR index 0"` | Whitespace-split header value of `KEY`, token `N` (0-based). No `#` fallback; a missing or non-string keyword raises `FrameMetadataError`. |
-| literal          | `"egain": 0.046`                    | Used as given, for constants the header lacks.                                                                                             |
+| literal          | `"egain": 0.046`                    | Used as given (a number, string or JSON object), for constants the header lacks.                                                           |
 | `"#key": value`  | `"#stack": 1`                       | Fallback for `key` when its `@` lookup finds nothing.                                                                                      |
 | `"_anything"`    | `"_note": "..."`                    | Comment; ignored.                                                                                                                          |
 
 `width` and `height` always come from `NAXIS1`/`NAXIS2`; do not map them. The
 pipeline requires these keys:
 
-| Keys                                           | Use                                                               |
-| ---------------------------------------------- | ----------------------------------------------------------------- |
-| `egain`                                        | Noise model, e-/ADU. A missing value raises `FrameMetadataError`. |
-| `largest_usable_adu_value`                     | Saturation cut.                                                   |
-| `pixscale`, `fov_rad`                          | Plate scale (arcsec/pixel) and field radius (degrees).            |
-| `ra`, `dec`                                    | Header pointing, for alignment and the pointing check.            |
-| `bayerpat`, `roworder`, `xbayroff`, `ybayroff` | Debayering.                                                       |
+| Keys                                           | Use                                                                                                                                                                                                                                       |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `egain`                                        | Noise model, e-/ADU: one number, or a mapping of filter name to gain when the Bayer channels differ (the `L4` list then records `l4_effective_egain`). A missing value, or a measured channel with no entry, raises `FrameMetadataError`. |
+| `largest_usable_adu_value`                     | Saturation cut.                                                                                                                                                                                                                           |
+| `pixscale`, `fov_rad`                          | Plate scale (arcsec/pixel) and field radius (degrees).                                                                                                                                                                                    |
+| `ra`, `dec`                                    | Header pointing, for alignment and the pointing check.                                                                                                                                                                                    |
+| `bayerpat`, `roworder`, `xbayroff`, `ybayroff` | Debayering.                                                                                                                                                                                                                               |
 
 Bookkeeping keys that flow into the output when mapped: `obs_time`, `site_lat`,
 `site_lon`, `site_elev`, `observer`, `exposure`, `object`, `block_filter`,

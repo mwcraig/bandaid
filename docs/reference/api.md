@@ -41,6 +41,11 @@ steps it is built from. See [Getting started](../getting_started.md).
 
 ::: bandaid.good_star_mask
 
+`l4_effective_egain` is the single gain the `L4` star list records when the
+Bayer channels have different gains.
+
+::: bandaid.l4_effective_egain
+
 ## Configuration
 
 Fields and defaults are in [Configuration](configuration.md).

@@ -53,9 +53,11 @@ A `BatchPrepError` is fatal: the once-per-batch preparation is built from the
 - The first frame's header resolves to no profile, or several (`InstrumentDetectionError`).
 - `edge_margin_px` is half the smaller frame side or more.
 - The Gaia query failed on every server ("could not query Gaia for the field
-    at ..."). bandaid tries CDS VizieR, then the CfA and IDIA mirrors, giving each
-    10 s to connect and 60 s to start answering, and logs a warning as each is
-    skipped (a timeout, a failure status, or the server's own error text). Usually
+    at ..."). bandaid tries CDS VizieR, then the CfA and IDIA mirrors, then the
+    GAVO Heidelberg TAP service, giving each 10 s to connect and 60 s to start
+    answering; GAVO itself stops a query that takes more than about 20 s and
+    reports that as an error. A warning is logged as each server is skipped (a
+    timeout, a failure status, or the server's own error text). Usually
     this is an outage on the catalog side; a failed answer is never cached, so
     just run again.
 - `CatalogTruncationError`: the Gaia query hit its row limit before reaching
