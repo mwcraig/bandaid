@@ -75,8 +75,8 @@ ERROR_WITH_EMPTY_TABLE_VOTABLE = f"""<?xml version="1.0" encoding="UTF-8"?>
 </RESOURCE>
 </VOTABLE>
 """.encode()
-# What the xeus-python browser kernel (pyjs 4.0.7) raised for a failed
-# XMLHttpRequest to IDIA on 2026-10-27: str() of the exception is JSON of the
+# What the xeus-python browser kernel (pyjs 4.0.7) raises for a failed
+# XMLHttpRequest, here one to IDIA: str() of the exception is JSON of the
 # JavaScript error's own properties, which for a DOMException is only "stack".
 BROWSER_ERROR_TEXT = (
     "NetworkError: Failed to execute 'send' on 'XMLHttpRequest': "
@@ -729,7 +729,7 @@ class TestServerFallback:
         "js_error", [DOMException(), None], ids=["js-error-object", "json-stack"]
     )
     def test_browser_failure_is_reported_by_its_first_line(
-        self, fake_vizier, center, caplog, js_error
+        self, fake_vizier, fake_gavo, center, caplog, js_error
     ):
         """
         A browser request failure is logged and reported without its JS stack.
@@ -742,6 +742,7 @@ class TestServerFallback:
         fake_vizier.return_value.query_region_async.side_effect = [
             JsGenericError(BROWSER_ERROR_JSON, js_error) for _ in SERVER_ORDER
         ]
+        fake_gavo.side_effect = [JsGenericError(BROWSER_ERROR_JSON, js_error)]
 
         with (
             caplog.at_level(logging.WARNING, logger="bandaid.catalog"),
@@ -754,7 +755,8 @@ class TestServerFallback:
         assert message.endswith(f"last error: {expected}")
         assert "at Module" not in message
         warnings_logged = [r.getMessage() for r in caplog.records]
-        assert len(warnings_logged) == len(SERVER_ORDER)
+        # One warning per VizieR server, then one for GAVO.
+        assert len(warnings_logged) == len(SERVER_ORDER) + 1
         for logged in warnings_logged:
             assert logged.endswith(f"failed, skipping it: {expected}")
             assert "at Module" not in logged

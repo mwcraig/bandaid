@@ -70,11 +70,11 @@ GAIA_DR3_VIZIER_CATALOG = "I/355/gaiadr3"
 GAIA_DR3_EPOCH = 2016.0
 
 # VizieR servers tried in order. CDS first; then IDIA, which answers Gaia DR3
-# cones itself and sends CORS headers (about 4 s for a cone, with CDS blocked,
-# both times it was tried on 2026-10-27); then CfA as the last resort, since
-# its behaviour varies: on 2026-10-27 it answered HTTP 504 without CORS
-# headers after about 60 s and a few hours later HTTP 200 in about 6 s, and on
-# 2026-10-20 it redirected to CDS. The other mirrors hang or are gone.
+# cones itself and sends CORS headers; then CfA, the last VizieR server before
+# the GAVO TAP service below, since its behaviour varies: on 2026-10-27 it
+# answered HTTP 504 without CORS headers after about 60 s and a few hours
+# later HTTP 200 in about 6 s, and on 2026-10-20 it redirected to CDS. The
+# other mirrors hang or are gone.
 VIZIER_SERVERS = (
     "vizier.cds.unistra.fr",
     "vizier.idia.ac.za",
