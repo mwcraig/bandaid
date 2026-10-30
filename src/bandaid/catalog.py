@@ -16,7 +16,8 @@ access and no caching code of our own. Inspect the cache with
 When a server times out or answers with an error, the query moves on to the
 next server in :data:`VIZIER_SERVERS`, and the failed answer is removed from
 astroquery's cache so a retry asks the server again. If every VizieR server
-fails, the GAVO Heidelberg TAP service is the last resort.
+fails, the GAVO Heidelberg TAP service is the last resort; its answers go
+through astroquery's cache too, and a failed one is removed the same way.
 
 The return value matches ``twirl.gaia_radecs``: an ``(n, 2)`` array of RA/Dec in
 degrees, optionally paired with the Gaia G magnitudes. Unlike twirl's optional
@@ -33,11 +34,11 @@ from io import BytesIO
 
 import astropy.units as u
 import numpy as np
-import requests
 from astropy.coordinates import SkyCoord
 from astropy.io import votable
 from astropy.table import MaskedColumn
 from astropy.time import Time
+from astroquery.query import BaseQuery
 from astroquery.vizier import Vizier
 from erfa import ErfaWarning
 
@@ -84,6 +85,10 @@ _DEC_COL = "DE_ICRS"
 _PMRA_COL = "pmRA"
 _PMDEC_COL = "pmDE"
 _MAG_COL = "Gmag"
+
+
+class _GavoTap(BaseQuery):
+    """astroquery client for the GAVO TAP sync endpoint; exists for its cache."""
 
 
 def _fov_to_radius_deg(fov):
@@ -162,8 +167,8 @@ def _read_votable(server, response):
     Raises
     ------
     GaiaQueryError
-        If the body is not a VOTable, or holds no rows and an error ``INFO``
-        element; the message carries the server's error text.
+        If the body is not a VOTable, or holds an error ``INFO`` element, even
+        after rows; the message carries the server's error text.
 
     Notes
     -----
@@ -172,7 +177,10 @@ def _read_votable(server, response):
     document raises ``requests.HTTPError``. VizieR answers an empty cone with
     no ``TABLE`` at all, so a missing table alone does not mean failure; the
     error ``INFO`` does. VizieR names that element ``Error``; a TAP service
-    sends ``QUERY_STATUS`` with value ``ERROR``.
+    sends ``QUERY_STATUS`` with value ``ERROR``. The error elements are
+    checked before the tables because a TAP service that fails while sending
+    rows appends that status after the table, overriding the ``OK`` before
+    it, so rows followed by an error are an incomplete answer.
     """
     try:
         tree = votable.parse(BytesIO(response.content), verify="ignore")
@@ -180,9 +188,6 @@ def _read_votable(server, response):
         response.raise_for_status()
         msg = f"{server} answered with something other than a VOTable"
         raise GaiaQueryError(msg) from exc
-    for table in tree.iter_tables():
-        if len(table.array):
-            return table.to_table(use_names_over_ids=True)
     errors = [
         info
         for info in tree.iter_info()
@@ -193,12 +198,52 @@ def _read_votable(server, response):
         text = (errors[0].content or errors[0].value or "").strip()
         msg = f"{server} answered with an error: {text}"
         raise GaiaQueryError(msg)
+    for table in tree.iter_tables():
+        if len(table.array):
+            return table.to_table(use_names_over_ids=True)
     response.raise_for_status()
     return None
 
 
 # pydoclint's DOC501/DOC503 are silenced on the docstring because the bare
 # raise only re-raises a server failure after evicting its cache entry.
+def _read_and_evict(server, client, response):
+    """
+    Read a server's answer, removing it from astroquery's cache if it failed.
+
+    Parameters
+    ----------
+    server : str
+        The server that sent the response, for the error message.
+    client : astroquery.query.BaseQuery
+        The astroquery client that made the request and cached the answer.
+    response : requests.Response
+        The server's response.
+
+    Returns
+    -------
+    astropy.table.Table or None
+        What `_read_votable` returns for the response.
+
+    Notes
+    -----
+    astroquery caches every response it receives, including an error answer,
+    so a failed response is removed from the cache before the error is
+    re-raised; otherwise the same query would return the cached failure for
+    a week. Removing it also clears a failure cached by an earlier run. A
+    genuine empty field stays cached.
+    """  # noqa: DOC501, DOC503
+    try:
+        return _read_votable(server, response)
+    except Exception:
+        # astroquery exposes cache-entry removal only on the last query, and
+        # raises FileNotFoundError when the entry is already gone (it tests
+        # ``Path.exists`` without calling it), which must not mask this error.
+        with contextlib.suppress(FileNotFoundError):
+            client._last_query.remove_cache_file(client.cache_location)  # noqa: SLF001
+        raise
+
+
 def _query_vizier(server, center, radius, *, limit, mag_limit):
     """
     Run the Gaia cone search on one VizieR server.
@@ -223,12 +268,9 @@ def _query_vizier(server, center, radius, *, limit, mag_limit):
 
     Notes
     -----
-    astroquery caches every response it receives, including an error answer,
-    so a failed response is removed from the cache before the error is
-    re-raised; otherwise the same query would return the cached failure for
-    a week. Removing it also clears a failure cached by an earlier run. A
-    genuine empty field stays cached.
-    """  # noqa: DOC501, DOC503
+    A failed answer is removed from astroquery's cache before its error
+    propagates; see `_read_and_evict`.
+    """
     # "+Gmag" asks VizieR to sort ascending (brightest first); combined with
     # row_limit this returns the N brightest sources in the cone, matching
     # twirl's "SELECT top N ... ORDER BY phot_g_mean_mag".
@@ -245,15 +287,7 @@ def _query_vizier(server, center, radius, *, limit, mag_limit):
     response = vizier.query_region_async(
         center, radius=radius * u.deg, catalog=GAIA_DR3_VIZIER_CATALOG
     )
-    try:
-        return _read_votable(server, response)
-    except Exception:
-        # astroquery exposes cache-entry removal only on the last query, and
-        # raises FileNotFoundError when the entry is already gone (it tests
-        # ``Path.exists`` without calling it), which must not mask this error.
-        with contextlib.suppress(FileNotFoundError):
-            vizier._last_query.remove_cache_file(vizier.cache_location)  # noqa: SLF001
-        raise
+    return _read_and_evict(server, vizier, response)
 
 
 def _query_gavo_tap(center, radius, *, limit, mag_limit):
@@ -281,27 +315,27 @@ def _query_gavo_tap(center, radius, *, limit, mag_limit):
     -----
     The ADQL renames the columns to the VizieR labels, so the result is
     handled exactly like a VizieR one. The query is a plain synchronous POST
-    through ``requests``, which has a timeout and works in the browser kernel;
-    astroquery's ``TapPlus`` uses raw ``http.client`` connections with no
-    timeout. Nothing is cached, which is acceptable for a last resort.
+    through astroquery's ``BaseQuery``, which sends it with ``requests``, so
+    it has a timeout and works in the browser kernel; astroquery's ``TapPlus``
+    uses raw ``http.client`` connections with no timeout. The answer is
+    cached by astroquery like a VizieR one, and a failed answer is removed
+    from the cache before its error propagates; see `_read_and_evict`.
     """
-    ra = float(center.icrs.ra.deg)
-    dec = float(center.icrs.dec.deg)
-    conditions = [
-        f"DISTANCE(POINT('ICRS', ra, dec), POINT('ICRS', {ra!r}, {dec!r})) "
-        f"<= {float(radius)!r}"
-    ]
-    if mag_limit is not None:
-        conditions.append(f"phot_g_mean_mag <= {mag_limit}")
+    ra = center.icrs.ra.deg
+    dec = center.icrs.dec.deg
+    mag_cut = "" if mag_limit is None else f" AND phot_g_mean_mag <= {mag_limit}"
     # Every interpolated value is a number or a module constant.
     query = (
         f'SELECT TOP {limit} phot_g_mean_mag AS "{_MAG_COL}", '  # noqa: S608
         f'ra AS "{_RA_COL}", dec AS "{_DEC_COL}", '
         f'pmra AS "{_PMRA_COL}", pmdec AS "{_PMDEC_COL}" '
-        f"FROM {GAVO_GAIA_TABLE} WHERE {' AND '.join(conditions)} "
-        "ORDER BY phot_g_mean_mag"
+        f"FROM {GAVO_GAIA_TABLE} "
+        f"WHERE DISTANCE(POINT('ICRS', ra, dec), POINT('ICRS', {ra}, {dec})) "
+        f"<= {radius}{mag_cut} ORDER BY phot_g_mean_mag"
     )
-    response = requests.post(
+    gavo = _GavoTap()
+    response = gavo._request(  # noqa: SLF001
+        "POST",
         GAVO_TAP_SYNC_URL,
         data={
             "REQUEST": "doQuery",
@@ -314,18 +348,19 @@ def _query_gavo_tap(center, radius, *, limit, mag_limit):
         },
         timeout=SERVER_TIMEOUT,
     )
-    return _read_votable(GAVO_TAP_SERVER, response)
+    return _read_and_evict(GAVO_TAP_SERVER, gavo, response)
 
 
 def cached_gaia_radecs(
     center, fov, *, limit=10000, magnitude=True, obs_epoch=None, mag_limit=None
 ):
     """
-    Return Gaia DR3 RA/Dec (and magnitudes) in a field, cached via VizieR.
+    Return Gaia DR3 RA/Dec (and magnitudes) in a field from VizieR or GAVO.
 
     Drop-in replacement for ``twirl.gaia_radecs`` as used by the bandaid
-    pipeline. Results are cached automatically by astroquery's VizieR cache, so
-    repeated calls with the same parameters do not re-query the server.
+    pipeline. The positions come from VizieR or, failing that, the GAVO TAP
+    service. Answers are cached automatically by astroquery, so repeated calls
+    with the same parameters do not re-query the server.
 
     Parameters
     ----------
@@ -345,7 +380,7 @@ def cached_gaia_radecs(
         (default), positions are returned at the catalog epoch with no
         proper-motion correction (matching the notebook's current behavior).
     mag_limit : float, optional
-        If given, ask VizieR to return only sources with ``Gmag <= mag_limit``.
+        If given, ask the server to return only sources with ``Gmag <= mag_limit``.
         If ``None`` (default) no filter is sent, so the query (and its cache
         entry) is identical to an unfiltered one.
 
