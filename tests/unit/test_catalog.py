@@ -87,9 +87,10 @@ TAP_ERROR_VOTABLE = f"""<?xml version="1.0" encoding="UTF-8"?>
 # How a TAP service reports a failure after it has started sending rows: a
 # QUERY_STATUS ERROR after the table, which overrides the OK before it.
 MID_STREAM_ERROR_MESSAGE = "Query aborted while sending rows"
-# A trimmed recorded answer from dc.g-vo.org (2026-10-29) to the GAVO query for
-# the three brightest stars within 0.1 deg of (239.9, 25.9). Only the FIELD
-# declarations, the QUERY_STATUS and the rows are kept.
+# Trimmed from a recorded dc.g-vo.org answer (2026-10-29) to the GAVO query
+# for the three brightest stars within 0.1 deg of (239.9, 25.9). Only the
+# FIELD declarations, the QUERY_STATUS and the rows are kept, and the rows
+# are written as TABLEDATA; the service itself sends BINARY.
 GAVO_VOTABLE = b"""<?xml version='1.0' encoding='utf-8'?>
 <VOTABLE version="1.5" xmlns="http://www.ivoa.net/xml/VOTable/v1.3">
 <RESOURCE type="results">
@@ -124,8 +125,7 @@ GAVO_RA = [239.87565390231384, 239.921962110703, 239.86838050558544]
 GAVO_DEC = [25.92022378794317, 25.893150190427217, 25.869797174834083]
 GAVO_PMRA = [-4.460514, -0.91251844, 2.8270888]
 GAVO_PMDE = [12.015859, -1.9135457, -7.088754]
-# GAVO's answer for an empty field, as recorded with a G <= 1 cut: the same
-# table with no rows.
+# GAVO's answer for an empty field: the same table with no rows.
 GAVO_EMPTY_VOTABLE = (
     GAVO_VOTABLE.split(b"<TR>")[0]
     + b"</TABLEDATA>"

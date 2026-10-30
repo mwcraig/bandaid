@@ -17,7 +17,9 @@ When a server times out or answers with an error, the query moves on to the
 next server in :data:`VIZIER_SERVERS`, and the failed answer is removed from
 astroquery's cache so a retry asks the server again. If every VizieR server
 fails, the GAVO Heidelberg TAP service is the last resort; its answers go
-through astroquery's cache too, and a failed one is removed the same way.
+through astroquery's cache too, in a separate ``_GavoTap`` directory next to
+the VizieR one that ``Vizier.clear_cache()`` does not touch, and a failed one
+is removed the same way.
 
 The return value matches ``twirl.gaia_radecs``: an ``(n, 2)`` array of RA/Dec in
 degrees, optionally paired with the Gaia G magnitudes. Unlike twirl's optional
