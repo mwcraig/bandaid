@@ -9,7 +9,7 @@ from astropy.table import Table
 from eloy import psf
 
 from bandaid.config import CentroidConfig
-from bandaid.exceptions import CentroidPlaneError
+from bandaid.exceptions import CentroidPlaneError, PSFFitError
 from bandaid.photometry import (
     _brightest_unsaturated,
     _fit_offset_plane,
@@ -308,6 +308,41 @@ class TestCalibrationSequenceCnn:
         calibration_sequence(path, fwhm_n_stars=requested_n_stars)
 
         assert fwhm_helper.call_args.kwargs["n_stars"] == requested_n_stars
+
+
+class TestCalibrationSequenceFwhmCeiling:
+    """`calibration_sequence` rejects an FWHM wider than its cutout can support."""
+
+    def _write_frame(self, tmp_path):
+        path = tmp_path / "frame.fits"
+        fits.PrimaryHDU(np.zeros((200, 200)), header=_seestar_header()).writeto(
+            path, output_verify="silentfix"
+        )
+        return path
+
+    def test_fwhm_wider_than_cutout_half_is_a_frame_error(self, tmp_path, mocker):
+        """An FWHM past ``fwhm_cutout_half`` raises ``PSFFitError`` naming the file."""
+        mocker.patch("bandaid.photometry._detect_stars", five_diagonal_regions)
+        mocker.patch("bandaid.photometry._fwhm_from_coords", return_value=85.8)
+        path = self._write_frame(tmp_path)
+
+        with pytest.raises(PSFFitError) as excinfo:
+            calibration_sequence(path, fwhm_cutout_half=25)
+
+        assert excinfo.value.file == path
+        assert "85.8" in str(excinfo.value)
+        assert "25 px" in str(excinfo.value)
+
+    def test_fwhm_within_cutout_half_passes(self, tmp_path, mocker):
+        """An FWHM below ``fwhm_cutout_half`` is returned unchanged."""
+        mocker.patch("bandaid.photometry._detect_stars", five_diagonal_regions)
+        stub_fwhm = 24.0
+        mocker.patch("bandaid.photometry._fwhm_from_coords", return_value=stub_fwhm)
+        path = self._write_frame(tmp_path)
+
+        result = calibration_sequence(path, fwhm_cutout_half=25)
+
+        assert result.fwhm == stub_fwhm
 
 
 class TestCentroidDriftFlag:

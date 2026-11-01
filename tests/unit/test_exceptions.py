@@ -15,6 +15,7 @@ from bandaid.exceptions import (
     BatchPrepError,
     CatalogTruncationError,
     FrameError,
+    PSFFitError,
     TooFewStarsError,
     WCSSolveError,
 )
@@ -26,6 +27,7 @@ class TestHierarchy:
     def test_frame_errors_are_recoverable_base(self):
         """The per-frame errors share the recoverable ``FrameError`` base."""
         assert issubclass(TooFewStarsError, FrameError)
+        assert issubclass(PSFFitError, FrameError)
         assert issubclass(WCSSolveError, FrameError)
         assert issubclass(FrameError, BandaidError)
 
