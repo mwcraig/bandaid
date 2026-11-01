@@ -846,7 +846,7 @@ class TestPrepareBatch:
 
         mocker.patch("bandaid.scripts.calibration_sequence", side_effect=_too_few)
         _stub_load_frame(mocker)
-        with pytest.raises(BatchPrepError, match="too few stars"):
+        with pytest.raises(BatchPrepError, match="only 1 stars detected"):
             scripts.prepare_batch("frame1.fits", cnn=object())
 
     def test_raises_when_first_frame_has_no_usable_psf(self, mocker):

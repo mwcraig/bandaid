@@ -38,6 +38,7 @@ from .exceptions import (
     FrameMetadataError,
     InstrumentDetectionError,
     NoUsableStarsError,
+    PSFFitError,
     TooFewStarsError,
     WCSSolveError,
 )
@@ -650,7 +651,8 @@ def prepare_batch(
     Raises
     ------
     BatchPrepError
-        If too few stars are detected in ``first_file`` to measure an FWHM.
+        If too few stars are detected in ``first_file`` to measure an FWHM,
+        or the FWHM fitted to them is wider than the cutout it was fit on.
         Also raised if ``config.edge_margin_px`` is at or above half the
         smaller frame dimension, which would leave no usable area on any frame,
         and if fewer than the minimum number of target stars lie within
@@ -670,9 +672,9 @@ def prepare_batch(
     if frame is None:
         frame = _load_frame(first_file)
 
-    # A too-few-stars failure on the *first* frame is fatal for the whole batch
-    # (no FWHM/pointing to prepare from), so translate the recoverable
-    # per-frame TooFewStarsError into a fatal BatchPrepError.
+    # A failure to measure an FWHM on the *first* frame is fatal for the whole
+    # batch (no FWHM/pointing to prepare from), so translate the recoverable
+    # per-frame TooFewStarsError or PSFFitError into a fatal BatchPrepError.
     config = config or PhotometryConfig()
     # This is the first place a header is in hand, so resolve here and carry
     # the instrument forward on the config stored on the returned BatchPrep --
@@ -700,8 +702,11 @@ def prepare_batch(
         )
         metadata = calibration.metadata
         fwhm_pix = calibration.fwhm
-    except TooFewStarsError as exc:
-        msg = f"too few stars detected in {first_file!r} to prepare the batch"
+    except (TooFewStarsError, PSFFitError) as exc:
+        msg = (
+            f"cannot measure an FWHM on {first_file!r} to prepare the batch: "
+            f"{exc.reason}"
+        )
         raise BatchPrepError(msg) from exc
 
     _check_edge_margin_fits_frame(config.edge_margin_px, metadata)
