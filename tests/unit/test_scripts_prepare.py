@@ -2,6 +2,7 @@
 
 import csv
 import dataclasses
+from pathlib import Path
 
 import astropy.units as u
 import numpy as np
@@ -559,12 +560,12 @@ class TestPrepareBatch:
         with pytest.raises(FrameMetadataError, match="obs_time"):
             scripts.prepare_batch("frame1.fits", cnn=object())
 
-    def test_bad_pointing_labeled_with_first_file(self, mocker):
+    def test_bad_pointing_labeled_with_prep_file(self, mocker):
         """
-        A bad first-frame pointing fails as a metadata error naming the frame.
+        A bad pointing fails as a metadata error naming the prep frame.
 
         ``estimate_center_from_header`` knows the pointing is bad but not which file
-        it came from; ``prepare_batch`` attaches ``first_file`` before re-raising,
+        it came from; ``prepare_batch`` attaches the prep file before re-raising,
         matching the ``metadata_from_header``/``obs_time`` labelling right above
         the call so the failure is actionable.
         """
@@ -865,15 +866,17 @@ class TestPrepareBatch:
         assert isinstance(excinfo.value.__cause__, PSFFitError)
 
     @staticmethod
-    def _walk_setup(mocker, failures) -> tuple:
+    def _walk_setup(mocker, failures, headers=None) -> tuple:
         """
         Patch a prep whose calibration fails for the files named in ``failures``.
 
         ``failures`` maps a file to the exception class it raises; any other
         file calibrates normally. Returns the `_patch_prep` namespace with its
         ``calibration_sequence`` re-keyed on the ``file`` argument, and the
-        ``_load_frame`` mock.
+        ``_load_frame`` mock. ``headers`` optionally maps a file to the header
+        its loaded frame carries (default: a Seestar S50 header).
         """
+        headers = headers or {}
         prep_data = _patch_prep(mocker)
         good = prep_data.calibration_sequence.return_value
 
@@ -886,8 +889,8 @@ class TestPrepareBatch:
         prep_data.calibration_sequence.side_effect = _calibrate
         load_frame = mocker.patch(
             "bandaid.scripts._load_frame",
-            side_effect=lambda _f: scripts.LoadedFrame(
-                np.zeros((4, 4)), {"INSTRUME": "Seestar S50"}
+            side_effect=lambda f: scripts.LoadedFrame(
+                np.zeros((4, 4)), headers.get(f, {"INSTRUME": "Seestar S50"})
             ),
         )
         return prep_data, load_frame
@@ -905,26 +908,53 @@ class TestPrepareBatch:
             "frame1.fits",
             "frame2.fits",
         ]
-        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
-        assert any(
-            "frame1.fits" in r.getMessage()
-            and "no FWHM on frame1.fits" in r.getMessage()
-            for r in warnings
-        )
+        walk_warnings = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelname == "WARNING" and "FWHM" in r.getMessage()
+        ]
+        assert walk_warnings == [
+            "no FWHM from frame1.fits (no FWHM on frame1.fits); "
+            "trying the next frame to prepare the batch",
+            "preparing the batch from frame2.fits after passing over 1 frame(s) "
+            "with no FWHM; they are still processed and skipped per frame",
+        ]
 
-    def test_every_frame_failing_raises_with_last_error_as_cause(self, mocker):
+    def test_no_walk_logs_a_single_info_line(self, mocker, caplog):
+        """With nothing passed over the batch start is one INFO line, no warning."""
+        self._walk_setup(mocker, {})
+
+        with caplog.at_level("INFO", logger="bandaid.scripts"):
+            scripts.prepare_batch(["frame1.fits", "frame2.fits"], cnn=object())
+
+        assert not [r for r in caplog.records if "passed over" in r.getMessage()]
+        assert "preparing the batch from frame1.fits" in [
+            r.getMessage() for r in caplog.records
+        ]
+
+    def test_every_frame_failing_raises_with_last_error_as_cause(self, mocker, caplog):
         """When no frame yields an FWHM the batch fails, naming the count and last."""
         self._walk_setup(
             mocker, {"frame1.fits": PSFFitError, "frame2.fits": TooFewStarsError}
         )
 
-        with pytest.raises(BatchPrepError) as excinfo:
+        with (
+            caplog.at_level("WARNING", logger="bandaid.scripts"),
+            pytest.raises(BatchPrepError) as excinfo,
+        ):
             scripts.prepare_batch(["frame1.fits", "frame2.fits"], cnn=object())
 
-        message = str(excinfo.value)
-        assert "any of the 2 frames" in message
-        assert "frame2.fits" in message
-        assert "no FWHM on frame2.fits" in message
+        assert str(excinfo.value) == (
+            "cannot measure an FWHM on any of the 2 frames; the last, "
+            "frame2.fits, failed with: no FWHM on frame2.fits"
+        )
+        trying = [
+            r.getMessage()
+            for r in caplog.records
+            if "trying the next" in r.getMessage()
+        ]
+        assert len(trying) == 1
+        assert "frame1.fits" in trying[0]
         assert isinstance(excinfo.value.__cause__, TooFewStarsError)
         assert excinfo.value.__cause__.file == "frame2.fits"
 
@@ -935,9 +965,75 @@ class TestPrepareBatch:
         with pytest.raises(BatchPrepError) as excinfo:
             scripts.prepare_batch("frame1.fits", cnn=object())
 
-        assert str(excinfo.value).endswith(
-            "cannot measure an FWHM: no FWHM on frame1.fits"
+        assert str(excinfo.value) == (
+            "cannot measure an FWHM on frame1.fits: no FWHM on frame1.fits"
         )
+
+    def test_later_candidate_of_another_instrument_is_passed_over(self, mocker, caplog):
+        """An auto-detected batch skips a later candidate from another instrument."""
+        prep_data, _ = self._walk_setup(
+            mocker,
+            {"frame1.fits": TooFewStarsError},
+            headers={"frame2.fits": {"INSTRUME": "Some Other Scope"}},
+        )
+
+        with caplog.at_level("WARNING", logger="bandaid.scripts"):
+            prep = scripts.prepare_batch(
+                ["frame1.fits", "frame2.fits", "frame3.fits"], cnn=object()
+            )
+
+        assert prep.prep_file == "frame3.fits"
+        called = [c.args[0] for c in prep_data.calibration_sequence.call_args_list]
+        assert called == ["frame1.fits", "frame3.fits"]
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(
+            "frame2.fits does not resolve to the batch instrument" in m
+            for m in messages
+        )
+
+    def test_non_fwhm_error_from_later_candidate_stops_the_walk(self, mocker):
+        """Only FWHM failures advance the walk; other errors propagate unchanged."""
+        prep_data, _ = self._walk_setup(
+            mocker,
+            {"frame1.fits": TooFewStarsError, "frame2.fits": FrameMetadataError},
+        )
+
+        with pytest.raises(FrameMetadataError) as excinfo:
+            scripts.prepare_batch(
+                ["frame1.fits", "frame2.fits", "frame3.fits"], cnn=object()
+            )
+
+        assert excinfo.value.file == "frame2.fits"
+        called = [c.args[0] for c in prep_data.calibration_sequence.call_args_list]
+        assert called == ["frame1.fits", "frame2.fits"]
+
+    def test_bad_pointing_after_a_walk_is_labeled_with_the_prep_frame(self, mocker):
+        """A bad pointing on the frame the walk settled on names that frame."""
+        metadata = _batch_metadata()
+        metadata["ra"] = "not-a-number"
+        prep_data = _patch_prep(mocker, metadata=metadata)
+        good = prep_data.calibration_sequence.return_value
+
+        def _calibrate(file, **_kwargs: object):
+            if file == "frame1.fits":
+                msg = "no FWHM"
+                raise TooFewStarsError(msg, file=file)
+            return good
+
+        prep_data.calibration_sequence.side_effect = _calibrate
+
+        with pytest.raises(FrameMetadataError, match="pointing") as excinfo:
+            scripts.prepare_batch(["frame1.fits", "frame2.fits"], cnn=object())
+        assert excinfo.value.file == "frame2.fits"
+
+    def test_path_object_input_sets_prep_file(self, mocker):
+        """A single `pathlib.Path` is accepted and recorded as given."""
+        _patch_prep(mocker)
+        path = Path("frame1.fits")
+
+        prep = scripts.prepare_batch(path, cnn=object())
+
+        assert prep.prep_file == path
 
     def test_provided_frame_is_used_for_the_first_candidate_only(self, mocker):
         """``frame=`` stands in for the first file; later candidates are loaded."""
@@ -1018,7 +1114,7 @@ class TestPrepareBatch:
     def test_floor_counts_only_stars_inside_solve_pool(self, mocker):
         """Stars in the widened cone but outside the solve pool do not count."""
         self._stars_in_and_out_of_pool(mocker, n_in=12, n_out=13)
-        with pytest.raises(BatchPrepError, match="solve pool"):
+        with pytest.raises(BatchPrepError, match=r"solve pool radius of frame1\.fits"):
             scripts.prepare_batch("frame1.fits", cnn=object())
 
     def test_floor_met_when_stars_inside_solve_pool(self, mocker):

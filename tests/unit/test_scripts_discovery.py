@@ -246,18 +246,14 @@ class TestPhotometerFrames:
         )
         assert exc_info.value.__cause__ is original
 
-    @pytest.mark.parametrize(
-        ("prep_index", "first_frame_passed"), [(0, True), (1, False)]
-    )
-    def test_first_frame_handed_to_process_batch_only_if_prep_used_it(
-        self, mocker, tmp_path, prep_index, first_frame_passed
+    def test_first_frame_handed_to_process_batch_even_if_prep_used_a_later_one(
+        self, mocker, tmp_path
     ):
         """
-        The preloaded first frame reaches ``process_batch`` only when it was used.
+        The preloaded first frame reaches ``process_batch`` whatever seeded the prep.
 
-        When ``prepare_batch`` walked past the first frame, the load belongs to
-        a frame that was not the prep frame, so ``process_batch`` reloads it
-        (and skips it through the normal per-frame path).
+        ``process_batch`` uses it for position 1 of the batch, so a walked-past
+        first frame still reuses the load.
         """
         night = tmp_path / "night"
         night.mkdir()
@@ -267,7 +263,7 @@ class TestPhotometerFrames:
         mocker.patch("bandaid.scripts._load_frame", return_value=frame_sentinel)
         mocker.patch("bandaid.scripts.Ballet", return_value=object())
         expected = sorted(str(p.resolve()) for p in night.glob("*.fit"))
-        prep = SimpleNamespace(prep_file=expected[prep_index])
+        prep = SimpleNamespace(prep_file=expected[1])
         prepare_batch = mocker.patch("bandaid.scripts.prepare_batch", return_value=prep)
         process_batch = mocker.patch("bandaid.scripts.process_batch", return_value={})
 
@@ -275,8 +271,7 @@ class TestPhotometerFrames:
 
         assert prepare_batch.call_args.args == (expected,)
         assert prepare_batch.call_args.kwargs["frame"] is frame_sentinel
-        expected_first = frame_sentinel if first_frame_passed else None
-        assert process_batch.call_args.kwargs["first_frame"] is expected_first
+        assert process_batch.call_args.kwargs["first_frame"] is frame_sentinel
 
     def test_forced_targets_forwarded_to_prepare_batch(self, mocker, tmp_path):
         """The ``forced_targets`` SkyCoord reaches ``prepare_batch`` unchanged."""
