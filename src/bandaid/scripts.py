@@ -546,7 +546,7 @@ def _resolve_batch_instrument(config, header, file):
     caller that wants the fatal behavior: an unresolvable *first* frame leaves
     the whole batch with no detection/PSF settings to prepare with. So it is
     wrapped here instead of relying on inheritance. The message names ``file``
-    because `photometer_frames` no longer adds the first frame's path.
+    because callers do not add the path.
     """
     try:
         return resolve_config_instrument(config, header)
@@ -555,9 +555,11 @@ def _resolve_batch_instrument(config, header, file):
         raise BatchPrepError(msg) from exc
 
 
-def _check_solve_pool_floor(target_radecs, center, fov_rad, instrument, mag_limit):
+def _check_solve_pool_floor(
+    target_radecs, center, fov_rad, instrument, mag_limit, file
+):
     """
-    Require enough target stars inside the first frame's solve pool.
+    Require enough target stars inside the solve pool of the prep frame.
 
     Parameters
     ----------
@@ -571,6 +573,8 @@ def _check_solve_pool_floor(target_radecs, center, fov_rad, instrument, mag_limi
         Supplies ``solve_pool_radius_scale``.
     mag_limit : float
         The target magnitude limit, used in the error message.
+    file : str or Path
+        The frame the batch is prepared from, named in the error message.
 
     Raises
     ------
@@ -589,14 +593,16 @@ def _check_solve_pool_floor(target_radecs, center, fov_rad, instrument, mag_limi
     if n_in_pool < N_GAIA_STARS_ALIGN_RETRY:
         msg = (
             f"Gaia returned only {n_in_pool} stars brighter than "
-            f"{mag_limit} within the first frame's solve pool radius "
+            f"{mag_limit} within the solve pool radius of {file} "
             f"({pool_radius:.3f} deg) for the field at {center}; need at least "
             f"{N_GAIA_STARS_ALIGN_RETRY} to solve a WCS"
         )
         raise BatchPrepError(msg)
 
 
-def _calibrate_first_usable(candidates, first_loaded, cnn, instrument):
+def _calibrate_first_usable(
+    candidates, first_loaded, cnn, instrument, instrument_auto_detected
+):
     """
     Run the calibration on each candidate until one yields an FWHM.
 
@@ -611,6 +617,9 @@ def _calibrate_first_usable(candidates, first_loaded, cnn, instrument):
         The centroiding model used to measure the FWHM.
     instrument : InstrumentProfile
         The resolved instrument profile for detection and PSF fitting.
+    instrument_auto_detected : bool
+        Whether ``instrument`` was auto-detected; if so, a candidate after the
+        first whose header does not resolve to it is passed over.
 
     Returns
     -------
@@ -626,10 +635,27 @@ def _calibrate_first_usable(candidates, first_loaded, cnn, instrument):
     BatchPrepError
         If no candidate yields an FWHM; the last candidate's
         `~bandaid.exceptions.TooFewStarsError` or
-        `~bandaid.exceptions.PSFFitError` is chained as ``__cause__``.
+        `~bandaid.exceptions.PSFFitError` (or the
+        `~bandaid.exceptions.FrameError` of a candidate from another
+        instrument) is chained as ``__cause__``.
     """
     for position, prep_file in enumerate(candidates):
         prep_frame = first_loaded if position == 0 else _load_frame(prep_file)
+        if position > 0 and instrument_auto_detected:
+            try:
+                _check_instrument_mixing(
+                    prep_file, prep_frame.header, instrument_auto_detected, instrument
+                )
+            except FrameError as exc:
+                last_error = exc
+                if position + 1 < len(candidates):
+                    logger.warning(
+                        "%s does not resolve to the batch instrument (%s); "
+                        "trying the next frame to prepare the batch",
+                        prep_file,
+                        exc.reason,
+                    )
+                continue
         try:
             # Pass the CNN so the FWHM (which sizes the photometry aperture) is
             # measured by re-centroiding detections, decoupling it from the
@@ -656,11 +682,11 @@ def _calibrate_first_usable(candidates, first_loaded, cnn, instrument):
         else:
             return prep_file, calibration, position
     if len(candidates) == 1:
-        msg = f"cannot measure an FWHM: {last_error.reason}"
+        msg = f"cannot measure an FWHM on {prep_file}: {last_error.reason}"
     else:
         msg = (
             f"cannot measure an FWHM on any of the {len(candidates)} "
-            f"frames; last, {prep_file}: {last_error.reason}"
+            f"frames; the last, {prep_file}, failed with: {last_error.reason}"
         )
     raise BatchPrepError(msg) from last_error
 
@@ -788,18 +814,19 @@ def prepare_batch(
     instrument = config.instrument
 
     prep_file, calibration, n_passed_over = _calibrate_first_usable(
-        candidates, first_loaded, cnn, instrument
+        candidates, first_loaded, cnn, instrument, instrument_auto_detected
     )
     metadata = calibration.metadata
     fwhm_pix = calibration.fwhm
-    logger.info("preparing the batch from %s", prep_file)
     if n_passed_over:
         logger.warning(
-            "passed over %d frame(s) with no FWHM before %s; they are still "
-            "processed and skipped per frame",
-            n_passed_over,
+            "preparing the batch from %s after passing over %d frame(s) with no "
+            "FWHM; they are still processed and skipped per frame",
             prep_file,
+            n_passed_over,
         )
+    else:
+        logger.info("preparing the batch from %s", prep_file)
 
     _check_edge_margin_fits_frame(config.edge_margin_px, metadata)
 
@@ -873,7 +900,12 @@ def prepare_batch(
     # Without enough reference stars no frame can solve a WCS, so fail the batch
     # now with a clear message rather than letting every frame fail later.
     _check_solve_pool_floor(
-        target_radecs, center, metadata["fov_rad"], instrument, gaia_mag_limit
+        target_radecs,
+        center,
+        metadata["fov_rad"],
+        instrument,
+        gaia_mag_limit,
+        prep_file,
     )
 
     # The flag is computed once, from the prep frame's FWHM, but applied to
@@ -970,7 +1002,7 @@ def prepare_batch(
     )
 
 
-def _check_instrument_mixing(file, header, prep, batch_instrument):
+def _check_instrument_mixing(file, header, instrument_auto_detected, batch_instrument):
     """
     Reject a frame whose header does not resolve to the batch's instrument.
 
@@ -980,11 +1012,12 @@ def _check_instrument_mixing(file, header, prep, batch_instrument):
         The frame being checked (attached to any raised error).
     header : astropy.io.fits.Header
         The frame's FITS header.
-    prep : BatchPrep
-        The batch prep whose ``instrument_auto_detected`` gates whether a
-        header matching no registered instrument is exempted (see Notes).
+    instrument_auto_detected : bool
+        Whether the batch instrument was auto-detected rather than chosen
+        explicitly; this gates whether a header matching no registered
+        instrument is exempted (see Notes).
     batch_instrument : InstrumentProfile or None
-        ``prep.config.instrument``, supplying the ``header_match`` rules
+        the batch's resolved instrument, supplying the ``header_match`` rules
         checked against.
 
     Raises
@@ -1010,7 +1043,7 @@ def _check_instrument_mixing(file, header, prep, batch_instrument):
 
     An explicitly chosen instrument (``--instrument``/``--profile``/
     ``--config``, or ``config=PhotometryConfig(instrument=...)`` --
-    ``prep.instrument_auto_detected`` is False) is exempted only from the
+    ``instrument_auto_detected`` is False) is exempted only from the
     no-match outcome: a header that resolves to *no* registered instrument at
     all (missing/malformed) is trusted, the deliberate override's intended
     escape hatch. A header that positively identifies a *different,
@@ -1038,7 +1071,7 @@ def _check_instrument_mixing(file, header, prep, batch_instrument):
             detection_error = None
 
         no_match = detection_error is not None and not detection_error.matched
-        if no_match and not prep.instrument_auto_detected:
+        if no_match and not instrument_auto_detected:
             # The explicit-selection escape hatch: a header that resolves to
             # no registered instrument at all is trusted, not just one that
             # merely fails to name the batch instrument. An ambiguous header
@@ -1060,7 +1093,7 @@ def _check_instrument_mixing(file, header, prep, batch_instrument):
                 header.get(rule.keyword) is None
                 for rule in batch_instrument.header_match
             )
-            origin = "auto-detected batch" if prep.instrument_auto_detected else "batch"
+            origin = "auto-detected batch" if instrument_auto_detected else "batch"
             if none_present:
                 msg = (
                     f"frame header is missing {missing}, required by the "
@@ -1146,7 +1179,9 @@ def check_frame_consistency(file, header, prep):
     # runs before the header is otherwise resolved; see
     # _check_instrument_mixing.
     batch_instrument = prep.config.instrument
-    _check_instrument_mixing(file, header, prep, batch_instrument)
+    _check_instrument_mixing(
+        file, header, prep.instrument_auto_detected, batch_instrument
+    )
 
     try:
         metadata = metadata_from_header(header, profile=batch_instrument)
@@ -2246,9 +2281,9 @@ def photometer_frames(
         cnn = Ballet(model_file=weights)
 
     # Open the first frame once and hand the load to both stages --
-    # prepare_batch derives the prep from it and process_batch photometers it
-    # -- so the whole run opens each frame exactly once (issue #44) unless
-    # prepare_batch walks past this frame, which process_batch then reloads.
+    # prepare_batch uses it as the first candidate and process_batch photometers
+    # it. When prepare_batch is seeded from a later frame, that frame is loaded
+    # a second time by process_batch.
     first_frame = _load_frame(frames[0])
     try:
         prep = prepare_batch(
@@ -2275,8 +2310,6 @@ def photometer_frames(
         write_frame=write_frame,
         fail_fast=fail_fast,
         write_manifest=write_manifest,
-        # Only the frame the prep was built from has been loaded for use; a
-        # walked-past first frame is reloaded and skipped like any other.
-        first_frame=first_frame if prep.prep_file == frames[0] else None,
+        first_frame=first_frame,
     )
     return frames, results
