@@ -27,6 +27,7 @@ __all__ = [
     "GaiaQueryError",
     "InstrumentDetectionError",
     "NoUsableStarsError",
+    "PSFFitError",
     "StarListValidationError",
     "TooFewStarsError",
     "WCSPointingError",
@@ -76,6 +77,20 @@ class FrameError(BandaidError):
         where the source file is set on the error by the caller that knows it.
         """
         return f"{self.file}: {self.reason}" if self.file is not None else self.reason
+
+
+class PSFFitError(FrameError):
+    """
+    The fitted PSF is wider than the cutout it was fit on, so no usable PSF exists.
+
+    Notes
+    -----
+    On a frame with no real star image (clouds, an obstruction moving into the
+    field) the Gaussian fit to the near-flat stacked cutout is unconstrained
+    and can come out wider than the cutout itself. Apertures and annuli are
+    sized in FWHM, so letting such a value through would size them to hundreds
+    of pixels per star and exhaust memory. The frame is skipped instead.
+    """
 
 
 class TooFewStarsError(FrameError):

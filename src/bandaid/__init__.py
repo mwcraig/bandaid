@@ -57,6 +57,7 @@ from .exceptions import (
     GaiaQueryError,
     InstrumentDetectionError,
     NoUsableStarsError,
+    PSFFitError,
     StarListValidationError,
     TooFewStarsError,
     WCSPointingError,
