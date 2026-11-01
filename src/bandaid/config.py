@@ -370,12 +370,12 @@ class InstrumentProfile(BaseModel, frozen=True):
         instrument PSF.
     contamination_seeing_margin : float
         Seeing-pessimism factor for the once-per-batch bright-neighbour
-        contamination flag. The flag is computed from the *first* frame's FWHM
+        contamination flag. The flag is computed from the prep frame's FWHM
         but applied to every frame of the batch, so it is evaluated at
-        ``first-frame FWHM * contamination_seeing_margin``: pairs that would
+        ``prep-frame FWHM * contamination_seeing_margin``: pairs that would
         become contaminated as seeing softens during the night are dropped up
         front. Must be ``>= 1``; ``1.0`` evaluates the flag at exactly the
-        first frame's seeing.
+        prep frame's seeing.
     wcs_scale_tolerance : float
         Maximum fractional deviation of a solved plate scale from the
         instrument's expected pixscale before the WCS is rejected as a
@@ -403,9 +403,9 @@ class InstrumentProfile(BaseModel, frozen=True):
     cone_radius_margin : float
         Extra radius in degrees added to ``fov_rad`` for the once-per-batch Gaia
         query. It is the amount of pointing drift (between any frame and the
-        first) that the batch catalogue covers. ``0.0`` queries exactly the
-        first frame's field, which leaves every frame whose header pointing
-        differs at all from the first partly uncovered.
+        prep frame) that the batch catalogue covers. ``0.0`` queries exactly
+        the prep frame's field, which leaves every frame whose header pointing
+        differs at all from it partly uncovered.
     solve_pool_radius_scale : float
         Fraction of ``fov_rad`` used as the radius of each frame's plate-solve
         star pool, centred on that frame's own header pointing. Must be ``> 0``.
@@ -449,7 +449,7 @@ class InstrumentProfile(BaseModel, frozen=True):
     fwhm_n_stars: Annotated[int, Field(ge=1)] = 25
     contamination_tolerance: Annotated[float, Field(gt=0)] = 0.01
     moffat_beta: Annotated[float, Field(gt=0)] = 3.0
-    # ge=1: a sub-unity margin would *un*-flag pairs the measured first-frame
+    # ge=1: a sub-unity margin would *un*-flag pairs the measured prep-frame
     # seeing already contaminates, silently shipping blended photometry.
     contamination_seeing_margin: Annotated[float, Field(ge=1.0)] = 1.25
     wcs_scale_tolerance: Annotated[float, Field(gt=0)] = 0.05

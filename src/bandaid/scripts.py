@@ -7,7 +7,7 @@ the Gaia source list, the contaminant-filtered subset of it used as the
 photometry/centroiding points, the CNN centroiding model, and the Bayer masks.
 
 `prepare_batch` computes these once -- deriving the field pointing, plate scale,
-FOV, Bayer pattern, and (via one cheap detection pass on the first frame) the
+FOV, Bayer pattern, and (via one cheap detection pass on the first usable frame) the
 FWHM -- and returns them as a `BatchPrep` bundle. `process_frame` photometers
 one frame against that bundle and reports the outcome as a `FrameResult`;
 `process_batch` loops the frames through it, writes the outputs and the QA
@@ -319,7 +319,7 @@ class BatchPrep:
         `~bandaid.photometry.centroid_with_catalog_model`).
         ``inf`` when the field has fewer than ``cnn_class_size`` targets in the
         cut circle; None when the policy is off. Default None.
-    prep_file : str or None
+    prep_file : str or Path or None
         The path, as given to `prepare_batch`, of the frame the preparation
         was built from: the first frame that yielded an FWHM. None when the
         bundle was not built by `prepare_batch`. Default None.
@@ -338,7 +338,7 @@ class BatchPrep:
     build_l4: bool = True
     gaia_g: np.ndarray | None = None
     g_cut: float | None = None
-    prep_file: str | None = None
+    prep_file: str | os.PathLike | None = None
 
     def __post_init__(self) -> None:
         """
@@ -715,11 +715,12 @@ def prepare_batch(
     Parameters
     ----------
     files : str or Path or sequence of (str or Path)
-        The batch's FITS frames in batch order, or a single path (treated as a
-        one-frame batch). The batch is prepared from the first one that yields
-        an FWHM; that frame supplies the field pointing/FOV, plate scale,
-        Bayer pattern, image shape, observation epoch, and FWHM. All frames in
-        the batch are assumed to share these.
+        The batch's FITS frames, or a single path (treated as a one-frame
+        batch). The order matters: it fixes which frame is tried first. The
+        batch is prepared from the first one that yields an FWHM; that frame
+        supplies the field pointing/FOV, plate scale, Bayer pattern, image
+        shape, observation epoch, and FWHM. All frames in the batch are assumed
+        to share these.
     cnn : object
         The centroiding model to carry through to every frame: any object with
         a ``centroid(cutouts) -> (N, 2)`` method, such as
@@ -748,8 +749,8 @@ def prepare_batch(
         `~astropy.coordinates.SkyCoord.from_name`) is accepted and treated as
         one target. None (default) adds nothing.
     frame : LoadedFrame or None, optional
-        The already-loaded contents of the first frame in ``files`` only; later
-        candidates are always loaded here. None (default) loads the first
+        The already-loaded contents of ``files[0]`` (or of the single path);
+        later candidates are always loaded here. None (default) loads that
         frame here too.
 
     Returns
@@ -793,6 +794,9 @@ def prepare_batch(
     The passed-over frames are not removed from the batch. `process_batch`
     still visits them, skips each through the normal per-frame path, and gives
     it a row in the QA manifest.
+
+    Instrument detection always uses the first frame; everything else comes
+    from the prep frame.
     """
     candidates = [files] if isinstance(files, str | os.PathLike) else list(files)
 
@@ -1118,7 +1122,7 @@ def check_frame_consistency(file, header, prep):
     Reject a frame whose pointing, shape, or instrument disagrees with the batch prep.
 
     `prepare_batch` derives the field pointing, FOV, and image shape from the
-    first frame and queries Gaia once for that field. A later frame that drifted
+    prep frame and queries Gaia once for that field. A later frame that drifted
     off the field (a slew, a meridian flip, the wrong target) or has a different
     shape would be photometered against a catalog that no longer covers it,
     producing silently wrong results -- so reject it instead. A frame whose
@@ -1130,7 +1134,7 @@ def check_frame_consistency(file, header, prep):
 
     The header is then resolved through the batch instrument's ``header_map``
     (``prep.config.instrument``), the same dialect that resolved the prep's
-    ``center``/``shape`` from the first frame -- so an instrument whose pointing
+    ``center``/``shape`` from the prep frame -- so an instrument whose pointing
     lives under different keywords than the Seestar's is compared consistently
     (issue #59). The frame's header pointing is converted to ICRS with
     :func:`estimate_center_from_header` before the comparison, the same way
@@ -1201,7 +1205,7 @@ def check_frame_consistency(file, header, prep):
     if ra is None or dec is None:
         msg = "header resolved no pointing (ra/dec) through the instrument header_map"
         raise FrameMetadataError(msg, file=file)
-    # prep.center is the first frame's header pointing converted to ICRS, so
+    # prep.center is the prep frame's header pointing converted to ICRS, so
     # convert this frame's the same way before comparing.
     # The None case is caught by the explicit guard above; a present-but-non-
     # numeric pointing surfaces from estimate_center_from_header, which sits
@@ -2202,8 +2206,8 @@ def photometer_frames(
 
     The high-level convenience behind ``bandaid process``: it does the file-name
     expansion (`expand_frame_paths`), builds the `Ballet` centroider, and
-    runs `prepare_batch` (seeded from the first frame that yields an FWHM) followed by
-    `process_batch`.
+    runs `prepare_batch` (seeded from the first frame that yields an FWHM)
+    followed by `process_batch`.
     Driving the whole flow from Python is one call to this function; the CLI is a
     thin dressing over it.
 
