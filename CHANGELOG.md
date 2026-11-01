@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `PSFFitError`, a `FrameError` exported from `bandaid`, is raised by
+    `calibration_sequence` when no usable PSF can be fit to a frame's stars
+    (#174).
 - The Gaia query falls back when a server fails: CDS VizieR, then the IDIA
     and CfA mirrors. Failed answers are not cached. If every server fails,
     `GaiaQueryError` names the servers and the last error (#169).
@@ -367,6 +370,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A frame whose fitted FWHM exceeds `fwhm_cutout_half` is skipped with
+    `PSFFitError` instead of sizing every aperture in FWHM to hundreds of
+    pixels and exhausting memory; on the first frame of a batch it is a fatal
+    `BatchPrepError`, as `TooFewStarsError` is (#174).
 - A VizieR outage answer (HTTP 200 with only an `INFO name="Error"`, such as
     "The database is not currently reachable") is no longer read as an empty
     field and cached for a week, which made every retry report "Gaia returned

@@ -6,13 +6,19 @@ Most per-frame problems show up as a non-`ok` `status` in the
 
 ## A few frames were skipped (the rest of the run finished)
 
-This is the normal, designed behavior: a single bad frame is logged and skipped
-so an overnight batch still produces results. The frame's manifest `status` names
-the reason — a `FrameError` subclass:
+This is the normal, designed behavior: a single bad frame is skipped with a
+`skipping <file>: <reason>` warning on stderr (and in `--log-file` when given),
+shown at the default verbosity, so an overnight batch still produces results.
+The frame's manifest `status` names the reason — a `FrameError` subclass:
 
 - **`skipped: TooFewStarsError`** — too few stars were detected to work with.
-    Usually a clouded-over, trailed, or badly defocused frame. Check `n_detected`
-    and `fwhm` in the manifest for that row.
+    Usually a clouded-over, trailed, or badly defocused frame. The skipped row
+    leaves `n_detected` and `fwhm` blank; the count is in the `skipping ...`
+    warning.
+- **`skipped: PSFFitError`** — no usable PSF could be fit to the frame's stars
+    (see [`PSFFitError`](api.md#bandaid.PSFFitError)). Typically a frame with no
+    real star image: clouds or an obstruction in the field. The skipped row
+    leaves `fwhm` blank; the fitted value is in the `skipping ...` warning.
 - **`skipped: WCSSolveError`** — the plate solve failed (`wcs_solved` is
     `False`). The field could not be matched against Gaia, typically because too
     few stars were detected or the pointing was off.
@@ -34,9 +40,10 @@ WCS failure) that the one-line skip message summarizes.
 
 A skipped frame is recoverable; a `BatchPrepError` is not. The once-per-batch
 preparation is built from the **first** frame, and if that fails — too few stars
-to measure an FWHM, Gaia returns too few reference stars for the field, or (with
-no explicit `--instrument`/`--profile`/config `instrument`) the first frame's
-header does not resolve to exactly one instrument profile
+to measure an FWHM or no usable PSF to fit to them, Gaia returns too few
+reference stars for the field, or (with no explicit
+`--instrument`/`--profile`/config `instrument`) the first frame's header does
+not resolve to exactly one instrument profile
 (`InstrumentDetectionError`; see [Instrument
 profiles](instrument_profiles.md#auto-detection-from-the-fits-header)) — there
 is nothing to process the rest of the batch against, so the whole run stops.

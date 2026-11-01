@@ -60,6 +60,7 @@ from .exceptions import (
     FrameMetadataError,
     InstrumentDetectionError,
     NoUsableStarsError,
+    PSFFitError,
     StarListValidationError,
     TooFewStarsError,
     WCSPointingError,
@@ -1044,6 +1045,9 @@ def calibration_sequence(
     TooFewStarsError
         If fewer than ``MIN_DETECTED_STARS`` are detected, or every detected
         source is saturated, so no usable PSF can be fit.
+    PSFFitError
+        If the fitted FWHM exceeds ``fwhm_cutout_half``, as happens on a frame
+        with no real star image.
     FrameMetadataError
         If the header is missing a required keyword (propagated from
         `metadata_from_header`, with the source file attached). Also raised,
@@ -1133,6 +1137,12 @@ def calibration_sequence(
     if fwhm is None:
         msg = "all detected sources are saturated"
         raise TooFewStarsError(msg, file=file)
+    if fwhm > fwhm_cutout_half:
+        msg = (
+            f"no usable PSF: fitted FWHM {fwhm:.1f} px exceeds the "
+            f"{fwhm_cutout_half} px cutout half-width"
+        )
+        raise PSFFitError(msg, file=file)
 
     logger.debug(
         "%s: %d sources detected, FWHM %.2f px (bayer-balanced detection: %s)",
@@ -3550,12 +3560,12 @@ def prepare_image(
     WCSSolveError
         If the per-image WCS cannot be solved. The source `file` is attached to
         the error before it propagates. (`calibration_sequence` may also raise
-        `TooFewStarsError` or, when ``detect_on_bayer_balanced`` is True and a
-        CFA sub-grid sample is empty or has zero variance,
-        `DegenerateBayerChannelError` -- both with `file` already attached by
+        `TooFewStarsError`, `PSFFitError` or, when ``detect_on_bayer_balanced``
+        is True and a CFA sub-grid sample is empty or has zero variance,
+        `DegenerateBayerChannelError` -- all with `file` already attached by
         `calibration_sequence` itself, and `_drop_edge_catalog_stars` may
         raise `NoUsableStarsError` when no catalog star lies inside the frame
-        by at least ``config.edge_margin_px``; all three propagate
+        by at least ``config.edge_margin_px``; all of these propagate
         unchanged.)
     FrameMetadataError
         If a WCS must be solved (``wcs`` is None) but the frame metadata has no
@@ -3587,8 +3597,9 @@ def prepare_image(
     centroid and would silently not run.
     """
     # "calibrate" the data and get initial detections for WCS alignment and
-    # FWHM estimation. calibration_sequence raises TooFewStarsError (a
-    # FrameError) when the frame is unusable; let it propagate to the batch loop.
+    # FWHM estimation. calibration_sequence raises TooFewStarsError or
+    # PSFFitError (both FrameErrors) when the frame is unusable; let it
+    # propagate to the batch loop.
     # Pass the CNN so the FWHM that sizes the photometry aperture is measured by
     # re-centroiding detections, keeping it independent of the detection opening.
     if frame is None:
@@ -4076,8 +4087,8 @@ def process_one_image(
     before any channel is photometered.
     """
     # Calculate everything we need for all filters at once. prepare_image raises
-    # a FrameError (TooFewStarsError / WCSSolveError) when the frame is unusable;
-    # let it propagate to the batch loop.
+    # a FrameError (TooFewStarsError / PSFFitError / WCSSolveError) when the
+    # frame is unusable; let it propagate to the batch loop.
     config = config or PhotometryConfig()
     # Resolve the instrument once, here, from the loaded frame's header, and
     # pass the resolved config down -- rather than letting prepare_image

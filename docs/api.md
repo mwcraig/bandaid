@@ -105,6 +105,8 @@ every Gaia server has failed, and `prepare_batch` wraps it in a `BatchPrepError`
 
 ::: bandaid.TooFewStarsError
 
+::: bandaid.PSFFitError
+
 ::: bandaid.WCSSolveError
 
 ::: bandaid.WCSScaleError

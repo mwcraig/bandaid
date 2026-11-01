@@ -37,6 +37,7 @@ from bandaid.exceptions import (
     FrameMetadataError,
     GaiaQueryError,
     InstrumentDetectionError,
+    PSFFitError,
     TooFewStarsError,
 )
 from bandaid.instruments import load_instrument, register_instrument
@@ -845,8 +846,23 @@ class TestPrepareBatch:
 
         mocker.patch("bandaid.scripts.calibration_sequence", side_effect=_too_few)
         _stub_load_frame(mocker)
-        with pytest.raises(BatchPrepError, match="too few stars"):
+        with pytest.raises(BatchPrepError, match="only 1 stars detected"):
             scripts.prepare_batch("frame1.fits", cnn=object())
+
+    def test_raises_when_first_frame_has_no_usable_psf(self, mocker):
+        """A first-frame PSFFitError becomes a fatal BatchPrepError."""
+
+        def _no_psf(file, **_kwargs: object):
+            msg = (
+                "no usable PSF: fitted FWHM 85.8 px exceeds the 25 px cutout half-width"
+            )
+            raise PSFFitError(msg, file=file)
+
+        mocker.patch("bandaid.scripts.calibration_sequence", side_effect=_no_psf)
+        _stub_load_frame(mocker)
+        with pytest.raises(BatchPrepError, match="no usable PSF") as excinfo:
+            scripts.prepare_batch("frame1.fits", cnn=object())
+        assert isinstance(excinfo.value.__cause__, PSFFitError)
 
     def test_empty_gaia_field_raises_batchpreperror(self, mocker):
         """An empty Gaia cone is fatal -- no reference stars to solve any WCS."""
