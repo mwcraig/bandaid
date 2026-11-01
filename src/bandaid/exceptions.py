@@ -81,7 +81,7 @@ class FrameError(BandaidError):
 
 class PSFFitError(FrameError):
     """
-    The fitted PSF is wider than the cutout it was fit on, so no usable PSF exists.
+    The fitted FWHM exceeds half the cutout's width, so no usable PSF exists.
 
     Notes
     -----
@@ -90,6 +90,9 @@ class PSFFitError(FrameError):
     and can come out wider than the cutout itself. Apertures and annuli are
     sized in FWHM, so letting such a value through would size them to hundreds
     of pixels per star and exhaust memory. The frame is skipped instead.
+
+    `calibration_sequence` raises this when the fitted FWHM exceeds
+    ``fwhm_cutout_half``, half the width of the cutout the PSF is fit on.
     """
 
 

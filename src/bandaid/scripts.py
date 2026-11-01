@@ -652,7 +652,7 @@ def prepare_batch(
     ------
     BatchPrepError
         If too few stars are detected in ``first_file`` to measure an FWHM,
-        or the FWHM fitted to them is wider than the cutout it was fit on.
+        or no usable PSF can be fit to them (`~bandaid.exceptions.PSFFitError`).
         Also raised if ``config.edge_margin_px`` is at or above half the
         smaller frame dimension, which would leave no usable area on any frame,
         and if fewer than the minimum number of target stars lie within
@@ -703,10 +703,7 @@ def prepare_batch(
         metadata = calibration.metadata
         fwhm_pix = calibration.fwhm
     except (TooFewStarsError, PSFFitError) as exc:
-        msg = (
-            f"cannot measure an FWHM on {first_file!r} to prepare the batch: "
-            f"{exc.reason}"
-        )
+        msg = f"cannot measure an FWHM: {exc.reason}"
         raise BatchPrepError(msg) from exc
 
     _check_edge_margin_fits_frame(config.edge_margin_px, metadata)
@@ -2165,9 +2162,9 @@ def photometer_frames(
             frame=first_frame,
         )
     except BatchPrepError as exc:
-        # prepare_batch's own message has no idea which file it was given --
-        # this is the caller that knows the first frame's path, so fold it in
-        # instead of letting a bare BatchPrepError surface uncaught.
+        # prepare_batch's messages do not name the file -- this is the caller
+        # that knows the first frame's path, so fold it in instead of letting a
+        # bare BatchPrepError surface uncaught.
         msg = f"could not prepare the batch from the first frame ({frames[0]}): {exc}"
         raise BatchPrepError(msg) from exc
     results = process_batch(
