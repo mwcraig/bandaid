@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from _helpers import _dummy_prep, _stub_load_frame
@@ -129,7 +130,8 @@ class TestPhotometerFrames:
         weights.write_bytes(b"npz")
 
         cnn_sentinel = object()
-        prep_sentinel = object()
+        expected = sorted(str(p.resolve()) for p in night.glob("*.fit"))
+        prep_sentinel = SimpleNamespace(prep_file=expected[0])
         frame_sentinel = object()
 
         def fake_process(files, _prep, **_kwargs: object):
@@ -162,11 +164,10 @@ class TestPhotometerFrames:
             write_manifest=False,
         )
 
-        expected = sorted(str(p.resolve()) for p in night.glob("*.fit"))
         assert frames == expected
         ballet.assert_called_once_with(model_file=str(weights))
         prepare_batch.assert_called_once_with(
-            expected[0],
+            expected,
             cnn=cnn_sentinel,
             config=config,
             build_l4=True,
@@ -202,7 +203,7 @@ class TestPhotometerFrames:
         _stub_load_frame(mocker)
         ballet = mocker.patch("bandaid.scripts.Ballet", return_value=object())
         prepare_batch = mocker.patch(
-            "bandaid.scripts.prepare_batch", return_value=object()
+            "bandaid.scripts.prepare_batch", return_value=_dummy_prep()
         )
         process_batch = mocker.patch("bandaid.scripts.process_batch", return_value={})
 
@@ -219,17 +220,15 @@ class TestPhotometerFrames:
         assert kwargs["output_dir"] == "."
         assert kwargs["output_suffix"] == ".star"
 
-    def test_first_frame_batch_prep_error_gets_actionable_message(
-        self, mocker, tmp_path
-    ):
+    def test_batch_prep_error_is_reraised_with_a_batch_prefix(self, mocker, tmp_path):
         """
-        A ``BatchPrepError`` from ``prepare_batch`` names the offending frame.
+        A ``BatchPrepError`` from ``prepare_batch`` surfaces with a batch prefix.
 
-        ``prepare_batch``'s own message has no idea which file it was given --
-        ``photometer_frames`` is the caller that knows the first frame's path,
-        so it catches the fatal error here and re-raises with that path folded
-        into a clear, top-level message (chaining the original as the cause)
-        instead of letting a bare ``BatchPrepError`` surface uncaught.
+        ``photometer_frames`` catches the fatal error and re-raises it as a
+        clear, top-level message (chaining the original as the cause) instead
+        of letting a bare ``BatchPrepError`` surface uncaught. The frame the
+        failure concerns is named by ``prepare_batch``'s own message, since the
+        batch may be prepared from a frame other than the first.
         """
         frame = tmp_path / "a.fit"
         frame.write_bytes(b"")
@@ -239,13 +238,45 @@ class TestPhotometerFrames:
         original = BatchPrepError("no bundled/registered instrument matched")
         mocker.patch("bandaid.scripts.prepare_batch", side_effect=original)
 
-        with pytest.raises(
-            BatchPrepError, match="no bundled/registered instrument matched"
-        ) as exc_info:
+        with pytest.raises(BatchPrepError) as exc_info:
             scripts.photometer_frames([str(frame)])
 
-        assert str(frame.resolve()) in str(exc_info.value)
+        assert str(exc_info.value) == (
+            "could not prepare the batch: no bundled/registered instrument matched"
+        )
         assert exc_info.value.__cause__ is original
+
+    @pytest.mark.parametrize(
+        ("prep_index", "first_frame_passed"), [(0, True), (1, False)]
+    )
+    def test_first_frame_handed_to_process_batch_only_if_prep_used_it(
+        self, mocker, tmp_path, prep_index, first_frame_passed
+    ):
+        """
+        The preloaded first frame reaches ``process_batch`` only when it was used.
+
+        When ``prepare_batch`` walked past the first frame, the load belongs to
+        a frame that was not the prep frame, so ``process_batch`` reloads it
+        (and skips it through the normal per-frame path).
+        """
+        night = tmp_path / "night"
+        night.mkdir()
+        for name in ["a.fit", "b.fit"]:
+            (night / name).write_bytes(b"")
+        frame_sentinel = object()
+        mocker.patch("bandaid.scripts._load_frame", return_value=frame_sentinel)
+        mocker.patch("bandaid.scripts.Ballet", return_value=object())
+        expected = sorted(str(p.resolve()) for p in night.glob("*.fit"))
+        prep = SimpleNamespace(prep_file=expected[prep_index])
+        prepare_batch = mocker.patch("bandaid.scripts.prepare_batch", return_value=prep)
+        process_batch = mocker.patch("bandaid.scripts.process_batch", return_value={})
+
+        scripts.photometer_frames([str(night)])
+
+        assert prepare_batch.call_args.args == (expected,)
+        assert prepare_batch.call_args.kwargs["frame"] is frame_sentinel
+        expected_first = frame_sentinel if first_frame_passed else None
+        assert process_batch.call_args.kwargs["first_frame"] is expected_first
 
     def test_forced_targets_forwarded_to_prepare_batch(self, mocker, tmp_path):
         """The ``forced_targets`` SkyCoord reaches ``prepare_batch`` unchanged."""
@@ -255,7 +286,7 @@ class TestPhotometerFrames:
         _stub_load_frame(mocker)
         mocker.patch("bandaid.scripts.Ballet", return_value=object())
         prepare_batch = mocker.patch(
-            "bandaid.scripts.prepare_batch", return_value=object()
+            "bandaid.scripts.prepare_batch", return_value=_dummy_prep()
         )
         mocker.patch("bandaid.scripts.process_batch", return_value={})
 
