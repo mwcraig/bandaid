@@ -11,13 +11,14 @@ so an overnight batch still produces results. The frame's manifest `status` name
 the reason — a `FrameError` subclass:
 
 - **`skipped: TooFewStarsError`** — too few stars were detected to work with.
-    Usually a clouded-over, trailed, or badly defocused frame. Check `n_detected`
-    and `fwhm` in the manifest for that row.
+    Usually a clouded-over, trailed, or badly defocused frame. The skipped row
+    leaves `n_detected` and `fwhm` blank; the count is in the `skipping ...`
+    warning in the log.
 - **`skipped: PSFFitError`** — the PSF fitted to the frame's stars was wider
     than the cutout it was fit on (`fwhm_cutout_half`), so no usable PSF exists.
     Typically a frame with no real star image: clouds or an obstruction in the
-    field. The skipped row leaves `fwhm` blank; run the frame alone with `-vv`
-    to see the fitted value.
+    field. The skipped row leaves `fwhm` blank; the fitted value is in the
+    `skipping ...` warning in the log, shown without any `-v`.
 - **`skipped: WCSSolveError`** — the plate solve failed (`wcs_solved` is
     `False`). The field could not be matched against Gaia, typically because too
     few stars were detected or the pointing was off.
