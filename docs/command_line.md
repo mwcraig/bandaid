@@ -16,7 +16,7 @@ To drive the same flow from Python, call `bandaid.photometer_frames` (defined in
 ## `bandaid process` — photometer a batch of frames
 
 The main command. Point it at your frames and it builds the Ballet centroider,
-prepares the batch from the first frame, photometers every frame, and writes a
+prepares the batch from the first frame that yields an FWHM, photometers every frame, and writes a
 `.star` file per frame plus a QA manifest.
 
 ```bash

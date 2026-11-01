@@ -8,7 +8,7 @@ returned `BatchPrep` and applied to every frame in the batch:
 from bandaid import PhotometryConfig, ApertureConfig, prepare_batch
 
 config = PhotometryConfig(apertures=ApertureConfig(gap=5, annulus_width=4))
-prep = prepare_batch(first_file, cnn=cnn, config=config)
+prep = prepare_batch(frames, cnn=cnn, config=config)
 ```
 
 If you pass no `config`, a default `PhotometryConfig()` is used. Every field

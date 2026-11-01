@@ -175,6 +175,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `prepare_batch` now takes the frame list and prepares the batch from the
+    first frame that yields an FWHM, instead of failing on a bad first frame;
+    the frames it passes over are still processed and skipped per frame. Its
+    first parameter is renamed from `first_file` to `files` (a single path is
+    still accepted), and `BatchPrep` gained `prep_file`, the frame the batch was
+    prepared from (#176).
 - `build_photometry_table` needs `filter_name=` when the frame's `egain` is a
     per-channel mapping.
 - The per-star background is the sigma-clipped mean of the annulus instead of
