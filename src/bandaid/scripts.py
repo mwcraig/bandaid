@@ -19,6 +19,7 @@ yet?" bookkeeping.
 import csv
 import glob
 import logging
+import os
 import time
 import traceback
 from dataclasses import dataclass
@@ -318,6 +319,10 @@ class BatchPrep:
         `~bandaid.photometry.centroid_with_catalog_model`).
         ``inf`` when the field has fewer than ``cnn_class_size`` targets in the
         cut circle; None when the policy is off. Default None.
+    prep_file : str or None
+        The path, as given to `prepare_batch`, of the frame the preparation
+        was built from: the first frame that yielded an FWHM. None when the
+        bundle was not built by `prepare_batch`. Default None.
     """
 
     radecs: np.ndarray
@@ -333,6 +338,7 @@ class BatchPrep:
     build_l4: bool = True
     gaia_g: np.ndarray | None = None
     g_cut: float | None = None
+    prep_file: str | None = None
 
     def __post_init__(self) -> None:
         """
@@ -505,7 +511,7 @@ def _check_edge_margin_fits_frame(edge_margin_px, metadata):
         raise BatchPrepError(msg)
 
 
-def _resolve_batch_instrument(config, header):
+def _resolve_batch_instrument(config, header, file):
     """
     Resolve ``config.instrument`` for the batch, wrapping a detection failure.
 
@@ -514,8 +520,10 @@ def _resolve_batch_instrument(config, header):
     config : PhotometryConfig
         The config whose ``instrument`` may need resolving.
     header : astropy.io.fits.Header
-        The first frame's header to detect from; only consulted when
+        The first candidate frame's header to detect from; only consulted when
         ``config.instrument`` is None.
+    file : str or Path
+        The frame ``header`` came from, named in the error message.
 
     Returns
     -------
@@ -537,12 +545,14 @@ def _resolve_batch_instrument(config, header):
     (recoverable per-frame) by declaration, but `prepare_batch` is the one
     caller that wants the fatal behavior: an unresolvable *first* frame leaves
     the whole batch with no detection/PSF settings to prepare with. So it is
-    wrapped here instead of relying on inheritance.
+    wrapped here instead of relying on inheritance. The message names ``file``
+    because `photometer_frames` no longer adds the first frame's path.
     """
     try:
         return resolve_config_instrument(config, header)
     except InstrumentDetectionError as exc:
-        raise BatchPrepError(str(exc)) from exc
+        msg = f"{file}: {exc}"
+        raise BatchPrepError(msg) from exc
 
 
 def _check_solve_pool_floor(target_radecs, center, fov_rad, instrument, mag_limit):
@@ -586,8 +596,77 @@ def _check_solve_pool_floor(target_radecs, center, fov_rad, instrument, mag_limi
         raise BatchPrepError(msg)
 
 
+def _calibrate_first_usable(candidates, first_loaded, cnn, instrument):
+    """
+    Run the calibration on each candidate until one yields an FWHM.
+
+    Parameters
+    ----------
+    candidates : list of (str or Path)
+        The frames to try, in batch order.
+    first_loaded : LoadedFrame
+        The already-loaded contents of ``candidates[0]``; later candidates are
+        loaded here.
+    cnn : object
+        The centroiding model used to measure the FWHM.
+    instrument : InstrumentProfile
+        The resolved instrument profile for detection and PSF fitting.
+
+    Returns
+    -------
+    prep_file : str or Path
+        The candidate that yielded an FWHM, as given.
+    calibration : CalibrationResult
+        Its calibration result.
+    n_passed_over : int
+        How many earlier candidates were passed over.
+
+    Raises
+    ------
+    BatchPrepError
+        If no candidate yields an FWHM; the last candidate's
+        `~bandaid.exceptions.TooFewStarsError` or
+        `~bandaid.exceptions.PSFFitError` is chained as ``__cause__``.
+    """
+    for position, prep_file in enumerate(candidates):
+        prep_frame = first_loaded if position == 0 else _load_frame(prep_file)
+        try:
+            # Pass the CNN so the FWHM (which sizes the photometry aperture) is
+            # measured by re-centroiding detections, decoupling it from the
+            # detection opening. detect_on_bayer_balanced and fwhm_n_stars must
+            # match the per-frame call in process_one_image (which detects on
+            # bayer-balanced data by default), so the batch-gating FWHM is
+            # measured in the same detection regime as the photometry it
+            # protects.
+            calibration = calibration_sequence(
+                prep_file,
+                detect_on_bayer_balanced=True,
+                cnn=cnn,
+                profile=instrument,
+                frame=prep_frame,
+            )
+        except (TooFewStarsError, PSFFitError) as exc:
+            last_error = exc
+            if position + 1 < len(candidates):
+                logger.warning(
+                    "no FWHM from %s (%s); trying the next frame to prepare the batch",
+                    prep_file,
+                    exc.reason,
+                )
+        else:
+            return prep_file, calibration, position
+    if len(candidates) == 1:
+        msg = f"cannot measure an FWHM: {last_error.reason}"
+    else:
+        msg = (
+            f"cannot measure an FWHM on any of the {len(candidates)} "
+            f"frames; last, {prep_file}: {last_error.reason}"
+        )
+    raise BatchPrepError(msg) from last_error
+
+
 def prepare_batch(
-    first_file,
+    files,
     *,
     cnn,
     config=None,
@@ -596,31 +675,34 @@ def prepare_batch(
     frame=None,
 ):
     """
-    Compute the once-per-batch photometry inputs from the first frame.
+    Compute the once-per-batch photometry inputs from the first usable frame.
 
-    Runs a single detection pass on ``first_file`` (no WCS solve) to obtain the
-    FWHM and image metadata, queries Gaia for the field (propagating the J2016.0
-    DR3 positions to the frame's observation epoch via proper motions), drops
-    contaminated sources, and builds the Bayer masks. The query cone is the
-    field radius widened by the instrument's ``cone_radius_margin``; it is
-    filtered to ``contaminant_mag_limit`` and carries a row limit with a
-    truncation check (`~bandaid.catalog.query_field_catalog`).
+    Runs a single detection pass on the first frame of ``files`` that yields an
+    FWHM (no WCS solve) to obtain the FWHM and image metadata, queries Gaia for
+    the field (propagating the J2016.0 DR3 positions to the frame's observation
+    epoch via proper motions), drops contaminated sources, and builds the Bayer
+    masks. The query cone is the field radius widened by the instrument's
+    ``cone_radius_margin``; it is filtered to ``contaminant_mag_limit`` and
+    carries a row limit with a truncation check
+    (`~bandaid.catalog.query_field_catalog`).
 
     Parameters
     ----------
-    first_file : str or Path
-        Path to the first FITS frame in the batch. Used to derive the field
-        pointing/FOV, plate scale, Bayer pattern, image shape, and FWHM. All
-        frames in the batch are assumed to share these.
+    files : str or Path or sequence of (str or Path)
+        The batch's FITS frames in batch order, or a single path (treated as a
+        one-frame batch). The batch is prepared from the first one that yields
+        an FWHM; that frame supplies the field pointing/FOV, plate scale,
+        Bayer pattern, image shape, observation epoch, and FWHM. All frames in
+        the batch are assumed to share these.
     cnn : object
         The centroiding model to carry through to every frame: any object with
         a ``centroid(cutouts) -> (N, 2)`` method, such as
         `~bandaid.ballet.Ballet`.
     config : PhotometryConfig or None, optional
         Photometry configuration carried on the returned `BatchPrep` and applied
-        to every frame. Its ``instrument`` settings drive the first-frame FWHM
+        to every frame. Its ``instrument`` settings drive the FWHM
         detection and the contamination flagging here (evaluated at the largest
-        ``apertures`` radius, with the first-frame FWHM padded by the
+        ``apertures`` radius, with the prep frame's FWHM padded by the
         instrument's ``contamination_seeing_margin``), and its
         ``source_selection`` settings supply the Gaia target/contaminant
         magnitude limits. If None (default), a default ``PhotometryConfig`` is
@@ -640,71 +722,84 @@ def prepare_batch(
         `~astropy.coordinates.SkyCoord.from_name`) is accepted and treated as
         one target. None (default) adds nothing.
     frame : LoadedFrame or None, optional
-        The already-loaded contents of ``first_file``. None (default) loads
-        ``first_file`` here.
+        The already-loaded contents of the first frame in ``files`` only; later
+        candidates are always loaded here. None (default) loads the first
+        frame here too.
 
     Returns
     -------
     BatchPrep
-        The reusable prep bundle for the batch.
+        The reusable prep bundle for the batch; its ``prep_file`` names the
+        frame it was built from.
 
     Raises
     ------
     BatchPrepError
-        If too few stars are detected in ``first_file`` to measure an FWHM,
-        or no usable PSF can be fit to them (`~bandaid.exceptions.PSFFitError`).
-        Also raised if ``config.edge_margin_px`` is at or above half the
-        smaller frame dimension, which would leave no usable area on any frame,
-        and if fewer than the minimum number of target stars lie within
-        the first frame's solve pool radius, if the Gaia query hit its row
-        limit before reaching the target magnitude limit (a
+        If no frame in ``files`` yields an FWHM: too few stars are detected to
+        measure one, or no usable PSF can be fit to them
+        (`~bandaid.exceptions.PSFFitError`); the last frame's error is chained
+        as ``__cause__``. Also raised if ``config.edge_margin_px`` is at or
+        above half the smaller frame dimension, which would leave no usable
+        area on any frame, and if fewer than the minimum number of target stars
+        lie within the prep frame's solve pool radius, if the Gaia query hit
+        its row limit before reaching the target magnitude limit (a
         `~bandaid.exceptions.CatalogTruncationError`, raised unchanged), if
         the Gaia query fails (original chained as ``__cause__``), and if
-        ``config.instrument``
-        is None and the first frame's header does not resolve to exactly one
-        instrument profile: `prepare_batch` is the one caller that treats that
-        as fatal.
+        ``config.instrument`` is None and the first frame's header does not
+        resolve to exactly one instrument profile (the message names that
+        frame): `prepare_batch` is the one caller that treats that as fatal.
     FrameMetadataError
-        If the first frame's metadata has no parseable observation time
+        If the prep frame's metadata has no parseable observation time
         (``obs_time``, usually mapped from ``DATE-OBS``), which is needed to
         propagate the Gaia positions to the observation epoch.
-    """
-    if frame is None:
-        frame = _load_frame(first_file)
 
-    # A failure to measure an FWHM on the *first* frame is fatal for the whole
-    # batch (no FWHM/pointing to prepare from), so translate the recoverable
-    # per-frame TooFewStarsError or PSFFitError into a fatal BatchPrepError.
+    Notes
+    -----
+    A frame that yields no FWHM (a clouded or obstructed frame, say) is passed
+    over with a warning and the next frame is tried, in the order given, until
+    one yields an FWHM or the list runs out. Only `~bandaid.exceptions.TooFewStarsError`
+    and `~bandaid.exceptions.PSFFitError` advance the walk. Every other failure
+    stays fatal for the batch and never advances it: an undetectable
+    instrument (resolved once, from the first frame's header), a missing or
+    unparsable observation time, an edge margin too large for the frame, a Gaia
+    failure, or too few Gaia stars in the solve pool.
+
+    The passed-over frames are not removed from the batch. `process_batch`
+    still visits them, skips each through the normal per-frame path, and gives
+    it a row in the QA manifest.
+    """
+    candidates = [files] if isinstance(files, str | os.PathLike) else list(files)
+
     config = config or PhotometryConfig()
-    # This is the first place a header is in hand, so resolve here and carry
-    # the instrument forward on the config stored on the returned BatchPrep --
-    # one resolution covers every frame in the batch (see also prepare_image,
-    # the other resolution point, for direct prepare_image/calibration_sequence
-    # callers). instrument_auto_detected gates check_frame_consistency's
-    # batch-mixing guard, which fires only when the instrument was actually
-    # detected, not explicitly chosen. See _resolve_batch_instrument for why
-    # an unresolvable header here becomes a fatal BatchPrepError.
-    config, instrument_auto_detected = _resolve_batch_instrument(config, frame.header)
+    # The instrument is resolved once, from the first candidate's header, so a
+    # header that matches nothing fails the batch before any frame is walked
+    # past. Carry the instrument forward on the config stored on the returned
+    # BatchPrep -- one resolution covers every frame in the batch (see also
+    # prepare_image, the other resolution point, for direct
+    # prepare_image/calibration_sequence callers). instrument_auto_detected
+    # gates check_frame_consistency's batch-mixing guard, which fires only when
+    # the instrument was actually detected, not explicitly chosen. See
+    # _resolve_batch_instrument for why an unresolvable header here becomes a
+    # fatal BatchPrepError.
+    first_loaded = frame if frame is not None else _load_frame(candidates[0])
+    config, instrument_auto_detected = _resolve_batch_instrument(
+        config, first_loaded.header, candidates[0]
+    )
     instrument = config.instrument
-    try:
-        # Pass the CNN so the FWHM (which sizes the photometry aperture) is measured
-        # by re-centroiding detections, decoupling it from the detection opening.
-        # detect_on_bayer_balanced and fwhm_n_stars must match the per-frame call
-        # in process_one_image (which detects on bayer-balanced data by default),
-        # so the batch-gating FWHM is measured in the same detection regime as
-        # the photometry it protects.
-        calibration = calibration_sequence(
-            first_file,
-            detect_on_bayer_balanced=True,
-            cnn=cnn,
-            profile=instrument,
-            frame=frame,
+
+    prep_file, calibration, n_passed_over = _calibrate_first_usable(
+        candidates, first_loaded, cnn, instrument
+    )
+    metadata = calibration.metadata
+    fwhm_pix = calibration.fwhm
+    logger.info("preparing the batch from %s", prep_file)
+    if n_passed_over:
+        logger.warning(
+            "passed over %d frame(s) with no FWHM before %s; they are still "
+            "processed and skipped per frame",
+            n_passed_over,
+            prep_file,
         )
-        metadata = calibration.metadata
-        fwhm_pix = calibration.fwhm
-    except (TooFewStarsError, PSFFitError) as exc:
-        msg = f"cannot measure an FWHM: {exc.reason}"
-        raise BatchPrepError(msg) from exc
 
     _check_edge_margin_fits_frame(config.edge_margin_px, metadata)
 
@@ -717,24 +812,25 @@ def prepare_batch(
     obs_time = metadata.get("obs_time")
     if obs_time is None:
         msg = (
-            "no observation time in the first frame's metadata (obs_time, "
+            "no observation time in the metadata of the frame the batch is "
+            "prepared from (obs_time, "
             "usually mapped from DATE-OBS); it is needed to propagate Gaia "
             "positions to the observation epoch"
         )
-        raise FrameMetadataError(msg, file=first_file)
-    obs_epoch = _parse_obs_time(obs_time, file=first_file)
+        raise FrameMetadataError(msg, file=prep_file)
+    obs_epoch = _parse_obs_time(obs_time, file=prep_file)
 
     # Center the Gaia cone on the header pointing converted to ICRS.
     # fov_rad is a field *radius*; query_field_catalog takes a radius too and
     # widens it by the instrument's cone margin, so a frame that drifts a little
-    # from the first frame's pointing is still covered by the catalog.
+    # from the prep frame's pointing is still covered by the catalog.
     # estimate_center_from_header knows a bad pointing but not which file it came
-    # from; attach first_file so the failure names the frame, like the obs_time/
+    # from; attach prep_file so the failure names the frame, like the obs_time/
     # metadata_from_header labelling above.
     try:
         center = estimate_center_from_header(metadata, instrument)
     except FrameMetadataError as exc:
-        exc.file = first_file
+        exc.file = prep_file
         raise
     logger.info("field center from header pointing: %s", center)
     # The target/contaminant magnitude limits bound the catalog query itself
@@ -780,7 +876,7 @@ def prepare_batch(
         target_radecs, center, metadata["fov_rad"], instrument, gaia_mag_limit
     )
 
-    # The flag is computed once, from the first frame's FWHM, but applied to
+    # The flag is computed once, from the prep frame's FWHM, but applied to
     # every frame of the batch, so evaluate it at a pessimistically softened
     # seeing (FWHM * contamination_seeing_margin): pairs that would become
     # contaminated as seeing degrades during the night are dropped up front.
@@ -862,6 +958,7 @@ def prepare_batch(
         instrument_auto_detected=instrument_auto_detected,
         build_l4=build_l4,
         gaia_g=gaia_g,
+        prep_file=prep_file,
         g_cut=_batch_g_cut(
             config.centroid,
             photometry_coords,
