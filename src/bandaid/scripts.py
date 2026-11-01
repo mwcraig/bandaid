@@ -2167,7 +2167,7 @@ def photometer_frames(
 
     The high-level convenience behind ``bandaid process``: it does the file-name
     expansion (`expand_frame_paths`), builds the `Ballet` centroider, and
-    runs `prepare_batch` (seeded from the first frame) followed by
+    runs `prepare_batch` (seeded from the first frame that yields an FWHM) followed by
     `process_batch`.
     Driving the whole flow from Python is one call to this function; the CLI is a
     thin dressing over it.
@@ -2230,11 +2230,11 @@ def photometer_frames(
         If the arguments expand to no FITS frames. `expand_frame_paths` may also
         raise `ValueError`/`FileNotFoundError` for a malformed path argument.
     BatchPrepError
-        If `prepare_batch` cannot build the once-per-batch preparation from
-        the first frame (e.g. its header does not resolve to exactly one
-        registered instrument profile). Re-raised here with the first frame's
-        path folded into the message, chaining the original as ``__cause__``,
-        so the failure is actionable instead of a bare traceback.
+        If `prepare_batch` cannot build the once-per-batch preparation: no
+        frame yields an FWHM, or the first frame's header does not resolve to
+        exactly one registered instrument profile, among other causes.
+        Re-raised here with a batch-level prefix, chaining the original as
+        ``__cause__``; the message names the frame concerned.
     """
     frames = expand_frame_paths(files)
     if not frames:
@@ -2247,11 +2247,12 @@ def photometer_frames(
 
     # Open the first frame once and hand the load to both stages --
     # prepare_batch derives the prep from it and process_batch photometers it
-    # -- so the whole run opens each frame exactly once (issue #44).
+    # -- so the whole run opens each frame exactly once (issue #44) unless
+    # prepare_batch walks past this frame, which process_batch then reloads.
     first_frame = _load_frame(frames[0])
     try:
         prep = prepare_batch(
-            frames[0],
+            frames,
             cnn=cnn,
             config=config,
             build_l4=build_l4,
@@ -2259,10 +2260,11 @@ def photometer_frames(
             frame=first_frame,
         )
     except BatchPrepError as exc:
-        # prepare_batch's messages do not name the file -- this is the caller
-        # that knows the first frame's path, so fold it in instead of letting a
-        # bare BatchPrepError surface uncaught.
-        msg = f"could not prepare the batch from the first frame ({frames[0]}): {exc}"
+        # prepare_batch's messages name the frame they concern (the batch may
+        # be prepared from a later frame than the first), so just give the
+        # failure a batch-level prefix instead of letting a bare BatchPrepError
+        # surface uncaught.
+        msg = f"could not prepare the batch: {exc}"
         raise BatchPrepError(msg) from exc
     results = process_batch(
         frames,
@@ -2273,6 +2275,8 @@ def photometer_frames(
         write_frame=write_frame,
         fail_fast=fail_fast,
         write_manifest=write_manifest,
-        first_frame=first_frame,
+        # Only the frame the prep was built from has been loaded for use; a
+        # walked-past first frame is reloaded and skipped like any other.
+        first_frame=first_frame if prep.prep_file == frames[0] else None,
     )
     return frames, results
