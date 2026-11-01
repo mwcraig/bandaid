@@ -864,6 +864,116 @@ class TestPrepareBatch:
             scripts.prepare_batch("frame1.fits", cnn=object())
         assert isinstance(excinfo.value.__cause__, PSFFitError)
 
+    @staticmethod
+    def _walk_setup(mocker, failures) -> tuple:
+        """
+        Patch a prep whose calibration fails for the files named in ``failures``.
+
+        ``failures`` maps a file to the exception class it raises; any other
+        file calibrates normally. Returns the `_patch_prep` namespace with its
+        ``calibration_sequence`` re-keyed on the ``file`` argument, and the
+        ``_load_frame`` mock.
+        """
+        prep_data = _patch_prep(mocker)
+        good = prep_data.calibration_sequence.return_value
+
+        def _calibrate(file, **_kwargs: object):
+            if file in failures:
+                msg = f"no FWHM on {file}"
+                raise failures[file](msg, file=file)
+            return good
+
+        prep_data.calibration_sequence.side_effect = _calibrate
+        load_frame = mocker.patch(
+            "bandaid.scripts._load_frame",
+            side_effect=lambda _f: scripts.LoadedFrame(
+                np.zeros((4, 4)), {"INSTRUME": "Seestar S50"}
+            ),
+        )
+        return prep_data, load_frame
+
+    @pytest.mark.parametrize("error", [PSFFitError, TooFewStarsError])
+    def test_walks_to_next_frame_when_first_has_no_fwhm(self, mocker, caplog, error):
+        """A first frame with no FWHM is passed over; the next one preps the batch."""
+        _, load_frame = self._walk_setup(mocker, {"frame1.fits": error})
+
+        with caplog.at_level("INFO", logger="bandaid.scripts"):
+            prep = scripts.prepare_batch(["frame1.fits", "frame2.fits"], cnn=object())
+
+        assert prep.prep_file == "frame2.fits"
+        assert [c.args[0] for c in load_frame.call_args_list] == [
+            "frame1.fits",
+            "frame2.fits",
+        ]
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any(
+            "frame1.fits" in r.getMessage()
+            and "no FWHM on frame1.fits" in r.getMessage()
+            for r in warnings
+        )
+
+    def test_every_frame_failing_raises_with_last_error_as_cause(self, mocker):
+        """When no frame yields an FWHM the batch fails, naming the count and last."""
+        self._walk_setup(
+            mocker, {"frame1.fits": PSFFitError, "frame2.fits": TooFewStarsError}
+        )
+
+        with pytest.raises(BatchPrepError) as excinfo:
+            scripts.prepare_batch(["frame1.fits", "frame2.fits"], cnn=object())
+
+        message = str(excinfo.value)
+        assert "any of the 2 frames" in message
+        assert "frame2.fits" in message
+        assert "no FWHM on frame2.fits" in message
+        assert isinstance(excinfo.value.__cause__, TooFewStarsError)
+        assert excinfo.value.__cause__.file == "frame2.fits"
+
+    def test_single_frame_failure_keeps_the_one_frame_message(self, mocker):
+        """A one-frame batch with no FWHM reports the plain reason."""
+        self._walk_setup(mocker, {"frame1.fits": PSFFitError})
+
+        with pytest.raises(BatchPrepError) as excinfo:
+            scripts.prepare_batch("frame1.fits", cnn=object())
+
+        assert str(excinfo.value).endswith(
+            "cannot measure an FWHM: no FWHM on frame1.fits"
+        )
+
+    def test_provided_frame_is_used_for_the_first_candidate_only(self, mocker):
+        """``frame=`` stands in for the first file; later candidates are loaded."""
+        _, load_frame = self._walk_setup(mocker, {"frame1.fits": PSFFitError})
+        frame = scripts.LoadedFrame(np.zeros((4, 4)), {"INSTRUME": "Seestar S50"})
+
+        prep = scripts.prepare_batch(
+            ["frame1.fits", "frame2.fits"], cnn=object(), frame=frame
+        )
+
+        load_frame.assert_called_once_with("frame2.fits")
+        assert prep.prep_file == "frame2.fits"
+
+    def test_single_path_sets_prep_file(self, mocker):
+        """A bare path is a one-frame batch and is recorded as the prep file."""
+        _patch_prep(mocker)
+
+        prep = scripts.prepare_batch("frame1.fits", cnn=object())
+
+        assert prep.prep_file == "frame1.fits"
+
+    def test_unmatched_header_does_not_walk(self, mocker):
+        """A header matching no instrument is fatal; later frames are not tried."""
+        prep_data = _patch_prep(mocker)
+        frame = scripts.LoadedFrame(np.zeros((4, 4)), {})
+
+        with pytest.raises(BatchPrepError, match=r"frame1\.fits"):
+            scripts.prepare_batch(
+                ["frame1.fits", "frame2.fits"],
+                cnn=object(),
+                config=PhotometryConfig(),
+                frame=frame,
+            )
+
+        prep_data.calibration_sequence.assert_not_called()
+
     def test_empty_gaia_field_raises_batchpreperror(self, mocker):
         """An empty Gaia cone is fatal -- no reference stars to solve any WCS."""
         _patch_prep(mocker, radecs_mags=(np.empty((0, 2)), np.empty(0)))
