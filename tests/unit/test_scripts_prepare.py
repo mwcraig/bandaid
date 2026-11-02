@@ -34,10 +34,12 @@ from bandaid.config import (
 from bandaid.exceptions import (
     BatchPrepError,
     CatalogTruncationError,
+    DegenerateBayerChannelError,
     FrameError,
     FrameMetadataError,
     GaiaQueryError,
     InstrumentDetectionError,
+    NoUsableStarsError,
     PSFFitError,
     TooFewStarsError,
 )
@@ -991,21 +993,81 @@ class TestPrepareBatch:
             for m in messages
         )
 
-    def test_non_fwhm_error_from_later_candidate_stops_the_walk(self, mocker):
-        """Only FWHM failures advance the walk; other errors propagate unchanged."""
+    @pytest.mark.parametrize(
+        "error", [FrameMetadataError, DegenerateBayerChannelError, NoUsableStarsError]
+    )
+    def test_frame_error_from_later_candidate_advances_the_walk(
+        self, mocker, caplog, error
+    ):
+        """Any per-frame error from a frame after the first is passed over."""
         prep_data, _ = self._walk_setup(
+            mocker, {"frame1.fits": TooFewStarsError, "frame2.fits": error}
+        )
+
+        with caplog.at_level("WARNING", logger="bandaid.scripts"):
+            prep = scripts.prepare_batch(
+                ["frame1.fits", "frame2.fits", "frame3.fits"], cnn=object()
+            )
+
+        assert prep.prep_file == "frame3.fits"
+        called = [c.args[0] for c in prep_data.calibration_sequence.call_args_list]
+        assert called == ["frame1.fits", "frame2.fits", "frame3.fits"]
+        messages = [r.getMessage() for r in caplog.records]
+        assert (
+            "cannot prepare the batch from frame2.fits (no FWHM on frame2.fits); "
+            "trying the next frame to prepare the batch"
+        ) in messages
+        assert (
+            "preparing the batch from frame3.fits after passing over 2 frame(s) "
+            "with no FWHM; they are still processed and skipped per frame"
+        ) in messages
+
+    def test_frame_error_from_last_candidate_is_the_chained_cause(self, mocker):
+        """A later candidate's per-frame error ends the walk like an FWHM failure."""
+        self._walk_setup(
             mocker,
-            {"frame1.fits": TooFewStarsError, "frame2.fits": FrameMetadataError},
+            {"frame1.fits": PSFFitError, "frame2.fits": FrameMetadataError},
+        )
+
+        with pytest.raises(BatchPrepError) as excinfo:
+            scripts.prepare_batch(["frame1.fits", "frame2.fits"], cnn=object())
+
+        assert isinstance(excinfo.value.__cause__, FrameMetadataError)
+        assert excinfo.value.__cause__.file == "frame2.fits"
+
+    def test_non_fwhm_frame_error_from_first_candidate_stops_the_walk(self, mocker):
+        """On the first frame only FWHM failures advance the walk."""
+        prep_data, load_frame = self._walk_setup(
+            mocker, {"frame1.fits": FrameMetadataError}
         )
 
         with pytest.raises(FrameMetadataError) as excinfo:
+            scripts.prepare_batch(["frame1.fits", "frame2.fits"], cnn=object())
+
+        assert excinfo.value.file == "frame1.fits"
+        called = [c.args[0] for c in prep_data.calibration_sequence.call_args_list]
+        assert called == ["frame1.fits"]
+        assert [c.args[0] for c in load_frame.call_args_list] == ["frame1.fits"]
+
+    def test_unreadable_later_candidate_stops_the_walk(self, mocker):
+        """A non-per-frame error (a truncated file, say) from a later frame is fatal."""
+        prep_data, load_frame = self._walk_setup(mocker, {"frame1.fits": PSFFitError})
+
+        def _load(file):
+            if file == "frame2.fits":
+                msg = "truncated file"
+                raise OSError(msg)
+            return scripts.LoadedFrame(np.zeros((4, 4)), {"INSTRUME": "Seestar S50"})
+
+        load_frame.side_effect = _load
+
+        with pytest.raises(OSError, match="truncated file"):
             scripts.prepare_batch(
                 ["frame1.fits", "frame2.fits", "frame3.fits"], cnn=object()
             )
 
-        assert excinfo.value.file == "frame2.fits"
         called = [c.args[0] for c in prep_data.calibration_sequence.call_args_list]
-        assert called == ["frame1.fits", "frame2.fits"]
+        assert called == ["frame1.fits"]
 
     def test_bad_pointing_after_a_walk_is_labeled_with_the_prep_frame(self, mocker):
         """A bad pointing on the frame the walk settled on names that frame."""

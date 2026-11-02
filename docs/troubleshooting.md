@@ -42,7 +42,10 @@ A skipped frame is recoverable; a `BatchPrepError` is not. The once-per-batch
 preparation is built from the first frame, in sorted order, that yields an FWHM.
 A clouded or obstructed first frame (too few stars to measure an FWHM, or no
 usable PSF to fit to them) does not abort the run: it is logged and the next
-frame is tried. The run stops only when no frame yields an FWHM, when Gaia
+frame is tried. A later frame is passed over the same way for any per-frame
+failure that would make it a `skipped:` row anyway (a degenerate Bayer channel,
+unreadable header metadata), though a file that cannot be read at all still
+aborts the run. The run stops only when no frame yields an FWHM, when Gaia
 returns too few reference stars for the field, when the observation time or
 pointing of the frame used cannot be read, or when (with no explicit
 `--instrument`/`--profile`/config `instrument`) the first frame's header does

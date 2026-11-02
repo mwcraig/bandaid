@@ -606,6 +606,11 @@ def _calibrate_first_usable(
     """
     Run the calibration on each candidate until one yields an FWHM.
 
+    The first candidate is passed over only for a
+    `~bandaid.exceptions.TooFewStarsError` or
+    `~bandaid.exceptions.PSFFitError`; a later one for any
+    `~bandaid.exceptions.FrameError`.
+
     Parameters
     ----------
     candidates : list of (str or Path)
@@ -634,10 +639,14 @@ def _calibrate_first_usable(
     ------
     BatchPrepError
         If no candidate yields an FWHM; the last candidate's
+        `~bandaid.exceptions.FrameError` (a
         `~bandaid.exceptions.TooFewStarsError` or
-        `~bandaid.exceptions.PSFFitError` (or the
-        `~bandaid.exceptions.FrameError` of a candidate from another
-        instrument) is chained as ``__cause__``.
+        `~bandaid.exceptions.PSFFitError` when there is only one candidate) is
+        chained as ``__cause__``.
+    FrameError
+        Raised unchanged from the first candidate when it is neither a
+        `~bandaid.exceptions.TooFewStarsError` nor a
+        `~bandaid.exceptions.PSFFitError`.
     """
     for position, prep_file in enumerate(candidates):
         prep_frame = first_loaded if position == 0 else _load_frame(prep_file)
@@ -671,11 +680,15 @@ def _calibrate_first_usable(
                 profile=instrument,
                 frame=prep_frame,
             )
-        except (TooFewStarsError, PSFFitError) as exc:
+        except FrameError as exc:
+            no_fwhm = isinstance(exc, (TooFewStarsError, PSFFitError))
+            if position == 0 and not no_fwhm:
+                raise
             last_error = exc
             if position + 1 < len(candidates):
                 logger.warning(
-                    "no FWHM from %s (%s); trying the next frame to prepare the batch",
+                    "%s %s (%s); trying the next frame to prepare the batch",
+                    "no FWHM from" if no_fwhm else "cannot prepare the batch from",
                     prep_file,
                     exc.reason,
                 )
@@ -764,8 +777,9 @@ def prepare_batch(
     BatchPrepError
         If no frame in ``files`` yields an FWHM: too few stars are detected to
         measure one, or no usable PSF can be fit to them
-        (`~bandaid.exceptions.PSFFitError`); the last frame's error is chained
-        as ``__cause__``. Also raised if ``config.edge_margin_px`` is at or
+        (`~bandaid.exceptions.PSFFitError`), or, for a frame after the first,
+        any other `~bandaid.exceptions.FrameError`; the last frame's error is
+        chained as ``__cause__``. Also raised if ``config.edge_margin_px`` is at or
         above half the smaller frame dimension, which would leave no usable
         area on any frame, and if fewer than the minimum number of target stars
         lie within the prep frame's solve pool radius, if the Gaia query hit
@@ -784,11 +798,16 @@ def prepare_batch(
     -----
     A frame that yields no FWHM (a clouded or obstructed frame, say) is passed
     over with a warning and the next frame is tried, in the order given, until
-    one yields an FWHM or the list runs out. Only `~bandaid.exceptions.TooFewStarsError`
-    and `~bandaid.exceptions.PSFFitError` advance the walk. Every other failure
-    stays fatal for the batch and never advances it: an undetectable
-    instrument (resolved once, from the first frame's header), a missing or
-    unparsable observation time, an edge margin too large for the frame, a Gaia
+    one yields an FWHM or the list runs out. On the first frame only
+    `~bandaid.exceptions.TooFewStarsError` and
+    `~bandaid.exceptions.PSFFitError` advance the walk, and any other
+    `~bandaid.exceptions.FrameError` from it is raised unchanged; on a later
+    frame any `~bandaid.exceptions.FrameError` does (unreadable header metadata
+    or a degenerate Bayer channel, say), since `process_batch` would skip that
+    frame anyway. Every other failure stays fatal for the batch and never advances
+    it: a frame file that cannot be read, an undetectable instrument (resolved
+    once, from the first frame's header), a missing or unparsable observation
+    time on the prep frame, an edge margin too large for the frame, a Gaia
     failure, or too few Gaia stars in the solve pool.
 
     The passed-over frames are not removed from the batch. `process_batch`
