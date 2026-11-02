@@ -46,8 +46,8 @@ Point `bandaid process` at a folder of frames and give it an output directory:
 $ bandaid process night-of-2026-06-27/ -o out/ -v
 ```
 
-`-v` prints one line per frame; `-vv` adds per-stage detail. The first frame takes
-longest because it carries the once-per-batch preparation.
+`-v` prints one line per frame; `-vv` adds per-stage detail. The first usable
+frame takes longest because it carries the once-per-batch preparation.
 
 ## What lands in `out/`
 

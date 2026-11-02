@@ -20,7 +20,8 @@ bandaid [--version] [--help] COMMAND [ARGS]...
 
 `FILES...` are directories (expanded to their FITS frames), glob patterns, or
 file paths. The combined list is sorted and de-duplicated by resolved path; the
-first frame seeds the once-per-batch preparation. Output naming is described in
+first frame, in batch order, that the preparation accepts seeds the
+once-per-batch preparation. Output naming is described in
 [Output files](outputs.md).
 
 | Option                             | Default          | Meaning                                                                                          |

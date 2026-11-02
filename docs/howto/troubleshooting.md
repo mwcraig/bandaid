@@ -11,11 +11,18 @@ bandaid process the_bad_frame.fit -o /tmp/debug -vv
 
 ## Skipped frames
 
-A skipped frame is the designed behavior: the rest of the batch still finishes.
+A skipped frame is the designed behavior: it is logged as a
+`skipping <file>: <reason>` warning at the default verbosity and the rest of the
+batch still finishes.
 
 - `skipped: TooFewStarsError` — fewer than 3 stars detected, or every detected
-    source saturated (cloud, trailing, defocus). Check `n_detected` and `fwhm` in
-    the row; there is no knob for a bad frame.
+    source saturated (cloud, trailing, defocus). The skipped row leaves
+    `n_detected` and `fwhm` blank; the count is in the `skipping ...` warning.
+    There is no knob for a bad frame.
+- `skipped: PSFFitError` — no usable PSF could be fit to the frame's stars: the
+    fitted FWHM exceeds the cutout (`fwhm_cutout_half`). Typically a frame with
+    no real star image (clouds, an obstruction). The fitted value is in the
+    `skipping ...` warning.
 - `skipped: WCSSolveError` — the twirl plate solve failed or matched nothing.
     Check the header pointing; `-vv` shows the twirl traceback.
 - `skipped: WCSScaleError` — every solve came back at the wrong plate scale, and
@@ -40,30 +47,43 @@ A skipped frame is the designed behavior: the rest of the batch still finishes.
     variance in the balancing window (a constant sub-frame). Discard the frame and
     check `bayerpat` and the Bayer offsets in the profile.
 - `skipped: FrameError` — the frame's shape differs from the batch, or its
-    pointing is beyond the field radius of the first frame. Process it separately.
+    pointing is beyond the field radius of the frame the batch was prepared
+    from. Process it separately.
 
 ## The whole run aborted
 
-A `BatchPrepError` is fatal: the once-per-batch preparation is built from the
-**first** frame, and nothing can proceed without it. Causes:
+A `BatchPrepError` is fatal: nothing can proceed without the once-per-batch
+preparation. It is built from the first frame, in batch order, that the
+preparation accepts: a first frame with too few stars to measure an FWHM, or no
+usable PSF to fit to them, is logged and the next frame is tried, and a later
+frame is passed over the same way for any per-frame failure that would make it
+a `skipped:` row anyway (a file that cannot be read at all still aborts). The
+passed-over frames still appear in the manifest as `skipped:` rows. Causes:
 
-- Too few stars in the first frame to measure an FWHM.
-- Gaia returned too few reference stars in the first frame's solve pool. Check the
+- No frame can prepare the batch ("tried all N frames"): the batch is bad
+    throughout. Check the frames themselves (clouds, a closed dome, a wrong
+    focus), the detection settings `thresh` and `detection_opening`, or the
+    PSF-fit ceiling `fwhm_cutout_half`.
+- Gaia returned too few reference stars in the prep frame's solve pool. Check the
     pointing, or raise `gaia_mag_limit`.
-- The first frame's header resolves to no profile, or several (`InstrumentDetectionError`).
+- The observation time or pointing of the prep frame cannot be read.
+- The first frame's header resolves to no profile, or several
+    (`InstrumentDetectionError`); the message names the frame. Pass
+    `--instrument` or fix the header.
 - `edge_margin_px` is half the smaller frame side or more.
 - The Gaia query failed on every server ("could not query Gaia for the field
-    at ..."). bandaid tries CDS VizieR, then the CfA and IDIA mirrors, then the
+    at ..."). bandaid tries CDS VizieR, then the IDIA and CfA mirrors, then the
     GAVO Heidelberg TAP service, giving each 10 s to connect and 60 s to start
     answering; GAVO itself stops a query that takes more than about 20 s and
     reports that as an error. A warning is logged as each server is skipped (a
-    timeout, a failure status, or the server's own error text). Usually
-    this is an outage on the catalog side; a failed answer is never cached, so
-    just run again.
+    timeout, a failure status, or the server's own error text). In the browser
+    each server instead gets one 70 s limit for the whole request
+    (`TimeoutError` past it), and a refused connection, a missing CORS header
+    or an error status all surface as the same `NetworkError`. Usually this is
+    an outage on the catalog side; a failed answer is never cached, so just run
+    again.
 - `CatalogTruncationError`: the Gaia query hit its row limit before reaching
     `gaia_mag_limit`. Raise `source_selection.gaia_row_limit` or lower the limit.
-
-Put a good frame first (batches run in sorted order) or remove bad frames.
 
 With `--fail-fast` an unexpected error is re-raised instead of logged and skipped;
 the `FrameError` cases above are skipped either way.

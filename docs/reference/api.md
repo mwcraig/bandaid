@@ -93,6 +93,8 @@ Causes and fixes are in [Troubleshooting](../howto/troubleshooting.md).
 
 ::: bandaid.TooFewStarsError
 
+::: bandaid.PSFFitError
+
 ::: bandaid.WCSSolveError
 
 ::: bandaid.WCSScaleError

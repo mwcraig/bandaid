@@ -58,8 +58,9 @@ The policy is on by default; its settings are the fields of
 
 `G_cut` is computed once per batch, from the catalog alone: the Gaia G of the
 30th (`cnn_class_size`) brightest target inside a circle with the frame's area
-(radius `sqrt(width * height / pi)` pixels) centred on the batch center. Because
-it does not depend on the frame, a star's class is the same on every frame;
+(radius `sqrt(width * height / pi)` pixels) centred on the batch center, the
+header pointing of the frame the batch is prepared from. Because it does not
+depend on the frame, a star's class is the same on every frame;
 per-frame ranking would flip borderline stars between measured and modelled and
 step their flux. If the circle holds fewer than `cnn_class_size` targets the cut
 is infinite, every star is CNN-class, and a warning is logged.
