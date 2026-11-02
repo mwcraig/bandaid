@@ -2,6 +2,8 @@
 
 import csv
 import dataclasses
+import gc
+import weakref
 from pathlib import Path
 
 import astropy.units as u
@@ -1109,6 +1111,46 @@ class TestPrepareBatch:
 
         assert isinstance(excinfo.value.__cause__, FrameMetadataError)
         assert excinfo.value.__cause__.file == "frame2.fits"
+        assert excinfo.value.__cause__.__traceback__ is not None
+
+    def test_passed_over_candidate_does_not_keep_its_pixels_alive(self, mocker):
+        """A passed-over frame's pixels are released before the next one is loaded."""
+        prep_data, load_frame = self._walk_setup(mocker, {})
+        data = np.zeros((4, 4))
+        pixels = weakref.ref(data)
+        frames = {
+            "frame1.fits": scripts.LoadedFrame(data, {"INSTRUME": "Seestar S50"}),
+            "frame2.fits": scripts.LoadedFrame(
+                np.zeros((4, 4)), {"INSTRUME": "Seestar S50"}
+            ),
+        }
+        load_frame.side_effect = frames.pop
+        good = prep_data.calibration_sequence.return_value
+
+        def _calibrate(file, *_args: object, frame, **_kwargs: object):
+            # A local holding the pixels, as the real pipeline's frames do; an
+            # uncleared traceback would keep it, and the array, alive.
+            held = frame.data
+            assert held.shape == (4, 4)
+            if file == "frame1.fits":
+                msg = "no FWHM"
+                raise PSFFitError(msg, file=file)
+            return good
+
+        # A plain function, not a Mock: a Mock's call record would hold the
+        # frame too.
+        mocker.patch("bandaid.scripts.calibration_sequence", new=_calibrate)
+
+        # Only reference counting may release the array, not a collection
+        # that happens to run.
+        gc.disable()
+        try:
+            prep = scripts.prepare_batch(["frame1.fits", "frame2.fits"], cnn=object())
+            del data
+            assert prep.prep_file == "frame2.fits"
+            assert pixels() is None
+        finally:
+            gc.enable()
 
     def test_non_fwhm_frame_error_from_first_candidate_stops_the_walk(self, mocker):
         """On the first frame only FWHM failures advance the walk."""
