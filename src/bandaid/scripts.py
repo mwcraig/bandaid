@@ -843,8 +843,8 @@ def prepare_batch(
     fwhm_pix = calibration.fwhm
     if n_passed_over:
         logger.warning(
-            "preparing the batch from %s after passing over %d frame(s) with no "
-            "FWHM; they are still processed and skipped per frame",
+            "preparing the batch from %s after passing over %d frame(s) that "
+            "could not prepare it; they are still processed and skipped per frame",
             prep_file,
             n_passed_over,
         )

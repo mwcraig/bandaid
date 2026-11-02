@@ -913,13 +913,13 @@ class TestPrepareBatch:
         walk_warnings = [
             r.getMessage()
             for r in caplog.records
-            if r.levelname == "WARNING" and "FWHM" in r.getMessage()
+            if r.levelname == "WARNING" and "prepar" in r.getMessage()
         ]
         assert walk_warnings == [
             "no FWHM from frame1.fits (no FWHM on frame1.fits); "
             "trying the next frame to prepare the batch",
             "preparing the batch from frame2.fits after passing over 1 frame(s) "
-            "with no FWHM; they are still processed and skipped per frame",
+            "that could not prepare it; they are still processed and skipped per frame",
         ]
 
     def test_no_walk_logs_a_single_info_line(self, mocker, caplog):
@@ -1019,7 +1019,7 @@ class TestPrepareBatch:
         ) in messages
         assert (
             "preparing the batch from frame3.fits after passing over 2 frame(s) "
-            "with no FWHM; they are still processed and skipped per frame"
+            "that could not prepare it; they are still processed and skipped per frame"
         ) in messages
 
     def test_frame_error_from_last_candidate_is_the_chained_cause(self, mocker):
