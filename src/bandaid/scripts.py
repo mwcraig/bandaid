@@ -658,6 +658,9 @@ def _calibrate_first_usable(
                     prep_file, prep_frame.header, instrument_auto_detected, instrument
                 )
             except FrameError as exc:
+                # Keep the error for the final message, not the pixels its
+                # traceback frames reference (see process_frame).
+                traceback.clear_frames(exc.__traceback__)
                 last_error = exc
                 if position + 1 < len(candidates):
                     logger.warning(
@@ -686,6 +689,10 @@ def _calibrate_first_usable(
             no_fwhm = isinstance(exc, (TooFewStarsError, PSFFitError))
             if position == 0 and not no_fwhm:
                 raise
+            # Keep the error for the final message, not the pixels its
+            # traceback frames reference (the pixel array and the images
+            # derived from it). The line numbers still format.
+            traceback.clear_frames(exc.__traceback__)
             last_error = exc
             if position + 1 < len(candidates):
                 logger.warning(
@@ -695,6 +702,9 @@ def _calibrate_first_usable(
                     exc.reason,
                 )
         else:
+            # A kept error's traceback reaches back to this frame, so drop it
+            # here rather than leave a cycle for the collector.
+            last_error = None
             return prep_file, calibration, position
     if len(candidates) == 1:
         msg = f"cannot measure an FWHM on {prep_file}: {last_error.reason}"
