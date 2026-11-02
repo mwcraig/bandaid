@@ -947,8 +947,8 @@ class TestPrepareBatch:
             scripts.prepare_batch(["frame1.fits", "frame2.fits"], cnn=object())
 
         assert str(excinfo.value) == (
-            "no frame of the 2 can prepare the batch; the last, "
-            "frame2.fits, failed with: no FWHM on frame2.fits"
+            "tried all 2 frames; the last, frame2.fits, failed with: "
+            "no FWHM on frame2.fits"
         )
         trying = [
             r.getMessage()
@@ -1060,8 +1060,8 @@ class TestPrepareBatch:
             scripts.prepare_batch(["frame1.fits", "frame2.fits"], cnn=object())
 
         assert str(excinfo.value).startswith(
-            "no frame of the 2 can prepare the batch; the last, frame2.fits, "
-            "failed with: frame header does not match"
+            "tried all 2 frames; the last, frame2.fits, failed with: "
+            "frame header does not match"
         )
         cause = excinfo.value.__cause__
         assert type(cause) is FrameError

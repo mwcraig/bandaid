@@ -53,10 +53,10 @@ not resolve to exactly one instrument profile (`InstrumentDetectionError`; see
 [Instrument profiles](instrument_profiles.md#auto-detection-from-the-fits-header)).
 There is then nothing to process the rest of the batch against.
 
-Fix: for "no frame of the N can prepare the batch", the batch is bad
-throughout; check the frames themselves (clouds, a closed dome, a wrong focus)
-and the detection settings `thresh` and `detection_opening` (too few stars
-detected) or `fwhm_cutout_half` (the PSF-size ceiling behind "no usable PSF").
+Fix: for "tried all N frames", the batch is bad throughout; check the frames
+themselves (clouds, a closed dome, a wrong focus), the detection settings
+`thresh` and `detection_opening` (too few stars detected), or the PSF-fit
+ceiling `fwhm_cutout_half` (behind "no usable PSF").
 The frames passed over before the prep frame still appear in the manifest as
 `skipped:` rows, so there is no need to prune them by hand. For a header that
 matches no instrument, name the instrument explicitly or fix the first frame's

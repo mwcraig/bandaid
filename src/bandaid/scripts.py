@@ -700,7 +700,7 @@ def _calibrate_first_usable(
         msg = f"cannot measure an FWHM on {prep_file}: {last_error.reason}"
     else:
         msg = (
-            f"no frame of the {len(candidates)} can prepare the batch; "
+            f"tried all {len(candidates)} frames; "
             f"the last, {prep_file}, failed with: {last_error.reason}"
         )
     raise BatchPrepError(msg) from last_error
@@ -829,10 +829,12 @@ def prepare_batch(
     # BatchPrep -- one resolution covers every frame in the batch (see also
     # prepare_image, the other resolution point, for direct
     # prepare_image/calibration_sequence callers). instrument_auto_detected
-    # tells check_frame_consistency's batch-mixing guard whether to exempt a
-    # header that matches no registered instrument (explicit selections are
-    # exempt; auto-detected ones are not). See _resolve_batch_instrument for
-    # why an unresolvable header here becomes a fatal BatchPrepError.
+    # goes to the batch-mixing guard, run by _calibrate_first_usable on every
+    # candidate after the first and by check_frame_consistency on every frame,
+    # and tells it whether to exempt a header that matches no registered
+    # instrument (explicit selections are exempt; auto-detected ones are not).
+    # See _resolve_batch_instrument for why an unresolvable header here
+    # becomes a fatal BatchPrepError.
     first_loaded = frame if frame is not None else _load_frame(candidates[0])
     config, instrument_auto_detected = _resolve_batch_instrument(
         config, first_loaded.header, candidates[0]
