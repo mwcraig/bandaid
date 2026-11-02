@@ -2,7 +2,6 @@
 
 import os
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from _helpers import _dummy_prep, _stub_load_frame
@@ -131,7 +130,7 @@ class TestPhotometerFrames:
 
         cnn_sentinel = object()
         expected = sorted(str(p.resolve()) for p in night.glob("*.fit"))
-        prep_sentinel = SimpleNamespace(prep_file=expected[0])
+        prep_sentinel = object()
         frame_sentinel = object()
 
         def fake_process(files, _prep, **_kwargs: object):
@@ -203,7 +202,7 @@ class TestPhotometerFrames:
         _stub_load_frame(mocker)
         ballet = mocker.patch("bandaid.scripts.Ballet", return_value=object())
         prepare_batch = mocker.patch(
-            "bandaid.scripts.prepare_batch", return_value=_dummy_prep()
+            "bandaid.scripts.prepare_batch", return_value=object()
         )
         process_batch = mocker.patch("bandaid.scripts.process_batch", return_value={})
 
@@ -263,7 +262,7 @@ class TestPhotometerFrames:
         mocker.patch("bandaid.scripts._load_frame", return_value=frame_sentinel)
         mocker.patch("bandaid.scripts.Ballet", return_value=object())
         expected = sorted(str(p.resolve()) for p in night.glob("*.fit"))
-        prep = SimpleNamespace(prep_file=expected[1])
+        prep = object()
         prepare_batch = mocker.patch("bandaid.scripts.prepare_batch", return_value=prep)
         process_batch = mocker.patch("bandaid.scripts.process_batch", return_value={})
 
@@ -281,7 +280,7 @@ class TestPhotometerFrames:
         _stub_load_frame(mocker)
         mocker.patch("bandaid.scripts.Ballet", return_value=object())
         prepare_batch = mocker.patch(
-            "bandaid.scripts.prepare_batch", return_value=_dummy_prep()
+            "bandaid.scripts.prepare_batch", return_value=object()
         )
         mocker.patch("bandaid.scripts.process_batch", return_value={})
 

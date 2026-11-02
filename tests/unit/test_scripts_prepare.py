@@ -947,7 +947,7 @@ class TestPrepareBatch:
             scripts.prepare_batch(["frame1.fits", "frame2.fits"], cnn=object())
 
         assert str(excinfo.value) == (
-            "cannot measure an FWHM on any of the 2 frames; the last, "
+            "no frame of the 2 can prepare the batch; the last, "
             "frame2.fits, failed with: no FWHM on frame2.fits"
         )
         trying = [
@@ -992,6 +992,81 @@ class TestPrepareBatch:
             "frame2.fits does not resolve to the batch instrument" in m
             for m in messages
         )
+
+    def test_explicit_instrument_passes_over_a_later_registered_other_instrument(
+        self, mocker, caplog, isolate_registry
+    ):
+        """An explicit selection still skips a later frame naming another profile."""
+        with isolate_registry(instruments, "_REGISTERED"):
+            register_instrument(
+                InstrumentProfile(
+                    name="OtherScope",
+                    header_match=(
+                        HeaderMatchRule(keyword="INSTRUME", pattern="Other Scope"),
+                    ),
+                )
+            )
+            prep_data, _ = self._walk_setup(
+                mocker,
+                {"frame1.fits": TooFewStarsError},
+                headers={"frame2.fits": {"INSTRUME": "Other Scope"}},
+            )
+
+            with caplog.at_level("WARNING", logger="bandaid.scripts"):
+                prep = scripts.prepare_batch(
+                    ["frame1.fits", "frame2.fits", "frame3.fits"],
+                    cnn=object(),
+                    config=PhotometryConfig(instrument=load_instrument("Seestar50")),
+                )
+
+        assert prep.prep_file == "frame3.fits"
+        called = [c.args[0] for c in prep_data.calibration_sequence.call_args_list]
+        assert called == ["frame1.fits", "frame3.fits"]
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(
+            "frame2.fits does not resolve to the batch instrument" in m
+            for m in messages
+        )
+
+    def test_explicit_instrument_accepts_a_later_frame_matching_no_profile(
+        self, mocker
+    ):
+        """An explicit selection trusts a later frame matching no registered profile."""
+        prep_data, _ = self._walk_setup(
+            mocker,
+            {"frame1.fits": TooFewStarsError},
+            headers={"frame2.fits": {"INSTRUME": "Some Other Scope"}},
+        )
+
+        prep = scripts.prepare_batch(
+            ["frame1.fits", "frame2.fits", "frame3.fits"],
+            cnn=object(),
+            config=PhotometryConfig(instrument=load_instrument("Seestar50")),
+        )
+
+        assert prep.prep_file == "frame2.fits"
+        called = [c.args[0] for c in prep_data.calibration_sequence.call_args_list]
+        assert called == ["frame1.fits", "frame2.fits"]
+
+    def test_instrument_mismatch_on_last_candidate_is_the_chained_cause(self, mocker):
+        """A last candidate failing the mixing guard ends the walk neutrally."""
+        self._walk_setup(
+            mocker,
+            {"frame1.fits": TooFewStarsError},
+            headers={"frame2.fits": {"INSTRUME": "Some Other Scope"}},
+        )
+
+        with pytest.raises(BatchPrepError) as excinfo:
+            scripts.prepare_batch(["frame1.fits", "frame2.fits"], cnn=object())
+
+        assert str(excinfo.value).startswith(
+            "no frame of the 2 can prepare the batch; the last, frame2.fits, "
+            "failed with: frame header does not match"
+        )
+        cause = excinfo.value.__cause__
+        assert type(cause) is FrameError
+        assert cause.file == "frame2.fits"
+        assert "header_match" in cause.reason
 
     @pytest.mark.parametrize(
         "error", [FrameMetadataError, DegenerateBayerChannelError, NoUsableStarsError]
