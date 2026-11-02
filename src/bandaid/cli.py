@@ -521,8 +521,9 @@ def process(
     Photometer a batch of FITS frames into per-frame .star photometry files.
 
     FILES may be directories (expanded to their FITS frames), glob patterns, or
-    individual frame paths. The first frame seeds the once-per-batch preparation
-    and every frame is then photometered against it.
+    individual frame paths. The batch is prepared from the first frame, in
+    batch order, that the preparation accepts, and every frame is then
+    photometered against it.
 
     Parameters
     ----------
@@ -608,7 +609,7 @@ def process(
     # path) and a fatal batch-prep failure (e.g. no usable Gaia catalog, or --
     # with no --instrument/--profile/--config -- an undetectable instrument)
     # as clean CLI errors. process_batch skips every per-frame FrameError, so
-    # one that escapes is from first-frame preparation and is fatal.
+    # one that escapes is from batch preparation and is fatal.
     try:
         frames, results = photometer_frames(
             files,

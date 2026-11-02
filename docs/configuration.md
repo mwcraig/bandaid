@@ -7,8 +7,9 @@ returned `BatchPrep` and applied to every frame in the batch:
 ```python
 from bandaid import PhotometryConfig, ApertureConfig, prepare_batch
 
+frames = ["night/frame_001.fit", "night/frame_002.fit"]  # the batch's paths
 config = PhotometryConfig(apertures=ApertureConfig(gap=5, annulus_width=4))
-prep = prepare_batch(first_file, cnn=cnn, config=config)
+prep = prepare_batch(frames, cnn=cnn, config=config)
 ```
 
 If you pass no `config`, a default `PhotometryConfig()` is used. Every field
@@ -101,10 +102,11 @@ A hand-written Seestar config that copies the class defaults from this table
 loses that tightened gate.
 
 The bright-neighbour contamination flag is computed once per batch, from the
-*first* frame's FWHM, and applied to every frame of the night. Because seeing
-usually changes during a night, the flag is evaluated at `first-frame FWHM × contamination_seeing_margin` (and at the largest configured aperture radius), so
+FWHM of the first usable frame, and applied to every frame of the night. Because seeing
+usually changes during a night, the flag is evaluated at `first-usable-frame FWHM × contamination_seeing_margin` (and at the largest
+configured aperture radius), so
 pairs that would become contaminated as seeing softens are dropped up front. Set
-the margin to `1.0` to evaluate the flag at exactly the first frame's seeing;
+the margin to `1.0` to evaluate the flag at exactly the seeing of that frame;
 values below 1 are rejected at construction.
 
 #### Instrument profiles registry

@@ -175,6 +175,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `prepare_batch` takes the frame list (`first_file` is now `files`) and
+    prepares from the first frame it accepts, passing over frames with
+    per-frame errors, which are still processed and skipped per frame;
+    `BatchPrep.prep_file` names the frame used (#176).
 - `build_photometry_table` needs `filter_name=` when the frame's `egain` is a
     per-channel mapping.
 - The per-star background is the sigma-clipped mean of the annulus instead of

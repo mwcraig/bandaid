@@ -7,18 +7,20 @@ the Gaia source list, the contaminant-filtered subset of it used as the
 photometry/centroiding points, the CNN centroiding model, and the Bayer masks.
 
 `prepare_batch` computes these once -- deriving the field pointing, plate scale,
-FOV, Bayer pattern, and (via one cheap detection pass on the first frame) the
-FWHM -- and returns them as a `BatchPrep` bundle. `process_frame` photometers
-one frame against that bundle and reports the outcome as a `FrameResult`;
-`process_batch` loops the frames through it, writes the outputs and the QA
-manifest. The split keeps the once-per-batch work and the per-frame work as
-separate, single-trigger functions: no shared mutable state, no "is it done
-yet?" bookkeeping.
+FOV, Bayer pattern, and (via one cheap detection pass on the prep frame) the
+FWHM -- and returns them as a `BatchPrep` bundle. The prep frame is the frame
+the batch is prepared from: the first frame, in batch order, that the
+preparation accepts. `process_frame` photometers one frame against that bundle
+and reports the outcome as a `FrameResult`; `process_batch` loops the frames
+through it, writes the outputs and the QA manifest. The split keeps the
+once-per-batch work and the per-frame work as separate, single-trigger
+functions: no shared mutable state, no "is it done yet?" bookkeeping.
 """
 
 import csv
 import glob
 import logging
+import os
 import time
 import traceback
 from dataclasses import dataclass
@@ -318,6 +320,11 @@ class BatchPrep:
         `~bandaid.photometry.centroid_with_catalog_model`).
         ``inf`` when the field has fewer than ``cnn_class_size`` targets in the
         cut circle; None when the policy is off. Default None.
+    prep_file : str or Path or None
+        The path, as given to `prepare_batch`, of the frame the batch is
+        prepared from: the first frame, in batch order, that the preparation
+        accepts. None when the bundle was not built by `prepare_batch`.
+        Default None.
     """
 
     radecs: np.ndarray
@@ -333,6 +340,7 @@ class BatchPrep:
     build_l4: bool = True
     gaia_g: np.ndarray | None = None
     g_cut: float | None = None
+    prep_file: str | os.PathLike | None = None
 
     def __post_init__(self) -> None:
         """
@@ -505,7 +513,7 @@ def _check_edge_margin_fits_frame(edge_margin_px, metadata):
         raise BatchPrepError(msg)
 
 
-def _resolve_batch_instrument(config, header):
+def _resolve_batch_instrument(config, header, file):
     """
     Resolve ``config.instrument`` for the batch, wrapping a detection failure.
 
@@ -514,8 +522,10 @@ def _resolve_batch_instrument(config, header):
     config : PhotometryConfig
         The config whose ``instrument`` may need resolving.
     header : astropy.io.fits.Header
-        The first frame's header to detect from; only consulted when
+        The first candidate frame's header to detect from; only consulted when
         ``config.instrument`` is None.
+    file : str or Path
+        The frame ``header`` came from, named in the error message.
 
     Returns
     -------
@@ -537,17 +547,21 @@ def _resolve_batch_instrument(config, header):
     (recoverable per-frame) by declaration, but `prepare_batch` is the one
     caller that wants the fatal behavior: an unresolvable *first* frame leaves
     the whole batch with no detection/PSF settings to prepare with. So it is
-    wrapped here instead of relying on inheritance.
+    wrapped here instead of relying on inheritance. The message names ``file``
+    because callers do not add the path.
     """
     try:
         return resolve_config_instrument(config, header)
     except InstrumentDetectionError as exc:
-        raise BatchPrepError(str(exc)) from exc
+        msg = f"{file}: {exc}"
+        raise BatchPrepError(msg) from exc
 
 
-def _check_solve_pool_floor(target_radecs, center, fov_rad, instrument, mag_limit):
+def _check_solve_pool_floor(
+    target_radecs, center, fov_rad, instrument, mag_limit, file
+):
     """
-    Require enough target stars inside the first frame's solve pool.
+    Require enough target stars inside the solve pool of the prep frame.
 
     Parameters
     ----------
@@ -561,6 +575,8 @@ def _check_solve_pool_floor(target_radecs, center, fov_rad, instrument, mag_limi
         Supplies ``solve_pool_radius_scale``.
     mag_limit : float
         The target magnitude limit, used in the error message.
+    file : str or Path
+        The frame the batch is prepared from, named in the error message.
 
     Raises
     ------
@@ -579,15 +595,129 @@ def _check_solve_pool_floor(target_radecs, center, fov_rad, instrument, mag_limi
     if n_in_pool < N_GAIA_STARS_ALIGN_RETRY:
         msg = (
             f"Gaia returned only {n_in_pool} stars brighter than "
-            f"{mag_limit} within the first frame's solve pool radius "
+            f"{mag_limit} within the solve pool radius of {file} "
             f"({pool_radius:.3f} deg) for the field at {center}; need at least "
             f"{N_GAIA_STARS_ALIGN_RETRY} to solve a WCS"
         )
         raise BatchPrepError(msg)
 
 
+def _calibrate_first_usable(
+    candidates, first_loaded, cnn, instrument, instrument_auto_detected
+):
+    """
+    Run the calibration on each candidate until the preparation accepts one.
+
+    The first candidate is passed over only for a
+    `~bandaid.exceptions.TooFewStarsError` or
+    `~bandaid.exceptions.PSFFitError`; a later one for any
+    `~bandaid.exceptions.FrameError`.
+
+    Parameters
+    ----------
+    candidates : list of (str or Path)
+        The frames to try, in batch order.
+    first_loaded : LoadedFrame
+        The already-loaded contents of ``candidates[0]``; later candidates are
+        loaded here.
+    cnn : object
+        The centroiding model used to measure the FWHM.
+    instrument : InstrumentProfile
+        The resolved instrument profile for detection and PSF fitting.
+    instrument_auto_detected : bool
+        Whether ``instrument`` was auto-detected; passed to the batch-mixing
+        guard run on every candidate after the first.
+
+    Returns
+    -------
+    prep_file : str or Path
+        The candidate the preparation accepted, as given.
+    calibration : CalibrationResult
+        Its calibration result.
+    n_passed_over : int
+        How many earlier candidates were passed over.
+
+    Raises
+    ------
+    BatchPrepError
+        If no candidate is accepted; the last candidate's
+        `~bandaid.exceptions.FrameError` (a
+        `~bandaid.exceptions.TooFewStarsError` or
+        `~bandaid.exceptions.PSFFitError` when there is only one candidate) is
+        chained as ``__cause__``.
+    FrameError
+        Raised unchanged from the first candidate when it is neither a
+        `~bandaid.exceptions.TooFewStarsError` nor a
+        `~bandaid.exceptions.PSFFitError`.
+    """
+    for position, prep_file in enumerate(candidates):
+        prep_frame = first_loaded if position == 0 else _load_frame(prep_file)
+        if position > 0:
+            try:
+                _check_instrument_mixing(
+                    prep_file, prep_frame.header, instrument_auto_detected, instrument
+                )
+            except FrameError as exc:
+                # Keep the error for the final message, not the pixels its
+                # traceback frames reference (see process_frame).
+                traceback.clear_frames(exc.__traceback__)
+                last_error = exc
+                if position + 1 < len(candidates):
+                    logger.warning(
+                        "%s does not resolve to the batch instrument (%s); "
+                        "trying the next frame to prepare the batch",
+                        prep_file,
+                        exc.reason,
+                    )
+                continue
+        try:
+            # Pass the CNN so the FWHM (which sizes the photometry aperture) is
+            # measured by re-centroiding detections, decoupling it from the
+            # detection opening. detect_on_bayer_balanced and fwhm_n_stars must
+            # match the per-frame call in process_one_image (which detects on
+            # bayer-balanced data by default), so the batch-gating FWHM is
+            # measured in the same detection regime as the photometry it
+            # protects.
+            calibration = calibration_sequence(
+                prep_file,
+                detect_on_bayer_balanced=True,
+                cnn=cnn,
+                profile=instrument,
+                frame=prep_frame,
+            )
+        except FrameError as exc:
+            no_fwhm = isinstance(exc, (TooFewStarsError, PSFFitError))
+            if position == 0 and not no_fwhm:
+                raise
+            # Keep the error for the final message, not the pixels its
+            # traceback frames reference (the pixel array and the images
+            # derived from it). The line numbers still format.
+            traceback.clear_frames(exc.__traceback__)
+            last_error = exc
+            if position + 1 < len(candidates):
+                logger.warning(
+                    "%s %s (%s); trying the next frame to prepare the batch",
+                    "no FWHM from" if no_fwhm else "cannot prepare the batch from",
+                    prep_file,
+                    exc.reason,
+                )
+        else:
+            # A kept error's traceback reaches back to this frame, so drop it
+            # here rather than leave a cycle for the collector.
+            last_error = None
+            return prep_file, calibration, position
+    if len(candidates) == 1:
+        msg = f"cannot measure an FWHM on {prep_file}: {last_error.reason}"
+    else:
+        msg = (
+            f"tried all {len(candidates)} frames; "
+            f"the last, {prep_file}, failed with: {last_error.reason}"
+        )
+    raise BatchPrepError(msg) from last_error
+
+
 def prepare_batch(
-    first_file,
+    files,
     *,
     cnn,
     config=None,
@@ -596,21 +726,26 @@ def prepare_batch(
     frame=None,
 ):
     """
-    Compute the once-per-batch photometry inputs from the first frame.
+    Compute the once-per-batch photometry inputs from the prep frame.
 
-    Runs a single detection pass on ``first_file`` (no WCS solve) to obtain the
-    FWHM and image metadata, queries Gaia for the field (propagating the J2016.0
-    DR3 positions to the frame's observation epoch via proper motions), drops
-    contaminated sources, and builds the Bayer masks. The query cone is the
-    field radius widened by the instrument's ``cone_radius_margin``; it is
-    filtered to ``contaminant_mag_limit`` and carries a row limit with a
-    truncation check (`~bandaid.catalog.query_field_catalog`).
+    The prep frame is the frame the batch is prepared from: the first frame of
+    ``files``, in batch order, that the preparation accepts. Runs a single
+    detection pass on it (no WCS solve) to obtain the FWHM and image metadata,
+    queries Gaia for the field (propagating the J2016.0 DR3 positions to the
+    frame's observation epoch via proper motions), drops contaminated sources,
+    and builds the Bayer masks. The query cone is the field radius widened by
+    the instrument's ``cone_radius_margin``; it is filtered to
+    ``contaminant_mag_limit`` and carries a row limit with a truncation check
+    (`~bandaid.catalog.query_field_catalog`).
 
     Parameters
     ----------
-    first_file : str or Path
-        Path to the first FITS frame in the batch. Used to derive the field
-        pointing/FOV, plate scale, Bayer pattern, image shape, and FWHM. All
+    files : str or Path or sequence of (str or Path)
+        The batch's FITS frames, or a single path (treated as a one-frame
+        batch). The order matters: it fixes which frame is tried first. The
+        batch is prepared from the first frame, in batch order, that the
+        preparation accepts; that frame supplies the field pointing/FOV, plate
+        scale, Bayer pattern, image shape, observation epoch, and FWHM. All
         frames in the batch are assumed to share these.
     cnn : object
         The centroiding model to carry through to every frame: any object with
@@ -618,9 +753,9 @@ def prepare_batch(
         `~bandaid.ballet.Ballet`.
     config : PhotometryConfig or None, optional
         Photometry configuration carried on the returned `BatchPrep` and applied
-        to every frame. Its ``instrument`` settings drive the first-frame FWHM
+        to every frame. Its ``instrument`` settings drive the FWHM
         detection and the contamination flagging here (evaluated at the largest
-        ``apertures`` radius, with the first-frame FWHM padded by the
+        ``apertures`` radius, with the prep frame's FWHM padded by the
         instrument's ``contamination_seeing_margin``), and its
         ``source_selection`` settings supply the Gaia target/contaminant
         magnitude limits. If None (default), a default ``PhotometryConfig`` is
@@ -640,71 +775,96 @@ def prepare_batch(
         `~astropy.coordinates.SkyCoord.from_name`) is accepted and treated as
         one target. None (default) adds nothing.
     frame : LoadedFrame or None, optional
-        The already-loaded contents of ``first_file``. None (default) loads
-        ``first_file`` here.
+        The already-loaded contents of ``files[0]`` (or of the single path);
+        later candidates are always loaded here. None (default) loads that
+        frame here too.
 
     Returns
     -------
     BatchPrep
-        The reusable prep bundle for the batch.
+        The reusable prep bundle for the batch; its ``prep_file`` names the
+        frame it was built from.
 
     Raises
     ------
     BatchPrepError
-        If too few stars are detected in ``first_file`` to measure an FWHM,
-        or no usable PSF can be fit to them (`~bandaid.exceptions.PSFFitError`).
-        Also raised if ``config.edge_margin_px`` is at or above half the
-        smaller frame dimension, which would leave no usable area on any frame,
-        and if fewer than the minimum number of target stars lie within
-        the first frame's solve pool radius, if the Gaia query hit its row
-        limit before reaching the target magnitude limit (a
+        If no frame in ``files`` can prepare the batch: too few stars are
+        detected to measure an FWHM, or no usable PSF can be fit to them
+        (`~bandaid.exceptions.PSFFitError`), or, for a frame after the first,
+        any other `~bandaid.exceptions.FrameError`; the last frame's error is
+        chained as ``__cause__``. Also raised if ``config.edge_margin_px`` is at or
+        above half the smaller frame dimension, which would leave no usable
+        area on any frame, and if fewer than the minimum number of target stars
+        lie within the prep frame's solve pool radius, if the Gaia query hit
+        its row limit before reaching the target magnitude limit (a
         `~bandaid.exceptions.CatalogTruncationError`, raised unchanged), if
         the Gaia query fails (original chained as ``__cause__``), and if
-        ``config.instrument``
-        is None and the first frame's header does not resolve to exactly one
-        instrument profile: `prepare_batch` is the one caller that treats that
-        as fatal.
+        ``config.instrument`` is None and the first frame's header does not
+        resolve to exactly one instrument profile (the message names that
+        frame): `prepare_batch` is the one caller that treats that as fatal.
     FrameMetadataError
-        If the first frame's metadata has no parseable observation time
+        If the prep frame's metadata has no parseable observation time
         (``obs_time``, usually mapped from ``DATE-OBS``), which is needed to
         propagate the Gaia positions to the observation epoch.
-    """
-    if frame is None:
-        frame = _load_frame(first_file)
 
-    # A failure to measure an FWHM on the *first* frame is fatal for the whole
-    # batch (no FWHM/pointing to prepare from), so translate the recoverable
-    # per-frame TooFewStarsError or PSFFitError into a fatal BatchPrepError.
+    Notes
+    -----
+    A frame that yields no FWHM (a clouded or obstructed frame, say) is passed
+    over with a warning and the next frame is tried, in the order given, until
+    one is accepted or the list runs out. On the first frame only
+    `~bandaid.exceptions.TooFewStarsError` and
+    `~bandaid.exceptions.PSFFitError` advance the walk, and any other
+    `~bandaid.exceptions.FrameError` from it is raised unchanged; on a later
+    frame any `~bandaid.exceptions.FrameError` does (unreadable header metadata
+    or a degenerate Bayer channel, say), since `process_batch` would skip that
+    frame anyway. Every other failure stays fatal for the batch and never advances
+    it: a frame file that cannot be read, an undetectable instrument (resolved
+    once, from the first frame's header), a missing or unparsable observation
+    time on the prep frame, an edge margin too large for the frame, a Gaia
+    failure, or too few Gaia stars in the solve pool.
+
+    The passed-over frames are not removed from the batch. `process_batch`
+    still visits them, skips each through the normal per-frame path, and gives
+    it a row in the QA manifest.
+
+    Instrument detection always uses the first frame; everything else comes
+    from the prep frame.
+    """
+    candidates = [files] if isinstance(files, str | os.PathLike) else list(files)
+
     config = config or PhotometryConfig()
-    # This is the first place a header is in hand, so resolve here and carry
-    # the instrument forward on the config stored on the returned BatchPrep --
-    # one resolution covers every frame in the batch (see also prepare_image,
-    # the other resolution point, for direct prepare_image/calibration_sequence
-    # callers). instrument_auto_detected gates check_frame_consistency's
-    # batch-mixing guard, which fires only when the instrument was actually
-    # detected, not explicitly chosen. See _resolve_batch_instrument for why
-    # an unresolvable header here becomes a fatal BatchPrepError.
-    config, instrument_auto_detected = _resolve_batch_instrument(config, frame.header)
+    # The instrument is resolved once, from the first candidate's header, so a
+    # header that matches nothing fails the batch before any frame is walked
+    # past. Carry the instrument forward on the config stored on the returned
+    # BatchPrep -- one resolution covers every frame in the batch (see also
+    # prepare_image, the other resolution point, for direct
+    # prepare_image/calibration_sequence callers). instrument_auto_detected
+    # goes to the batch-mixing guard, run by _calibrate_first_usable on every
+    # candidate after the first and by check_frame_consistency on every frame,
+    # and tells it whether to exempt a header that matches no registered
+    # instrument (explicit selections are exempt; auto-detected ones are not).
+    # See _resolve_batch_instrument for why an unresolvable header here
+    # becomes a fatal BatchPrepError.
+    first_loaded = frame if frame is not None else _load_frame(candidates[0])
+    config, instrument_auto_detected = _resolve_batch_instrument(
+        config, first_loaded.header, candidates[0]
+    )
     instrument = config.instrument
-    try:
-        # Pass the CNN so the FWHM (which sizes the photometry aperture) is measured
-        # by re-centroiding detections, decoupling it from the detection opening.
-        # detect_on_bayer_balanced and fwhm_n_stars must match the per-frame call
-        # in process_one_image (which detects on bayer-balanced data by default),
-        # so the batch-gating FWHM is measured in the same detection regime as
-        # the photometry it protects.
-        calibration = calibration_sequence(
-            first_file,
-            detect_on_bayer_balanced=True,
-            cnn=cnn,
-            profile=instrument,
-            frame=frame,
+
+    prep_file, calibration, n_passed_over = _calibrate_first_usable(
+        candidates, first_loaded, cnn, instrument, instrument_auto_detected
+    )
+    metadata = calibration.metadata
+    fwhm_pix = calibration.fwhm
+    if n_passed_over:
+        logger.warning(
+            "preparing the batch from %s after passing over %d frame(s) that "
+            "could not prepare it; they are still processed and skipped per frame",
+            prep_file,
+            n_passed_over,
         )
-        metadata = calibration.metadata
-        fwhm_pix = calibration.fwhm
-    except (TooFewStarsError, PSFFitError) as exc:
-        msg = f"cannot measure an FWHM: {exc.reason}"
-        raise BatchPrepError(msg) from exc
+    else:
+        logger.info("preparing the batch from %s", prep_file)
 
     _check_edge_margin_fits_frame(config.edge_margin_px, metadata)
 
@@ -717,24 +877,25 @@ def prepare_batch(
     obs_time = metadata.get("obs_time")
     if obs_time is None:
         msg = (
-            "no observation time in the first frame's metadata (obs_time, "
+            "no observation time in the metadata of the frame the batch is "
+            "prepared from (obs_time, "
             "usually mapped from DATE-OBS); it is needed to propagate Gaia "
             "positions to the observation epoch"
         )
-        raise FrameMetadataError(msg, file=first_file)
-    obs_epoch = _parse_obs_time(obs_time, file=first_file)
+        raise FrameMetadataError(msg, file=prep_file)
+    obs_epoch = _parse_obs_time(obs_time, file=prep_file)
 
     # Center the Gaia cone on the header pointing converted to ICRS.
     # fov_rad is a field *radius*; query_field_catalog takes a radius too and
     # widens it by the instrument's cone margin, so a frame that drifts a little
-    # from the first frame's pointing is still covered by the catalog.
+    # from the prep frame's pointing is still covered by the catalog.
     # estimate_center_from_header knows a bad pointing but not which file it came
-    # from; attach first_file so the failure names the frame, like the obs_time/
+    # from; attach prep_file so the failure names the frame, like the obs_time/
     # metadata_from_header labelling above.
     try:
         center = estimate_center_from_header(metadata, instrument)
     except FrameMetadataError as exc:
-        exc.file = first_file
+        exc.file = prep_file
         raise
     logger.info("field center from header pointing: %s", center)
     # The target/contaminant magnitude limits bound the catalog query itself
@@ -777,10 +938,15 @@ def prepare_batch(
     # Without enough reference stars no frame can solve a WCS, so fail the batch
     # now with a clear message rather than letting every frame fail later.
     _check_solve_pool_floor(
-        target_radecs, center, metadata["fov_rad"], instrument, gaia_mag_limit
+        target_radecs,
+        center,
+        metadata["fov_rad"],
+        instrument,
+        gaia_mag_limit,
+        prep_file,
     )
 
-    # The flag is computed once, from the first frame's FWHM, but applied to
+    # The flag is computed once, from the prep frame's FWHM, but applied to
     # every frame of the batch, so evaluate it at a pessimistically softened
     # seeing (FWHM * contamination_seeing_margin): pairs that would become
     # contaminated as seeing degrades during the night are dropped up front.
@@ -862,6 +1028,7 @@ def prepare_batch(
         instrument_auto_detected=instrument_auto_detected,
         build_l4=build_l4,
         gaia_g=gaia_g,
+        prep_file=prep_file,
         g_cut=_batch_g_cut(
             config.centroid,
             photometry_coords,
@@ -873,7 +1040,7 @@ def prepare_batch(
     )
 
 
-def _check_instrument_mixing(file, header, prep, batch_instrument):
+def _check_instrument_mixing(file, header, instrument_auto_detected, batch_instrument):
     """
     Reject a frame whose header does not resolve to the batch's instrument.
 
@@ -883,11 +1050,12 @@ def _check_instrument_mixing(file, header, prep, batch_instrument):
         The frame being checked (attached to any raised error).
     header : astropy.io.fits.Header
         The frame's FITS header.
-    prep : BatchPrep
-        The batch prep whose ``instrument_auto_detected`` gates whether a
-        header matching no registered instrument is exempted (see Notes).
+    instrument_auto_detected : bool
+        Whether the batch instrument was auto-detected rather than chosen
+        explicitly; this gates whether a header matching no registered
+        instrument is exempted (see Notes).
     batch_instrument : InstrumentProfile or None
-        ``prep.config.instrument``, supplying the ``header_match`` rules
+        the batch's resolved instrument, supplying the ``header_match`` rules
         checked against.
 
     Raises
@@ -913,7 +1081,7 @@ def _check_instrument_mixing(file, header, prep, batch_instrument):
 
     An explicitly chosen instrument (``--instrument``/``--profile``/
     ``--config``, or ``config=PhotometryConfig(instrument=...)`` --
-    ``prep.instrument_auto_detected`` is False) is exempted only from the
+    ``instrument_auto_detected`` is False) is exempted only from the
     no-match outcome: a header that resolves to *no* registered instrument at
     all (missing/malformed) is trusted, the deliberate override's intended
     escape hatch. A header that positively identifies a *different,
@@ -941,7 +1109,7 @@ def _check_instrument_mixing(file, header, prep, batch_instrument):
             detection_error = None
 
         no_match = detection_error is not None and not detection_error.matched
-        if no_match and not prep.instrument_auto_detected:
+        if no_match and not instrument_auto_detected:
             # The explicit-selection escape hatch: a header that resolves to
             # no registered instrument at all is trusted, not just one that
             # merely fails to name the batch instrument. An ambiguous header
@@ -963,7 +1131,7 @@ def _check_instrument_mixing(file, header, prep, batch_instrument):
                 header.get(rule.keyword) is None
                 for rule in batch_instrument.header_match
             )
-            origin = "auto-detected batch" if prep.instrument_auto_detected else "batch"
+            origin = "auto-detected batch" if instrument_auto_detected else "batch"
             if none_present:
                 msg = (
                     f"frame header is missing {missing}, required by the "
@@ -988,7 +1156,7 @@ def check_frame_consistency(file, header, prep):
     Reject a frame whose pointing, shape, or instrument disagrees with the batch prep.
 
     `prepare_batch` derives the field pointing, FOV, and image shape from the
-    first frame and queries Gaia once for that field. A later frame that drifted
+    prep frame and queries Gaia once for that field. A later frame that drifted
     off the field (a slew, a meridian flip, the wrong target) or has a different
     shape would be photometered against a catalog that no longer covers it,
     producing silently wrong results -- so reject it instead. A frame whose
@@ -996,11 +1164,11 @@ def check_frame_consistency(file, header, prep):
 
     The batch-mixing guard (`_check_instrument_mixing`) runs first, needing
     only ``header`` and the batch instrument: a later frame whose header does
-    not resolve to the profile `prepare_batch` auto-detected is rejected.
+    not resolve to the batch instrument is rejected.
 
     The header is then resolved through the batch instrument's ``header_map``
     (``prep.config.instrument``), the same dialect that resolved the prep's
-    ``center``/``shape`` from the first frame -- so an instrument whose pointing
+    ``center``/``shape`` from the prep frame -- so an instrument whose pointing
     lives under different keywords than the Seestar's is compared consistently
     (issue #59). The frame's header pointing is converted to ICRS with
     :func:`estimate_center_from_header` before the comparison, the same way
@@ -1017,7 +1185,8 @@ def check_frame_consistency(file, header, prep):
         checked against; whose ``config.instrument`` supplies the
         ``header_map`` dialect used to read the header and the
         ``header_match`` rules used for the batch-mixing guard; and whose
-        ``instrument_auto_detected`` gates whether that guard is enforced.
+        ``instrument_auto_detected`` decides whether a no-match header is
+        exempt.
 
     Returns
     -------
@@ -1049,7 +1218,9 @@ def check_frame_consistency(file, header, prep):
     # runs before the header is otherwise resolved; see
     # _check_instrument_mixing.
     batch_instrument = prep.config.instrument
-    _check_instrument_mixing(file, header, prep, batch_instrument)
+    _check_instrument_mixing(
+        file, header, prep.instrument_auto_detected, batch_instrument
+    )
 
     try:
         metadata = metadata_from_header(header, profile=batch_instrument)
@@ -1069,7 +1240,7 @@ def check_frame_consistency(file, header, prep):
     if ra is None or dec is None:
         msg = "header resolved no pointing (ra/dec) through the instrument header_map"
         raise FrameMetadataError(msg, file=file)
-    # prep.center is the first frame's header pointing converted to ICRS, so
+    # prep.center is the prep frame's header pointing converted to ICRS, so
     # convert this frame's the same way before comparing.
     # The None case is caught by the explicit guard above; a present-but-non-
     # numeric pointing surfaces from estimate_center_from_header, which sits
@@ -2070,8 +2241,8 @@ def photometer_frames(
 
     The high-level convenience behind ``bandaid process``: it does the file-name
     expansion (`expand_frame_paths`), builds the `Ballet` centroider, and
-    runs `prepare_batch` (seeded from the first frame) followed by
-    `process_batch`.
+    runs `prepare_batch` (seeded from the first frame, in batch order, that
+    the preparation accepts) followed by `process_batch`.
     Driving the whole flow from Python is one call to this function; the CLI is a
     thin dressing over it.
 
@@ -2133,11 +2304,11 @@ def photometer_frames(
         If the arguments expand to no FITS frames. `expand_frame_paths` may also
         raise `ValueError`/`FileNotFoundError` for a malformed path argument.
     BatchPrepError
-        If `prepare_batch` cannot build the once-per-batch preparation from
-        the first frame (e.g. its header does not resolve to exactly one
-        registered instrument profile). Re-raised here with the first frame's
-        path folded into the message, chaining the original as ``__cause__``,
-        so the failure is actionable instead of a bare traceback.
+        If `prepare_batch` cannot build the once-per-batch preparation: no
+        frame can prepare the batch, or the first frame's header does not resolve to
+        exactly one registered instrument profile, among other causes.
+        Re-raised here with a batch-level prefix, chaining the original as
+        ``__cause__``; the message names the frame concerned.
     """
     frames = expand_frame_paths(files)
     if not frames:
@@ -2149,12 +2320,13 @@ def photometer_frames(
         cnn = Ballet(model_file=weights)
 
     # Open the first frame once and hand the load to both stages --
-    # prepare_batch derives the prep from it and process_batch photometers it
-    # -- so the whole run opens each frame exactly once (issue #44).
+    # prepare_batch uses it as the first candidate and process_batch photometers
+    # it. When prepare_batch is seeded from a later frame, that frame is loaded
+    # a second time by process_batch.
     first_frame = _load_frame(frames[0])
     try:
         prep = prepare_batch(
-            frames[0],
+            frames,
             cnn=cnn,
             config=config,
             build_l4=build_l4,
@@ -2162,10 +2334,11 @@ def photometer_frames(
             frame=first_frame,
         )
     except BatchPrepError as exc:
-        # prepare_batch's messages do not name the file -- this is the caller
-        # that knows the first frame's path, so fold it in instead of letting a
-        # bare BatchPrepError surface uncaught.
-        msg = f"could not prepare the batch from the first frame ({frames[0]}): {exc}"
+        # prepare_batch's messages name the frame they concern (the batch may
+        # be prepared from a later frame than the first), so just give the
+        # failure a batch-level prefix instead of letting a bare BatchPrepError
+        # surface uncaught.
+        msg = f"could not prepare the batch: {exc}"
         raise BatchPrepError(msg) from exc
     results = process_batch(
         frames,

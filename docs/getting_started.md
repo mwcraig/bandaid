@@ -13,7 +13,7 @@ Three ideas explain almost everything you'll see:
     photometry: it measures flux at the positions of a magnitude-limited Gaia
     catalog rather than detecting your own sources. You do not give it a target
     list — it builds one from Gaia for wherever the telescope was pointed.
-1. **It works in batches.** One slow preparation pass on the first frame
+1. **It works in batches.** One slow preparation pass on the first usable frame
     (`prepare_batch`) sets up the Gaia catalog, plate scale, field of view, Bayer
     masks, and centroiding model; then a fast per-frame loop (`process_batch`)
     reuses all of that for every remaining frame.
@@ -32,7 +32,7 @@ $ bandaid process night-of-2026-06-27/ -o out/ -v
 `-v` streams a one-line outcome per frame so you can watch the batch move (use
 `-vv` for per-stage detail such as the plate solve and star counts). The first
 frame takes the longest — that is the once-per-batch preparation (instrument
-detection, a detection pass on the first frame, the Gaia query and contamination
+detection, a detection pass on the first usable frame, the Gaia query and contamination
 flagging) — and the rest follow quickly.
 
 ## The Ballet weights (first run)

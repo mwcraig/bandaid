@@ -10,7 +10,7 @@ It is a deliberately temporary solution: the bandaid gets ripped off on
 - **Positions come from Gaia, not from your image.** bandaid does *forced*
     photometry at the positions of a magnitude-limited Gaia catalog — you do not
     detect your own sources.
-- **It works in batches.** One slow preparation pass on the first frame
+- **It works in batches.** One slow preparation pass on the first usable frame
     (`prepare_batch`) sets up the Gaia catalog, plate scale, field of view, Bayer
     masks, and centroiding model; a fast per-frame loop (`process_batch`) reuses
     all of it.

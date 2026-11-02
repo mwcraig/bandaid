@@ -79,7 +79,7 @@ require both the catalog's Gaia G and the batch's `G_cut` and raise
 alone: it is the Gaia G of the `cnn_class_size`-th (30th) brightest catalog
 target inside a circle centred on the batch center whose area equals the frame's
 area (radius `sqrt(width * height / pi)` pixels, about 0.54 degrees for a
-Seestar S50). The circle is centred on the first frame's header pointing, so a
+Seestar S50). The circle is centred on the header pointing of the frame the batch is prepared from, so a
 run whose first frames precede centring shifts the cut batch-wide, not per
 frame. The value is logged at the start of the run. Because it depends
 only on the catalog, a star's class is the same on every frame; the alternative,

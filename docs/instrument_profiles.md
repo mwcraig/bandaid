@@ -51,14 +51,15 @@ Pass a profile to a batch through the config:
 from bandaid import PhotometryConfig, prepare_batch
 
 config = PhotometryConfig(instrument=load_instrument("Seestar50"))
-prep = prepare_batch(first_file, cnn=cnn, config=config)
+prep = prepare_batch(frames, cnn=cnn, config=config)
 ```
 
 ## Auto-detection from the FITS header
 
 `PhotometryConfig.instrument` defaults to `None`, which means "figure it out
 from the frame header" rather than a hard-coded telescope. `prepare_batch`
-resolves it once, from the first frame's header, and carries the resolved
+resolves it once, from the first frame's header (`frames` is the batch's list
+of paths; a single path is also accepted), and carries the resolved
 profile forward for the rest of the batch. The direct/single-frame entry
 points — `prepare_image`, `process_one_image`, and `calibration_sequence` —
 instead resolve it per call, from whichever frame they are handed:
@@ -67,7 +68,7 @@ instead resolve it per call, from whichever frame they are handed:
 from bandaid import PhotometryConfig, prepare_batch
 
 config = PhotometryConfig()  # instrument=None -> auto-detect
-prep = prepare_batch(first_file, cnn=cnn, config=config)
+prep = prepare_batch(frames, cnn=cnn, config=config)
 prep.config.instrument.name  # -> 'Seestar50', resolved from the header
 ```
 

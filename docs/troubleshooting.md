@@ -39,18 +39,28 @@ WCS failure) that the one-line skip message summarizes.
 ## The whole run aborted before finishing
 
 A skipped frame is recoverable; a `BatchPrepError` is not. The once-per-batch
-preparation is built from the **first** frame, and if that fails — too few stars
-to measure an FWHM or no usable PSF to fit to them, Gaia returns too few
-reference stars for the field, or (with no explicit
+preparation is built from the first frame, in batch order, that the preparation
+accepts. A clouded or obstructed first frame (too few stars to measure an FWHM,
+or no usable PSF to fit to them) does not abort the run: it is logged and the
+next frame is tried. A later frame is passed over the same way for any
+per-frame failure that would make it a `skipped:` row anyway (a degenerate Bayer
+channel, unreadable header metadata), though a file that cannot be read at all
+still aborts the run. The run stops only when no frame can prepare the batch,
+when Gaia returns too few reference stars for the field, when the observation
+time or pointing of the frame used cannot be read, or when (with no explicit
 `--instrument`/`--profile`/config `instrument`) the first frame's header does
-not resolve to exactly one instrument profile
-(`InstrumentDetectionError`; see [Instrument
-profiles](instrument_profiles.md#auto-detection-from-the-fits-header)) — there
-is nothing to process the rest of the batch against, so the whole run stops.
+not resolve to exactly one instrument profile (`InstrumentDetectionError`; see
+[Instrument profiles](instrument_profiles.md#auto-detection-from-the-fits-header)).
+There is then nothing to process the rest of the batch against.
 
-Fix: make sure the **first** frame in the batch is a good one (the batch is
-processed in sorted order). Point `bandaid process` at a cleaner starting frame,
-or prune the obviously bad frames before the run.
+Fix: for "tried all N frames", the batch is bad throughout; check the frames
+themselves (clouds, a closed dome, a wrong focus), the detection settings
+`thresh` and `detection_opening` (too few stars detected), or the PSF-fit
+ceiling `fwhm_cutout_half` (behind "no usable PSF").
+The frames passed over before the prep frame still appear in the manifest as
+`skipped:` rows, so there is no need to prune them by hand. For a header that
+matches no instrument, name the instrument explicitly or fix the first frame's
+header; the message names the frame.
 
 If the message is "could not query Gaia for the field at ...", the catalog
 query failed on every server. bandaid tries CDS VizieR, then the IDIA and CfA
