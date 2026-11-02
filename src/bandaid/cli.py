@@ -521,8 +521,9 @@ def process(
     Photometer a batch of FITS frames into per-frame .star photometry files.
 
     FILES may be directories (expanded to their FITS frames), glob patterns, or
-    individual frame paths. The first frame that yields an FWHM seeds the
-    once-per-batch preparation and every frame is then photometered against it.
+    individual frame paths. The batch is prepared from the first frame, in
+    batch order, that the preparation accepts, and every frame is then
+    photometered against it.
 
     Parameters
     ----------
