@@ -746,21 +746,22 @@ def config_validate(config_file):
     "output_file",
     default=None,
     type=click.Path(dir_okay=False),
-    help="Copy the weights here in addition to printing their path.",
+    help="Copy the weights here instead of printing their cached path.",
 )
 def weights(output_file):
     """
-    Print (and optionally copy) the default Ballet centroider weights.
+    Print the path of (or, with ``-o``, copy) the default Ballet centroider weights.
 
     The weights are downloaded from HuggingFace on first use; caching is handled
     by the HuggingFace hub cache (under ``HF_HOME``/``~/.cache/huggingface``), not
     by bandaid, so this simply prints the cached ``.npz`` path for reuse with
-    ``bandaid process --weights``.
+    ``bandaid process --weights``. With ``-o`` it copies the file instead and
+    prints only a confirmation.
 
     Parameters
     ----------
     output_file : str or None
-        Destination to copy the weights to, in addition to printing the path.
+        Destination to copy the weights to, instead of printing the cached path.
 
     Raises
     ------

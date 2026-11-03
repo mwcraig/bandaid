@@ -15,8 +15,7 @@ name = "bandaid"
 # You can chose to use dynamic versioning with hatch or static where you add it manually.
 dynamic = ["version"]
 description = """
-A temporary Smart Telescope photometry solution -- the bandaid gets ripped off on August
-1, 2026
+A temporary Smart Telescope photometry solution
 """
 authors = [
     { name = "AAVSO STWG", email = "aavso@aavso.org" },
@@ -186,7 +185,7 @@ test = "pytest" # fast suite, no network needed
 test-remote = "pytest -m remote_data --remote-data=any" # downloads CNN weights from Hugging Face
 lint = "pre-commit run --all-files" # everything CI's lint job runs
 docs = "mkdocs serve" # live-reload docs at localhost:8000
-docs-build = "mkdocs build" # one-shot build (what Read the Docs does)
+docs-build = "mkdocs build --strict" # one-shot build (what Read the Docs does)
 
 ######## Configure pytest for your test suite ########
 # Native pytest 9+ TOML configuration.
