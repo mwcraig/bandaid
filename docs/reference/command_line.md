@@ -7,14 +7,14 @@ For a walkthrough see [Getting started](../getting_started.md).
 bandaid [--version] [--help] COMMAND [ARGS]...
 ```
 
-| Command                               | Purpose                                                              |
-| ------------------------------------- | -------------------------------------------------------------------- |
-| `bandaid process FILES...`            | Photometer a batch of frames into `.star` files.                     |
-| `bandaid instrument list`             | List resolvable instrument-profile names.                            |
-| `bandaid instrument show NAME`        | Print one profile as JSON.                                           |
-| `bandaid config init [-o FILE]`       | Write a default `PhotometryConfig` (stdout without `-o`).            |
-| `bandaid config validate CONFIG_FILE` | Validate a config file; non-zero exit on error.                      |
-| `bandaid weights [-o FILE]`           | Print the cached default Ballet weights path; `-o` also copies them. |
+| Command                               | Purpose                                                                                        |
+| ------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `bandaid process FILES...`            | Photometer a batch of frames into `.star` files.                                               |
+| `bandaid instrument list`             | List resolvable instrument-profile names.                                                      |
+| `bandaid instrument show NAME`        | Print one profile as JSON.                                                                     |
+| `bandaid config init [-o FILE]`       | Write a default `PhotometryConfig` with `instrument: null`, auto-detect (stdout without `-o`). |
+| `bandaid config validate CONFIG_FILE` | Validate a config file; non-zero exit on error.                                                |
+| `bandaid weights [-o FILE]`           | Print the cached default Ballet weights path, or with `-o` copy them to FILE instead.          |
 
 ## `bandaid process`
 
@@ -24,24 +24,24 @@ first frame, in batch order, that the preparation accepts seeds the
 once-per-batch preparation. Output naming is described in
 [Output files](outputs.md).
 
-| Option                             | Default          | Meaning                                                                                          |
-| ---------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------ |
-| `-o, --output-dir DIRECTORY`       | `.`              | Directory for the `.star` files and QA manifest.                                                 |
-| `--instrument NAME`                | auto-detect      | Bundled or registered instrument profile.                                                        |
-| `--profile FILE`                   | none             | Instrument-profile JSON file (alternative to `--instrument`).                                    |
-| `--config FILE`                    | none             | Full `PhotometryConfig` JSON file.                                                               |
-| `--gaia-mag-limit FLOAT`           | `15.0`           | Overrides `source_selection.gaia_mag_limit`.                                                     |
-| `--min-snr FLOAT`                  | `2.0`            | Overrides `source_selection.min_snr`.                                                            |
-| `--weights FILE`                   | downloaded       | Ballet centroider weights; omitted means the default weights are downloaded.                     |
-| `--user-metadata FILE`             | none             | JSON object of per-frame metadata overrides (see [Instrument profiles](instrument_profiles.md)). |
-| `--forced-targets FILE`            | none             | CSV/ECSV with `ra`, `dec` columns (case-insensitive; optional `name` is ignored).                |
-| `--build-l4 / --no-build-l4`       | `--build-l4`     | Also produce the full-frame `L4` luminance channel.                                              |
-| `--fail-fast / --no-fail-fast`     | `--no-fail-fast` | Re-raise unexpected per-frame errors instead of skipping the frame.                              |
-| `--output-format TEXT`             | `starlist`       | Registered output writer.                                                                        |
-| `--output-suffix TEXT`             | `.star`          | Suffix of the per-frame output files.                                                            |
-| `--qa-manifest / --no-qa-manifest` | `--qa-manifest`  | Write `qa_manifest.csv`.                                                                         |
-| `-v, --verbose`                    | off              | `-v` streams per-frame progress (INFO); `-vv` adds per-stage DEBUG detail.                       |
-| `--log-file FILE`                  | none             | Also write log records to this file, at the terminal's level.                                    |
+| Option                             | Default          | Meaning                                                                                                |
+| ---------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------ |
+| `-o, --output-dir DIRECTORY`       | `.`              | Directory for the `.star` files and QA manifest.                                                       |
+| `--instrument NAME`                | auto-detect      | Bundled or registered instrument profile.                                                              |
+| `--profile FILE`                   | none             | Instrument-profile JSON file (alternative to `--instrument`).                                          |
+| `--config FILE`                    | none             | Full `PhotometryConfig` JSON file.                                                                     |
+| `--gaia-mag-limit FLOAT`           | config value     | Overrides `source_selection.gaia_mag_limit`.                                                           |
+| `--min-snr FLOAT`                  | config value     | Overrides `source_selection.min_snr`.                                                                  |
+| `--weights FILE`                   | downloaded       | Ballet centroider weights; omitted means the default weights are downloaded.                           |
+| `--user-metadata FILE`             | none             | JSON object of per-frame metadata overrides (see [Instrument profiles](instrument_profiles.md)).       |
+| `--forced-targets FILE`            | none             | CSV/ECSV with `ra`, `dec` columns (case-insensitive; optional `name` is ignored).                      |
+| `--build-l4 / --no-build-l4`       | `--build-l4`     | Also produce the full-frame `L4` luminance channel.                                                    |
+| `--fail-fast / --no-fail-fast`     | `--no-fail-fast` | Re-raise unexpected per-frame errors instead of skipping the frame (write errors always stop the run). |
+| `--output-format TEXT`             | `starlist`       | Registered output writer.                                                                              |
+| `--output-suffix TEXT`             | `.star`          | Suffix of the per-frame output files.                                                                  |
+| `--qa-manifest / --no-qa-manifest` | `--qa-manifest`  | Write `qa_manifest.csv`.                                                                               |
+| `-v, --verbose`                    | off              | `-v` streams per-frame progress (INFO); `-vv` adds per-stage DEBUG detail.                             |
+| `--log-file FILE`                  | none             | Also write log records to this file, at the terminal's level.                                          |
 
 Rules:
 
@@ -59,14 +59,3 @@ Rules:
 - Exit status is non-zero when every frame fails, or when the arguments expand
     to no frames, an input file fails validation, or batch preparation fails.
     A partial failure exits 0.
-
-The default weights are downloaded on first use; see
-[Troubleshooting](../howto/troubleshooting.md) for offline use.
-
-## Other commands
-
-- `instrument show NAME` prints JSON that can be edited and passed back with
-    `bandaid process --profile`.
-- `config init` writes a config whose `instrument` is `null` (auto-detect).
-- `weights -o FILE` copies the cached weights to `FILE` in addition to printing
-    their path, for reuse with `--weights`.

@@ -41,8 +41,8 @@ steps it is built from. See [Getting started](../getting_started.md).
 
 ::: bandaid.good_star_mask
 
-`l4_effective_egain` is the single gain the `L4` star list records when the
-Bayer channels have different gains.
+`l4_effective_egain` is the single gain the `L4` star list records; see
+[Instrument profiles](instrument_profiles.md).
 
 ::: bandaid.l4_effective_egain
 
@@ -80,7 +80,8 @@ The profile format and selection rules are in
 ## Exceptions
 
 `FrameError` and its subclasses are per-frame failures: the batch skips the frame
-and continues. `BatchPrepError` and its subclasses are fatal: the once-per-batch
+and continues, except during `prepare_batch`, where a `FrameError` from the first
+usable frame stops the run. `BatchPrepError` and its subclasses are fatal: the once-per-batch
 preparation failed and the run stops. `InstrumentDetectionError` is a
 `FrameMetadataError` and so a `FrameError`; `prepare_batch` raises it wrapped in
 `BatchPrepError`. `GaiaQueryError` is neither: the catalog query raises it when

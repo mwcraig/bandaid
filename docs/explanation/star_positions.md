@@ -9,24 +9,10 @@ stars) for the rest.
 
 Below an aperture SNR of about 10 the CNN centroid is off by 1.2 to 1.6 px, and
 the error is a bias, not just scatter: the published weights pull toward a point
-set by the noise. A synthetic star at a known position shows it:
-
-| aperture SNR | median offset x (px) | median offset y (px) | scatter x (px) | scatter y (px) |
-| ------------ | -------------------- | -------------------- | -------------- | -------------- |
-| 1            | -0.32                | +0.37                | 1.17           | 1.18           |
-| 2            | -0.27                | +0.35                | 1.09           | 1.07           |
-| 3            | -0.21                | +0.34                | 0.99           | 0.95           |
-| 5            | -0.13                | +0.33                | 0.77           | 0.72           |
-| 10           | -0.07                | +0.20                | 0.40           | 0.41           |
-| 20           | -0.02                | +0.05                | 0.12           | 0.12           |
-| 50           | 0.00                 | 0.00                 | 0.04           | 0.04           |
-
-(Median predicted minus true position, Moffat stars of FWHM 2.2 to 3.7 px in
-real-frame white noise. The aperture SNR is sky-limited at one FWHM radius, not
-the manifest's `snr` column.)
-
-Projected positions are good to about 0.15 px once a per-frame offset is fitted
-to the bright stars, so the CNN is used only where it is accurate.
+set by the noise (at SNR 5 the median offset is about 0.3 px with 0.75 px
+scatter; at SNR 20 it is under 0.1 px with 0.12 px scatter). Projected positions
+are good to about 0.15 px once a per-frame offset is fitted to the bright stars,
+so the CNN is used only where it is accurate.
 
 ## The policy
 
@@ -87,17 +73,10 @@ dropped because of it. The manifest counts flagged stars (`n_centroid_drift`).
 ## Seeing the choice in the output
 
 - `centroid_method`: `cnn` (measured), `plane` (modelled), `fallback_cnn`
-    (measured because the frame had no plane).
-- Manifest columns: `g_cut`, `n_cnn_class`, `plane_fallback`, `plane_n_used`,
-    `plane_n_clipped`, `plane_rms`, `plane_dx_center`, `plane_dy_center`,
-    `plane_dx_slope_x`, `plane_dx_slope_y`, `plane_dy_slope_x`,
-    `plane_dy_slope_y`, `n_centroid_drift`, `n_drift_rejected`.
-
-Column meanings are in [Output files](../reference/outputs.md). To centroid every
-star with the CNN, see [Tune a run](../howto/tune_a_run.md):
-
-```python
-from bandaid import CentroidConfig, PhotometryConfig
-
-config = PhotometryConfig(centroid=CentroidConfig(model_faint_positions=False))
-```
+    (measured because the frame had no plane). It is never written to a `.star`
+    file (the schema is fixed); it is a column of the in-memory tables only, the
+    ones `photometer_frames(..., output_dir=None)` returns.
+- The `g_cut`, `n_cnn_class`, `plane_*` and `n_*drift*` manifest columns are
+    defined in [Output files](../reference/outputs.md). To centroid every star
+    with the CNN, set `centroid.model_faint_positions=False`
+    ([Tune a run](../howto/tune_a_run.md)).

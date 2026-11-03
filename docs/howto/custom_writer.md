@@ -21,7 +21,7 @@ from bandaid import photometer_frames
 def write_csv(frame_result, output_path):
     written = []
     for filter_name, table in frame_result.items():
-        path = output_path.with_suffix(f".{filter_name}.csv")
+        path = output_path.with_name(f"{output_path.name}.{filter_name}.csv")
         table.write(path, format="ascii.csv", overwrite=True)
         written.append(path)
     return written

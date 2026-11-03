@@ -18,8 +18,12 @@ needs. The profile format is specified in the
     missing gain fails every frame. Give one number for every channel or, where
     the Bayer channels differ, a mapping of filter name to gain; the Seestar50
     profile ships `{"TR": 0.046, "TG": 0.076, "TB": 0.078}`, measured from flat
-    pairs. With a mapping each channel's star list records its own gain and the
-    `L4` list records the median per-star effective gain (`l4_effective_egain`).
+    pairs. How the gain is recorded per channel, including the `L4` list, is
+    explained under `egain` in the
+    [instrument profile reference](../reference/instrument_profiles.md#header_map-directives).
+- `fov_rad` (degrees): half the frame diagonal (0.74 for the Seestar S50). It sets
+    the Gaia query cone, the plate-solve star pool and the default pointing
+    tolerance.
 
 ## 2. Write a profile
 
@@ -34,18 +38,17 @@ A minimal profile for a telescope whose header is already ICRS:
 ```json
 {
     "name": "MyScope",
-    "thresh": 0.5,
-    "detection_opening": 5,
-    "fwhm_cutout_half": 25,
-    "fwhm_n_stars": 25,
-    "contamination_tolerance": 0.01,
-    "moffat_beta": 3.0,
-    "contamination_seeing_margin": 1.25,
     "wcs_scale_tolerance": 0.05,
     "header_match": [{"keyword": "INSTRUME", "pattern": "MyScope Model 1"}],
     "header_map": {
         "obs_time": "@DATE-OBS",
         "exposure": "@EXPTIME",
+        "block_filter": "@FILTER",
+        "tel_manufac": "MyScope Inc",
+        "tel_model": "@INSTRUME",
+        "tel_firmware": "@FIRMWARE",
+        "adc_depth": 12,
+        "refframe": "ICRS",
         "ra": "@RA",
         "dec": "@DEC",
         "bayerpat": "@BAYERPAT",
@@ -62,10 +65,28 @@ A minimal profile for a telescope whose header is already ICRS:
 }
 ```
 
-Replace `pixscale` and `egain` with your measured values. The `header_map`
-directives, `header_match`, and the pointing-frame keys are in the
-[reference](../reference/instrument_profiles.md). Leave the detection and PSF
-knobs alone until you have a reason to tune them.
+Replace `pixscale`, `fov_rad` and `egain` with your measured values, and the
+keyword names with the ones your headers use. The `header_map` directives and
+`header_match` are in the [reference](../reference/instrument_profiles.md).
+Omitted keys take their defaults, so leave the detection and PSF knobs out until
+you have a reason to tune them.
+
+The output format also requires the observer and site. Those belong to the
+person running the telescope, so put them in a JSON file and pass it
+with `--user-metadata` in steps 3 and 4:
+
+```json
+{"observer": "ABCD", "site_lat": 44.5, "site_lon": -92.1, "site_elev": 300.0}
+```
+
+A telescope whose header carries the site can map `site_lat`, `site_lon` and
+`site_elev` with `@KEY` directives instead, as the bundled Seestar50 profile does
+(`src/bandaid/meta_json_files/Seestar50/profile.json`). The observer code usually comes from user metadata too; a header that carries it (the Seestar writes `obscode`) can map it instead.
+
+If the header pointing is not ICRS, set `header_frame` and `header_equinox` to
+match the header's `RADESYS` and `EQUINOX` keywords. The Seestar writes FK5 in the
+equinox of date, hence `"header_frame": "fk5"` with `"header_equinox": "date"`; an
+ICRS header omits both. A fixed epoch such as `"J2025.5"` is also accepted.
 
 ## 3. Use it
 
@@ -73,7 +94,7 @@ For one run, load the file by path (from Python, pass
 `PhotometryConfig(instrument=InstrumentProfile.from_file(path))`):
 
 ```bash
-bandaid process frames/ --profile my_scope.json
+bandaid process frames/ --profile my_scope.json --user-metadata site.json
 ```
 
 To refer to it by name for the rest of a Python session, register it:
@@ -92,11 +113,14 @@ Registration lasts only for the session; a separate `bandaid process --instrumen
 Confirm the `header_map` resolves on your files with one frame before a long run:
 
 ```bash
-bandaid process one_frame.fit --profile my_scope.json -o /tmp/check -vv
+bandaid process one_frame.fit --profile my_scope.json \
+    --user-metadata site.json -o /tmp/check -vv
 ```
 
-Success is a written `.star` file. A `FrameMetadataError` means a directive points
-at a keyword your headers do not carry; see [troubleshooting](troubleshooting.md).
+Success is a written `.star` file. A `FrameMetadataError` or
+`StarListValidationError` usually means a directive points at a keyword your
+headers do not carry (an absent `@KEY` resolves to null); see
+[troubleshooting](troubleshooting.md).
 
 ## Bundling it in the package
 

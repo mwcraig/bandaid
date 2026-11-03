@@ -30,9 +30,12 @@ batch still finishes.
     `wcs_scale_tolerance` ([add a telescope](add_a_telescope.md)).
 - `skipped: WCSPointingError` — every solve landed far from the header pointing.
     Widen `wcs_pointing_tolerance`, or check the header's RA/DEC frame and equinox.
-- `skipped: FrameMetadataError` — a `header_map` directive points at a keyword the
-    header lacks, or its value is unparsable. Fix the profile and verify with a
-    single-frame `-vv` run ([add a telescope](add_a_telescope.md#4-validate)).
+- `skipped: FrameMetadataError` — the frame's observation time or airmass cannot
+    be derived: a `header_map` directive points at a keyword the header lacks (an
+    absent `@KEY` resolves to null) or its value is unparsable. A null behind any
+    other required field surfaces as `StarListValidationError` instead. Fix the
+    profile and verify with a single-frame `-vv` run
+    ([add a telescope](add_a_telescope.md#4-validate)).
     `InstrumentDetectionError`, a subclass, means the header matched no profile or
     several; pass `--instrument` or `--profile`.
 - `skipped: NoUsableStarsError` — stars were detected but none survived the quality
@@ -42,13 +45,14 @@ batch still finishes.
     worse than `max_plane_rms_pix`. Raise `centroid.max_plane_rms_pix` or set
     `centroid.model_faint_positions` false.
 - `skipped: StarListValidationError` — a row passed filtering but the AAVSO
-    starlist schema rejected the frame. The log names the field; report it.
+    starlist schema rejected the frame. The log names the field; with a custom profile, map it in `header_map` or supply it with `--user-metadata`.
 - `skipped: DegenerateBayerChannelError` — a Bayer channel has no pixels or zero
     variance in the balancing window (a constant sub-frame). Discard the frame and
     check `bayerpat` and the Bayer offsets in the profile.
-- `skipped: FrameError` — the frame's shape differs from the batch, or its
+- `skipped: FrameError` — the frame's shape differs from the batch, its
     pointing is beyond the field radius of the frame the batch was prepared
-    from. Process it separately.
+    from, or its header matches a different bundled instrument profile than the
+    batch (the instrument-mixing guard). Process it separately.
 
 ## The whole run aborted
 

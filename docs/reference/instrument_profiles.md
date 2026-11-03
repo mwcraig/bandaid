@@ -12,20 +12,9 @@ profile for a new telescope, see [Add a telescope](../howto/add_a_telescope.md).
 write this format; `bandaid instrument show NAME` prints it. Omitted keys take the
 defaults in [Configuration](configuration.md).
 
-| Key                                                                     | Type                         | Meaning                                                                                                                                                                                                             |
-| ----------------------------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`                                                                  | string                       | Registry key.                                                                                                                                                                                                       |
-| `thresh`, `detection_opening`, `fwhm_cutout_half`, `fwhm_n_stars`       | number / int                 | Detection and FWHM-fit tuning.                                                                                                                                                                                      |
-| `contamination_tolerance`, `moffat_beta`, `contamination_seeing_margin` | number                       | Bright-neighbour contamination model.                                                                                                                                                                               |
-| `wcs_scale_tolerance`                                                   | number                       | Fractional tolerance on the solved plate scale relative to `header_map["pixscale"]`.                                                                                                                                |
-| `wcs_pointing_tolerance`                                                | number or null               | Degrees between a solved center and the header pointing.                                                                                                                                                            |
-| `header_frame`, `header_equinox`                                        | string                       | Frame and equinox of the header RA/DEC; case-insensitive. `header_equinox` is `"date"` (each frame's observation time) or an epoch string; setting it with `header_frame` `"icrs"` is an error.                     |
-| `cone_radius_margin`                                                    | number                       | Degrees added to `fov_rad` for the batch Gaia query; a frame whose pointing drifts further than this but less than `fov_rad` is processed with a coverage warning, and one drifting more than `fov_rad` is skipped. |
-| `solve_pool_radius_scale`                                               | number                       | Plate-solve star-pool radius as a fraction of `fov_rad`, centered on each frame's own header pointing.                                                                                                              |
-| `header_match`                                                          | list of `{keyword, pattern}` | Auto-detection rules; see below.                                                                                                                                                                                    |
-| `header_map`                                                            | object                       | Metadata key to directive; see below.                                                                                                                                                                               |
-
-The key `header_center_offset` is rejected unless it is `null`.
+Every key other than `header_match` and `header_map` (below) is a Tier 2 field of
+[Configuration](configuration.md). Choose `header_frame` and `header_equinox` as described in
+[Add a telescope](../howto/add_a_telescope.md#2-write-a-profile).
 
 ## `header_map` directives
 
@@ -43,19 +32,29 @@ a frame's header.
 `width` and `height` always come from `NAXIS1`/`NAXIS2`; do not map them. The
 pipeline requires these keys:
 
-| Keys                                           | Use                                                                                                                                                                                                                                       |
-| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `egain`                                        | Noise model, e-/ADU: one number, or a mapping of filter name to gain when the Bayer channels differ (the `L4` list then records `l4_effective_egain`). A missing value, or a measured channel with no entry, raises `FrameMetadataError`. |
-| `largest_usable_adu_value`                     | Saturation cut.                                                                                                                                                                                                                           |
-| `pixscale`, `fov_rad`                          | Plate scale (arcsec/pixel) and field radius (degrees).                                                                                                                                                                                    |
-| `ra`, `dec`                                    | Header pointing, for alignment and the pointing check.                                                                                                                                                                                    |
-| `bayerpat`, `roworder`, `xbayroff`, `ybayroff` | Debayering.                                                                                                                                                                                                                               |
+| Keys                                           | Use                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `egain`                                        | Noise model, e-/ADU: one number, or a mapping of filter name to gain when the Bayer channels differ (the Seestar50 profile ships `{"TR": 0.046, "TG": 0.076, "TB": 0.078}`). Each channel's star list records its own gain; the `L4` list records the median per-star effective gain (`l4_effective_egain`). The `L4` `count_err` is built from the per-channel error terms and does not depend on that recorded median. A missing value, or a measured channel with no entry, raises `FrameMetadataError`. |
+| `largest_usable_adu_value`                     | Saturation cut.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `pixscale`, `fov_rad`                          | Plate scale (arcsec/pixel) and field radius (degrees).                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `ra`, `dec`                                    | Header pointing, for alignment and the pointing check.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `bayerpat`, `roworder`, `xbayroff`, `ybayroff` | Debayering.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
-Bookkeeping keys that flow into the output when mapped: `obs_time`, `site_lat`,
-`site_lon`, `site_elev`, `observer`, `exposure`, `object`, `block_filter`,
-`tel_manufac`, `tel_model`, `tel_firmware`, `adc_depth`, `stack`, `refframe`,
-`system_id`. Airmass is derived from `ra`/`dec`, site and `obs_time` unless
-`airmass` is mapped, in which case that value is used.
+Keys the output schema requires, so every profile (or `--user-metadata`) must
+supply them: `obs_time`, `site_lat`, `site_lon`, `site_elev`, `observer`,
+`block_filter`, `exposure`, `tel_manufac`, `tel_model`, `tel_firmware`,
+`adc_depth`, `refframe`, `egain`, `largest_usable_adu_value` and `stack`. The
+`stack` value may be null, but the key must be present (the bundled profile pairs
+`"stack": "@STACKCNT"` with `"#stack": 1`). `airmass` is derived from `ra`/`dec`,
+the site and `obs_time` unless mapped. `object` and `system_id`, which the bundled
+profile also maps, are not output-schema fields.
+
+A required key absent from the metadata altogether makes the star-list build
+raise a plain `ValueError`, which aborts the run. A key mapped to a header keyword
+the frame lacks resolves to null. For `obs_time` and the site keys that is a
+`FrameMetadataError` (no parseable time, or no airmass), which skips the frame, or
+stops the run when it is the preparation frame; for any other key the frame is
+skipped with `StarListValidationError`.
 
 ## `header_match` and detection
 
@@ -68,9 +67,9 @@ header values checked and the candidate profiles. An empty `header_match` (the
 default, including on a bare `InstrumentProfile()`) means a profile is never
 auto-detected. The bundled `Seestar50` rule is `INSTRUME == "Seestar S50"`.
 
-`prepare_batch` wraps a detection failure in `BatchPrepError`. The single-frame
-entry points (`prepare_image`, `process_one_image`, `calibration_sequence`) let
-`InstrumentDetectionError` propagate, and it is a `FrameError`.
+`prepare_batch` wraps a detection failure in `BatchPrepError`, chaining
+`InstrumentDetectionError`. The single-frame entry points let the bare exception
+propagate.
 
 Every later frame of a batch is checked against the batch instrument's
 `header_match`: a header that identifies a different or several registered
@@ -85,7 +84,7 @@ The first that applies wins:
 1. A `--config` file (or `PhotometryConfig`) whose `instrument` is a concrete
     profile.
 1. Auto-detection from the first frame's header, when `instrument` is `None`.
-1. Otherwise `InstrumentDetectionError`, which stops the batch.
+1. Otherwise the batch stops with `BatchPrepError` (cause: `InstrumentDetectionError`).
 
 ## Registry
 
@@ -100,7 +99,7 @@ All are importable from `bandaid`; signatures are in [API reference](api.md).
     the replaced profile's.
 - `available_instruments()` returns the sorted bundled and registered names.
 
-Registration lasts for the process, so a separate `bandaid` command does not see it.
+Registration lasts for the process; see [Add a telescope](../howto/add_a_telescope.md#3-use-it).
 
 ## Observer identity
 

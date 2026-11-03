@@ -11,7 +11,7 @@ build:
   commands:
     - python -m pip install uv
     - UV_PROJECT_ENVIRONMENT="$READTHEDOCS_VIRTUALENV_PATH" uv sync --frozen --only-group docs --inexact
-    - python -m mkdocs build --strict --site-dir "$READTHEDOCS_OUTPUT/html"
+    - '"$READTHEDOCS_VIRTUALENV_PATH/bin/python" -m mkdocs build --strict --site-dir "$READTHEDOCS_OUTPUT/html"'
 
 mkdocs:
   configuration: mkdocs.yml

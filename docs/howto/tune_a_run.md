@@ -42,8 +42,9 @@ photometer_frames(["night/"], config=config, output_dir="out/")
 ```
 
 A config cannot be mutated. To vary one top-level field, copy it with
-`config.model_copy(update={"edge_margin_px": 15.0})`; nested groups such as
-`apertures` are rebuilt as above. Invalid values raise at construction.
+`PhotometryConfig(**{**config.model_dump(), "edge_margin_px": 15.0})`, which
+validates the new value (`model_copy(update=...)` skips validation); nested groups
+such as `apertures` are rebuilt as above. Invalid values raise at construction.
 
 ## Which knob for which symptom
 
@@ -54,11 +55,8 @@ Too few stars in the output:
     color-disadvantaged channel can hold fewer stars than its siblings.
 - Lower `edge_margin_px` if the manifest's `n_edge_dropped` is large.
 
-Stars missing near the frame edge: `edge_margin_px` removes every catalog star
-whose projected position is within that many pixels of an edge, forced targets
-included. The default covers the centroiding network's 15x15 cutout, so lower it
-only if you accept unreliable edge centroids. A margin of half the smaller frame
-side or more is rejected when the batch is prepared.
+Stars missing near the frame edge: lower `edge_margin_px` (see
+[configuration](../reference/configuration.md) for what the default protects).
 
 Noisy or biased background, or neighbours leaking into the aperture:
 
@@ -76,13 +74,6 @@ Too many or too few `centroid_drift` flags: `drift.drift_tolerance_fwhm` and
 `drift.drift_cap_pix` set the thresholds. The flag never removes rows; see
 [output files](../reference/outputs.md).
 
-Centroid policy:
-
-- By default the `centroid.cnn_class_size` brightest stars keep their CNN centroid
-    and all others get the projected position plus a per-frame plane.
-- `centroid.model_faint_positions=False` switches the policy off, so every star
-    gets its CNN centroid.
-- Frames whose plane fit is worse than `centroid.max_plane_rms_pix` are skipped
-    with `CentroidPlaneError`.
-
-How the policy chooses positions: [star positions](../explanation/star_positions.md).
+Centroid policy (CNN versus modelled positions, `centroid.model_faint_positions`,
+plane-fit skips): see [star positions](../explanation/star_positions.md) and the
+`centroid` rows of the [configuration reference](../reference/configuration.md).

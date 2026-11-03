@@ -22,7 +22,8 @@ photometry — `.star` files you can submit or analyze — without writing any c
     [add a telescope](howto/add_a_telescope.md),
     [troubleshoot](howto/troubleshooting.md).
 - **Reference** — [command line](reference/command_line.md),
-    [outputs](reference/outputs.md), [configuration](reference/configuration.md).
+    [outputs](reference/outputs.md), [configuration](reference/configuration.md),
+    [instrument profiles](reference/instrument_profiles.md), [API](reference/api.md).
 - **Explanation** — [star positions](explanation/star_positions.md),
     [why Gaia](explanation/why_gaia.md).
 - **[Contributing](developers/contributing.md)** — developer setup.

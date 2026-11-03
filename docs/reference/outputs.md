@@ -30,33 +30,33 @@ Per-list fields: `obs_time`, `site_lat`, `site_lon`, `site_elev`, `observer`,
 `filter`, `block_filter`, `exposure`, `tel_manufac`, `tel_model`, `tel_firmware`,
 `width`, `height`, `stack`, `adc_depth`, `largest_usable_adu_value`, `egain`,
 `fwhm` (measured per frame and filter), `refframe`, `staritems`. Each list's
-`egain` is the gain its channel was measured with; with one gain per Bayer
-channel, the `L4` list records the median per-star effective gain (see
-`l4_effective_egain`).
+`egain` is the gain its channel was measured with; the `L4` list records a
+median effective gain (see [Instrument profiles](instrument_profiles.md)).
 
 Per-star fields (`staritems` rows):
 
-| Field        | Meaning                                                                                                                            |
-| ------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `x`, `y`     | Centroid in pixels: a CNN centroid or a modelled position (see [How star positions are chosen](../explanation/star_positions.md)). |
-| `ra`, `dec`  | Catalog position in degrees, as given in the target list (not the measured centroid).                                              |
-| `tot_count`  | Background-subtracted counts in the aperture.                                                                                      |
-| `count_err`  | Uncertainty on `tot_count` from the noise model.                                                                                   |
-| `bkgd_count` | Background counts per pixel: the sigma-clipped mean of the annulus.                                                                |
-| `peak_count` | Peak pixel value in the star's own channel within about 2 FWHM of the centroid; for `L4`, the maximum of the three channels.       |
+| Field        | Meaning                                                                                                                                              |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `x`, `y`     | Centroid in pixels: a CNN centroid or a modelled position (see [How star positions are chosen](../explanation/star_positions.md)).                   |
+| `ra`, `dec`  | Catalog position in degrees, as given in the target list (not the measured centroid).                                                                |
+| `tot_count`  | Background-subtracted counts in the aperture.                                                                                                        |
+| `count_err`  | Uncertainty on `tot_count` from the noise model.                                                                                                     |
+| `bkgd_count` | Background counts per pixel: the sigma-clipped mean of the annulus.                                                                                  |
+| `peak_count` | Peak pixel value in the star's own channel within a box about 2 FWHM on a side centred on the centroid; for `L4`, the maximum of the three channels. |
 
 A star has a row only when `tot_count` and `count_err` are finite and positive,
-its centroid is in bounds, its SNR is at least `source_selection.min_snr`, and it
-is not within `edge_margin_px` of a frame edge (see
+its `peak_count` is finite and non-negative, its centroid is in bounds, its SNR
+is at least `source_selection.min_snr`, and it is not within `edge_margin_px` of a frame edge (see
 [Configuration](configuration.md)). The cuts apply per filter, so a filter can
 hold fewer stars than its siblings. A filter with no surviving star is omitted
 from the file and listed in `dropped_filters`; a frame with no surviving star in
 any filter is skipped.
 
 Contaminated targets are dropped once at batch preparation, so they have no row
-in any frame and no column records them. `centroid_drift`, `snr` and `airmass` are not `.star` fields; they are columns
-of the tables `photometer_frames(..., output_dir=None)` returns instead of
-writing files. Writing other formats:
+in any frame and no column records them. `centroid_drift`, `snr`, `airmass` and
+`centroid_method` are not `.star` fields; they are columns of the in-memory
+tables `photometer_frames(..., output_dir=None)` returns instead of writing
+files (`centroid_method` exists only there). Writing other formats:
 [Write a custom output format](../howto/custom_writer.md).
 
 `--output-format` selects a writer registered at import; `starlist` is the only
@@ -64,7 +64,7 @@ bundled one.
 
 ## `qa_manifest.csv`
 
-One row per input frame, including skipped and failed frames (diagnostics blank).
+One row per input frame, including skipped and failed frames (most diagnostics blank).
 Columns are `QA_MANIFEST_COLUMNS`, in this order.
 
 | Column                | Meaning                                                                                                                                              |
@@ -98,17 +98,13 @@ Columns are `QA_MANIFEST_COLUMNS`, in this order.
 | `plane_dy_slope_x`    | Change in the plane's y offset from the center to the right edge, in pixels.                                                                         |
 | `plane_dy_slope_y`    | Change in the plane's y offset from the center to the top edge, in pixels.                                                                           |
 
-The `plane_*` columns are blank for a frame the centroid policy did not run on. A
+The `plane_*` columns are blank for a frame the centroid policy did not run on,
+except that `plane_rms` is filled for a frame skipped for its offset plane. A
 row can have `status` `ok` with `n_good_stars` of `0` when only a sibling filter
 survived; check `dropped_filters`.
 
-### Status values
-
-| Status                       | Meaning                                                                  |
-| ---------------------------- | ------------------------------------------------------------------------ |
-| `ok`                         | The frame was photometered and written.                                  |
-| `skipped: <FrameError type>` | A per-frame failure; see [Troubleshooting](../howto/troubleshooting.md). |
-| `error: <exception type>`    | An unexpected error (with `--no-fail-fast`).                             |
+| Status | Meaning |
+| ------ | ------- |
 
 ## Forced-target bypass
 
@@ -119,5 +115,4 @@ forced target near a Gaia comparison star does not flag that star. Every other
 cut applies: a forced target too faint or too near an edge is absent from that
 frame's output. Forced rows carry no name in the `.star` file and are identified
 by `ra`/`dec`. A user forcing a target is expected to account for the
-contamination it causes; to keep a comparison star flagged as contaminated,
-adjust `instrument.contamination_tolerance` or exclude the star.
+contamination it causes, by excluding the affected comparison star.

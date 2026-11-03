@@ -18,7 +18,7 @@ tasks defined in `pyproject.toml`:
 | `poe test-remote` | `pytest -m remote_data --remote-data=any` — downloads the Ballet weights from HuggingFace |
 | `poe lint`        | `pre-commit run --all-files` — everything CI's lint job runs                              |
 | `poe docs`        | `mkdocs serve` — live-reload docs at localhost:8000                                       |
-| `poe docs-build`  | `mkdocs build` — one-shot build, as Read the Docs does                                    |
+| `poe docs-build`  | `mkdocs build --strict` — one-shot build, as Read the Docs does                           |
 
 Run them as `uv run poe <task>`.
 
@@ -33,10 +33,8 @@ $ uvx --python 3.12 pre-commit install    # run on every commit
 
 The hooks:
 
-- **pre-commit-hooks**: `check-case-conflict`, `check-ast`, `check-docstring-first`,
-    `check-executables-have-shebangs`, `check-added-large-files`,
-    `check-merge-conflict`, `check-json`, `check-toml`, `check-yaml`,
-    `debug-statements`, `end-of-file-fixer`, `trailing-whitespace`.
+- **pre-commit-hooks**: the standard file checks (JSON, TOML, YAML and Python
+    syntax; merge conflicts, large files, whitespace, debug statements).
 - **ruff**: `ruff-check` (with `--fix`) and `ruff-format`.
 - **pydoclint**: docstring checks.
 - **blacken-docs**: formats Python code blocks in the docs.

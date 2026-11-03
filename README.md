@@ -20,7 +20,7 @@ photometry — `.star` files you can submit or analyze — without writing any c
 Install into a Python ≥ 3.12 environment and photometer a folder of frames:
 
 ```bash
-$ pip install bandaid
+$ pip install git+https://github.com/mwcraig/bandaid
 $ bandaid process night-of-2026-06-27/ -o out/ -v
 ```
 
@@ -36,4 +36,4 @@ $ uvx --python 3.12 pre-commit run --all-files
 ## Copyright
 
 - Copyright © 2026 AAVSO.
-- Free software distributed under the [MIT License](./LICENSE).
+- Free software distributed under the [MIT License](https://github.com/mwcraig/bandaid/blob/main/LICENSE).
