@@ -31,13 +31,11 @@ jobs:
         # Only the `docs` group: the package itself is not installed because
         # mkdocstrings reads the source statically (same as .readthedocs.yaml).
         run: uv sync --frozen --only-group docs --python 3.12
-      - name: Configure Pages
-        # On a pull request this only computes the URL; nothing is deployed.
-        id: pages
-        uses: actions/configure-pages@v5
       - name: Build site
         env:
-          SITE_URL: ${{ steps.pages.outputs.base_url }}
+          # The project-site URL, derived rather than asked of the Pages API so
+          # the pull-request check does not depend on Pages being enabled.
+          SITE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
         run: uv run --no-sync mkdocs build --strict --site-dir site
       - name: Upload site artifact
         uses: actions/upload-pages-artifact@v4
