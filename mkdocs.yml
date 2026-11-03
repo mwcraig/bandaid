@@ -2,7 +2,9 @@ site_name: bandaid
 site_description: A temporary Smart Telescope photometry solution
 
 site_author: AAVSO STWG
-site_url: https://bandaid.readthedocs.io/
+# Overridden by the Docs workflow so the GitHub Pages deploy gets the right
+# canonical URL; Read the Docs uses the default.
+site_url: !ENV [SITE_URL, https://bandaid.readthedocs.io/]
 
 markdown_extensions:
   - admonition

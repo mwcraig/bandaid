@@ -1,0 +1,62 @@
+name: Docs
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+# The build job installs third-party code, so it gets a read-only token. Only
+# the deploy job, which runs nothing but the official Pages actions, is granted
+# the Pages and OIDC permissions it needs.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install docs dependencies
+        # Only the `docs` group: the package itself is not installed because
+        # mkdocstrings reads the source statically (same as .readthedocs.yaml).
+        run: uv sync --frozen --only-group docs --python 3.12
+      - name: Configure Pages
+        # On a pull request this only computes the URL; nothing is deployed.
+        id: pages
+        uses: actions/configure-pages@v5
+      - name: Build site
+        env:
+          SITE_URL: ${{ steps.pages.outputs.base_url }}
+        run: uv run --no-sync mkdocs build --strict --site-dir site
+      - name: Upload site artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  deploy:
+    name: deploy to GitHub Pages
+    # Deploy only from main; pull requests just prove the site builds.
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
