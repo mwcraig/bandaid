@@ -87,7 +87,7 @@ bandaid = "bandaid.cli:main"
 [project.urls]
 Homepage = "https://github.com/mwcraig/bandaid"
 Repository = "https://github.com/mwcraig/bandaid"
-Documentation = "https://bandaid.readthedocs.io"
+Documentation = "https://mwcraig.github.io/bandaid/"
 Download = "https://pypi.org/project/bandaid/#files"
 
 [dependency-groups]

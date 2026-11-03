@@ -4,7 +4,7 @@ site_description: A temporary Smart Telescope photometry solution
 site_author: AAVSO STWG
 # Overridden by the Docs workflow so the GitHub Pages deploy gets the right
 # canonical URL; Read the Docs uses the default.
-site_url: !ENV [SITE_URL, https://bandaid.readthedocs.io/]
+site_url: !ENV [SITE_URL, https://mwcraig.github.io/bandaid/]
 
 markdown_extensions:
   - admonition

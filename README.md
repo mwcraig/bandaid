@@ -24,7 +24,7 @@ $ pip install git+https://github.com/mwcraig/bandaid
 $ bandaid process night-of-2026-06-27/ -o out/ -v
 ```
 
-Full documentation: <https://bandaid.readthedocs.io/>
+Full documentation: <https://mwcraig.github.io/bandaid/>
 
 ## Development
 
