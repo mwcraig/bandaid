@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `prepare_batch` takes `user_specific_metadata` and, before the Gaia query,
+    stops with a `FrameMetadataError` naming any output-schema key (`observer`,
+    `site_elev`, ...) that is missing or null on the prep frame, instead of
+    skipping every frame. The Seestar50 profile no longer maps `observer` and
+    `site_elev`, which Seestar headers never carry; supply them with
+    `--user-metadata`.
 - `PSFFitError`, a `FrameError` exported from `bandaid`, is raised by
     `calibration_sequence` when no usable PSF can be fit to a frame's stars
     (#174).

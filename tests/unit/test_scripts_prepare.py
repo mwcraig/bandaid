@@ -564,6 +564,53 @@ class TestPrepareBatch:
         with pytest.raises(FrameMetadataError, match="obs_time"):
             scripts.prepare_batch("frame1.fits", cnn=object())
 
+    @pytest.mark.parametrize("missing", ["observer", "site_elev"])
+    def test_required_output_key_missing_fails_early(self, mocker, missing):
+        """A required output-schema key absent from the prep metadata is fatal."""
+        metadata = _batch_metadata()
+        del metadata[missing]
+        _patch_prep(mocker, metadata=metadata)
+
+        with pytest.raises(FrameMetadataError, match=missing) as excinfo:
+            scripts.prepare_batch("frame1.fits", cnn=object())
+        assert "user-metadata" in str(excinfo.value)
+        assert excinfo.value.file == "frame1.fits"
+
+    def test_required_output_key_none_fails_early(self, mocker):
+        """A required key resolved to None (an absent header keyword) is fatal."""
+        metadata = _batch_metadata()
+        metadata["observer"] = None
+        metadata["site_elev"] = None
+        _patch_prep(mocker, metadata=metadata)
+
+        with pytest.raises(FrameMetadataError, match="observer") as excinfo:
+            scripts.prepare_batch("frame1.fits", cnn=object())
+        assert "site_elev" in str(excinfo.value)
+        assert "user-metadata" in str(excinfo.value)
+
+    def test_user_metadata_supplies_missing_required_keys(self, mocker):
+        """Keys the user supplies fill the gaps in the prep frame's metadata."""
+        metadata = _batch_metadata()
+        metadata["observer"] = None
+        del metadata["site_elev"]
+        _patch_prep(mocker, metadata=metadata)
+
+        prep = scripts.prepare_batch(
+            "frame1.fits",
+            cnn=object(),
+            user_specific_metadata={"observer": "ABC", "site_elev": 1600.0},
+        )
+
+        assert prep.prep_file == "frame1.fits"
+
+    def test_optional_stack_may_be_none(self, mocker):
+        """``stack`` is optional in the output schema, so None passes."""
+        metadata = _batch_metadata()
+        metadata["stack"] = None
+        _patch_prep(mocker, metadata=metadata)
+
+        scripts.prepare_batch("frame1.fits", cnn=object())
+
     def test_bad_pointing_labeled_with_prep_file(self, mocker):
         """
         A bad pointing fails as a metadata error naming the prep frame.

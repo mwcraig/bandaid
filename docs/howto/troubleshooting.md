@@ -36,6 +36,10 @@ batch still finishes.
     other required field surfaces as `StarListValidationError` instead. Fix the
     profile and verify with a single-frame `-vv` run
     ([add a telescope](add_a_telescope.md#4-validate)).
+    On the frame the batch is prepared from, the same error stops the run and can
+    also mean a key the output schema requires is missing or null in its metadata
+    (`observer` or `site_elev`, say); the message lists the keys. Map them in
+    `header_map` or supply them with `--user-metadata`.
     `InstrumentDetectionError`, a subclass, means the header matched no profile or
     several; pass `--instrument` or `--profile`.
 - `skipped: NoUsableStarsError` — stars were detected but none survived the quality

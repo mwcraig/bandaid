@@ -49,6 +49,7 @@ from .instruments import detect_instrument, resolve_config_instrument
 from .photometry import (
     N_GAIA_STARS_ALIGN_RETRY,
     LoadedFrame,
+    _check_output_metadata,
     _load_frame,
     _parse_obs_time,
     _solve_pool_near,
@@ -724,6 +725,7 @@ def prepare_batch(
     build_l4=True,
     forced_targets=None,
     frame=None,
+    user_specific_metadata=None,
 ):
     """
     Compute the once-per-batch photometry inputs from the prep frame.
@@ -778,6 +780,11 @@ def prepare_batch(
         The already-loaded contents of ``files[0]`` (or of the single path);
         later candidates are always loaded here. None (default) loads that
         frame here too.
+    user_specific_metadata : dict or None, optional
+        Values that override the prep frame's header-map metadata, as
+        `process_batch` applies them to every frame. Here they only count
+        toward the check that the output metadata is complete. None (default)
+        adds nothing.
 
     Returns
     -------
@@ -805,7 +812,10 @@ def prepare_batch(
     FrameMetadataError
         If the prep frame's metadata has no parseable observation time
         (``obs_time``, usually mapped from ``DATE-OBS``), which is needed to
-        propagate the Gaia positions to the observation epoch.
+        propagate the Gaia positions to the observation epoch. Also raised if
+        a key the output schema requires (``observer`` or ``site_elev``, say)
+        is missing or None in the prep frame's metadata after
+        ``user_specific_metadata`` is applied; the message names the keys.
 
     Notes
     -----
@@ -874,8 +884,7 @@ def prepare_batch(
     # Validate obs_time up front: a frame without DATE-OBS resolves it to None,
     # and letting that fail inside the Gaia try block below would surface a
     # metadata problem as a misleading "could not query Gaia" error.
-    obs_time = metadata.get("obs_time")
-    if obs_time is None:
+    if (obs_time := metadata.get("obs_time")) is None:
         msg = (
             "no observation time in the metadata of the frame the batch is "
             "prepared from (obs_time, "
@@ -884,6 +893,10 @@ def prepare_batch(
         )
         raise FrameMetadataError(msg, file=prep_file)
     obs_epoch = _parse_obs_time(obs_time, file=prep_file)
+
+    # Every frame must fill the output schema from the same metadata, so check
+    # the prep frame once here: one clear error instead of every frame skipped.
+    _check_output_metadata({**metadata, **(user_specific_metadata or {})}, prep_file)
 
     # Center the Gaia cone on the header pointing converted to ICRS.
     # fov_rad is a field *radius*; query_field_catalog takes a radius too and
@@ -2332,6 +2345,7 @@ def photometer_frames(
             build_l4=build_l4,
             forced_targets=forced_targets,
             frame=first_frame,
+            user_specific_metadata=user_specific_metadata,
         )
     except BatchPrepError as exc:
         # prepare_batch's messages name the frame they concern (the batch may

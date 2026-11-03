@@ -80,8 +80,15 @@ with `--user-metadata` in steps 3 and 4:
 ```
 
 A telescope whose header carries the site can map `site_lat`, `site_lon` and
-`site_elev` with `@KEY` directives instead, as the bundled Seestar50 profile does
-(`src/bandaid/meta_json_files/Seestar50/profile.json`). The observer code usually comes from user metadata too; a header that carries it (the Seestar writes `obscode`) can map it instead.
+`site_elev` with `@KEY` directives instead. The bundled Seestar50 profile maps
+`site_lat` and `site_lon` (the Seestar writes latitude and longitude) but not
+`site_elev` or `observer`, which its headers lack
+(`src/bandaid/meta_json_files/Seestar50/profile.json`); supply those two with
+`--user-metadata`. The observer code usually comes from user metadata; a header
+that carries it can map it instead.
+
+A required key that is missing or null on the first frame the batch is prepared
+from stops the run at once with a `FrameMetadataError` that lists the keys.
 
 If the header pointing is not ICRS, set `header_frame` and `header_equinox` to
 match the header's `RADESYS` and `EQUINOX` keywords. The Seestar writes FK5 in the
