@@ -31,7 +31,7 @@ magnitude-limited Gaia catalog, rather than detecting sources in the image.
 `prepare_batch` (Gaia catalog, plate scale, Bayer masks, centroiding model) and
 a fast per-frame `process_batch` loop over `process_frame`, which photometers
 one frame and reports a `FrameResult`. See the project documentation
-(https://bandaid.readthedocs.io/) for the full guide.
+(https://mwcraig.github.io/bandaid/) for the full guide.
 """
 
 import logging
