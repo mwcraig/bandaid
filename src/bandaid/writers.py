@@ -32,7 +32,7 @@ list of Path``:
 import logging
 
 import numpy as np
-from aavso_starlist_schema import StarListSet
+from aavso_starlist_schema import SCHEMA_VERSION, StarListSet
 
 from .exceptions import NoUsableStarsError
 from .photometry import eloy_to_starlist, good_star_mask
@@ -136,7 +136,7 @@ def write_starlist_set(frame_result, output_path):
             ", ".join(dropped),
             len(star_lists),
         )
-    star_list_set = StarListSet(star_lists=star_lists)
+    star_list_set = StarListSet(schema_version=SCHEMA_VERSION, star_lists=star_lists)
     output_path.write_text(star_list_set.model_dump_json(indent=2))
     return output_path
 

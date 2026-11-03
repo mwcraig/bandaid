@@ -97,7 +97,7 @@ def fake_vizier(mocker, gaia_table, votable_response):
 @pytest.fixture
 def starlist_metadata():
     """
-    A metadata dict covering every StarList field except fwhm (set on table meta).
+    A metadata dict with the StarList fields a header or the user supplies.
 
     Returns
     -------

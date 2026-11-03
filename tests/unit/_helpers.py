@@ -178,7 +178,7 @@ def _make_tan_wcs(image_size=(500, 500), crval=(10.0, 20.0), pixscale=SEESTAR_PI
     return wcs
 
 
-def _seestar_header(*, with_stackcnt=True):
+def _seestar_header(*, with_stackcnt=True, with_focuspos=True):
     """Build a FITS header carrying the keys referenced by ``basic.json``."""
     header = fits.Header()
     header["DATE-OBS"] = "2024-01-01T00:00:00"
@@ -200,6 +200,8 @@ def _seestar_header(*, with_stackcnt=True):
     header["NAXIS2"] = 1920
     if with_stackcnt:
         header["STACKCNT"] = 7
+    if with_focuspos:
+        header["FOCUSPOS"] = 1625
     return header
 
 

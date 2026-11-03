@@ -10,11 +10,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 from _helpers import _CONSISTENT_HEADER, _dummy_prep
-from aavso_starlist_schema import StarListSet
+from aavso_starlist_schema import SCHEMA_VERSION, StarListSet
 from astropy.table import Table
 
 import bandaid
-from bandaid import scripts
+from bandaid import _version, scripts
 from bandaid.exceptions import (
     CentroidPlaneError,
     FrameError,
@@ -486,7 +486,11 @@ class TestProcessBatchToDisk:
     def test_written_file_round_trips_through_starlistset(
         self, patched_process_one_image, tmp_path, by_filter
     ):
-        """The file is a valid StarListSet: one StarList per filter, stars intact."""
+        """
+        The file is a valid StarListSet: one StarList per filter, stars intact.
+
+        It also states the schema version and names bandaid as the software.
+        """
         filters = ("TR", "TG", "TB")
         patched_process_one_image(by_filter(filters))
 
@@ -500,10 +504,12 @@ class TestProcessBatchToDisk:
         text = (tmp_path / "frame1.star").read_text()
         star_list_set = StarListSet.model_validate_json(text)
 
+        assert json.loads(text)["schema_version"] == SCHEMA_VERSION
         assert len(star_list_set.star_lists) == len(filters)
         for star_list in star_list_set.star_lists:
             kept_x = sorted(item.x for item in star_list.staritems)
             assert kept_x == [20.0, 70.0]
+            assert star_list.photometry_software == [f"bandaid {_version.__version__}"]
 
     def test_disk_mode_returns_path_mapping(
         self, patched_process_one_image, tmp_path, by_filter

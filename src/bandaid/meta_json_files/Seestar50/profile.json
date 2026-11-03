@@ -40,6 +40,8 @@
         "ybayroff": 0,
         "stack": "@STACKCNT",
         "#stack": 1,
+        "_absolute_focus": "focuser position in steps; null when the header has no FOCUSPOS",
+        "absolute_focus": "@FOCUSPOS",
         "object": "@OBJECT",
         "system_id": "@TELESCOP"
     }
