@@ -14,9 +14,11 @@ a name get a numeric suffix. `qa_manifest.csv` is written once per run unless
 
 ## `.star` files
 
-Each file is an [`StarListSet`](https://github.com/mwcraig/aavso-starlist-schema)
-JSON document with one `StarList` per filter: `TR`, `TG`, `TB`, and `L4` (omitted
-with `--no-build-l4`).
+Each file is a
+[`StarListSet`](https://github.com/AAVSO/public-utils/tree/main/schemas/starlist)
+JSON document, AAVSO starlist schema version 0.3.1 (recorded in the file's
+`schema_version`), with one `StarList` per filter: `TR`, `TG`, `TB`, and `L4`
+(omitted with `--no-build-l4`).
 
 ```python
 from aavso_starlist_schema import StarListSet
@@ -29,7 +31,9 @@ for star_list in star_set.star_lists:
 Per-list fields: `obs_time`, `site_lat`, `site_lon`, `site_elev`, `observer`,
 `filter`, `block_filter`, `exposure`, `tel_manufac`, `tel_model`, `tel_firmware`,
 `width`, `height`, `stack`, `adc_depth`, `largest_usable_adu_value`, `egain`,
-`fwhm` (measured per frame and filter), `refframe`, `staritems`. Each list's
+`fwhm` (measured per frame and filter), `refframe`, `photometry_software`
+(`["bandaid <version>"]`), `absolute_focus` (the focuser position from the header
+when the profile maps it, otherwise null), `staritems`. Each list's
 `egain` is the gain its channel was measured with; the `L4` list records a
 median effective gain (see [Instrument profiles](instrument_profiles.md)).
 
