@@ -51,11 +51,11 @@ supply them: `obs_time`, `site_lat`, `site_lon`, `site_elev`, `observer`,
 and `obs_time` unless mapped. `object` and `system_id`, which the bundled profile
 also maps, are not output-schema fields.
 
-The preparation frame is checked first: a required key that is absent or null in
-its metadata, after `--user-metadata` is applied, stops
-the run with a `FrameMetadataError` that lists the keys. A key mapped to a header
-keyword a later frame lacks resolves to null on that frame. For `obs_time` and the
-site keys that is a `FrameMetadataError` (no parseable time, or no airmass), which
+The preparation frame is checked first: a required key that is absent or null
+in its metadata, after `--user-metadata` is applied, stops the run with a
+`FrameMetadataError` that lists the keys. A key mapped to a header keyword a
+later frame lacks resolves to null on that frame. For `obs_time` and the site
+keys that is a `FrameMetadataError` (no parseable time, or no airmass), which
 skips the frame; for any other key the frame is skipped with
 `StarListValidationError`.
 

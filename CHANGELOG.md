@@ -181,11 +181,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `.star` files follow AAVSO starlist schema 0.3.1 (now installed from
-    `AAVSO/public-utils`): files carry `schema_version`, every list records
-    `photometry_software` as `bandaid <version>`, and the Seestar50 profile
-    fills `absolute_focus` from `FOCUSPOS`. Optional schema keys such as
-    `stack` may be left out of a profile.
+- `.star` files follow AAVSO starlist schema 0.3.1: they carry
+    `schema_version`, each list records `photometry_software` as
+    `bandaid <version>`, and the Seestar50 profile fills `absolute_focus` from
+    `FOCUSPOS`. Optional schema keys such as `stack` may be left out of a profile.
 - `prepare_batch` takes the frame list (`first_file` is now `files`) and
     prepares from the first frame it accepts, passing over frames with
     per-frame errors, which are still processed and skipped per frame;

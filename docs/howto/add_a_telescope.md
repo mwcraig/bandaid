@@ -66,8 +66,10 @@ A minimal profile for a telescope whose header is already ICRS:
 ```
 
 Replace `pixscale`, `fov_rad` and `egain` with your measured values, and the
-keyword names with the ones your headers use. The `header_map` directives and
-`header_match` are in the [reference](../reference/instrument_profiles.md).
+keyword names with the ones your headers use. `stack` is optional, as is
+`absolute_focus` (the focuser position); leave either out if your headers do
+not record it. The `header_map` directives and `header_match` are in the
+[reference](../reference/instrument_profiles.md).
 Omitted keys take their defaults, so leave the detection and PSF knobs out until
 you have a reason to tune them.
 

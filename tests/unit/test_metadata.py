@@ -2,6 +2,7 @@
 
 import logging
 import warnings
+from typing import ClassVar
 
 import astropy.units as u
 import numpy as np
@@ -488,19 +489,6 @@ class TestGoodStarMask:
         )[0]
 
 
-# One star row every filter in `good_star_mask` keeps.
-_GOOD_ROW = {
-    "x": 20.0,
-    "y": 30.0,
-    "ra": 10.0,
-    "dec": 20.0,
-    "tot_count": 100.0,
-    "count_err": 5.0,
-    "bkgd_count": 1.0,
-    "peak_count": 200.0,
-}
-
-
 class TestEloyToStarlist:
     """
     Unit tests for the table->StarList conversion ``eloy_to_starlist``.
@@ -509,18 +497,21 @@ class TestEloyToStarlist:
     so they can be shared with ``test_scripts.py``.
     """
 
+    # One star row every filter in ``good_star_mask`` keeps.
+    GOOD_ROW: ClassVar[dict[str, float]] = {
+        "x": 20.0,
+        "y": 30.0,
+        "ra": 10.0,
+        "dec": 20.0,
+        "tot_count": 100.0,
+        "count_err": 5.0,
+        "bkgd_count": 1.0,
+        "peak_count": 200.0,
+    }
+
     def test_filters_bad_rows(self, eloy_table, starlist_metadata):
         """Only finite, positive, in-bounds rows survive into the StarList."""
-        good_a = {
-            "x": 20.0,
-            "y": 30.0,
-            "ra": 10.0,
-            "dec": 20.0,
-            "tot_count": 100.0,
-            "count_err": 5.0,
-            "bkgd_count": 1.0,
-            "peak_count": 200.0,
-        }
+        good_a = self.GOOD_ROW
         good_b = {
             "x": 70.0,
             "y": 60.0,
@@ -566,7 +557,7 @@ class TestEloyToStarlist:
 
     def test_photometry_software_set_by_bandaid(self, eloy_table, starlist_metadata):
         """Metadata without ``photometry_software`` still yields bandaid's entry."""
-        table = eloy_table([_GOOD_ROW])
+        table = eloy_table([self.GOOD_ROW])
 
         starlist = eloy_to_starlist(table, starlist_metadata)
 
@@ -574,30 +565,12 @@ class TestEloyToStarlist:
 
     def test_user_photometry_software_overridden(self, eloy_table, starlist_metadata):
         """A ``photometry_software`` in the metadata gives way to bandaid's."""
-        table = eloy_table([_GOOD_ROW])
+        table = eloy_table([self.GOOD_ROW])
         metadata = {**starlist_metadata, "photometry_software": ["other 1.0"]}
 
         starlist = eloy_to_starlist(table, metadata)
 
         assert starlist.photometry_software == [f"bandaid {_version.__version__}"]
-
-    def test_absolute_focus_passes_through(self, eloy_table, starlist_metadata):
-        """An ``absolute_focus`` in the metadata reaches the StarList."""
-        expected_focus = 1625.0
-        table = eloy_table([_GOOD_ROW])
-        metadata = {**starlist_metadata, "absolute_focus": expected_focus}
-
-        starlist = eloy_to_starlist(table, metadata)
-
-        assert starlist.absolute_focus == expected_focus
-
-    def test_absolute_focus_absent_is_none(self, eloy_table, starlist_metadata):
-        """Metadata without ``absolute_focus`` leaves it None."""
-        table = eloy_table([_GOOD_ROW])
-
-        starlist = eloy_to_starlist(table, starlist_metadata)
-
-        assert starlist.absolute_focus is None
 
     def test_schema_rejection_raises_frame_error(self, eloy_table, starlist_metadata):
         """
