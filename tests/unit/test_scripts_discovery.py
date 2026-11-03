@@ -172,6 +172,7 @@ class TestPhotometerFrames:
             build_l4=True,
             forced_targets=None,
             frame=frame_sentinel,
+            user_specific_metadata={"observer": "MWC"},
         )
         process_call = process_batch.call_args
         assert process_call.args == (expected, prep_sentinel)

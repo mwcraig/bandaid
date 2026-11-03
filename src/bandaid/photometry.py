@@ -1422,6 +1422,59 @@ def metadata_from_header(header, *, profile=None):
     return metadata
 
 
+# The StarList metadata keys the header map or the user must supply: every
+# schema field except the ones bandaid computes per frame. Derived from the
+# schema so a field added upstream is checked without a change here.
+_BANDAID_FILLED_KEYS = frozenset({"width", "height", "filter", "fwhm", "staritems"})
+_REQUIRED_USER_KEYS = tuple(
+    key
+    for key, info in StarList.model_fields.items()
+    if key not in _BANDAID_FILLED_KEYS and info.is_required()
+)
+_OPTIONAL_USER_KEYS = tuple(
+    key
+    for key, info in StarList.model_fields.items()
+    if key not in _BANDAID_FILLED_KEYS and not info.is_required()
+)
+
+
+def _check_output_metadata(metadata, file=None):
+    """
+    Fail early if the metadata cannot fill the output schema.
+
+    Parameters
+    ----------
+    metadata : dict
+        Frame metadata from `metadata_from_header`, already merged with any
+        user-supplied values.
+    file : str or pathlib.Path, optional
+        The frame, attached to the error. Default None.
+
+    Raises
+    ------
+    FrameMetadataError
+        If a key the output schema requires is absent or None, or an optional
+        key is absent. The message names the keys.
+
+    Notes
+    -----
+    The schema rejects a missing key for the whole run and a null required value
+    for each frame, which would skip every frame without a clear cause. The
+    keys bandaid computes itself (``width``, ``height``, ``filter``, ``fwhm``,
+    ``staritems``) are not checked.
+    """
+    bad = [key for key in _REQUIRED_USER_KEYS if metadata.get(key) is None]
+    bad += [key for key in _OPTIONAL_USER_KEYS if key not in metadata]
+    if bad:
+        msg = (
+            f"the metadata of the frame the batch is prepared from lacks "
+            f"required output keys: {', '.join(sorted(bad))}; map them in the "
+            f"instrument profile's header_map or supply them with "
+            f"--user-metadata"
+        )
+        raise FrameMetadataError(msg, file=file)
+
+
 def _check_egain(metadata, file=None, channels=()):
     """
     Fail the frame if its ``egain`` metadata cannot serve every channel.

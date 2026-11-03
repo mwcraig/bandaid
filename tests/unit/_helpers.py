@@ -335,6 +335,19 @@ def _consistency_header(**overrides: object) -> dict:
 def _batch_metadata():
     """Return a metadata dict like the one ``calibration_sequence`` produces."""
     return {
+        "site_lat": 40.0,
+        "site_lon": -105.0,
+        "site_elev": 1600.0,
+        "observer": "ABC",
+        "block_filter": "L",
+        "exposure": 10.0,
+        "tel_manufac": "ZWO",
+        "tel_model": "Seestar S50",
+        "tel_firmware": "SeestarApp",
+        "adc_depth": 12,
+        "largest_usable_adu_value": 50000,
+        "refframe": "ICRS",
+        "stack": None,
         "ra": 10.0,
         "dec": 0.0,
         "obs_time": "2026-04-28T03:03:43.270038",
