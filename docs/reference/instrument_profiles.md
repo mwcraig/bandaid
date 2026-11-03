@@ -43,17 +43,19 @@ pipeline requires these keys:
 Keys the output schema requires, so every profile (or `--user-metadata`) must
 supply them: `obs_time`, `site_lat`, `site_lon`, `site_elev`, `observer`,
 `block_filter`, `exposure`, `tel_manufac`, `tel_model`, `tel_firmware`,
-`adc_depth`, `refframe`, `egain`, `largest_usable_adu_value` and `stack`. The
-`stack` value may be null, but the key must be present (the bundled profile pairs
-`"stack": "@STACKCNT"` with `"#stack": 1`). `airmass` is derived from `ra`/`dec`,
-the site and `obs_time` unless mapped. `object` and `system_id`, which the bundled
-profile also maps, are not output-schema fields.
+`adc_depth`, `refframe`, `egain` and `largest_usable_adu_value`. bandaid fills
+`photometry_software` itself. The optional schema keys `stack` and
+`absolute_focus` may be mapped, left null or left out; the bundled profile pairs
+`"stack": "@STACKCNT"` with `"#stack": 1` and maps `absolute_focus` to
+`@FOCUSPOS`, the focuser position. `airmass` is derived from `ra`/`dec`, the site
+and `obs_time` unless mapped. `object` and `system_id`, which the bundled profile
+also maps, are not output-schema fields.
 
-The preparation frame is checked first: a required key (other than `stack`)
-that is absent or null in its metadata, after `--user-metadata` is applied, stops
-the run with a `FrameMetadataError` that lists the keys. A key mapped to a header
-keyword a later frame lacks resolves to null on that frame. For `obs_time` and the
-site keys that is a `FrameMetadataError` (no parseable time, or no airmass), which
+The preparation frame is checked first: a required key that is absent or null
+in its metadata, after `--user-metadata` is applied, stops the run with a
+`FrameMetadataError` that lists the keys. A key mapped to a header keyword a
+later frame lacks resolves to null on that frame. For `obs_time` and the site
+keys that is a `FrameMetadataError` (no parseable time, or no airmass), which
 skips the frame; for any other key the frame is skipped with
 `StarListValidationError`.
 

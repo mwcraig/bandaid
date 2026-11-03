@@ -46,6 +46,7 @@ from scipy.optimize import minimize
 from skimage.measure import label, regionprops
 from twirl import compute_wcs
 
+from ._version import __version__
 from .config import (
     ApertureConfig,
     CentroidConfig,
@@ -1422,19 +1423,21 @@ def metadata_from_header(header, *, profile=None):
     return metadata
 
 
+# The schema's ``photometry_software`` entry for every StarList bandaid writes,
+# in the schema's "<name> <version>" form.
+PHOTOMETRY_SOFTWARE = f"bandaid {__version__}"
+
 # The StarList metadata keys the header map or the user must supply: every
-# schema field except the ones bandaid computes per frame. Derived from the
-# schema so a field added upstream is checked without a change here.
-_BANDAID_FILLED_KEYS = frozenset({"width", "height", "filter", "fwhm", "staritems"})
+# required schema field except the ones bandaid fills itself. Optional fields
+# may be absent and take their schema defaults. Derived from the schema so a
+# required field added upstream is checked without a change here.
+_BANDAID_FILLED_KEYS = frozenset(
+    {"width", "height", "filter", "fwhm", "staritems", "photometry_software"}
+)
 _REQUIRED_USER_KEYS = tuple(
     key
     for key, info in StarList.model_fields.items()
     if key not in _BANDAID_FILLED_KEYS and info.is_required()
-)
-_OPTIONAL_USER_KEYS = tuple(
-    key
-    for key, info in StarList.model_fields.items()
-    if key not in _BANDAID_FILLED_KEYS and not info.is_required()
 )
 
 
@@ -1453,18 +1456,19 @@ def _check_output_metadata(metadata, file=None):
     Raises
     ------
     FrameMetadataError
-        If a key the output schema requires is absent or None, or an optional
-        key is absent. The message names the keys.
+        If a key the output schema requires is absent or None. The message
+        names the keys.
 
     Notes
     -----
-    The schema rejects a missing key for the whole run and a null required value
-    for each frame, which would skip every frame without a clear cause. The
-    keys bandaid computes itself (``width``, ``height``, ``filter``, ``fwhm``,
-    ``staritems``) are not checked.
+    The schema rejects a missing or null required value for each frame, which
+    would skip every frame without a clear cause. The keys bandaid fills itself
+    (``width``, ``height``, ``filter``, ``fwhm``, ``staritems``,
+    ``photometry_software``) are not checked. Optional schema keys, such as
+    ``stack`` and ``absolute_focus``, may be left out and take their schema
+    defaults.
     """
     bad = [key for key in _REQUIRED_USER_KEYS if metadata.get(key) is None]
-    bad += [key for key in _OPTIONAL_USER_KEYS if key not in metadata]
     if bad:
         msg = (
             f"the metadata of the frame the batch is prepared from lacks "
@@ -1532,9 +1536,11 @@ def eloy_to_starlist(eloy_table, metadata, *, min_snr=None):
         Table meta must include fwhm.
     metadata : dict
         Dictionary of StarList metadata fields not available in the eloy table.
-        Required keys: site_lat, site_lon, site_elev, observer, filter,
-        block_filter, exposure, tel_manufac, tel_model, tel_firmware,
+        Required keys: obs_time, site_lat, site_lon, site_elev, observer,
+        filter, block_filter, exposure, tel_manufac, tel_model, tel_firmware,
         adc_depth, largest_usable_adu_value, egain, width, height, refframe.
+        Optional keys such as stack and absolute_focus may be absent.
+        Any photometry_software entry is replaced by `PHOTOMETRY_SOFTWARE`.
     min_snr : float or None, optional
         Minimum SNR a star must have to survive, passed through to
         `good_star_mask`. If None (default), the module-level `MIN_SNR`
@@ -1560,7 +1566,10 @@ def eloy_to_starlist(eloy_table, metadata, *, min_snr=None):
         msg = "no stars survived photometry filtering"
         raise NoUsableStarsError(msg)
     try:
-        return StarList.from_table(eloy_table[good], metadata=metadata)
+        return StarList.from_table(
+            eloy_table[good],
+            metadata={**metadata, "photometry_software": [PHOTOMETRY_SOFTWARE]},
+        )
     except ValidationError as exc:
         msg = f"starlist schema rejected the frame: {exc}"
         raise StarListValidationError(msg) from exc

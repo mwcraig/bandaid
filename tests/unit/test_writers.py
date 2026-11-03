@@ -9,10 +9,13 @@ contract (resolve by name, register/override, unknown-name error) and that the
 default ``starlist`` writer still emits a valid ``StarListSet`` document.
 """
 
-import pytest
-from aavso_starlist_schema import StarListSet
+import json
+import warnings
 
-from bandaid import writers
+import pytest
+from aavso_starlist_schema import SCHEMA_VERSION, SchemaMigrationWarning, StarListSet
+
+from bandaid import _version, writers
 from bandaid.exceptions import NoUsableStarsError
 from bandaid.writers import (
     available_writers,
@@ -96,6 +99,27 @@ class TestWriteStarlistSet:
         for star_list in star_list_set.star_lists:
             kept_x = sorted(item.x for item in star_list.staritems)
             assert kept_x == [20.0, 70.0]
+
+    def test_written_file_states_schema_version_and_software(self, tmp_path, by_filter):
+        """The file names the current schema version and bandaid as the software."""
+        output_path = tmp_path / "frame1.star"
+
+        write_starlist_set(by_filter(), output_path)
+
+        document = json.loads(output_path.read_text())
+        assert document["schema_version"] == SCHEMA_VERSION
+        expected_software = [f"bandaid {_version.__version__}"]
+        for star_list in document["star_lists"]:
+            assert star_list["photometry_software"] == expected_software
+
+    def test_written_file_reads_back_without_migration(self, tmp_path, by_filter):
+        """A file bandaid writes is current, so reading it migrates nothing."""
+        output_path = tmp_path / "frame1.star"
+        write_starlist_set(by_filter(), output_path)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", SchemaMigrationWarning)
+            StarListSet.model_validate_json(output_path.read_text())
 
     def test_honors_table_meta_min_snr_override(self, tmp_path, by_filter):
         """A ``min_snr`` stamped on the table meta is forwarded to the filter."""

@@ -2,6 +2,7 @@
 
 import logging
 import warnings
+from typing import ClassVar
 
 import astropy.units as u
 import numpy as np
@@ -14,6 +15,7 @@ from astropy.table import Table
 from astropy.time import Time
 from astropy.utils import iers
 
+from bandaid import _version
 from bandaid.config import InstrumentProfile, SourceSelectionConfig
 from bandaid.exceptions import (
     FrameMetadataError,
@@ -303,6 +305,17 @@ class TestMetadataFromHeader:
         metadata = metadata_from_header(_seestar_header(with_stackcnt=False))
         assert metadata["stack"] == default_stack
 
+    def test_present_focuspos_used(self):
+        """When FOCUSPOS is present its value flows into ``absolute_focus``."""
+        expected_focus = 1625
+        metadata = metadata_from_header(_seestar_header(with_focuspos=True))
+        assert metadata["absolute_focus"] == expected_focus
+
+    def test_missing_focuspos_gives_none(self):
+        """A missing FOCUSPOS leaves ``absolute_focus`` None, as the schema allows."""
+        metadata = metadata_from_header(_seestar_header(with_focuspos=False))
+        assert metadata["absolute_focus"] is None
+
     def test_explicit_profile_header_map_is_used(self):
         """An explicit ``profile=`` header_map overrides the default dialect."""
         expected_exposure = 42.0
@@ -484,18 +497,21 @@ class TestEloyToStarlist:
     so they can be shared with ``test_scripts.py``.
     """
 
+    # One star row every filter in ``good_star_mask`` keeps.
+    GOOD_ROW: ClassVar[dict[str, float]] = {
+        "x": 20.0,
+        "y": 30.0,
+        "ra": 10.0,
+        "dec": 20.0,
+        "tot_count": 100.0,
+        "count_err": 5.0,
+        "bkgd_count": 1.0,
+        "peak_count": 200.0,
+    }
+
     def test_filters_bad_rows(self, eloy_table, starlist_metadata):
         """Only finite, positive, in-bounds rows survive into the StarList."""
-        good_a = {
-            "x": 20.0,
-            "y": 30.0,
-            "ra": 10.0,
-            "dec": 20.0,
-            "tot_count": 100.0,
-            "count_err": 5.0,
-            "bkgd_count": 1.0,
-            "peak_count": 200.0,
-        }
+        good_a = self.GOOD_ROW
         good_b = {
             "x": 70.0,
             "y": 60.0,
@@ -538,6 +554,23 @@ class TestEloyToStarlist:
 
         kept_x = sorted(item.x for item in starlist.staritems)
         assert kept_x == [20.0, 70.0]
+
+    def test_photometry_software_set_by_bandaid(self, eloy_table, starlist_metadata):
+        """Metadata without ``photometry_software`` still yields bandaid's entry."""
+        table = eloy_table([self.GOOD_ROW])
+
+        starlist = eloy_to_starlist(table, starlist_metadata)
+
+        assert starlist.photometry_software == [f"bandaid {_version.__version__}"]
+
+    def test_user_photometry_software_overridden(self, eloy_table, starlist_metadata):
+        """A ``photometry_software`` in the metadata gives way to bandaid's."""
+        table = eloy_table([self.GOOD_ROW])
+        metadata = {**starlist_metadata, "photometry_software": ["other 1.0"]}
+
+        starlist = eloy_to_starlist(table, metadata)
+
+        assert starlist.photometry_software == [f"bandaid {_version.__version__}"]
 
     def test_schema_rejection_raises_frame_error(self, eloy_table, starlist_metadata):
         """

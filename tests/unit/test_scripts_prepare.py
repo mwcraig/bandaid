@@ -611,6 +611,23 @@ class TestPrepareBatch:
 
         scripts.prepare_batch("frame1.fits", cnn=object())
 
+    def test_photometry_software_not_asked_of_the_user(self, mocker):
+        """Metadata need not carry ``photometry_software``; bandaid fills it."""
+        metadata = _batch_metadata()
+        assert "photometry_software" not in metadata
+        _patch_prep(mocker, metadata=metadata)
+
+        scripts.prepare_batch("frame1.fits", cnn=object())
+
+    def test_optional_keys_may_be_absent(self, mocker):
+        """Optional schema keys such as ``stack`` may be left out entirely."""
+        metadata = _batch_metadata()
+        del metadata["stack"]
+        metadata.pop("absolute_focus", None)
+        _patch_prep(mocker, metadata=metadata)
+
+        scripts.prepare_batch("frame1.fits", cnn=object())
+
     def test_bad_pointing_labeled_with_prep_file(self, mocker):
         """
         A bad pointing fails as a metadata error naming the prep frame.

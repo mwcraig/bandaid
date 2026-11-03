@@ -48,7 +48,9 @@ dependencies = [
     "scikit-image",
     "scipy",
     "twirl",
-    "aavso-starlist-schema @ git+https://github.com/mwcraig/aavso-starlist-schema.git"
+    # The starlist schema lives in the schemas/starlist subdirectory of the AAVSO
+    # public-utils monorepo; pin it to a specific commit.
+    "aavso-starlist-schema @ git+https://github.com/AAVSO/public-utils.git@76fc53cedf1211a2c5af67099b641060c7e4f241#subdirectory=schemas/starlist"
 ]
 
 [project.optional-dependencies]
