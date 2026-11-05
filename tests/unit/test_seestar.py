@@ -18,7 +18,9 @@ import pytest
 
 from bandaid import seestar
 from bandaid.image2sl_qt import generate_bayer_masks
+from bandaid.instruments import StarFlagInputs
 from bandaid.seestar import (
+    CORE_REPLACED,
     MIN_PEAK_ABOVE_SKY_ADU,
     STATIC_MAP_FRAMES,
     STATIC_MAP_MIN_FRAMES,
@@ -27,6 +29,7 @@ from bandaid.seestar import (
     _CONTROL_MAX_FRACTION,
     _CONTROL_MAX_PIXELS,
     _phase_skies,
+    _prepare_core_replaced,
     core_replaced_flags,
     replacement_map,
     replacement_residual,
@@ -1135,3 +1138,83 @@ def test_nan_peak_count_never_flagged():
     _assert_flags(
         flags, {"TR": [False, True], "TG": [False, False], "TB": [False, False]}
     )
+
+
+def test_core_replaced_flagger_wraps_core_replaced_flags():
+    """`CORE_REPLACED` builds a static map per batch and flags through it."""
+    assert CORE_REPLACED.column == "core_replaced"
+    assert CORE_REPLACED.prepare is _prepare_core_replaced
+    assert CORE_REPLACED.n_state_frames == STATIC_MAP_FRAMES
+
+    stars = [(20.0, 20.0), (44.0, 44.0)]
+    raw = _plant(_frame(stars=stars), 20, 20)
+    # Only the static map can flag the second star.
+    static_map = np.zeros(SHAPE, dtype=bool)
+    static_map[44, 45] = True
+    peak_count, bkgd_count = _gates(2)
+    inputs = StarFlagInputs(
+        raw=raw,
+        centroids=np.array(stars),
+        bayer_masks=_bayer_masks("RGGB"),
+        peak_count=peak_count,
+        bkgd_count=bkgd_count,
+        metadata={"largest_usable_adu_value": SATURATED_ADU},
+    )
+    _assert_flags(
+        CORE_REPLACED.flag(inputs, static_map),
+        {"TR": [True, False], "TG": [False, True], "TB": [False, False]},
+    )
+    _assert_flags(
+        CORE_REPLACED.flag(inputs, None),
+        {"TR": [True, False], "TG": [False, False], "TB": [False, False]},
+    )
+
+
+def test_core_replaced_flagger_reads_the_ceiling_from_the_metadata():
+    """
+    The flagger's saturation gate is the frame's ``largest_usable_adu_value``.
+
+    The same replaced core is flagged under a ceiling above the star's peak and
+    not under one equal to it.
+    """
+    raw = _plant(_frame(), 32, 30)
+    peak_count, bkgd_count = _gates(1)
+
+    def flags_for(ceiling):
+        inputs = StarFlagInputs(
+            raw=raw,
+            centroids=np.array([[32.0, 30.0]]),
+            bayer_masks=_bayer_masks("RGGB"),
+            peak_count=peak_count,
+            bkgd_count=bkgd_count,
+            metadata={"largest_usable_adu_value": ceiling},
+        )
+        return CORE_REPLACED.flag(inputs, None)
+
+    _assert_flags(
+        flags_for(STAR_PEAK + SKY + 1), {"TR": [True], "TG": [False], "TB": [False]}
+    )
+    _assert_flags(flags_for(STAR_PEAK + SKY), {ch: [False] for ch in CHANNELS})
+
+
+# A ceiling below SATURATED_ADU that a planted neighbour reaches.
+LOW_CEILING = 30000
+
+
+@pytest.mark.parametrize(
+    ("ceiling", "kept"), [(SATURATED_ADU, True), (LOW_CEILING, False)]
+)
+def test_core_replaced_prepare_reads_the_ceiling_from_the_metadata(ceiling, kept):
+    """
+    The flagger's static map masks saturation at the batch's own ceiling.
+
+    A diagonal neighbour of a constant-residual pixel sits at `LOW_CEILING` in
+    every frame: saturated under a ceiling that low, ordinary under the S50's.
+    """
+    x, y = STATIC_PIXELS["large_offset"]
+    frames = _static_frames(k=STATIC_MAP_FRAMES)
+    for f in frames:
+        f[y + 2, x + 2] = LOW_CEILING
+    result = CORE_REPLACED.prepare(frames, {"largest_usable_adu_value": ceiling})
+    names = STATIC_KEPT if kept else STATIC_KEPT - {"large_offset"}
+    np.testing.assert_array_equal(np.argwhere(result).tolist(), _yx(names))

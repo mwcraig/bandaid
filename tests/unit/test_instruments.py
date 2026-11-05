@@ -9,12 +9,16 @@ bundled Seestar50 profile reproduces the class defaults, that the registry can b
 extended, and that a profile round-trips through ``to_file``/``from_file``.
 """
 
+import subprocess
+import sys
+
 import numpy as np
 import pytest
 from _helpers import SEESTAR_EGAIN, SEESTAR_RULE
 from astropy.table import Table
 from pydantic import ValidationError
 
+import bandaid
 from bandaid import instruments
 from bandaid.config import HeaderMatchRule, InstrumentProfile
 from bandaid.exceptions import InstrumentDetectionError
@@ -29,6 +33,7 @@ from bandaid.instruments import (
     register_star_flagger,
     star_flaggers_for,
 )
+from bandaid.seestar import CORE_REPLACED
 
 EXPECTED_CONE_MARGIN = 0.4
 EXPECTED_WCS_POINTING_TOLERANCE = 0.30
@@ -570,6 +575,51 @@ class TestStarFlaggerRegistry:
     def test_bare_profile_has_no_flaggers(self):
         """A bare ``InstrumentProfile()`` runs no instrument code."""
         assert star_flaggers_for(InstrumentProfile()) == ()
+
+    def test_builtin_seestar_flagger_resolves(self):
+        """``seestar_core_replaced`` is built in and resolves to `CORE_REPLACED`."""
+        profile = InstrumentProfile(
+            name="ToyScope", star_flaggers=("seestar_core_replaced",)
+        )
+        assert star_flaggers_for(profile) == (("seestar_core_replaced", CORE_REPLACED),)
+
+    def test_builtin_name_counts_as_registered(self):
+        """A built-in name needs ``replace=True`` to override; then it resolves."""
+        replacement = StarFlagger(column="other", flag=_never)
+        with pytest.raises(ValueError, match="seestar_core_replaced"):
+            register_star_flagger("seestar_core_replaced", replacement)
+        register_star_flagger("seestar_core_replaced", replacement, replace=True)
+        profile = InstrumentProfile(
+            name="ToyScope", star_flaggers=("seestar_core_replaced",)
+        )
+        assert star_flaggers_for(profile) == (("seestar_core_replaced", replacement),)
+
+    def test_unknown_name_lists_builtins(self):
+        """The unknown-flagger error lists the built-in flaggers as available."""
+        profile = InstrumentProfile(name="ToyScope", star_flaggers=("missing",))
+        with pytest.raises(ValueError, match="seestar_core_replaced"):
+            star_flaggers_for(profile)
+
+    def test_importing_bandaid_does_not_import_seestar(self):
+        """
+        Built-in flaggers are resolved on lookup, not imported with the package.
+
+        The child checks that it imported the same ``bandaid`` as this process,
+        so an editable install of another checkout cannot make the test pass.
+        """
+        code = (
+            "import os, sys, bandaid, bandaid.instruments\n"
+            "same = os.path.samefile(bandaid.__file__, sys.argv[1])\n"
+            "assert same, f'imported {bandaid.__file__}, not {sys.argv[1]}'\n"
+            "sys.exit('bandaid.seestar' in sys.modules)\n"
+        )
+        result = subprocess.run(  # noqa: S603
+            [sys.executable, "-c", code, bandaid.__file__],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
 
 
 class TestApplyStarFlags:
