@@ -40,7 +40,12 @@ from bandaid.exceptions import (
     WCSSolveError,
 )
 from bandaid.image2sl_qt import bayer_balance_image, generate_bayer_masks
-from bandaid.instruments import load_instrument, register_instrument
+from bandaid.instruments import (
+    StarFlagger,
+    load_instrument,
+    register_instrument,
+    register_star_flagger,
+)
 from bandaid.photometry import (
     DETECTION_OPENING,
     MIN_DETECTED_STARS,
@@ -55,8 +60,10 @@ from bandaid.photometry import (
     _detect_stars,
     _drop_edge_catalog_stars,
     _fwhm_from_coords,
+    _load_frame,
     build_photometry_table,
     calibration_sequence,
+    good_star_mask,
     l4_effective_egain,
     measure_photometry,
     metadata_from_header,
@@ -2381,6 +2388,106 @@ class TestProcessOneImage:
         result = process_one_image(path, {}, _REF_RADECS, None, masks, build_l4=False)
 
         assert set(result) == {"TR", "TG"}
+
+    @staticmethod
+    def _toy_flagger_config(seen, *, enabled=True) -> PhotometryConfig:
+        """
+        Register a toy star flagger and return a config whose profile names it.
+
+        The flagger records each call's inputs and state in ``seen`` and flags
+        star 0 in the TG channel only.
+        """
+
+        def flag(inputs, state):
+            seen.append((inputs, state))
+            flags = np.zeros(len(inputs.centroids), dtype=bool)
+            flags[0] = True
+            return {"TG": flags}
+
+        register_star_flagger("toy", StarFlagger(column="core_replaced", flag=flag))
+        profile = load_instrument("Seestar50").model_copy(
+            update={"star_flaggers": ("toy",)}
+        )
+        return PhotometryConfig(instrument=profile, instrument_star_flags=enabled)
+
+    def test_flagger_free_profile_adds_no_flag_column(self, l4_frame):
+        """A profile naming no star flagger leaves the tables as they were."""
+        path, masks = l4_frame
+        profile = load_instrument("Seestar50").model_copy(update={"star_flaggers": ()})
+        config = PhotometryConfig(instrument=profile)
+
+        result = process_one_image(path, {}, _REF_RADECS, None, masks, config=config)
+
+        for table in result.values():
+            assert "core_replaced" not in table.colnames
+            assert "reject_flags" not in table.meta
+
+    def test_disabled_star_flags_add_no_flag_column(self, l4_frame):
+        """``instrument_star_flags=False`` skips a profile's flaggers entirely."""
+        path, masks = l4_frame
+        seen = []
+        config = self._toy_flagger_config(seen, enabled=False)
+
+        result = process_one_image(path, {}, _REF_RADECS, None, masks, config=config)
+
+        assert seen == []
+        for table in result.values():
+            assert "core_replaced" not in table.colnames
+            assert "reject_flags" not in table.meta
+
+    def test_star_flags_land_on_every_table_and_l4(self, l4_frame):
+        """A star flagged in one channel is flagged, and rejected, everywhere."""
+        path, masks = l4_frame
+        seen = []
+        config = self._toy_flagger_config(seen)
+
+        result = process_one_image(
+            path,
+            {},
+            _REF_RADECS,
+            None,
+            masks,
+            config=config,
+            star_flag_state={"toy": "prepared"},
+        )
+
+        assert set(result) == {"TR", "TG", "TB", "L4"}
+        for table in result.values():
+            assert table["core_replaced"][0]
+            assert not np.any(table["core_replaced"][1:])
+            assert table.meta["reject_flags"] == ("core_replaced",)
+            good = good_star_mask(table, table.meta["full_image_meta"], min_snr=0)
+            assert not good[0]
+        assert len(seen) == 1
+        assert seen[0][1] == "prepared"
+
+    def test_star_flag_inputs_describe_the_frame(self, l4_frame):
+        """The flagger sees the untouched frame array and row-aligned columns."""
+        path, masks = l4_frame
+        seen = []
+        config = self._toy_flagger_config(seen)
+        frame = _load_frame(path)
+
+        result = process_one_image(
+            path, {}, _REF_RADECS, None, masks, config=config, frame=frame
+        )
+
+        inputs, state = seen[0]
+        assert state is None
+        assert inputs.raw is frame.data
+        np.testing.assert_array_equal(inputs.centroids[:, 0], result["TR"]["x"])
+        np.testing.assert_array_equal(inputs.centroids[:, 1], result["TR"]["y"])
+        assert set(inputs.bayer_masks) == {"TR", "TG", "TB"}
+        for name in ("TR", "TG", "TB"):
+            assert inputs.bayer_masks[name] is masks[name]
+            np.testing.assert_array_equal(
+                inputs.peak_count[name], result[name]["peak_count"]
+            )
+            np.testing.assert_array_equal(
+                inputs.bkgd_count[name], result[name]["bkgd_count"]
+            )
+        tr_meta = result["TR"].meta["full_image_meta"]
+        assert inputs.metadata["obs_time"] == tr_meta["obs_time"]
 
     def test_opens_the_file_exactly_once(self, l4_frame, fromfile_spy):
         """process_one_image opens the file exactly once end-to-end (#44)."""
