@@ -68,7 +68,12 @@ from .exceptions import (
     WCSSolveError,
 )
 from .image2sl_qt import bayer_balance_image
-from .instruments import resolve_config_instrument, resolve_profile
+from .instruments import (
+    StarFlagInputs,
+    apply_star_flags,
+    resolve_config_instrument,
+    resolve_profile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -4058,6 +4063,7 @@ def process_one_image(
     build_l4=True,
     input_gaia_g=None,
     g_cut=None,
+    star_flag_state=None,
 ):
     """
     Process a single image file and return one photometry table per input mask.
@@ -4106,6 +4112,11 @@ def process_one_image(
     g_cut : float or None, optional
         The batch's CNN-class magnitude cut, handed to `prepare_image`.
         Required under the same conditions as `input_gaia_g`. By default None.
+    star_flag_state : collections.abc.Mapping or None, optional
+        Star-flagger name to the per-batch state its ``prepare`` built (see
+        `~bandaid.scripts.BatchPrep.star_flag_state`), handed to
+        `~bandaid.instruments.apply_star_flags`. None (default) gives every
+        flagger None.
 
     Returns
     -------
@@ -4143,6 +4154,12 @@ def process_one_image(
     A per-channel ``egain`` mapping that lacks one of the channels in
     `bayer_masks` fails the frame with `FrameMetadataError` (`file` attached)
     before any channel is photometered.
+
+    When ``config.instrument_star_flags`` is True, the instrument profile's
+    star flaggers (``star_flaggers``) run once the channel tables exist and
+    before L4 is built: a star a flagger marks in any channel gets the
+    flagger's column set on every table, L4 included, and is rejected by
+    `good_star_mask` (see `~bandaid.instruments.apply_star_flags`).
     """
     # Calculate everything we need for all filters at once. prepare_image raises
     # a FrameError (TooFewStarsError / PSFFitError / WCSSolveError) when the
@@ -4203,6 +4220,39 @@ def process_one_image(
         by_filter_data[filter_name] = data
         logger.debug(
             "%s: %s photometry table has %d rows", file, filter_name, len(data)
+        )
+
+    # The instrument's star flaggers read the camera's own integers
+    # (frame.data), not the float copy photometry ran on. Every channel table
+    # has one row per img.centroid_coords row, in order, so the per-channel
+    # columns line up with the centroids. Run before L4 so it inherits the
+    # flag columns from TR. With the switch off or no flagger named, nothing
+    # is built or stamped.
+    # The gate columns (peak_count, bkgd_count) are measured on
+    # calibrated_data, which today equals the raw integers (1.0 * data), so
+    # the flaggers' ADU gates are in raw units, and so is their saturation
+    # ceiling, the profile's largest_usable_adu_value. A calibration step that
+    # rescales the data would have to hand the flaggers raw-scale values
+    # instead.
+    if config.instrument_star_flags and config.instrument.star_flaggers:
+        apply_star_flags(
+            by_filter_data,
+            StarFlagInputs(
+                raw=frame.data,
+                centroids=img.centroid_coords,
+                bayer_masks=bayer_masks,
+                peak_count={
+                    name: np.asarray(table["peak_count"])
+                    for name, table in by_filter_data.items()
+                },
+                bkgd_count={
+                    name: np.asarray(table["bkgd_count"])
+                    for name, table in by_filter_data.items()
+                },
+                metadata=img.metadata,
+            ),
+            config.instrument,
+            state=star_flag_state,
         )
 
     # L4 is a recombination of the RGB tables, so it is built once they all
