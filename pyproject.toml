@@ -42,9 +42,10 @@ dependencies = [
     # "eloy @ git+https://github.com/lgrcia/eloy@0b53f23f90b12b33ef21473cbb1a785a819aaeeb",
     "huggingface_hub>=1.0",
     # The released photutils; 3.1 is the first release with the compiled
-    # sigma-clipped ApertureStats. The `photutils-dev` extra below swaps in a
-    # build from a pinned commit on photutils main.
-    "photutils>=3.1",
+    # sigma-clipped ApertureStats, 3.1.1 the first on emscripten-forge for the
+    # browser build. The `photutils-dev` extra below swaps in a build from a
+    # pinned commit on photutils main.
+    "photutils>=3.1.1",
     "pydantic>=2",
     "scikit-image",
     "scipy",
@@ -155,7 +156,7 @@ url = "https://pypi.org/simple"
 # and content-addressed. Move it by hand when a newer photutils main is wanted.
 [tool.uv.sources]
 photutils = [
-    { git = "https://github.com/astropy/photutils", rev = "02b7355a412789f2a226dab52ac71d7ad6ed71ff", extra = "photutils-dev" },
+    { git = "https://github.com/astropy/photutils", rev = "df22cd03c85b451379cc8372398474e2994b8229", extra = "photutils-dev" },
     { index = "pypi", extra = "photutils-release" },
 ]
 

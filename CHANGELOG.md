@@ -9,9 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- photutils 3.1 is now the minimum version. It is the first release with the
-    compiled sigma-clipped `ApertureStats` (about 26 % less time per frame,
-    output differs only at the last bit).
+- photutils 3.1.1 is now the minimum version. 3.1 is the first release with
+    the compiled sigma-clipped `ApertureStats` (about 26 % less time per frame,
+    output differs only at the last bit) and 3.1.1 the first available on
+    emscripten-forge for the browser build.
 
 ### Added
 
