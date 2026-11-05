@@ -23,6 +23,7 @@ than keying them on the profile's ``name``, keeps a bare or user-built profile
 free of instrument code unless it opts in.
 """
 
+import importlib
 import json
 import logging
 from collections.abc import Callable, Mapping, Sequence
@@ -61,6 +62,11 @@ _REGISTERED: dict[str, InstrumentProfile] = {}
 
 # Registered star flaggers, keyed by the name a profile's ``star_flaggers`` uses.
 _STAR_FLAGGERS: dict[str, "StarFlagger"] = {}
+
+# Star flaggers shipped with bandaid, as "module:attribute", imported only when a
+# profile names one: a run that never uses the instrument never imports its code.
+# A registration under the same name takes precedence.
+_BUILTIN_STAR_FLAGGERS = {"seestar_core_replaced": "bandaid.seestar:CORE_REPLACED"}
 
 
 def _profiles_root():
@@ -577,8 +583,8 @@ def register_star_flagger(name, flagger, *, replace=False):
     flagger : StarFlagger
         The flagger to register.
     replace : bool, optional
-        Whether to allow overriding a name that is already registered.
-        Default False.
+        Whether to allow overriding a name that is already registered or
+        built in (see `star_flaggers_for`). Default False.
 
     Raises
     ------
@@ -596,7 +602,7 @@ def register_star_flagger(name, flagger, *, replace=False):
 
 def _is_star_flagger(name):
     """
-    Return whether ``name`` is a registered star flagger.
+    Return whether ``name`` is a registered or built-in star flagger.
 
     Parameters
     ----------
@@ -608,12 +614,12 @@ def _is_star_flagger(name):
     bool
         True when `star_flaggers_for` can resolve ``name``.
     """
-    return name in _STAR_FLAGGERS
+    return name in _STAR_FLAGGERS or name in _BUILTIN_STAR_FLAGGERS
 
 
 def _star_flagger(name):
     """
-    Look up a registered star flagger.
+    Look up a star flagger, importing a built-in one on demand.
 
     Parameters
     ----------
@@ -623,9 +629,12 @@ def _star_flagger(name):
     Returns
     -------
     StarFlagger
-        The registered flagger.
+        The registered flagger, else the built-in one.
     """
-    return _STAR_FLAGGERS[name]
+    if name in _STAR_FLAGGERS:
+        return _STAR_FLAGGERS[name]
+    module, attribute = _BUILTIN_STAR_FLAGGERS[name].split(":")
+    return getattr(importlib.import_module(module), attribute)
 
 
 def star_flaggers_for(profile):
@@ -653,10 +662,17 @@ def star_flaggers_for(profile):
     -----
     Two flaggers may not share a ``column``: each flag column has to say
     which flagger fired, and a second flagger would overwrite the first.
+
+    Besides the flaggers registered with `register_star_flagger`, bandaid
+    ships built-in ones (``seestar_core_replaced``, the Seestar S50
+    core-replacement flag, `bandaid.seestar.CORE_REPLACED`). A built-in's
+    module is imported the first time a profile naming it is resolved, not
+    when bandaid is imported. A registration under a built-in's name takes
+    precedence over it.
     """
     unknown = [name for name in profile.star_flaggers if not _is_star_flagger(name)]
     if unknown:
-        available = ", ".join(sorted(_STAR_FLAGGERS))
+        available = ", ".join(sorted({*_STAR_FLAGGERS, *_BUILTIN_STAR_FLAGGERS}))
         msg = (
             f"instrument {profile.name!r} names unknown star flagger(s) "
             f"{', '.join(map(repr, unknown))}; registered: {available}"

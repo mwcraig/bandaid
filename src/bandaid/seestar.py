@@ -16,14 +16,20 @@ batch by the constancy of ``S4 - 4c`` from frame to frame, not by its size.
 +-2 px is the nearest same-color pixel along each axis for R, B and both G
 sub-lattices of any 2x2 Bayer pattern, so none of these tests needs to know the
 pattern; only the final per-channel attribution does.
+
+`CORE_REPLACED` packages these tests as the star flagger the bundled Seestar50
+profile names, ``seestar_core_replaced``.
 """
 
 import logging
 
 import numpy as np
 
+from .instruments import StarFlagger
+
 __all__ = [
     "CORE_RADIUS_PX",
+    "CORE_REPLACED",
     "EDGE_PX",
     "MIN_PEAK_ABOVE_SKY_ADU",
     "STATIC_MAP_FRAMES",
@@ -659,3 +665,63 @@ def core_replaced_flags(
             & (peak < saturated_adu)
         )
     return flags
+
+
+def _flag_core_replaced(inputs, state):
+    """
+    Adapt `core_replaced_flags` to the star-flagger interface.
+
+    Parameters
+    ----------
+    inputs : bandaid.instruments.StarFlagInputs
+        The frame's raw data, centroids, Bayer masks, gate columns and
+        metadata, whose ``"largest_usable_adu_value"`` is the saturation
+        ceiling.
+    state : numpy.ndarray or None
+        The batch's static map from `static_replacement_map`, or None.
+
+    Returns
+    -------
+    dict of str to numpy.ndarray
+        One length-N boolean array per channel, as from `core_replaced_flags`.
+    """
+    return core_replaced_flags(
+        inputs.raw,
+        inputs.centroids,
+        inputs.bayer_masks,
+        inputs.peak_count,
+        inputs.bkgd_count,
+        saturated_adu=inputs.metadata["largest_usable_adu_value"],
+        static_map=state,
+    )
+
+
+def _prepare_core_replaced(raw_frames, metadata):
+    """
+    Adapt `static_replacement_map` to the star-flagger interface.
+
+    Parameters
+    ----------
+    raw_frames : sequence of numpy.ndarray
+        The batch's first raw frames.
+    metadata : mapping
+        The batch's frame metadata, whose ``"largest_usable_adu_value"`` is the
+        saturation ceiling.
+
+    Returns
+    -------
+    numpy.ndarray
+        The batch's static map.
+    """
+    return static_replacement_map(
+        raw_frames, saturated_adu=metadata["largest_usable_adu_value"]
+    )
+
+
+# The Seestar core-replacement star flagger, built in as "seestar_core_replaced".
+CORE_REPLACED = StarFlagger(
+    column="core_replaced",
+    flag=_flag_core_replaced,
+    prepare=_prepare_core_replaced,
+    n_state_frames=STATIC_MAP_FRAMES,
+)
