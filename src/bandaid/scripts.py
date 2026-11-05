@@ -23,7 +23,8 @@ import logging
 import os
 import time
 import traceback
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 
@@ -45,7 +46,11 @@ from .exceptions import (
     WCSSolveError,
 )
 from .image2sl_qt import generate_bayer_masks
-from .instruments import detect_instrument, resolve_config_instrument
+from .instruments import (
+    detect_instrument,
+    resolve_config_instrument,
+    star_flaggers_for,
+)
 from .photometry import (
     N_GAIA_STARS_ALIGN_RETRY,
     LoadedFrame,
@@ -98,6 +103,7 @@ QA_MANIFEST_COLUMNS = (
     "plane_dx_slope_y",
     "plane_dy_slope_x",
     "plane_dy_slope_y",
+    "n_core_replaced",
 )
 # The QA manifest columns filled from a frame's centroid-policy summary.
 _CENTROID_MODEL_COLUMNS = (
@@ -326,6 +332,17 @@ class BatchPrep:
         prepared from: the first frame, in batch order, that the preparation
         accepts. None when the bundle was not built by `prepare_batch`.
         Default None.
+    prep_metadata : collections.abc.Mapping
+        The metadata of that frame, resolved through the instrument's
+        ``header_map`` (``height``, ``width``, ``largest_usable_adu_value``,
+        ...) with ``user_specific_metadata`` applied on top: the same mapping
+        a frame's ``StarFlagInputs.metadata`` carries, as each star flagger's
+        ``prepare`` gets it. Empty when the bundle was not built by
+        `prepare_batch`. Default empty.
+    star_flag_state : collections.abc.Mapping
+        Star-flagger name to the per-batch state that flagger's ``prepare``
+        built (see `~bandaid.instruments.StarFlagger`), handed to every
+        frame. A flagger without an entry gets None. Default empty.
     """
 
     radecs: np.ndarray
@@ -342,6 +359,8 @@ class BatchPrep:
     gaia_g: np.ndarray | None = None
     g_cut: float | None = None
     prep_file: str | os.PathLike | None = None
+    prep_metadata: Mapping = field(default_factory=dict)
+    star_flag_state: Mapping = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """
@@ -717,6 +736,201 @@ def _calibrate_first_usable(
     raise BatchPrepError(msg) from last_error
 
 
+def _active_star_flaggers(config, instrument):
+    """
+    Return the star flaggers a batch runs: the profile's, unless switched off.
+
+    Parameters
+    ----------
+    config : PhotometryConfig
+        The run's configuration; its ``instrument_star_flags`` is the switch.
+    instrument : InstrumentProfile
+        The batch's resolved instrument.
+
+    Returns
+    -------
+    tuple of (str, StarFlagger)
+        ``(name, flagger)`` pairs in the profile's order; empty when the
+        switch is off or the profile names no flagger.
+
+    Raises
+    ------
+    ValueError
+        If the switch is on and the profile names a flagger that is not
+        registered (see `~bandaid.instruments.star_flaggers_for`).
+
+    Notes
+    -----
+    Every batch stage that touches the flaggers (loading the state frames,
+    resolving names in `prepare_batch`, building their state) goes through
+    this helper, so the switch off means no flagger work at all, and an
+    unknown name is never looked up.
+    """  # noqa: DOC502
+    if not config.instrument_star_flags:
+        return ()
+    return star_flaggers_for(instrument)
+
+
+def _batch_star_flaggers(config, instrument):
+    """
+    Resolve the batch's active star flaggers and log them once.
+
+    Parameters
+    ----------
+    config : PhotometryConfig
+        The run's configuration.
+    instrument : InstrumentProfile
+        The batch's resolved instrument.
+
+    Returns
+    -------
+    tuple of (str, StarFlagger)
+        As from `_active_star_flaggers`.
+
+    Notes
+    -----
+    The INFO line shows what will run, which matters for a profile copied
+    from the bundled Seestar50 one for another camera. `_active_star_flaggers`
+    raises `ValueError` for an unknown name when the switch is on.
+    """
+    flaggers = _active_star_flaggers(config, instrument)
+    if flaggers:
+        logger.info(
+            "Instrument star flaggers: %s", ", ".join(name for name, _ in flaggers)
+        )
+    return flaggers
+
+
+def _star_flag_state(flaggers, state_frames, shape, metadata):
+    """
+    Build each stateful star flagger's per-batch state from the raw frames.
+
+    Parameters
+    ----------
+    flaggers : tuple of (str, StarFlagger)
+        The batch's active flaggers, from `_active_star_flaggers`.
+    state_frames : collections.abc.Sequence of numpy.ndarray
+        Raw frame arrays from the start of the batch.
+    shape : tuple of int
+        The batch's ``(height, width)``, from the prep frame.
+    metadata : collections.abc.Mapping
+        The prep frame's metadata with the user's overrides applied, handed to
+        each ``prepare``.
+
+    Returns
+    -------
+    dict
+        Flagger name to the state its ``prepare`` built from the first
+        ``n_state_frames`` of the frames of ``shape`` and ``metadata``; empty
+        when no flagger asks for state or no frame has ``shape``.
+
+    Notes
+    -----
+    A frame of another shape is left out, with one WARNING that counts them:
+    the batch may be prepared from a frame after the first, and a state of the
+    wrong shape cannot be indexed at the batch's star positions.
+    """
+    stateful = [
+        (name, flagger)
+        for name, flagger in flaggers
+        if flagger.prepare is not None and flagger.n_state_frames > 0
+    ]
+    if not stateful or not len(state_frames):
+        return {}
+    matching = [frame for frame in state_frames if np.shape(frame) == tuple(shape)]
+    if len(matching) < len(state_frames):
+        logger.warning(
+            "%d of the %d state frames differ in shape from the batch's %s and "
+            "are left out of the instrument star-flag state",
+            len(state_frames) - len(matching),
+            len(state_frames),
+            tuple(shape),
+        )
+    if not matching:
+        return {}
+    return {
+        name: flagger.prepare(matching[: flagger.n_state_frames], metadata)
+        for name, flagger in stateful
+    }
+
+
+def _load_state_frames(frames, prep, first_frame):
+    """
+    Load the raw frames the batch's star flaggers build their state from.
+
+    Parameters
+    ----------
+    frames : list of str
+        The batch's frames, in batch order.
+    prep : BatchPrep
+        The batch's preparation: its resolved instrument, how that was chosen,
+        and the batch shape decide which frames are admitted.
+    first_frame : LoadedFrame
+        The already-loaded ``frames[0]``.
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        The raw data of the frames among the first ``K`` that load, pass the
+        batch's instrument check and have the batch's shape, where ``K`` is
+        the largest ``n_state_frames`` among the active flaggers; empty when
+        ``instrument_star_flags`` is off or no flagger asks for state.
+
+    Notes
+    -----
+    A frame that cannot be read, whose header does not resolve to the batch's
+    instrument (`_check_instrument_mixing`, with its exemption for an explicit
+    selection), or whose shape differs from ``prep.shape`` is left out with a
+    warning; `process_batch` reports it again when it reaches it. Frames past
+    the first ``K`` are never read to make up the number. The shape is the
+    prep frame's, which is not ``frames[0]`` when the preparation passed over
+    the first frame.
+    """
+    instrument = prep.config.instrument
+    n_state_frames = max(
+        (
+            flagger.n_state_frames
+            for _, flagger in _active_star_flaggers(prep.config, instrument)
+            if flagger.prepare is not None
+        ),
+        default=0,
+    )
+    raw = []
+    for position, file in enumerate(frames[:n_state_frames]):
+        # A truncated uncompressed frame makes astropy raise ValueError, not
+        # OSError; any failure here only costs the state one frame.
+        try:
+            loaded = first_frame if position == 0 else _load_frame(file)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "%s: could not read it for the instrument star-flag state, "
+                "leaving it out: %s",
+                file,
+                exc,
+            )
+            continue
+        try:
+            _check_instrument_mixing(
+                file, loaded.header, prep.instrument_auto_detected, instrument
+            )
+        except FrameError as exc:
+            logger.warning(
+                "%s: left out of the instrument star-flag state: %s", file, exc
+            )
+            continue
+        if np.shape(loaded.data) != tuple(prep.shape):
+            logger.warning(
+                "%s: its shape %s differs from the batch's %s, so it is left "
+                "out of the instrument star-flag state",
+                file,
+                np.shape(loaded.data),
+                tuple(prep.shape),
+            )
+            continue
+        raw.append(loaded.data)
+    return tuple(raw)
+
+
 def prepare_batch(
     files,
     *,
@@ -726,6 +940,7 @@ def prepare_batch(
     forced_targets=None,
     frame=None,
     user_specific_metadata=None,
+    state_frames=(),
 ):
     """
     Compute the once-per-batch photometry inputs from the prep frame.
@@ -782,9 +997,18 @@ def prepare_batch(
         frame here too.
     user_specific_metadata : dict or None, optional
         Values that override the prep frame's header-map metadata, as
-        `process_batch` applies them to every frame. Here they only count
-        toward the check that the output metadata is complete. None (default)
+        `process_batch` applies them to every frame. Here they count toward
+        the check that the output metadata is complete and reach the star
+        flaggers' ``prepare`` (stored as ``prep_metadata``). None (default)
         adds nothing.
+    state_frames : collections.abc.Sequence of numpy.ndarray, optional
+        Raw frame arrays (the camera's integers, as read from the FITS file)
+        to build the instrument's star-flagger state from. Those with the
+        prep frame's shape are kept; each flagger with a ``prepare`` and a
+        positive ``n_state_frames`` gets the first ``n_state_frames`` of them,
+        and the result is stored by flagger name in the returned bundle's
+        ``star_flag_state``. Empty (default) builds no state, and every
+        flagger then gets None.
 
     Returns
     -------
@@ -816,6 +1040,10 @@ def prepare_batch(
         a key the output schema requires (``observer`` or ``site_elev``, say)
         is missing or None in the prep frame's metadata after
         ``user_specific_metadata`` is applied; the message names the keys.
+    ValueError
+        If ``config.instrument_star_flags`` is True and the instrument names
+        a star flagger that is not registered (see
+        `~bandaid.instruments.star_flaggers_for`).
 
     Notes
     -----
@@ -839,7 +1067,21 @@ def prepare_batch(
 
     Instrument detection always uses the first frame; everything else comes
     from the prep frame.
-    """
+
+    ``state_frames`` are used as given, except that a frame whose shape
+    differs from the prep frame's is left out with a WARNING: the prep frame
+    is not added to them, they need not include it, and their headers are not
+    checked against the batch instrument. A caller that passes no
+    ``state_frames`` (then `process_batch` or `process_frame`) gets no flagger
+    state: for the bundled Seestar50 flagger, no static replacement map.
+    `photometer_frames` passes none and builds the state itself once this
+    function returns, so the raw frames are not held during the preparation.
+
+    With ``config.instrument_star_flags`` True, the instrument's flagger
+    names are resolved here, before any frame is walked, and the active
+    flaggers are logged once at INFO; with it False none is resolved, an
+    unknown name included, and no state is built.
+    """  # noqa: DOC503
     candidates = [files] if isinstance(files, str | os.PathLike) else list(files)
 
     config = config or PhotometryConfig()
@@ -860,12 +1102,15 @@ def prepare_batch(
         config, first_loaded.header, candidates[0]
     )
     instrument = config.instrument
+    # Resolve the flagger names now, so a typo in star_flaggers fails the
+    # batch before any frame is walked, even for a caller passing no state
+    # frames.
+    flaggers = _batch_star_flaggers(config, instrument)
 
     prep_file, calibration, n_passed_over = _calibrate_first_usable(
         candidates, first_loaded, cnn, instrument, instrument_auto_detected
     )
     metadata = calibration.metadata
-    fwhm_pix = calibration.fwhm
     if n_passed_over:
         logger.warning(
             "preparing the batch from %s after passing over %d frame(s) that "
@@ -896,7 +1141,11 @@ def prepare_batch(
 
     # Every frame must fill the output schema from the same metadata, so check
     # the prep frame once here: one clear error instead of every frame skipped.
-    _check_output_metadata({**metadata, **(user_specific_metadata or {})}, prep_file)
+    # The prep frame's metadata as process_batch completes every frame's: the
+    # output check and the star flaggers' prepare both see it.
+    _check_output_metadata(
+        prep_metadata := {**metadata, **(user_specific_metadata or {})}, prep_file
+    )
 
     # Center the Gaia cone on the header pointing converted to ICRS.
     # fov_rad is a field *radius*; query_field_catalog takes a radius too and
@@ -965,7 +1214,7 @@ def prepare_batch(
     # contaminated as seeing degrades during the night are dropped up front.
     # https://github.com/mwcraig/bandaid/issues/64
     flag_fwhm_arcsec = (
-        fwhm_pix * metadata["pixscale"] * instrument.contamination_seeing_margin
+        calibration.fwhm * metadata["pixscale"] * instrument.contamination_seeing_margin
     )
     # Asymmetric flagging: only targets can be flagged, but the deeper contaminant
     # list supplies the (possibly fainter) neighbors that can contaminate them.
@@ -1042,6 +1291,13 @@ def prepare_batch(
         build_l4=build_l4,
         gaia_g=gaia_g,
         prep_file=prep_file,
+        prep_metadata=prep_metadata,
+        star_flag_state=_star_flag_state(
+            flaggers,
+            state_frames,
+            (metadata["height"], metadata["width"]),
+            prep_metadata,
+        ),
         g_cut=_batch_g_cut(
             config.centroid,
             photometry_coords,
@@ -1358,6 +1614,11 @@ def qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None):
     removed before measurement, read from the table ``meta`` like
     ``wcs_pixscale``; blank when absent.
 
+    ``n_core_replaced`` is the number of stars the ``core_replaced`` column
+    marks, read from the first table that has one (the instrument star flags
+    are stamped identically on every table); blank when no table has it (the
+    flagger did not run), like the other columns of a step that did not run.
+
     ``g_cut`` and the ``n_cnn_class`` and ``plane_*`` columns summarise the
     centroid policy (see `~bandaid.photometry.centroid_with_catalog_model`) for the
     frame: the batch's magnitude cut, the number of CNN-class stars, whether the
@@ -1409,6 +1670,17 @@ def qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None):
         n_centroid_drift = int(np.sum(drift))
         n_drift_rejected = int(np.sum(drift & good))
 
+    # The star-flag mechanism is generic, but the QA column reports one
+    # flag by name: the Seestar's core-pixel replacement, "core_replaced".
+    n_core_replaced = next(
+        (
+            int(np.sum(np.asarray(table["core_replaced"], dtype=bool)))
+            for table in by_filter.values()
+            if "core_replaced" in table.colnames
+        ),
+        None,
+    )
+
     n_forced_measured = None
     if forced_targets is not None and {"ra", "dec"} <= cols:
         good_rows = representative[good]
@@ -1437,6 +1709,7 @@ def qa_record_ok(file, by_filter, *, forced_targets=None, pointing_offset=None):
         "n_forced_measured": n_forced_measured,
         "n_edge_dropped": _plain(meta.get("n_edge_dropped")),
         **_centroid_model_record(meta.get("centroid_model")),
+        "n_core_replaced": n_core_replaced,
     }
 
 
@@ -1857,7 +2130,7 @@ class FrameResult:
     elapsed_s : float
         Seconds the frame took, loading included.
     schema_version : int
-        The version of this result's layout, 1.
+        The version of this result's layout, 2.
 
     Notes
     -----
@@ -1884,7 +2157,7 @@ class FrameResult:
     qa: dict
     pointing_offset: float | None
     elapsed_s: float
-    schema_version: int = 1
+    schema_version: int = 2
 
     @property
     def ok(self):
@@ -1993,6 +2266,7 @@ def process_frame(
             g_cut=prep.g_cut,
             frame=frame,
             build_l4=prep.build_l4,
+            star_flag_state=prep.star_flag_state,
         )
         qa = qa_record_ok(
             name,
@@ -2322,6 +2596,16 @@ def photometer_frames(
         exactly one registered instrument profile, among other causes.
         Re-raised here with a batch-level prefix, chaining the original as
         ``__cause__``; the message names the frame concerned.
+
+    Notes
+    -----
+    When the instrument's star flaggers build per-batch state (a flagger
+    with a positive ``n_state_frames``), the raw data of the first frames of
+    the batch -- as many as the largest ``n_state_frames`` -- are read once
+    `prepare_batch` has returned, and the state built from them is set on the
+    prep handed to `process_batch`. A frame that cannot be read, whose header
+    does not resolve to the batch's instrument, or whose shape differs from
+    the prepared batch's is left out with a warning and not replaced.
     """
     frames = expand_frame_paths(files)
     if not frames:
@@ -2354,6 +2638,18 @@ def photometer_frames(
         # surface uncaught.
         msg = f"could not prepare the batch: {exc}"
         raise BatchPrepError(msg) from exc
+    # The state frames are read only now, against the shape and instrument of
+    # the prepared batch, so none is held during the preparation or by a
+    # BatchPrepError's traceback. Built inline so no reference to them
+    # outlives the state.
+    star_flag_state = _star_flag_state(
+        _active_star_flaggers(prep.config, prep.config.instrument),
+        _load_state_frames(frames, prep, first_frame),
+        prep.shape,
+        prep.prep_metadata,
+    )
+    if star_flag_state:
+        prep = replace(prep, star_flag_state=star_flag_state)
     results = process_batch(
         frames,
         prep,

@@ -93,7 +93,13 @@ def _override_source_selection(config, *, gaia_mag_limit, min_snr):
 
 
 def _build_config(
-    instrument, profile, config_file, *, gaia_mag_limit=None, min_snr=None
+    instrument,
+    profile,
+    config_file,
+    *,
+    gaia_mag_limit=None,
+    min_snr=None,
+    instrument_flags=None,
 ):
     """
     Build the `PhotometryConfig` for a run from the instrument/config options.
@@ -102,7 +108,9 @@ def _build_config(
     override only its instrument (the frozen config is copied, not mutated).
     ``--gaia-mag-limit``/``--min-snr`` then override only those fields of the
     resulting ``source_selection``, carrying its other fields (e.g. a
-    ``--config`` file's ``contaminant_mag_offset``) forward unchanged. With no
+    ``--config`` file's ``contaminant_mag_offset``) forward unchanged.
+    ``--instrument-flags/--no-instrument-flags`` likewise overrides only
+    ``instrument_star_flags``, and leaves the config's value when omitted. With no
     options a default `PhotometryConfig` is returned, whose ``instrument`` is
     None -- meaning "resolve from the first frame's header" -- since a bare
     `PhotometryConfig()` no longer hard-defaults to Seestar50. Any explicit
@@ -125,6 +133,9 @@ def _build_config(
     min_snr : float or None, optional
         Value passed to ``--min-snr``; None (default) leaves
         ``source_selection.min_snr`` untouched.
+    instrument_flags : bool or None, optional
+        Value passed to ``--instrument-flags/--no-instrument-flags``; None
+        (default) leaves ``instrument_star_flags`` untouched.
 
     Returns
     -------
@@ -166,6 +177,8 @@ def _build_config(
 
     if override is not None:
         config = config.model_copy(update={"instrument": override})
+    if instrument_flags is not None:
+        config = config.model_copy(update={"instrument_star_flags": instrument_flags})
 
     return _override_source_selection(
         config, gaia_mag_limit=gaia_mag_limit, min_snr=min_snr
@@ -462,6 +475,17 @@ def main():
     help="Also produce the full-frame L4 luminance channel.",
 )
 @click.option(
+    "--instrument-flags/--no-instrument-flags",
+    "instrument_flags",
+    default=None,
+    help=(
+        "Run the instrument's own per-star rejection flags (for the Seestar, "
+        "stars whose core pixel the camera overwrote), dropping flagged stars "
+        "from every filter's output. On unless switched off here or in a "
+        "--config file; --no-instrument-flags disables them."
+    ),
+)
+@click.option(
     "--fail-fast/--no-fail-fast",
     default=False,
     show_default=True,
@@ -510,6 +534,7 @@ def process(
     metadata_file,
     forced_targets_file,
     build_l4,
+    instrument_flags,
     fail_fast,
     output_format,
     output_suffix,
@@ -553,6 +578,9 @@ def process(
         Gaia catalog.
     build_l4 : bool
         Whether to also produce the full-frame L4 luminance channel.
+    instrument_flags : bool or None
+        Whether to run the instrument's star flaggers; overrides
+        ``instrument_star_flags`` when given. None keeps the config's value.
     fail_fast : bool
         Whether to re-raise unexpected per-frame errors instead of skipping.
     output_format : str
@@ -594,6 +622,7 @@ def process(
         config_file,
         gaia_mag_limit=gaia_mag_limit,
         min_snr=min_snr,
+        instrument_flags=instrument_flags,
     )
     metadata = _load_metadata(metadata_file)
     forced_targets = _load_forced_targets(forced_targets_file)
