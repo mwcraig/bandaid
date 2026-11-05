@@ -1215,7 +1215,7 @@ class TestProcessFrame:
         assert set(result.qa) == set(scripts.QA_MANIFEST_COLUMNS)
         assert result.qa["status"] == "ok"
         assert result.qa["n_good_stars"] == len(tables["TR"])
-        assert result.schema_version == 1
+        assert result.schema_version == 2  # noqa: PLR2004
 
     def test_qa_values_keep_full_precision(self, mocker, by_filter):
         """The QA row is unrounded; rounding belongs to the manifest writer."""
@@ -1241,6 +1241,62 @@ class TestProcessFrame:
         assert result.qa["wcs_pixscale"] == pixscale
         assert result.qa["solve_offset_deg"] == solve_offset
         assert result.qa["plane_rms"] == plane_rms
+
+    def test_star_flag_state_reaches_process_one_image(self, mocker, by_filter):
+        """The bundle's prepared flagger state is handed to each frame."""
+        process = mocker.patch(
+            "bandaid.scripts.process_one_image", return_value=by_filter()
+        )
+        prep = dataclasses.replace(_dummy_prep(), star_flag_state={"toy": "state"})
+
+        process_frame("a.fits", prep, user_specific_metadata={})
+
+        assert process.call_args.kwargs["star_flag_state"] is prep.star_flag_state
+
+    def test_qa_counts_core_replaced_stars(self, patched_process_one_image, by_filter):
+        """``n_core_replaced`` counts the stars a ``core_replaced`` flag marks."""
+        tables = by_filter()
+        for table in tables.values():
+            table["core_replaced"] = [False, True]
+            table.meta["reject_flags"] = ("core_replaced",)
+        patched_process_one_image(tables)
+
+        result = process_frame("a.fits", _dummy_prep(), user_specific_metadata={})
+
+        assert result.qa["n_core_replaced"] == 1
+        assert result.qa["n_good_stars"] == 1
+
+    def test_qa_core_replaced_is_zero_when_the_flagger_flags_nothing(
+        self, patched_process_one_image, by_filter
+    ):
+        """A flagger that ran and flagged no star records 0."""
+        tables = by_filter()
+        for table in tables.values():
+            table["core_replaced"] = [False, False]
+            table.meta["reject_flags"] = ("core_replaced",)
+        patched_process_one_image(tables)
+
+        result = process_frame("a.fits", _dummy_prep(), user_specific_metadata={})
+
+        assert result.qa["n_core_replaced"] == 0
+
+    def test_qa_core_replaced_is_blank_without_the_column(
+        self, patched_process_one_image, by_filter
+    ):
+        """A frame whose tables carry no ``core_replaced`` column records blank."""
+        patched_process_one_image(by_filter())
+
+        result = process_frame("a.fits", _dummy_prep(), user_specific_metadata={})
+
+        assert result.qa["n_core_replaced"] is None
+
+    def test_skipped_and_error_records_carry_core_replaced(self):
+        """The skip and error QA rows have a blank ``n_core_replaced``."""
+        skipped = scripts.qa_record_skipped("a.fits", TooFewStarsError("few"))
+        error = scripts.qa_record_error("a.fits", RuntimeError("bug"))
+
+        assert skipped["n_core_replaced"] is None
+        assert error["n_core_replaced"] is None
 
     def test_file_is_the_path_unless_a_label_is_given(
         self, patched_process_one_image, by_filter
@@ -1391,8 +1447,9 @@ class TestProcessFrame:
             "plane_dx_slope_y",
             "plane_dy_slope_x",
             "plane_dy_slope_y",
+            "n_core_replaced",
         )
-        assert FrameResult.schema_version == 1
+        assert FrameResult.schema_version == 2  # noqa: PLR2004
 
     def test_dropped_filters_names_the_starved_filter(
         self, patched_process_one_image, by_filter

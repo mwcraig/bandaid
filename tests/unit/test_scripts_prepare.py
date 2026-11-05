@@ -3,6 +3,7 @@
 import csv
 import dataclasses
 import gc
+import logging
 import weakref
 from pathlib import Path
 
@@ -45,12 +46,35 @@ from bandaid.exceptions import (
     PSFFitError,
     TooFewStarsError,
 )
-from bandaid.instruments import load_instrument, register_instrument
+from bandaid.instruments import (
+    StarFlagger,
+    load_instrument,
+    register_instrument,
+    register_star_flagger,
+)
 from bandaid.photometry import (
     CalibrationResult,
     min_separation_fwhm,
     neighbor_contamination_flag_sky,
 )
+
+
+def _flag_nothing(inputs, _state):
+    """A star-flagger ``flag`` callable that flags no star."""
+    return {"TG": np.zeros(len(inputs.centroids), dtype=bool)}
+
+
+# The (height, width) of the state-frame tests' frames and of their batch.
+_STATE_SHAPE = (64, 64)
+
+
+def _patch_prep_with_shape(mocker, shape=_STATE_SHAPE):
+    """`_patch_prep` with a prep frame of ``shape``, as the state frames need."""
+    height, width = shape
+    return _patch_prep(
+        mocker, metadata={**_batch_metadata(), "height": height, "width": width}
+    )
+
 
 # FK5(J2000) differs from ICRS by well under a tenth of an arcsecond; 25 years of
 # precession moves a pointing by about a third of a degree.
@@ -239,6 +263,287 @@ class TestPrepareBatch:
 
         assert prep.build_l4 is build_l4
         assert set(prep.bayer_masks) == {"TR", "TB", "TG"}
+
+    def test_state_frames_build_each_flaggers_state_by_name(self, mocker):
+        """Each stateful flagger's ``prepare`` sees its share of the state frames."""
+        _patch_prep_with_shape(mocker)
+        seen = []
+
+        def prepare(frames, _metadata):
+            seen.append(frames)
+            return "prepared"
+
+        register_star_flagger(
+            "toy",
+            StarFlagger(
+                column="core_replaced",
+                flag=_flag_nothing,
+                prepare=prepare,
+                n_state_frames=2,
+            ),
+        )
+        register_star_flagger(
+            "stateless", StarFlagger(column="other", flag=_flag_nothing)
+        )
+        instrument = InstrumentProfile(
+            name="ToyScope", star_flaggers=("toy", "stateless")
+        )
+        frames = [np.full(_STATE_SHAPE, value, dtype=np.uint16) for value in range(3)]
+
+        prep = scripts.prepare_batch(
+            "frame1.fits",
+            cnn=object(),
+            config=PhotometryConfig(instrument=instrument),
+            state_frames=frames,
+        )
+
+        assert prep.star_flag_state == {"toy": "prepared"}
+        assert len(seen) == 1
+        assert isinstance(seen[0], list)
+        # The flagger asked for two frames, so it gets the first two.
+        assert len(seen[0]) == 2  # noqa: PLR2004
+        assert seen[0][0] is frames[0]
+        assert seen[0][1] is frames[1]
+
+    def test_prepare_gets_the_prep_frames_metadata(self, mocker):
+        """``prepare`` gets the metadata of the frame the batch is prepared from."""
+        prep_data = _patch_prep_with_shape(mocker)
+        seen = []
+
+        def prepare(_frames, metadata):
+            seen.append(metadata)
+            return "prepared"
+
+        register_star_flagger(
+            "toy",
+            StarFlagger(
+                column="core_replaced",
+                flag=_flag_nothing,
+                prepare=prepare,
+                n_state_frames=1,
+            ),
+        )
+        instrument = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+
+        prep = scripts.prepare_batch(
+            "frame1.fits",
+            cnn=object(),
+            config=PhotometryConfig(instrument=instrument),
+            state_frames=[np.zeros(_STATE_SHAPE, dtype=np.uint16)],
+        )
+
+        assert seen == [prep_data.metadata]
+        assert prep.prep_metadata == prep_data.metadata
+
+    def test_prepare_gets_the_user_metadata_on_top(self, mocker):
+        """``user_specific_metadata`` overrides the prep frame's in ``prepare``'s."""
+        _patch_prep_with_shape(mocker)
+        seen = []
+
+        def prepare(_frames, metadata):
+            seen.append(metadata["largest_usable_adu_value"])
+            return "prepared"
+
+        register_star_flagger(
+            "toy",
+            StarFlagger(
+                column="core_replaced",
+                flag=_flag_nothing,
+                prepare=prepare,
+                n_state_frames=1,
+            ),
+        )
+        instrument = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        override = 12345
+
+        prep = scripts.prepare_batch(
+            "frame1.fits",
+            cnn=object(),
+            config=PhotometryConfig(instrument=instrument),
+            user_specific_metadata={"largest_usable_adu_value": override},
+            state_frames=[np.zeros(_STATE_SHAPE, dtype=np.uint16)],
+        )
+
+        assert seen == [override]
+        assert prep.prep_metadata["largest_usable_adu_value"] == override
+
+    def test_no_state_frames_means_no_state(self, mocker):
+        """Without state frames no ``prepare`` runs and the state is empty."""
+        _patch_prep(mocker)
+        calls = []
+        register_star_flagger(
+            "toy",
+            StarFlagger(
+                column="core_replaced",
+                flag=_flag_nothing,
+                prepare=lambda frames, _metadata: calls.append(frames),
+                n_state_frames=2,
+            ),
+        )
+        instrument = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+
+        prep = scripts.prepare_batch(
+            "frame1.fits", cnn=object(), config=PhotometryConfig(instrument=instrument)
+        )
+
+        assert prep.star_flag_state == {}
+        assert calls == []
+
+    def test_flagger_without_prepare_gets_no_state(self, mocker):
+        """A flagger with ``n_state_frames`` but no ``prepare`` builds no state."""
+        _patch_prep_with_shape(mocker)
+        register_star_flagger(
+            "toy",
+            StarFlagger(column="core_replaced", flag=_flag_nothing, n_state_frames=2),
+        )
+        instrument = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+
+        prep = scripts.prepare_batch(
+            "frame1.fits",
+            cnn=object(),
+            config=PhotometryConfig(instrument=instrument),
+            state_frames=[np.zeros(_STATE_SHAPE, dtype=np.uint16)] * 2,
+        )
+
+        assert prep.star_flag_state == {}
+
+    def test_switch_off_resolves_and_prepares_no_flagger(self, mocker):
+        """
+        With ``instrument_star_flags`` False no flagger is resolved or prepared.
+
+        An unknown name in the profile does not raise, and a stateful flagger's
+        ``prepare`` is not called even when state frames are given.
+        """
+        _patch_prep_with_shape(mocker)
+        calls = []
+        register_star_flagger(
+            "toy",
+            StarFlagger(
+                column="core_replaced",
+                flag=_flag_nothing,
+                prepare=lambda frames, _metadata: calls.append(frames),
+                n_state_frames=2,
+            ),
+        )
+        instrument = InstrumentProfile(name="ToyScope", star_flaggers=("toy", "typo"))
+        frames = [np.zeros(_STATE_SHAPE, dtype=np.uint16)] * 2
+
+        prep = scripts.prepare_batch(
+            "frame1.fits",
+            cnn=object(),
+            config=PhotometryConfig(instrument=instrument, instrument_star_flags=False),
+            state_frames=frames,
+        )
+
+        assert prep.star_flag_state == {}
+        assert calls == []
+
+    def test_unknown_flagger_fails_at_prep_without_state_frames(self, mocker):
+        """A typo in ``star_flaggers`` fails ``prepare_batch``, state frames or not."""
+        _patch_prep(mocker)
+        instrument = InstrumentProfile(name="ToyScope", star_flaggers=("typo",))
+
+        with pytest.raises(ValueError, match="typo"):
+            scripts.prepare_batch(
+                "frame1.fits",
+                cnn=object(),
+                config=PhotometryConfig(instrument=instrument),
+            )
+
+    def test_logs_the_active_flaggers(self, mocker, caplog):
+        """The flaggers that will run are logged once, at INFO."""
+        _patch_prep(mocker)
+        register_star_flagger(
+            "toy", StarFlagger(column="core_replaced", flag=_flag_nothing)
+        )
+        instrument = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+
+        with caplog.at_level(logging.INFO, logger="bandaid.scripts"):
+            scripts.prepare_batch(
+                "frame1.fits",
+                cnn=object(),
+                config=PhotometryConfig(instrument=instrument),
+            )
+
+        records = [
+            r
+            for r in caplog.records
+            if r.getMessage() == "Instrument star flaggers: toy"
+        ]
+        assert len(records) == 1
+        assert records[0].levelno == logging.INFO
+
+    def test_state_frames_of_another_shape_are_left_out(self, mocker, caplog):
+        """
+        Only state frames of the prep frame's shape build the state.
+
+        The prep frame may not be the first, so the state frames a caller
+        gives can have another frame's shape; those are left out with one
+        WARNING that counts them.
+        """
+        _patch_prep_with_shape(mocker, shape=(80, 80))
+        seen = []
+
+        def prepare(frames, _metadata):
+            seen.append(frames)
+            return "prepared"
+
+        register_star_flagger(
+            "toy",
+            StarFlagger(
+                column="core_replaced",
+                flag=_flag_nothing,
+                prepare=prepare,
+                n_state_frames=3,
+            ),
+        )
+        instrument = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        small = np.zeros(_STATE_SHAPE, dtype=np.uint16)
+        large = [np.full((80, 80), value, dtype=np.uint16) for value in range(2)]
+
+        with caplog.at_level(logging.WARNING, logger="bandaid.scripts"):
+            prep = scripts.prepare_batch(
+                "frame1.fits",
+                cnn=object(),
+                config=PhotometryConfig(instrument=instrument),
+                state_frames=[small, *large],
+            )
+
+        assert prep.star_flag_state == {"toy": "prepared"}
+        assert len(seen) == 1
+        assert len(seen[0]) == len(large)
+        assert all(got is want for got, want in zip(seen[0], large, strict=True))
+        warnings = [
+            r.getMessage() for r in caplog.records if "state frames" in r.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert "1 of the 3 state frames" in warnings[0]
+        assert "(80, 80)" in warnings[0]
+
+    def test_no_state_frame_of_the_prep_shape_means_no_state(self, mocker):
+        """When no state frame has the prep frame's shape, no ``prepare`` runs."""
+        _patch_prep_with_shape(mocker, shape=(80, 80))
+        calls = []
+        register_star_flagger(
+            "toy",
+            StarFlagger(
+                column="core_replaced",
+                flag=_flag_nothing,
+                prepare=lambda frames, _metadata: calls.append(frames),
+                n_state_frames=2,
+            ),
+        )
+        instrument = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+
+        prep = scripts.prepare_batch(
+            "frame1.fits",
+            cnn=object(),
+            config=PhotometryConfig(instrument=instrument),
+            state_frames=[np.zeros(_STATE_SHAPE, dtype=np.uint16)] * 2,
+        )
+
+        assert prep.star_flag_state == {}
+        assert calls == []
 
     def test_build_l4_true_by_default(self, mocker):
         """Omitting ``build_l4`` requests the L4 channel (issue #61)."""
@@ -1606,6 +1911,10 @@ class TestBatchPrep:
             **self._kwargs(config=PhotometryConfig(instrument=InstrumentProfile()))
         )
         assert prep.config.instrument is not None
+
+    def test_star_flag_state_defaults_to_empty(self):
+        """A bundle built without flagger state carries an empty mapping."""
+        assert scripts.BatchPrep(**self._kwargs()).star_flag_state == {}
 
     def test_gaia_g_of_the_wrong_length_raises(self):
         """``gaia_g`` must have one entry per photometry coordinate."""
