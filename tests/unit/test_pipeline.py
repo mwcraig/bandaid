@@ -1,5 +1,6 @@
 """Unit tests for the detect/align/centroid pipeline (prepare_image, process)."""
 
+import dataclasses
 import gzip
 import logging
 import warnings
@@ -14,6 +15,7 @@ from _helpers import (
     _seestar_header,
     five_diagonal_regions,
 )
+from aavso_starlist_schema import StarListSet
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.nddata import CCDData
@@ -74,6 +76,7 @@ from bandaid.photometry import (
     centroid_stars as real_centroid_stars,
 )
 from bandaid.scripts import BatchPrep, estimate_center_from_header, process_frame
+from bandaid.writers import write_starlist_set
 
 
 def _prepare_without_model(file, radecs, cnn, **kwargs):  # noqa: ANN003
@@ -2066,6 +2069,21 @@ class TestPrepareImageBranches:
         assert bayer_balance_mock.call_count == 1
 
 
+# The second of _SOURCE_POSITIONS, and the G pixel next to its R-pixel core in
+# RGGB, whose value the core-replaced frames overwrite.
+_REPLACED_STAR = 1
+_REPLACED_PIXEL = (160, 161)  # (y, x)
+
+# Header-less keys the schema requires, so the tables can be written.
+_WRITABLE_METADATA = {
+    "observer": "XYZ",
+    "site_elev": 100.0,
+    "block_filter": "IRCUT",
+    "exposure": 10.0,
+    "tel_firmware": "7.32",
+}
+
+
 class TestProcessOneImage:
     """End-to-end (stubbed-externals) coverage for ``process_one_image``."""
 
@@ -2488,6 +2506,148 @@ class TestProcessOneImage:
             )
         tr_meta = result["TR"].meta["full_image_meta"]
         assert inputs.metadata["obs_time"] == tr_meta["obs_time"]
+
+    @pytest.fixture
+    def seestar_raw_frame(self, make_test_image, tmp_path, mocker, bayer_masks_rggb):
+        """
+        Factory for a uint16 Seestar FITS frame, optionally with a replaced core.
+
+        Parameters
+        ----------
+        make_test_image : callable
+            The ``make_test_image`` factory fixture.
+        tmp_path : pathlib.Path
+            pytest's per-test temporary directory.
+        mocker : pytest_mock.MockerFixture
+            Used to stub the WCS solve and CNN centroiding.
+        bayer_masks_rggb : callable
+            The RGGB mask factory fixture.
+
+        Returns
+        -------
+        callable
+            ``make(replaced) -> (path, masks)``. The frame holds five bright
+            stars on a 500 ADU sky, written as BITPIX 16 so it reads back as the
+            camera's integers. With ``replaced`` True the pixel
+            `_REPLACED_PIXEL` holds ``floor`` of the mean of its four axis
+            neighbours at +-2 px, the way the camera's hot-pixel correction
+            leaves it.
+        """
+        _stub_wcs_and_centroid(mocker)
+        image = _detectable_image(
+            make_test_image, amplitude=10000.0, noise_mean=500.0, noise_stddev=10.0
+        )
+        raw = np.rint(image).astype(np.uint16)
+
+        def make(replaced):
+            frame = raw.copy()
+            if replaced:
+                y, x = _REPLACED_PIXEL
+                neighbours = (frame[y - 2, x], frame[y + 2, x])
+                neighbours += (frame[y, x - 2], frame[y, x + 2])
+                frame[y, x] = sum(int(v) for v in neighbours) // 4
+            name = "replaced.fits" if replaced else "clean.fits"
+            path = _write_seestar_fits(tmp_path / name, frame)
+            return path, bayer_masks_rggb(frame.shape)
+
+        return make
+
+    def test_seestar_core_replaced_star_dropped_from_every_filter(
+        self, seestar_raw_frame, tmp_path
+    ):
+        """
+        A star with a replaced G core is flagged and written in no filter.
+
+        Runs the bundled Seestar50 profile end to end on the camera's integers;
+        every other star is written as it is from the untouched frame. Only
+        positions are compared: the replaced pixel shifts the frame's FWHM, and
+        with it every star's aperture.
+        """
+        written = {}
+        for replaced in (False, True):
+            path, masks = seestar_raw_frame(replaced)
+            result = process_one_image(
+                path, _WRITABLE_METADATA, _REF_RADECS, None, masks
+            )
+            assert set(result) == {"TR", "TG", "TB", "L4"}
+            expected = np.zeros(len(result["TR"]), dtype=bool)
+            expected[_REPLACED_STAR] = replaced
+            for table in result.values():
+                np.testing.assert_array_equal(table["core_replaced"], expected)
+                assert table.meta["reject_flags"] == ("core_replaced",)
+                good = good_star_mask(table, table.meta["full_image_meta"])
+                assert good[_REPLACED_STAR] != replaced
+            out = tmp_path / f"{replaced}.star"
+            write_starlist_set(result, out)
+            written[replaced] = StarListSet.model_validate_json(out.read_text())
+
+        replaced_x = result["TR"]["x"][_REPLACED_STAR]
+        for star_list, clean_list in zip(
+            written[True].star_lists, written[False].star_lists, strict=True
+        ):
+            kept = [(item.x, item.y) for item in star_list.staritems]
+            clean = [(item.x, item.y) for item in clean_list.staritems]
+            assert replaced_x in [x for x, _ in clean]
+            assert kept == [(x, y) for x, y in clean if x != replaced_x]
+
+    def test_seestar_core_replaced_switched_off(self, seestar_raw_frame):
+        """With ``instrument_star_flags=False`` the replaced star is not flagged."""
+        path, masks = seestar_raw_frame(replaced=True)
+        config = PhotometryConfig(instrument_star_flags=False)
+
+        result = process_one_image(path, {}, _REF_RADECS, None, masks, config=config)
+
+        for table in result.values():
+            assert "core_replaced" not in table.colnames
+            assert "reject_flags" not in table.meta
+            good = good_star_mask(table, table.meta["full_image_meta"])
+            assert good[_REPLACED_STAR]
+
+    def test_static_map_state_drops_a_star_in_process_frame(self, seestar_raw_frame):
+        """
+        A star on a pixel of the batch's static map is dropped by `process_frame`.
+
+        Nothing is replaced in the frame itself, so without the batch state the
+        star is kept.
+        """
+        path, masks = seestar_raw_frame(replaced=False)
+        wcs = _make_tan_wcs(crval=_SYNTHETIC_FIELD_CENTER)
+        xs, ys = zip(*_SOURCE_POSITIONS, strict=True)
+        on_sky = wcs.pixel_to_world(
+            np.array(xs, dtype=float), np.array(ys, dtype=float)
+        )
+        static_map = np.zeros((480, 480), dtype=bool)
+        static_map[_REPLACED_PIXEL] = True
+        prep = BatchPrep(
+            radecs=_REF_RADECS,
+            photometry_coords=SkyCoord(on_sky.ra.degree, on_sky.dec.degree, unit="deg"),
+            cnn=None,
+            bayer_masks=masks,
+            center=_SYNTHETIC_FIELD_CENTER,
+            fov_rad=1.0,
+            shape=(480, 480),
+            config=PhotometryConfig(
+                instrument=load_instrument("Seestar50"),
+                centroid=CentroidConfig(model_faint_positions=False),
+            ),
+        )
+
+        for state, dropped in (
+            ({}, False),
+            ({"seestar_core_replaced": static_map}, True),
+        ):
+            result = process_frame(
+                path,
+                dataclasses.replace(prep, star_flag_state=state),
+                user_specific_metadata=_WRITABLE_METADATA,
+            )
+
+            assert result.ok, result.error
+            assert result.qa["n_core_replaced"] == int(dropped)
+            for table in result.by_filter.values():
+                good = good_star_mask(table, table.meta["full_image_meta"])
+                assert good[_REPLACED_STAR] != dropped
+                assert good.sum() == len(_SOURCE_POSITIONS) - int(dropped)
 
     def test_opens_the_file_exactly_once(self, l4_frame, fromfile_spy):
         """process_one_image opens the file exactly once end-to-end (#44)."""

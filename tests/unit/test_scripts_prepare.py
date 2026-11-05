@@ -57,12 +57,16 @@ from bandaid.photometry import (
     min_separation_fwhm,
     neighbor_contamination_flag_sky,
 )
+from bandaid.seestar import STATIC_MAP_FRAMES, static_replacement_map
 
 
 def _flag_nothing(inputs, _state):
     """A star-flagger ``flag`` callable that flags no star."""
     return {"TG": np.zeros(len(inputs.centroids), dtype=bool)}
 
+
+# A pixel the Seestar firmware replaces in every frame of the batch, (y, x).
+_STATIC_PIXEL = (30, 33)
 
 # The (height, width) of the state-frame tests' frames and of their batch.
 _STATE_SHAPE = (64, 64)
@@ -74,6 +78,30 @@ def _patch_prep_with_shape(mocker, shape=_STATE_SHAPE):
     return _patch_prep(
         mocker, metadata={**_batch_metadata(), "height": height, "width": width}
     )
+
+
+def _static_pixel_frames(n_frames):
+    """
+    Build ``n_frames`` uint16 frames sharing one statically replaced pixel.
+
+    Each frame has its own textured sky, noisy enough that every other pixel's
+    ``S4 - 4c`` scatters across frames by far more than the static threshold.
+    `_STATIC_PIXEL` holds the neighbour mean rounded and then nudged by -2..+2
+    ADU, frame to frame, so its ``S4 - 4c`` varies only within about +-8: its
+    robust scatter stays well inside the threshold although it is not always an
+    exact replacement.
+    """
+    rng = np.random.default_rng(7)
+    y, x = _STATIC_PIXEL
+    frames = []
+    for index in range(n_frames):
+        frame = (500 + rng.integers(-80, 81, size=(64, 64))).astype(np.uint16)
+        s4 = sum(
+            int(frame[y + dy, x + dx]) for dy, dx in ((-2, 0), (2, 0), (0, -2), (0, 2))
+        )
+        frame[y, x] = round(s4 / 4) + index % 5 - 2
+        frames.append(frame)
+    return frames
 
 
 # FK5(J2000) differs from ICRS by well under a tenth of an arcsecond; 25 years of
@@ -438,6 +466,24 @@ class TestPrepareBatch:
         assert prep.star_flag_state == {}
         assert calls == []
 
+    def test_switch_off_seestar_logs_no_static_map_line(self, mocker, caplog):
+        """With the switch off the Seestar50 static map is never attempted."""
+        _patch_prep_with_shape(mocker)
+
+        with caplog.at_level(logging.DEBUG, logger="bandaid.seestar"):
+            prep = scripts.prepare_batch(
+                "frame1.fits",
+                cnn=object(),
+                config=PhotometryConfig(
+                    instrument=load_instrument("Seestar50"),
+                    instrument_star_flags=False,
+                ),
+                state_frames=_static_pixel_frames(5),
+            )
+
+        assert prep.star_flag_state == {}
+        assert not [r for r in caplog.records if r.name == "bandaid.seestar"]
+
     def test_unknown_flagger_fails_at_prep_without_state_frames(self, mocker):
         """A typo in ``star_flaggers`` fails ``prepare_batch``, state frames or not."""
         _patch_prep(mocker)
@@ -472,6 +518,61 @@ class TestPrepareBatch:
         ]
         assert len(records) == 1
         assert records[0].levelno == logging.INFO
+
+    def test_seestar_state_is_the_static_replacement_map(self, mocker):
+        """
+        The Seestar50 flagger's state marks the pixel replaced in all 20 frames.
+
+        Only the first `STATIC_MAP_FRAMES` state frames are used. As many again
+        follow that break the pattern: over all the frames they are half, enough
+        to clear the pixel, so the map keeps it only if the cut is applied.
+        """
+        _patch_prep_with_shape(mocker)
+        frames = _static_pixel_frames(2 * STATIC_MAP_FRAMES)
+        for frame in frames[STATIC_MAP_FRAMES:]:
+            frame[_STATIC_PIXEL] = 0
+        saturated_adu = _batch_metadata()["largest_usable_adu_value"]
+        assert not static_replacement_map(frames, saturated_adu=saturated_adu)[
+            _STATIC_PIXEL
+        ]
+
+        prep = scripts.prepare_batch(
+            "frame1.fits",
+            cnn=object(),
+            config=PhotometryConfig(instrument=load_instrument("Seestar50")),
+            state_frames=frames,
+        )
+
+        static_map = prep.star_flag_state["seestar_core_replaced"]
+        expected = np.zeros(_STATE_SHAPE, dtype=bool)
+        expected[_STATIC_PIXEL] = True
+        np.testing.assert_array_equal(static_map, expected)
+
+    def test_seestar_state_from_too_few_frames_is_empty(self, mocker, caplog):
+        """
+        Fewer than `STATIC_MAP_MIN_FRAMES` frames give an empty map and one INFO line.
+
+        The line names the frame count and says no static map is used.
+        """
+        _patch_prep_with_shape(mocker)
+        n_frames = 5
+        frames = _static_pixel_frames(n_frames)
+
+        with caplog.at_level(logging.INFO, logger="bandaid.seestar"):
+            prep = scripts.prepare_batch(
+                "frame1.fits",
+                cnn=object(),
+                config=PhotometryConfig(instrument=load_instrument("Seestar50")),
+                state_frames=frames,
+            )
+
+        static_map = prep.star_flag_state["seestar_core_replaced"]
+        np.testing.assert_array_equal(static_map, np.zeros(_STATE_SHAPE, dtype=bool))
+        seestar = [r for r in caplog.records if r.name == "bandaid.seestar"]
+        assert [r.levelno for r in seestar] == [logging.INFO]
+        message = seestar[0].getMessage()
+        assert f"Only {n_frames} frames" in message
+        assert "no static map is used" in message
 
     def test_state_frames_of_another_shape_are_left_out(self, mocker, caplog):
         """
