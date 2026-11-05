@@ -175,6 +175,19 @@ class TestDefaultsMatchLegacyConstants:
         """The edge margin defaults to 10 px."""
         assert PhotometryConfig().edge_margin_px == EXPECTED_EDGE_MARGIN_PX
 
+    def test_instrument_star_flaggers_default_to_empty(self):
+        """
+        A bare ``InstrumentProfile()`` names no star flaggers.
+
+        Instrument-specific star flags are opt-in like ``header_match``: a
+        bare or user-built profile runs no instrument code.
+        """
+        assert InstrumentProfile().star_flaggers == ()
+
+    def test_instrument_star_flags_enabled_by_default(self):
+        """The instrument star flags are on unless switched off."""
+        assert PhotometryConfig().instrument_star_flags is True
+
 
 class TestImmutability:
     """The config is frozen so a batch cannot mutate its inputs mid-run."""
