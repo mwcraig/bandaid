@@ -1624,7 +1624,7 @@ def good_star_mask(eloy_table, metadata, *, min_snr=None):
         Per-image photometry table; one row per star. Must include
         ``tot_count``, ``count_err``, ``x``, and ``y`` (and optionally
         ``peak_count``, ``snr``, and ``contaminated``, each checked only when
-        present).
+        present, and any column named in ``meta["reject_flags"]``).
     metadata : dict
         Must include the frame ``width`` and ``height`` used for the in-bounds
         test.
@@ -1643,8 +1643,11 @@ def good_star_mask(eloy_table, metadata, *, min_snr=None):
     A star is "good" when it has a finite, positive net count and error, lies
     in-bounds (its pixel-center coordinate falls within
     ``[0, width - 0.5)`` in x and ``[0, height - 0.5)`` in y), has a finite,
-    nonnegative peak count, meets the minimum SNR floor, and is not flagged as
-    contaminated. This is the same predicate `eloy_to_starlist` uses to decide
+    nonnegative peak count, meets the minimum SNR floor, is not flagged as
+    contaminated, and is not flagged by any column the table's
+    ``meta["reject_flags"]`` names (the instrument star flags stamped by
+    `~bandaid.instruments.apply_star_flags`). A boolean column that is not
+    named there is ignored. This is the same predicate `eloy_to_starlist` uses to decide
     which rows reach the output StarList, so QA tooling can count good stars
     without rebuilding the StarList.
     """
@@ -1679,6 +1682,8 @@ def good_star_mask(eloy_table, metadata, *, min_snr=None):
         good &= eloy_table["snr"] >= threshold
     if "contaminated" in eloy_table.colnames:
         good &= ~eloy_table["contaminated"]
+    for name in eloy_table.meta.get("reject_flags", ()):
+        good &= ~np.asarray(eloy_table[name], dtype=bool)
     return np.asarray(good)
 
 
@@ -4305,8 +4310,9 @@ def calculate_l4_quantities(by_filter_data, egain):
     Returns
     -------
     astropy.table.Table
-        The L4 table: `_MASK_INDEPENDENT_COLUMNS` and the whole ``meta`` copied
-        from TR, plus the columns recombined from TR/TG/TB.
+        The L4 table: `_MASK_INDEPENDENT_COLUMNS`, any columns named in TR's
+        ``meta["reject_flags"]``, and the whole ``meta`` copied from TR, plus
+        the columns recombined from TR/TG/TB.
 
     Raises
     ------
@@ -4331,8 +4337,12 @@ def calculate_l4_quantities(by_filter_data, egain):
     if msg := _missing_rgb_channels(by_filter_data):
         raise ValueError(msg)
 
-    # Column-list selection returns a new table (data and meta copied).
-    final_data = by_filter_data["TR"][list(_MASK_INDEPENDENT_COLUMNS)]
+    # Column-list selection returns a new table (data and meta copied). The
+    # instrument star-flag columns named in meta["reject_flags"] are stamped
+    # identically on every channel, so they come across from TR like the
+    # mask-independent columns, keeping the copied reject_flags list valid.
+    tr = by_filter_data["TR"]
+    final_data = tr[[*_MASK_INDEPENDENT_COLUMNS, *tr.meta.get("reject_flags", ())]]
 
     # L4 total count is sum of the individual filter total counts
     final_data["tot_count"] = (
