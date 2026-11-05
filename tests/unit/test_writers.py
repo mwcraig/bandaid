@@ -112,6 +112,28 @@ class TestWriteStarlistSet:
             kept_x = [item.x for item in star_list.staritems]
             assert kept_x == [20.0]
 
+    def test_reject_flagged_row_absent_from_output(self, tmp_path, by_filter):
+        """A row flagged via ``meta["reject_flags"]`` is not written; others are."""
+        output_path = tmp_path / "frame1.star"
+        frame_result = by_filter()
+        unflagged = by_filter()
+        for table in frame_result.values():
+            table["core_replaced"] = [False, True]
+            table.meta["reject_flags"] = ("core_replaced",)
+
+        write_starlist_set(frame_result, output_path)
+        write_starlist_set(unflagged, tmp_path / "unflagged.star")
+
+        written = StarListSet.model_validate_json(output_path.read_text())
+        reference = StarListSet.model_validate_json(
+            (tmp_path / "unflagged.star").read_text()
+        )
+        for star_list, full_list in zip(
+            written.star_lists, reference.star_lists, strict=True
+        ):
+            # Row 0 is the unflagged star; row 1 is flagged.
+            assert star_list.staritems == full_list.staritems[:1]
+
     def test_all_faint_filter_dropped_not_the_frame(self, tmp_path, by_filter, caplog):
         """
         A filter with no surviving stars is dropped; the rest still write.
