@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from _helpers import _dummy_prep, _stub_load_frame
+from _helpers import _batch_metadata, _dummy_prep, _stub_load_frame
 from astropy.coordinates import SkyCoord
 
 from bandaid import scripts
@@ -136,10 +136,15 @@ class TestPhotometerFrames:
 
         cnn_sentinel = object()
         expected = sorted(str(p.resolve()) for p in night.glob("*.fit"))
-        # A batch prepared for the (flagger-free) bundled Seestar50.
-        prep_sentinel = self._prep(
-            PhotometryConfig(instrument=load_instrument("Seestar50")),
-            auto_detected=True,
+        # A batch prepared for the bundled Seestar50, whose core-replaced
+        # flagger builds its state from the first frames of the batch and
+        # reads its saturation ceiling from the prep frame's metadata.
+        prep_sentinel = dataclasses.replace(
+            self._prep(
+                PhotometryConfig(instrument=load_instrument("Seestar50")),
+                auto_detected=True,
+            ),
+            prep_metadata={**_batch_metadata(), "height": 4, "width": 4},
         )
         # A header that detects to the bundled Seestar50.
         frame_sentinel = scripts.LoadedFrame(
@@ -188,10 +193,14 @@ class TestPhotometerFrames:
             user_specific_metadata={"observer": "MWC"},
         )
         process_call = process_batch.call_args
-        assert process_call.args == (expected, prep_sentinel)
+        # process_batch gets the prep with the star-flag state built from both
+        # frames of the batch; the first is the same load as the prep frame.
+        assert process_call.args[0] == expected
+        assert set(process_call.args[1].star_flag_state) == {"seestar_core_replaced"}
+        assert process_call.args[1].radecs is prep_sentinel.radecs
         # The first frame is opened once and the same load handed to both
-        # stages, so the whole run opens each frame exactly once (#44).
-        load_frame.assert_called_once_with(expected[0])
+        # stages and the state; the second is read once for the state.
+        assert [call.args[0] for call in load_frame.call_args_list] == expected
         kwargs = process_call.kwargs
         assert kwargs["first_frame"] is frame_sentinel
         assert kwargs["user_specific_metadata"] == {"observer": "MWC"}

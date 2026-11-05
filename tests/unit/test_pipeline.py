@@ -2541,7 +2541,8 @@ class TestProcessOneImage:
             _REF_RADECS,
             None,
             {"TR": None},
-            config=PhotometryConfig(),
+            # The stub table has no columns for the Seestar50 star flagger.
+            config=PhotometryConfig(instrument_star_flags=False),
             build_l4=False,
         )
 
