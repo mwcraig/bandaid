@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Seestar S50 stars whose core pixel the camera overwrote are detected and
+    dropped from every filter of that frame; `--no-instrument-flags`
+    (`instrument_star_flags=False`) switches this off, and the QA manifest's new
+    `n_core_replaced` column counts them (`FrameResult.schema_version` is now 2).
 - `prepare_batch` takes `user_specific_metadata` and, before the Gaia query,
     stops with a `FrameMetadataError` naming any output-schema key (`observer`,
     `site_elev`, ...) that is missing or null on the prep frame, instead of

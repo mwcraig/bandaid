@@ -24,24 +24,25 @@ first frame, in batch order, that the preparation accepts seeds the
 once-per-batch preparation. Output naming is described in
 [Output files](outputs.md).
 
-| Option                             | Default          | Meaning                                                                                                |
-| ---------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------ |
-| `-o, --output-dir DIRECTORY`       | `.`              | Directory for the `.star` files and QA manifest.                                                       |
-| `--instrument NAME`                | auto-detect      | Bundled or registered instrument profile.                                                              |
-| `--profile FILE`                   | none             | Instrument-profile JSON file (alternative to `--instrument`).                                          |
-| `--config FILE`                    | none             | Full `PhotometryConfig` JSON file.                                                                     |
-| `--gaia-mag-limit FLOAT`           | config value     | Overrides `source_selection.gaia_mag_limit`.                                                           |
-| `--min-snr FLOAT`                  | config value     | Overrides `source_selection.min_snr`.                                                                  |
-| `--weights FILE`                   | downloaded       | Ballet centroider weights; omitted means the default weights are downloaded.                           |
-| `--user-metadata FILE`             | none             | JSON object of per-frame metadata overrides (see [Instrument profiles](instrument_profiles.md)).       |
-| `--forced-targets FILE`            | none             | CSV/ECSV with `ra`, `dec` columns (case-insensitive; optional `name` is ignored).                      |
-| `--build-l4 / --no-build-l4`       | `--build-l4`     | Also produce the full-frame `L4` luminance channel.                                                    |
-| `--fail-fast / --no-fail-fast`     | `--no-fail-fast` | Re-raise unexpected per-frame errors instead of skipping the frame (write errors always stop the run). |
-| `--output-format TEXT`             | `starlist`       | Registered output writer.                                                                              |
-| `--output-suffix TEXT`             | `.star`          | Suffix of the per-frame output files.                                                                  |
-| `--qa-manifest / --no-qa-manifest` | `--qa-manifest`  | Write `qa_manifest.csv`.                                                                               |
-| `-v, --verbose`                    | off              | `-v` streams per-frame progress (INFO); `-vv` adds per-stage DEBUG detail.                             |
-| `--log-file FILE`                  | none             | Also write log records to this file, at the terminal's level.                                          |
+| Option                                       | Default           | Meaning                                                                                                                                                                                                           |
+| -------------------------------------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-o, --output-dir DIRECTORY`                 | `.`               | Directory for the `.star` files and QA manifest.                                                                                                                                                                  |
+| `--instrument NAME`                          | auto-detect       | Bundled or registered instrument profile.                                                                                                                                                                         |
+| `--profile FILE`                             | none              | Instrument-profile JSON file (alternative to `--instrument`).                                                                                                                                                     |
+| `--config FILE`                              | none              | Full `PhotometryConfig` JSON file.                                                                                                                                                                                |
+| `--gaia-mag-limit FLOAT`                     | config value      | Overrides `source_selection.gaia_mag_limit`.                                                                                                                                                                      |
+| `--min-snr FLOAT`                            | config value      | Overrides `source_selection.min_snr`.                                                                                                                                                                             |
+| `--weights FILE`                             | downloaded        | Ballet centroider weights; omitted means the default weights are downloaded.                                                                                                                                      |
+| `--user-metadata FILE`                       | none              | JSON object of per-frame metadata overrides (see [Instrument profiles](instrument_profiles.md)).                                                                                                                  |
+| `--forced-targets FILE`                      | none              | CSV/ECSV with `ra`, `dec` columns (case-insensitive; optional `name` is ignored).                                                                                                                                 |
+| `--build-l4 / --no-build-l4`                 | `--build-l4`      | Also produce the full-frame `L4` luminance channel.                                                                                                                                                               |
+| `--instrument-flags / --no-instrument-flags` | config value (on) | Run the instrument's per-star rejection flags (Seestar: stars whose core pixel the camera overwrote); `--no-instrument-flags` disables them. Without either, a `--config` file's `instrument_star_flags` applies. |
+| `--fail-fast / --no-fail-fast`               | `--no-fail-fast`  | Re-raise unexpected per-frame errors instead of skipping the frame (write errors always stop the run).                                                                                                            |
+| `--output-format TEXT`                       | `starlist`        | Registered output writer.                                                                                                                                                                                         |
+| `--output-suffix TEXT`                       | `.star`           | Suffix of the per-frame output files.                                                                                                                                                                             |
+| `--qa-manifest / --no-qa-manifest`           | `--qa-manifest`   | Write `qa_manifest.csv`.                                                                                                                                                                                          |
+| `-v, --verbose`                              | off               | `-v` streams per-frame progress (INFO); `-vv` adds per-stage DEBUG detail.                                                                                                                                        |
+| `--log-file FILE`                            | none              | Also write log records to this file, at the terminal's level.                                                                                                                                                     |
 
 Rules:
 
