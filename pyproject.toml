@@ -41,9 +41,10 @@ dependencies = [
     "eloy @ git+https://github.com/mwcraig/eloy@a056c91a945772e0520a89695f8fcd16fda36870",
     # "eloy @ git+https://github.com/lgrcia/eloy@0b53f23f90b12b33ef21473cbb1a785a819aaeeb",
     "huggingface_hub>=1.0",
-    # The released photutils. The `photutils-dev` extra below swaps in a build
-    # from a pinned commit on photutils main.
-    "photutils",
+    # The released photutils; 3.1 is the first release with the compiled
+    # sigma-clipped ApertureStats. The `photutils-dev` extra below swaps in a
+    # build from a pinned commit on photutils main.
+    "photutils>=3.1",
     "pydantic>=2",
     "scikit-image",
     "scipy",
@@ -58,15 +59,14 @@ dependencies = [
 jax = ["jax", "flax"]
 
 # Opt in to photutils main, built from the commit pinned in [tool.uv.sources],
-# for its compiled sigma-clipped ApertureStats (~26 % less time per frame,
-# output differs only at the last bit). For developers only: the default
+# to test against unreleased photutils. For developers only: the default
 # install stays on the released photutils, which is what pip and the browser
 # build use. Under uv the two extras are declared conflicting so that
 # `uv sync` without `--extra photutils-dev` resolves photutils from PyPI; the
 # `photutils-release` extra exists only as the other side of that conflict and
-# never needs to be requested. Drop both, the conflict and the sources once
-# photutils 3.1 is released. pip ignores [tool.uv] and installs the release
-# for both extras.
+# never needs to be requested. pip ignores [tool.uv] and installs the release
+# for both extras. The pinned commit must build as a version that satisfies
+# the photutils floor above.
 photutils-release = ["photutils"]
 photutils-dev = ["photutils"]
 
@@ -155,7 +155,7 @@ url = "https://pypi.org/simple"
 # and content-addressed. Move it by hand when a newer photutils main is wanted.
 [tool.uv.sources]
 photutils = [
-    { git = "https://github.com/astropy/photutils", rev = "a6acb06a2cc1f910548ab60bd572b6dfaf865cc7", extra = "photutils-dev" },
+    { git = "https://github.com/astropy/photutils", rev = "02b7355a412789f2a226dab52ac71d7ad6ed71ff", extra = "photutils-dev" },
     { index = "pypi", extra = "photutils-release" },
 ]
 
