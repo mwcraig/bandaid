@@ -2,7 +2,7 @@
 Unit tests for the Seestar core-replacement flags in :mod:`bandaid.seestar`.
 
 The Seestar S50 hot-pixel correction sometimes overwrites a bright star's core
-pixel with ``floor`` of the mean of its four same-colour axis neighbours at
+pixel with ``floor`` of the mean of its four same-color axis neighbors at
 +-2 px. On the raw integer frame that leaves ``0 <= S4 - 4c <= 3``. These tests
 build small deterministic uint16 frames with Gaussian stars, plant such
 replacements by hand, and pin which star-channels get flagged.
@@ -11,11 +11,13 @@ replacements by hand, and pin which star-channels get flagged.
 import logging
 import re
 import tracemalloc
+import warnings
 
 import numpy as np
 import pytest
 
 from bandaid import seestar
+from bandaid.image2sl_qt import generate_bayer_masks
 from bandaid.seestar import (
     MIN_PEAK_ABOVE_SKY_ADU,
     STATIC_MAP_FRAMES,
@@ -54,7 +56,7 @@ def _frame(
     """
     Build a deterministic frame: textured sky plus Gaussian stars.
 
-    ``stars`` holds ``(x, y)`` centres. The sky gets a fixed-seed integer
+    ``stars`` holds ``(x, y)`` centers. The sky gets a fixed-seed integer
     texture rather than a flat value: a flat sky has ``S4 - 4c == 0`` at every
     pixel, which would make every sky pixel an exact "replacement".
     """
@@ -66,8 +68,8 @@ def _frame(
     return np.rint(img).astype(dtype)
 
 
-def _neighbour_coords(frame, x, y):
-    """Axis neighbours at +-2 px of ``(x, y)``, clipped to the frame."""
+def _neighbor_coords(frame, x, y):
+    """Axis neighbors at +-2 px of ``(x, y)``, clipped to the frame."""
     ny, nx = frame.shape
     return [
         (min(max(y + dy, 0), ny - 1), min(max(x + dx, 0), nx - 1))
@@ -79,40 +81,34 @@ def _plant(frame, x, y):
     """
     Overwrite pixel ``(x, y)`` the way the camera does.
 
-    The value is ``floor`` of the mean of the four axis neighbours at +-2 px.
-    Near the frame edge the neighbours are clipped to the frame, so the planted
+    The value is ``floor`` of the mean of the four axis neighbors at +-2 px.
+    Near the frame edge the neighbors are clipped to the frame, so the planted
     value is one that a window gathered with clipped indices would read as an
     exact hit; the edge rule, not luck, must keep such pixels from counting.
-    A clipped neighbour can land on the pixel itself, in which case the pixel's
-    own value contributes and the remaining neighbours are averaged instead.
+    A clipped neighbor can land on the pixel itself, in which case the pixel's
+    own value contributes and the remaining neighbors are averaged instead.
     """
-    coords = _neighbour_coords(frame, x, y)
+    coords = _neighbor_coords(frame, x, y)
     others = [frame[c] for c in coords if c != (y, x)]
     frame[y, x] = sum(int(v) for v in others) // len(others)
     return frame
 
 
 def _set_residual(frame, x, y, d):
-    """Make ``S4 - 4c`` at ``(x, y)`` exactly ``d`` by adjusting the north neighbour."""
-    _, s, w, e = (int(frame[c]) for c in _neighbour_coords(frame, x, y))
+    """Make ``S4 - 4c`` at ``(x, y)`` exactly ``d`` by adjusting the north neighbor."""
+    _, s, w, e = (int(frame[c]) for c in _neighbor_coords(frame, x, y))
     frame[y - 2, x] = 4 * int(frame[y, x]) + d - (s + w + e)
     return frame
 
 
-def _bayer_masks(pattern):
+def _bayer_masks(pattern, shape=SHAPE):
     """
-    Mirror ``generate_bayer_masks`` for a top-down frame with no offsets.
+    Build the pipeline's Bayer masks for a top-down frame with no offsets.
 
     True means "not this channel", as in the pipeline.
     """
-    masks = {}
-    for color in "RBG":
-        mask = np.ones(SHAPE, dtype=bool)
-        for k, (dy, dx) in enumerate(((0, 0), (0, 1), (1, 0), (1, 1))):
-            if pattern[k] == color:
-                mask[dy::2, dx::2] = False
-        masks["T" + color] = mask
-    return masks
+    metadata = {"bayerpat": pattern, "roworder": "top-down", "ybayroff": 0}
+    return generate_bayer_masks(shape, metadata)
 
 
 def _gates(n, peak=STAR_PEAK + SKY, sky=SKY):
@@ -131,7 +127,7 @@ def _flags(
     return core_replaced_flags(
         raw,
         centroids,
-        _bayer_masks(pattern),
+        _bayer_masks(pattern, raw.shape),
         peak_count,
         bkgd_count,
         saturated_adu=SATURATED_ADU,
@@ -172,7 +168,7 @@ def test_residual_exact_values_and_border_sentinel():
 
 @pytest.mark.parametrize("dtype", [np.uint16, np.int32, np.int64, np.uint8])
 def test_residual_matches_direct_sum(dtype):
-    """The vectorised residual matches a direct per-pixel sum for any integer dtype."""
+    """The vectorized residual matches a direct per-pixel sum for any integer dtype."""
     rng = np.random.default_rng(1)
     raw = rng.integers(0, 200, size=(7, 9)).astype(dtype)
     wide = raw.astype(np.int64)
@@ -235,7 +231,7 @@ STATIC_PIXELS = {
 }
 
 # The residuals S4 - 4c planted at each pixel, frame by frame. A replaced pixel
-# differs from the neighbour mean by a fixed amount of any size, so it is the
+# differs from the neighbor mean by a fixed amount of any size, so it is the
 # constancy of the residual that marks it.
 STATIC_KEPT = {"large_offset", "small_negative", "exact"}
 
@@ -288,7 +284,7 @@ def test_static_map_keeps_pixels_with_a_constant_residual(k):
 
     A large constant offset and a small negative one are kept, as is an exact
     replacement; a residual that jumps or wanders by tens of ADU is dropped, and
-    so are a dead and a hot pixel, whose residuals follow their neighbours'
+    so are a dead and a hot pixel, whose residuals follow their neighbors'
     noise however far from zero they are.
     """
     result = _static_map(_static_frames(k=k))
@@ -316,7 +312,7 @@ def test_static_map_proportional_residual_on_a_drifting_sky():
 
     The sky ramps from 500 to 2500 ADU across the batch; the planted residual is
     4 % of it, so the raw residual scatters by more than the threshold but the
-    sky-normalised one does not.
+    sky-normalized one does not.
     """
     k = STATIC_MAP_FRAMES
     skies = np.linspace(500, 2500, k).round().astype(int)
@@ -330,6 +326,34 @@ def test_static_map_proportional_residual_on_a_drifting_sky():
         frames.append(f)
     result = _static_map(frames)
     np.testing.assert_array_equal(np.argwhere(result).tolist(), [[y, x]])
+
+
+def test_static_map_additive_residual_on_a_drifting_sky(caplog):
+    """
+    A fixed residual is kept even when the sky drifts.
+
+    The sky ramps from 500 to 2500 ADU across the batch; the planted residual is
+    a constant 300 ADU, so the raw residual does not scatter but the
+    sky-normalized one does, by far more than the threshold.
+    """
+    k = STATIC_MAP_FRAMES
+    skies = np.linspace(500, 2500, k).round().astype(int)
+    x, y = STATIC_PIXELS["large_offset"]
+    d = 300
+    normalized = d * np.median(skies) / skies
+    threshold = max(STATIC_SCATTER_FLOOR_ADU, STATIC_SCATTER_SKY_FRACTION * 2500)
+    assert _residual_scatter(normalized) > threshold
+    frames = []
+    for i, sky in enumerate(skies):
+        f = _frame(stars=(), seed=250 + i, noise=int(sky) // 10, sky=int(sky))
+        _set_residual(f, x, y, d=d)
+        frames.append(f)
+    with caplog.at_level(logging.DEBUG, logger="bandaid.seestar"):
+        result = _static_map(frames)
+    np.testing.assert_array_equal(np.argwhere(result).tolist(), [[y, x]])
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    info = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert "diagonal control 0)" in info[0].getMessage()
 
 
 BRIGHT_SKY = 2500
@@ -352,7 +376,7 @@ def test_static_map_threshold_scales_with_bright_sky(levels, kept):
     A residual alternating +-16 ADU has a robust scatter of about 24 ADU: inside
     the 25 ADU threshold of a 2500 ADU sky, outside the 20 ADU floor of a dark
     one. The planted pixel is in the (0, 0) phase, and only that phase's sky
-    sets its threshold: bright neighbouring phases do not loosen it.
+    sets its threshold: bright neighboring phases do not loosen it.
     """
     x, y = STATIC_PIXELS["large_offset"]
     planted = [16 if i % 2 else -16 for i in range(STATIC_MAP_FRAMES)]
@@ -376,15 +400,14 @@ def test_static_map_logs_both_counts_at_info(caplog):
     info = [r for r in caplog.records if r.levelno == logging.INFO]
     assert len(info) == 1
     message = info[0].getMessage()
-    assert f"{len(STATIC_KEPT)} pixels" in message
-    assert "diagonal control 0" in message
+    assert re.search(rf"\b{len(STATIC_KEPT)} pixels \(diagonal control 0\)$", message)
 
 
 def test_static_map_flat_sky_fails_the_diagonal_control(caplog):
     """
     On a noise-free sky every residual is constant, so the map is switched off.
 
-    The diagonal neighbours, which no firmware uses, match as often as the axis
+    The diagonal neighbors, which no firmware uses, match as often as the axis
     ones; the WARNING names both counts and the map is empty.
     """
     frames = [_frame(stars=(), noise=0) for _ in range(STATIC_MAP_FRAMES)]
@@ -400,12 +423,12 @@ def test_static_map_flat_sky_fails_the_diagonal_control(caplog):
 
 
 # Diagonal-only matches for the control: (x, y) pixels, well clear of the
-# STATIC_PIXELS and of each other's neighbours.
+# STATIC_PIXELS and of each other's neighbors.
 DIAGONAL_PIXELS = [(x, y) for y in (46, 54) for x in range(6, 60, 6)]
 
 
 def _set_diagonal_residual(frame, x, y, d):
-    """Make the diagonal residual at ``(x, y)`` exactly ``d`` via its NW neighbour."""
+    """Make the diagonal residual at ``(x, y)`` exactly ``d`` via its NW neighbor."""
     others = sum(int(frame[y + dy, x + dx]) for dy, dx in ((-2, 2), (2, -2), (2, 2)))
     frame[y - 2, x - 2] = 4 * int(frame[y, x]) + d - others
     return frame
@@ -446,14 +469,14 @@ def test_static_map_diagonal_control_pixel_limit(caplog, n_diag, switched_off):
 
 # A frame tall and wide enough for an axis list of more than 1000 pixels: a
 # lattice 4 px apart in x and 6 px in y (so that no planted pixel's adjusted
-# north neighbour is another's neighbour) over the upper rows, and room below
+# north neighbor is another's neighbor) over the upper rows, and room below
 # it for diagonal matches.
 LONG_LIST_SHAPE = (240, 200)
 LONG_LIST_PIXELS = [(x, y) for y in range(4, 180, 6) for x in range(4, 197, 4)]
 LONG_LIST_DIAGONAL = [(x, y) for y in (200, 210, 220) for x in range(8, 192, 8)]
 
 
-@pytest.mark.parametrize("extra", [0, 1])
+@pytest.mark.parametrize("extra", [0, 1], ids=["at-limit", "over-limit"])
 def test_static_map_diagonal_control_fraction_limit(caplog, extra):
     """
     On a long axis list the limit is 1 % of it, not 10 pixels.
@@ -476,12 +499,14 @@ def test_static_map_diagonal_control_fraction_limit(caplog, extra):
         result = _static_map(frames)
     if extra:
         assert not result.any()
-        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-        counts = re.findall(r"\d+", warnings[0].getMessage())
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warning_records) == 1
+        counts = re.findall(r"\d+", warning_records[0].getMessage())
         assert counts == [str(n_diag), str(n_axis)]
     else:
         expected = sorted([y, x] for x, y in LONG_LIST_PIXELS)
         np.testing.assert_array_equal(np.argwhere(result).tolist(), expected)
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
 # Levels of the four 2x2 phases, indexed [row % 2][column % 2], all distinct.
@@ -509,19 +534,19 @@ def _phase_frame(levels, *, seed, noise=STATIC_NOISE, shape=SHAPE):
     Build a textured sky whose four 2x2 phases sit on their own levels.
 
     ``levels[py][px]`` is the sky of the pixels at frame rows ``py`` and columns
-    ``px`` modulo 2, as on a Bayer sensor under a coloured sky.
+    ``px`` modulo 2, as on a Bayer sensor under a colored sky.
     """
     f = _frame(stars=(), seed=seed, noise=noise, sky=0, dtype=np.int32, shape=shape)
     f += np.tile(np.asarray(levels, dtype=np.int32), (shape[0] // 2, shape[1] // 2))
     return f.astype(np.uint16)
 
 
-def test_static_map_proportional_residual_under_a_changing_sky_colour():
+def test_static_map_proportional_residual_under_a_changing_sky_color():
     """
-    A residual proportional to its own phase's sky is kept when the colour shifts.
+    A residual proportional to its own phase's sky is kept when the color shifts.
 
     Over the batch the (0, 0) phase brightens from 500 to 3000 ADU while the
-    (1, 1) phase fades from 2500 to 500, as when the sky colour changes in
+    (1, 1) phase fades from 2500 to 500, as when the sky color changes in
     twilight. The planted residual at a (1, 1) pixel is 6 % of its own phase's
     sky. It scatters beyond the ceiling raw, and also when scaled by a single
     sky per frame, the brightest phase's; scaled by its own phase's sky, it is
@@ -553,7 +578,7 @@ def test_static_map_dark_phase_is_left_to_the_diagonal_control(caplog):
     """
     A Bayer phase whose sky is 0 is tested on its raw residual alone.
 
-    On some units one colour plane reads 0 on a dark sky. There is no sky to
+    On some units one color plane reads 0 on a dark sky. There is no sky to
     scale by, and the plane is flat, so every residual in it is constant on
     both kernels; the diagonal control sees them and switches the map off.
     """
@@ -571,6 +596,45 @@ def test_static_map_dark_phase_is_left_to_the_diagonal_control(caplog):
     n_dark = 30 * 30
     counts = re.findall(r"\d+", warnings[0].getMessage())
     assert counts == [str(n_dark)] * 2
+
+
+def test_static_map_phase_dark_in_one_frame(caplog):
+    """
+    A phase whose sky is 0 in a single frame is not scaled by that 0.
+
+    One color plane reads 0 in the first frame only. Constant residuals in
+    that phase, an additive offset and an exact replacement (residual 0, also
+    in the dark frame), are kept on their raw scatter, with no division by the
+    zero sky; scaling by it would make the first frame's scaled residual
+    infinite, or NaN where the residual is 0. A residual proportional to the
+    drifting sky of another phase is still kept on its scaled scatter, and the
+    map is not switched off.
+    """
+    k = STATIC_MAP_FRAMES
+    ramp = np.linspace(500, 2500, k).round().astype(int)
+    # (x, y): (1, 0)-phase pixels for the additive residual and the exact
+    # replacement, a (0, 0)-phase one for the proportional residual.
+    additive = (10, 11)
+    exact = (30, 11)
+    proportional = (20, 20)
+    frames = []
+    for i in range(k):
+        f = _phase_frame(((ramp[i], SKY), (SKY, SKY)), seed=950 + i)
+        if i == 0:
+            f[1::2, 0::2] = 0
+        _set_residual(f, *additive, d=300)
+        _set_residual(f, *exact, d=0)
+        _set_residual(f, *proportional, d=round(0.04 * ramp[i]))
+        frames.append(f)
+    with (
+        caplog.at_level(logging.DEBUG, logger="bandaid.seestar"),
+        warnings.catch_warnings(),
+    ):
+        warnings.simplefilter("error", RuntimeWarning)
+        result = _static_map(frames)
+    expected = sorted([y, x] for x, y in (additive, exact, proportional))
+    np.testing.assert_array_equal(np.argwhere(result).tolist(), expected)
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
 @pytest.mark.parametrize(("n_broken", "kept"), [(9, True), (11, False)])
@@ -594,8 +658,8 @@ def test_static_map_tolerates_a_minority_of_outlier_frames(n_broken, kept):
     np.testing.assert_array_equal(np.argwhere(result).tolist(), expected)
 
 
-# (x, y) centre of a stationary saturated star, clear of the STATIC_PIXELS.
-PLATEAU_CENTRE = (48, 48)
+# (x, y) center of a stationary saturated star, clear of the STATIC_PIXELS.
+PLATEAU_CENTER = (48, 48)
 
 
 @pytest.mark.parametrize("half", [3, 4])
@@ -607,7 +671,7 @@ def test_static_map_ignores_a_stationary_saturated_core(caplog, half):
     both kernels. A 7x7 plateau would add 9 pixels to the map; a 9x9 one adds
     25 diagonal matches and would switch the map off.
     """
-    cx, cy = PLATEAU_CENTRE
+    cx, cy = PLATEAU_CENTER
     frames = _static_frames(k=STATIC_MAP_FRAMES)
     for f in frames:
         f[cy - half : cy + half + 1, cx - half : cx + half + 1] = 65535
@@ -627,7 +691,7 @@ def test_static_map_saturation_mask_needs_half_the_frames(n_saturated, kept):
     """
     A pixel is masked when its kernel reaches saturation in half the frames.
 
-    A diagonal neighbour of a constant-residual pixel is set to
+    A diagonal neighbor of a constant-residual pixel is set to
     `SATURATED_ADU`, which leaves its axis residual alone: a star passing
     by in a minority of the frames costs a real list pixel nothing, one that
     sits there in half of them masks it.
@@ -655,7 +719,7 @@ def test_static_map_too_few_frames_logs_info_and_is_empty(caplog, k, count):
     Below the minimum frame count the map is empty and one INFO line says so.
 
     A short batch (a single frame on the command line, say) is ordinary, so
-    nothing is logged at WARNING; the INFO line names the count, pluralised.
+    nothing is logged at WARNING; the INFO line names the count, pluralized.
     """
     frames = _static_frames(k=k)
     with caplog.at_level(logging.DEBUG, logger="bandaid.seestar"):
@@ -676,7 +740,7 @@ TALL_SHAPE = (2 * 32 + 7 + 4, 64)
 # (x, y) of the constant-residual pixels in TALL_SHAPE frames. Interior row
 # y - 2 falls in block (y - 2) // 32: rows 2..33 are the first block, 34..65
 # the second and 66..72 the partial third. Columns differ so that no pixel's
-# planted neighbour is another's neighbour.
+# planted neighbor is another's neighbor.
 BLOCK_PIXELS = (
     (10, 10),  # first block
     (20, 33),  # last row of the first block
@@ -743,10 +807,19 @@ def test_static_map_never_holds_every_residual_plane():
     assert peak < full_stack / 2
 
 
-def test_static_map_float_frames_are_all_false():
-    """Float frames give an empty static map."""
+def test_static_map_float_frames_are_all_false(caplog):
+    """Float frames give an empty static map, and one INFO line says why."""
     frames = _static_frames(dtype=np.float64)
-    np.testing.assert_array_equal(_static_map(frames), np.zeros(SHAPE, dtype=bool))
+    with caplog.at_level(logging.DEBUG, logger="bandaid.seestar"):
+        result = _static_map(frames)
+    np.testing.assert_array_equal(result, np.zeros(SHAPE, dtype=bool))
+    info = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.INFO and r.name == "bandaid.seestar"
+    ]
+    assert len(info) == 1
+    assert "raw integer frames" in info[0].getMessage()
 
 
 # --------------------------------------------------------------------------
@@ -774,12 +847,12 @@ def test_replaced_core_flags_only_its_channel(pattern, x, y, channel):
     _assert_flags(flags, {ch: [ch == channel] for ch in CHANNELS})
 
 
-@pytest.mark.parametrize("centre", [(32.0, 30.0), (32.49, 30.49), (32.5, 29.5)])
+@pytest.mark.parametrize("center", [(32.0, 30.0), (32.49, 30.49), (32.5, 29.5)])
 @pytest.mark.parametrize("pattern", ["RGGB", "GRBG"])
-def test_untouched_star_not_flagged(centre, pattern):
+def test_untouched_star_not_flagged(center, pattern):
     """A star with no replacement is never flagged."""
-    raw = _frame(stars=(centre,))
-    _assert_flags(_flags(raw, [centre], pattern), {ch: [False] for ch in CHANNELS})
+    raw = _frame(stars=(center,))
+    _assert_flags(_flags(raw, [center], pattern), {ch: [False] for ch in CHANNELS})
 
 
 @pytest.mark.parametrize(
@@ -809,20 +882,31 @@ def _channel_of(pattern, x, y):
 
 
 @pytest.mark.parametrize(
-    ("centre", "pixel"),
+    ("center", "pixel"),
     [
         # Centroid just short of a pixel boundary; replacement at its nearest pixel.
         ((32.49, 30.49), (32, 30)),
         # Nearest pixel is 33, but the replaced pixel 32 is still within the core.
         ((32.6, 30.0), (32, 30)),
         ((31.5, 30.5), (32, 31)),
+        # rint(33.5) is 34, so the replaced pixel is 2 px from the rounded
+        # centroid but exactly 1.5 px from the true one: the radius is inclusive.
+        ((33.5, 30.0), (32, 30)),
     ],
 )
-def test_sub_pixel_centroid(centre, pixel):
+def test_sub_pixel_centroid(center, pixel):
     """Sub-pixel centroids near pixel boundaries still find the replaced pixel."""
-    raw = _plant(_frame(stars=(centre,)), *pixel)
+    raw = _plant(_frame(stars=(center,)), *pixel)
     channel = _channel_of("RGGB", *pixel)
-    _assert_flags(_flags(raw, [centre]), {ch: [ch == channel] for ch in CHANNELS})
+    _assert_flags(_flags(raw, [center]), {ch: [ch == channel] for ch in CHANNELS})
+
+
+def test_sub_pixel_centroid_just_outside_core():
+    """A replacement just over 1.5 px from a sub-pixel centroid is not flagged."""
+    # sqrt(1.5**2 + 1**2) is about 1.8 px.
+    center, pixel = (33.5, 30.0), (32, 31)
+    raw = _plant(_frame(stars=(center,)), *pixel)
+    _assert_flags(_flags(raw, [center]), {ch: [False] for ch in CHANNELS})
 
 
 def test_several_stars_are_flagged_independently():
@@ -854,6 +938,27 @@ def test_brightness_and_saturation_gates(peak, sky, expected):
     raw = _plant(_frame(), 32, 30)
     flags = _flags(raw, [(32.0, 30.0)], peak=peak, sky=sky)
     _assert_flags(flags, {ch: [expected and ch == "TR"] for ch in CHANNELS})
+
+
+def test_unsigned_gate_columns_peak_below_sky():
+    """
+    uint16 gate columns with the peak below the sky do not wrap round.
+
+    ``400 - 500`` in uint16 is 65436, which would clear the brightness gate; the
+    star must stay unflagged even with a replaced core.
+    """
+    raw = _plant(_frame(), 32, 30)
+    peak_count = {ch: np.full(1, 400, dtype=np.uint16) for ch in CHANNELS}
+    bkgd_count = {ch: np.full(1, SKY, dtype=np.uint16) for ch in CHANNELS}
+    flags = core_replaced_flags(
+        raw,
+        np.array([[32.0, 30.0]]),
+        _bayer_masks("RGGB"),
+        peak_count,
+        bkgd_count,
+        saturated_adu=SATURATED_ADU,
+    )
+    _assert_flags(flags, {ch: [False] for ch in CHANNELS})
 
 
 def test_gates_are_read_per_channel():
@@ -924,16 +1029,38 @@ def test_static_map_respects_gates():
         (63, 30, False),
         (30, 0, False),
         (30, 1, False),
+        (30, 2, True),
+        (30, 61, True),
         (30, 62, False),
         (30, 63, False),
     ],
 )
-def test_outer_edge_never_flagged(x, y, expected):
-    """Outer-2-px replacements never count, even when clipping makes them exact."""
+def test_outer_edge_rule(x, y, expected):
+    """
+    Outer-2-px replacements never count, even when clipping makes them exact.
+
+    Those just inside, 2 px from either edge on either axis, do.
+    """
     raw = _plant(_frame(stars=((x, y),)), x, y)
     channel = _channel_of("RGGB", x, y)
     flags = _flags(raw, [(x, y)])
     _assert_flags(flags, {ch: [expected and ch == channel] for ch in CHANNELS})
+
+
+# Rows fewer than columns, like the Seestar's 1080 x 1920 frames.
+WIDE_SHAPE = (40, 96)
+
+
+@pytest.mark.parametrize(
+    ("x", "y"),
+    [(80, 5), (80, 37), (93, 20)],
+    ids=["near-top", "near-bottom", "near-right"],
+)
+def test_non_square_frame(x, y):
+    """On a frame wider than it is tall, a replaced core near an edge is flagged."""
+    raw = _plant(_frame(stars=((x, y),), shape=WIDE_SHAPE), x, y)
+    channel = _channel_of("RGGB", x, y)
+    _assert_flags(_flags(raw, [(x, y)]), {ch: [ch == channel] for ch in CHANNELS})
 
 
 def test_static_map_on_outer_edge_never_flagged():
