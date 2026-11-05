@@ -10,6 +10,7 @@ from astropy.table import MaskedColumn, Table
 from astropy.utils.iers import conf as iers_conf
 from photutils.datasets import make_model_image, make_noise_image
 
+from bandaid import instruments
 from bandaid.image2sl_qt import generate_bayer_masks
 
 
@@ -274,6 +275,18 @@ def isolate_registry():
             registry.update(saved)
 
     return _isolate
+
+
+@pytest.fixture(autouse=True)
+def _isolate_star_flagger_registry(isolate_registry):
+    """
+    Restore the star-flagger registry after every test.
+
+    Tests in several modules register toy star flaggers; without this one would
+    leak into later tests that resolve a profile's flaggers.
+    """
+    with isolate_registry(instruments, "_STAR_FLAGGERS"):
+        yield
 
 
 @pytest.fixture

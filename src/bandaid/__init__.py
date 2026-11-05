@@ -66,10 +66,13 @@ from .exceptions import (
 )
 from .image2sl_qt import bayer_balance_image, generate_bayer_masks
 from .instruments import (
+    StarFlagger,
+    StarFlagInputs,
     available_instruments,
     detect_instrument,
     load_instrument,
     register_instrument,
+    register_star_flagger,
 )
 from .logging_setup import configure_logging
 from .photometry import (
