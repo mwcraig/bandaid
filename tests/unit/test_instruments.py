@@ -167,6 +167,13 @@ class TestLoadInstrument:
             EXPECTED_SEESTAR_PIXSCALE
         )
 
+    def test_seestar_names_the_core_replaced_flagger(self):
+        """The bundled Seestar50 profile runs the core-replacement flagger."""
+        profile = load_instrument("Seestar50")
+        assert profile.star_flaggers == ("seestar_core_replaced",)
+        assert star_flaggers_for(profile) == (("seestar_core_replaced", CORE_REPLACED),)
+        assert InstrumentProfile().star_flaggers == ()
+
     def test_unknown_instrument_raises(self):
         """An unregistered, unbundled name raises rather than guessing."""
         with pytest.raises(ValueError, match="NoSuchScope"):
