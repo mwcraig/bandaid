@@ -15,6 +15,7 @@ from astropy.table import Table
 
 import bandaid
 from bandaid import scripts
+from bandaid.config import InstrumentProfile
 from bandaid.exceptions import (
     CentroidPlaneError,
     FrameError,
@@ -24,6 +25,12 @@ from bandaid.exceptions import (
     TooFewStarsError,
     WCSScaleError,
     WCSSolveError,
+)
+from bandaid.instruments import (
+    StarFlagInputs,
+    StarFlagger,
+    apply_star_flags,
+    register_star_flagger,
 )
 from bandaid.scripts import (
     _CENTROID_MODEL_COLUMNS,
@@ -303,6 +310,68 @@ class TestProcessBatch:
         )
 
         assert list(results) == ["good.fits"]
+
+    def test_star_flagger_error_fails_only_its_frame(self, mocker, tmp_path, by_filter):
+        """
+        A flagger's ``flag`` that raises fails that frame, not the batch.
+
+        ``process_one_image`` is stubbed to run the real `apply_star_flags`, so
+        the flagger's error has the same path out of it as in a real run.
+        """
+
+        def flag(inputs, _state):
+            if inputs.metadata["file"] == "bad.fits":
+                msg = "flagger bug"
+                raise IndexError(msg)
+            return {"TR": np.zeros(len(inputs.centroids), dtype=bool)}
+
+        register_star_flagger("toy", StarFlagger(column="toy_flag", flag=flag))
+        profile = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+
+        def _process(file, *_args: object, **kwargs: object):
+            tables = by_filter()
+            n_stars = len(tables["TR"])
+            apply_star_flags(
+                tables,
+                StarFlagInputs(
+                    raw=np.zeros((4, 4), dtype=np.uint16),
+                    centroids=np.zeros((n_stars, 2)),
+                    bayer_masks=dict.fromkeys(tables),
+                    peak_count={},
+                    bkgd_count={},
+                    metadata={"file": file},
+                ),
+                profile,
+                state=kwargs["star_flag_state"],
+            )
+            return tables
+
+        mocker.patch("bandaid.scripts.process_one_image", side_effect=_process)
+
+        results = scripts.process_batch(
+            ["bad.fits", "good.fits"],
+            _dummy_prep(),
+            user_specific_metadata={},
+            output_dir=tmp_path,
+            write_frame=lambda _by_filter, path: path,
+            fail_fast=False,
+        )
+
+        assert list(results) == ["good.fits"]
+        statuses = {row["file"]: row["status"] for row in _read_manifest(tmp_path)}
+        assert statuses == {"bad.fits": "error: IndexError", "good.fits": "ok"}
+        bad = process_frame(
+            "bad.fits", _dummy_prep(), user_specific_metadata={}, fail_fast=False
+        )
+        assert bad.outcome is FrameOutcome.ERROR
+        assert isinstance(bad.error, IndexError)
+        with pytest.raises(IndexError, match="flagger bug"):
+            scripts.process_batch(
+                ["good.fits", "bad.fits"],
+                _dummy_prep(),
+                user_specific_metadata={},
+                fail_fast=True,
+            )
 
     def test_starless_frame_is_skipped_in_memory_mode(self, mocker, by_filter):
         """A frame with no usable star in any filter is omitted, as on disk."""
@@ -1288,6 +1357,29 @@ class TestProcessFrame:
 
         result = process_frame("a.fits", _dummy_prep(), user_specific_metadata={})
 
+        assert result.qa["n_core_replaced"] is None
+
+    def test_every_star_core_replaced_skips_the_frame_with_a_blank_count(
+        self, patched_process_one_image, by_filter
+    ):
+        """
+        A frame whose every star is flagged is skipped; its row has no counts.
+
+        The frame raises `NoUsableStarsError` after `qa_record_ok` has run, and
+        the row is rebuilt by `qa_record_skipped`, so ``n_core_replaced`` is
+        blank like every other stage count.
+        """
+        tables = by_filter()
+        for table in tables.values():
+            table["core_replaced"] = [True, True]
+            table.meta["reject_flags"] = ("core_replaced",)
+        patched_process_one_image(tables)
+
+        result = process_frame("a.fits", _dummy_prep(), user_specific_metadata={})
+
+        assert result.outcome is FrameOutcome.SKIPPED
+        assert isinstance(result.error, NoUsableStarsError)
+        assert result.qa["status"] == "skipped: NoUsableStarsError"
         assert result.qa["n_core_replaced"] is None
 
     def test_skipped_and_error_records_carry_core_replaced(self):

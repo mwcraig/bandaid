@@ -696,6 +696,23 @@ class TestApplyStarFlags:
         for table in tables.values():
             assert list(table["toy_flag"]) == [False, True, False, False]
 
+    @pytest.mark.parametrize(
+        "flags",
+        [True, np.array([True]), np.array([1, 3])],
+        ids=["scalar", "length-1", "index-array"],
+    )
+    def test_flags_not_one_per_star_raise(self, flags):
+        """A channel's flags must be one boolean per star, not a scalar or indices."""
+        register_star_flagger(
+            "toy", StarFlagger(column="toy_flag", flag=lambda _i, _s: {"TR": flags})
+        )
+        profile = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        tables = _channel_tables()
+        with pytest.raises(ValueError, match=r"'toy'.*'TR'.*\(4,\)"):
+            apply_star_flags(tables, _flag_inputs(), profile)
+        for table in tables.values():
+            assert "toy_flag" not in table.colnames
+
     def test_state_is_passed_by_flagger_name(self):
         """Each flagger receives its own prepared state, or None without one."""
         seen = {}

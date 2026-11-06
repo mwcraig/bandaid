@@ -526,7 +526,9 @@ class StarFlagInputs:
         channel's table.
     metadata : collections.abc.Mapping
         The frame's metadata (``tel_firmware``, ``system_id``, ...), as
-        resolved by the profile's ``header_map``.
+        resolved by the profile's ``header_map``, with the user's metadata
+        overrides applied: the same mapping `StarFlagger`'s ``prepare``
+        receives.
     """
 
     raw: np.ndarray
@@ -551,19 +553,27 @@ class StarFlagger:
         ``flag(inputs, state) -> {channel: bool array}``: given the frame's
         `StarFlagInputs` and the flagger's per-batch state (None when the
         batch prepared none), return one ``(N,)`` boolean array per channel,
-        True for a flagged star. A channel left out of the mapping flags
-        nothing.
+        one entry per star (``N = len(inputs.centroids)``), True for a
+        flagged star. A channel left out of the mapping flags nothing. An
+        exception fails that frame only, as an ``error`` result or re-raised
+        under ``fail_fast``; it does not stop the batch.
     prepare : collections.abc.Callable or None
         ``prepare(raw_frames, metadata) -> state``: build the per-batch state
         from a list of raw frame arrays and the metadata of the frame the
         batch is prepared from, with the user's metadata overrides applied:
         the same mapping a frame's ``StarFlagInputs.metadata`` carries (e.g.
         ``height``, ``width`` and ``largest_usable_adu_value``). Called once
-        per batch. None (default) for a
-        flagger that needs no state.
+        per batch, with the first ``n_state_frames`` of the batch's frames
+        that could be read, belong to the batch's instrument and have its
+        shape, so possibly fewer than ``n_state_frames``; never with none:
+        when no frame is usable ``prepare`` is not called and ``flag`` gets
+        None. It must not modify the arrays, since the first is the frame
+        photometry runs on next. An exception fails the batch as
+        `~bandaid.exceptions.BatchPrepError`. None (default) for a flagger
+        that needs no state.
     n_state_frames : int
-        How many raw frames, from the start of the batch, ``prepare`` wants.
-        Default 0 (no state).
+        How many raw frames, from the start of the batch, ``prepare`` wants;
+        must be positive for ``prepare`` to be called. Default 0 (no state).
     """
 
     column: str
@@ -714,7 +724,8 @@ def apply_star_flags(by_filter_data, inputs, profile, *, state=None):
     ValueError
         If `star_flaggers_for` rejects the profile, or a flagger's ``column``
         is already a column of a table that does not list it in
-        ``meta["reject_flags"]``.
+        ``meta["reject_flags"]``, or a flagger returns a channel's flags in
+        any shape but ``(n_stars,)``, one entry per star.
 
     Notes
     -----
@@ -750,8 +761,16 @@ def apply_star_flags(by_filter_data, inputs, profile, *, state=None):
     for name, flagger in flaggers:
         flags = flagger.flag(inputs, state.get(name))
         combined = np.zeros(n_stars, dtype=bool)
-        for channel_flags in flags.values():
-            combined |= np.asarray(channel_flags, dtype=bool)
+        for channel, channel_flags in flags.items():
+            channel_mask = np.asarray(channel_flags, dtype=bool)
+            if channel_mask.shape != (n_stars,):
+                msg = (
+                    f"star flagger {name!r} returned flags of shape "
+                    f"{channel_mask.shape} for channel {channel!r}; expected "
+                    f"({n_stars},), one entry per star"
+                )
+                raise ValueError(msg)
+            combined |= channel_mask
         for table in by_filter_data.values():
             table[flagger.column] = combined
             reject_flags = tuple(table.meta.get("reject_flags", ()))

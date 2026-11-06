@@ -824,6 +824,12 @@ def _star_flag_state(flaggers, state_frames, shape, metadata):
         ``n_state_frames`` of the frames of ``shape`` and ``metadata``; empty
         when no flagger asks for state or no frame has ``shape``.
 
+    Raises
+    ------
+    BatchPrepError
+        If a flagger's ``prepare`` raises; the message names the flagger and
+        the original is chained as ``__cause__``.
+
     Notes
     -----
     A frame of another shape is left out, with one WARNING that counts them:
@@ -848,10 +854,14 @@ def _star_flag_state(flaggers, state_frames, shape, metadata):
         )
     if not matching:
         return {}
-    return {
-        name: flagger.prepare(matching[: flagger.n_state_frames], metadata)
-        for name, flagger in stateful
-    }
+    state = {}
+    for name, flagger in stateful:
+        try:
+            state[name] = flagger.prepare(matching[: flagger.n_state_frames], metadata)
+        except Exception as exc:
+            msg = f"star flagger {name!r} failed to build its state: {exc}"
+            raise BatchPrepError(msg) from exc
+    return state
 
 
 def _load_state_frames(frames, prep, first_frame):
@@ -1033,6 +1043,9 @@ def prepare_batch(
         ``config.instrument`` is None and the first frame's header does not
         resolve to exactly one instrument profile (the message names that
         frame): `prepare_batch` is the one caller that treats that as fatal.
+        Also raised if a star flagger's ``prepare`` raises while building its
+        state from ``state_frames``: the message names the flagger and the
+        original is chained as ``__cause__``.
     FrameMetadataError
         If the prep frame's metadata has no parseable observation time
         (``obs_time``, usually mapped from ``DATE-OBS``), which is needed to
@@ -2595,7 +2608,9 @@ def photometer_frames(
         frame can prepare the batch, or the first frame's header does not resolve to
         exactly one registered instrument profile, among other causes.
         Re-raised here with a batch-level prefix, chaining the original as
-        ``__cause__``; the message names the frame concerned.
+        ``__cause__``; the message names the frame concerned. Also raised,
+        with the same prefix, if a star flagger's ``prepare`` fails to build
+        its per-batch state; that message names the flagger.
 
     Notes
     -----
@@ -2639,15 +2654,20 @@ def photometer_frames(
         msg = f"could not prepare the batch: {exc}"
         raise BatchPrepError(msg) from exc
     # The state frames are read only now, against the shape and instrument of
-    # the prepared batch, so none is held during the preparation or by a
+    # the prepared batch, so none is held during the preparation or by its
     # BatchPrepError's traceback. Built inline so no reference to them
-    # outlives the state.
-    star_flag_state = _star_flag_state(
-        _active_star_flaggers(prep.config, prep.config.instrument),
-        _load_state_frames(frames, prep, first_frame),
-        prep.shape,
-        prep.prep_metadata,
-    )
+    # outlives the state. A prepare that fails is a batch failure like the
+    # preparation's own, with the same prefix.
+    try:
+        star_flag_state = _star_flag_state(
+            _active_star_flaggers(prep.config, prep.config.instrument),
+            _load_state_frames(frames, prep, first_frame),
+            prep.shape,
+            prep.prep_metadata,
+        )
+    except BatchPrepError as exc:
+        msg = f"could not prepare the batch: {exc}"
+        raise BatchPrepError(msg) from exc
     if star_flag_state:
         prep = replace(prep, star_flag_state=star_flag_state)
     results = process_batch(

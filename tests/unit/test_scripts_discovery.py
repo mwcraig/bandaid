@@ -558,6 +558,44 @@ class TestPhotometerFrames:
         with pytest.raises(ValueError, match="typo"):
             scripts.photometer_frames(frames, config=config)
 
+    def test_failing_prepare_fails_the_run_before_any_frame(self, mocker, tmp_path):
+        """A flagger ``prepare`` that raises fails the batch with the prep prefix."""
+        frames, config = self._night_with_state_flagger(
+            tmp_path, n_frames=2, n_state_frames=2
+        )
+        cause = IndexError("index 9 is out of bounds")
+
+        def prepare(_frames, _metadata):
+            raise cause
+
+        register_star_flagger(
+            "toy",
+            StarFlagger(
+                column="core_replaced",
+                flag=lambda inputs, _state: {},
+                prepare=prepare,
+                n_state_frames=2,
+            ),
+            replace=True,
+        )
+        mocker.patch(
+            "bandaid.scripts._load_frame",
+            return_value=scripts.LoadedFrame(np.zeros((4, 4)), {}),
+        )
+        _, process_batch = self._patch_steps(mocker, self._prep(config))
+
+        with pytest.raises(
+            BatchPrepError,
+            match=(
+                r"^could not prepare the batch: star flagger 'toy' failed to "
+                r"build its state: index 9 is out of bounds$"
+            ),
+        ) as excinfo:
+            scripts.photometer_frames(frames, config=config)
+
+        assert excinfo.value.__cause__.__cause__ is cause
+        process_batch.assert_not_called()
+
     def test_no_state_frames_loaded_without_a_stateful_flagger(self, mocker, tmp_path):
         """A profile whose flaggers need no state costs no extra frame loads."""
         frames, config = self._night_with_state_flagger(

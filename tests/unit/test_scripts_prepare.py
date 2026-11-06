@@ -484,6 +484,38 @@ class TestPrepareBatch:
         assert prep.star_flag_state == {}
         assert not [r for r in caplog.records if r.name == "bandaid.seestar"]
 
+    def test_failing_prepare_raises_batch_prep_error(self, mocker):
+        """A flagger whose ``prepare`` raises fails the batch, naming the flagger."""
+        _patch_prep_with_shape(mocker)
+        cause = IndexError("index 9 is out of bounds")
+
+        def prepare(_frames, _metadata):
+            raise cause
+
+        register_star_flagger(
+            "toy",
+            StarFlagger(
+                column="core_replaced",
+                flag=_flag_nothing,
+                prepare=prepare,
+                n_state_frames=1,
+            ),
+        )
+        instrument = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+
+        with pytest.raises(
+            BatchPrepError, match="star flagger 'toy' failed to build its state"
+        ) as excinfo:
+            scripts.prepare_batch(
+                "frame1.fits",
+                cnn=object(),
+                config=PhotometryConfig(instrument=instrument),
+                state_frames=[np.zeros(_STATE_SHAPE, dtype=np.uint16)],
+            )
+
+        assert excinfo.value.__cause__ is cause
+        assert "index 9 is out of bounds" in str(excinfo.value)
+
     def test_unknown_flagger_fails_at_prep_without_state_frames(self, mocker):
         """A typo in ``star_flaggers`` fails ``prepare_batch``, state frames or not."""
         _patch_prep(mocker)
