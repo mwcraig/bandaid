@@ -9,8 +9,13 @@ $ uv sync
 ```
 
 `uv sync` installs the package editable together with the `dev` dependency group
-(tests, docs, style, types). Day-to-day tasks are [poe](https://poethepoet.natn.io/)
-tasks defined in `pyproject.toml`:
+(tests, docs, style, types); git must be installed, since two dependencies are
+fetched from GitHub. The `jax` and `photutils-dev` extras are opt-in:
+`uv sync --extra jax` or `uv sync --extra photutils-dev` (the latter swaps in
+the pinned photutils development commit; `photutils-release` is only the other
+side of that conflict and never needs requesting).
+Day-to-day tasks are [poe](https://poethepoet.natn.io/) tasks defined in
+`pyproject.toml`:
 
 | Task              | Runs                                                                                      |
 | ----------------- | ----------------------------------------------------------------------------------------- |
@@ -18,13 +23,17 @@ tasks defined in `pyproject.toml`:
 | `poe test-remote` | `pytest -m remote_data --remote-data=any` — downloads the Ballet weights from HuggingFace |
 | `poe lint`        | `pre-commit run --all-files` — everything CI's lint job runs                              |
 | `poe docs`        | `mkdocs serve` — live-reload docs at localhost:8000                                       |
-| `poe docs-build`  | `mkdocs build --strict` — one-shot build, as Read the Docs does                           |
+| `poe docs-build`  | `mkdocs build --strict` — one-shot build, as the docs deployment does                     |
 
-Run them as `uv run poe <task>`.
+Run them as `uv run poe <task>`; `uv run pytest` is the same as `poe test` and is
+what CI runs, on Python 3.12 and 3.13.
 
 ## Pre-commit
 
-The `pre-commit` CI job must pass. Run it locally with Python 3.12:
+The `pre-commit` CI job must pass. `uv run poe lint` runs it with the project's
+interpreter. To run it outside the environment, pin the interpreter, because the
+pydoclint hook needs Python ≥ 3.10 and `uvx` may otherwise pick an older system
+Python:
 
 ```bash
 $ uvx --python 3.12 pre-commit run --all-files
@@ -63,6 +72,9 @@ group in `pyproject.toml`, so local runs match CI.
 
 ## Tests
 
+- `pytest` with no options is the whole offline suite: a test that reaches the
+    network without the `remote_data` mark fails. Warnings are errors, and
+    pytest-randomly shuffles the test order, so a test must not depend on another.
 - Add tests to the existing test file for the module you are changing, reusing its
     fixtures, rather than creating a new file.
 - Patch with `pytest-mock`'s `mocker`, not `monkeypatch`, and patch the name where

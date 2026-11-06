@@ -46,6 +46,9 @@ once-per-batch preparation. Output naming is described in
 
 Rules:
 
+- `--user-metadata` is a JSON object whose keys override the frame metadata.
+    The `Seestar50` profile needs it for `observer` and `site_elev`, which Seestar
+    headers lack ([getting started](../getting_started.md#observer-and-site)).
 - `--config` loads the full configuration. `--instrument` or `--profile` then
     replaces only its instrument; give at most one of the two.
 - `--gaia-mag-limit` and `--min-snr` replace only those two `source_selection`

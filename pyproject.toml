@@ -186,7 +186,7 @@ test = "pytest" # fast suite, no network needed
 test-remote = "pytest -m remote_data --remote-data=any" # downloads CNN weights from Hugging Face
 lint = "pre-commit run --all-files" # everything CI's lint job runs
 docs = "mkdocs serve" # live-reload docs at localhost:8000
-docs-build = "mkdocs build --strict" # one-shot build (what Read the Docs does)
+docs-build = "mkdocs build --strict" # one-shot build (what the docs deployment does)
 
 ######## Configure pytest for your test suite ########
 # Native pytest 9+ TOML configuration.
