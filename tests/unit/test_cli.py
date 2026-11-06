@@ -325,6 +325,55 @@ def test_process_uses_robust_defaults(runner, patched_photometer, tmp_path):
     assert call_kwargs["write_manifest"] is True
 
 
+def test_process_no_instrument_flags_switches_them_off(
+    runner, patched_photometer, tmp_path
+):
+    """``--no-instrument-flags`` turns off the instrument's star flags."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+
+    result = runner.invoke(cli.main, ["process", str(frame), "--no-instrument-flags"])
+
+    assert result.exit_code == 0, result.output
+    config = patched_photometer.call_args.kwargs["config"]
+    assert config.instrument_star_flags is False
+
+
+def test_process_instrument_flags_on_by_default(runner, patched_photometer, tmp_path):
+    """Without the switch the instrument's star flags run."""
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+
+    result = runner.invoke(cli.main, ["process", str(frame)])
+
+    assert result.exit_code == 0, result.output
+    assert patched_photometer.call_args.kwargs["config"].instrument_star_flags is True
+
+
+def test_process_instrument_flags_override_a_config_file(
+    runner, patched_photometer, tmp_path
+):
+    """The switch overrides a ``--config`` file; leaving it out keeps the file's."""
+    config_file = tmp_path / "config.json"
+    config_file.write_text('{"instrument_star_flags": false}')
+    frame = tmp_path / "a.fit"
+    frame.write_bytes(b"")
+
+    kept = runner.invoke(
+        cli.main, ["process", str(frame), "--config", str(config_file)]
+    )
+    kept_config = patched_photometer.call_args.kwargs["config"]
+    overridden = runner.invoke(
+        cli.main,
+        ["process", str(frame), "--config", str(config_file), "--instrument-flags"],
+    )
+
+    assert kept.exit_code == 0, kept.output
+    assert overridden.exit_code == 0, overridden.output
+    assert kept_config.instrument_star_flags is False
+    assert patched_photometer.call_args.kwargs["config"].instrument_star_flags is True
+
+
 def test_process_omitted_forced_targets_defaults_to_none(
     runner, patched_photometer, tmp_path
 ):

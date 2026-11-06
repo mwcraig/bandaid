@@ -475,6 +475,41 @@ class TestGoodStarMask:
             eloy_table, starlist_metadata, 20.0, 30.0, snr=3.0, min_snr=5.0
         )[0]
 
+    def test_reject_flag_rows_excluded(self, eloy_table, starlist_metadata):
+        """A column named in ``meta["reject_flags"]`` drops its flagged rows."""
+        good = {
+            "x": 20.0,
+            "y": 30.0,
+            "ra": 10.0,
+            "dec": 20.0,
+            "tot_count": 100.0,
+            "count_err": 5.0,
+            "bkgd_count": 1.0,
+            "peak_count": 200.0,
+        }
+        table = eloy_table([good, {**good, "x": 70.0}])
+        table["core_replaced"] = [False, True]
+        table.meta["reject_flags"] = ("core_replaced",)
+
+        assert list(good_star_mask(table, starlist_metadata)) == [True, False]
+
+    def test_unlisted_flag_column_ignored(self, eloy_table, starlist_metadata):
+        """A flag-like column not named in ``meta["reject_flags"]`` drops nothing."""
+        good = {
+            "x": 20.0,
+            "y": 30.0,
+            "ra": 10.0,
+            "dec": 20.0,
+            "tot_count": 100.0,
+            "count_err": 5.0,
+            "bkgd_count": 1.0,
+            "peak_count": 200.0,
+        }
+        table = eloy_table([good, {**good, "x": 70.0}])
+        table["core_replaced"] = [False, True]
+
+        assert list(good_star_mask(table, starlist_metadata)) == [True, True]
+
 
 class TestEloyToStarlist:
     """

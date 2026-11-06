@@ -7,6 +7,40 @@ Generated from the source; every name imports from `bandaid`.
 `photometer_frames` does what `bandaid process` does; the other three are the
 steps it is built from. See [Getting started](../getting_started.md).
 
+`photometer_frames` also reads the first frames of the batch to build the
+instrument's star-flag state (for the Seestar50 core-replaced flag, the static
+list; see [Output files](outputs.md#seestar-core-replaced-stars)). A caller that
+runs `prepare_batch` and then `process_batch` or `process_frame` gets no such
+state unless it passes the raw frames to `prepare_batch` as `state_frames`:
+
+```python
+from astropy.io import fits
+
+from bandaid import prepare_batch
+from bandaid.seestar import STATIC_MAP_FRAMES
+
+prep = prepare_batch(
+    frames,
+    cnn=cnn,
+    user_specific_metadata={"observer": "ABCD", "site_elev": 300.0},
+    state_frames=[fits.getdata(f) for f in frames[:STATIC_MAP_FRAMES]],
+)
+```
+
+`user_specific_metadata` is the same dict `photometer_frames` is given
+(`--user-metadata` on the command line); Seestar headers carry neither
+`observer` nor `site_elev`, so without it `prepare_batch` raises
+`FrameMetadataError`. For a profile other than Seestar50, the number of frames
+to pass as `state_frames` is the largest `n_state_frames` among its flaggers,
+`max(f.n_state_frames for _, f in star_flaggers_for(profile))`, with
+`star_flaggers_for` imported from `bandaid.instruments`.
+
+This matches what `photometer_frames` does on a clean batch. `prepare_batch`
+leaves out a frame whose shape differs from the batch's, but unlike
+`photometer_frames` the one-liner raises on a frame it cannot read, does not
+leave out a frame from another instrument, and reads the frames even when
+`instrument_star_flags` is off.
+
 ::: bandaid.photometer_frames
 
 ::: bandaid.prepare_batch
@@ -19,7 +53,9 @@ steps it is built from. See [Getting started](../getting_started.md).
 
 `process_frame` is the per-frame step `process_batch` loops over. Its
 `FrameResult.qa` record is the frame's QA-manifest row, keyed by
-`QA_MANIFEST_COLUMNS`; columns are listed in [Output files](outputs.md).
+`QA_MANIFEST_COLUMNS`; columns are listed in [Output files](outputs.md). As
+with `process_batch`, a `BatchPrep` built without `state_frames` gives no
+instrument star-flag state (see [Running a batch](#running-a-batch)).
 
 ::: bandaid.process_frame
 
@@ -76,6 +112,15 @@ The profile format and selection rules are in
 ::: bandaid.available_instruments
 
 ::: bandaid.detect_instrument
+
+Star flaggers are named by a profile's `star_flaggers`; see
+[Instrument profiles](instrument_profiles.md#star_flaggers).
+
+::: bandaid.register_star_flagger
+
+::: bandaid.StarFlagger
+
+::: bandaid.StarFlagInputs
 
 ## Exceptions
 

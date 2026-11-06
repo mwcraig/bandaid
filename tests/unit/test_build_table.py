@@ -30,6 +30,7 @@ from bandaid.photometry import (
     _peak_box_cutouts,
     build_photometry_table,
     calculate_l4_quantities,
+    good_star_mask,
     l4_effective_egain,
     metadata_from_header,
 )
@@ -558,6 +559,24 @@ class TestCalculateL4Quantities:
         np.testing.assert_allclose(final_data["peak_count"], expected_peak)
         np.testing.assert_allclose(final_data["count_err"], expected_err)
         np.testing.assert_allclose(final_data["snr"], expected_snr)
+
+    def test_reject_flag_columns_carry_onto_l4(self):
+        """A flag column listed in ``reject_flags`` reaches L4 and drops the star."""
+        by_filter = {
+            "TR": filter_table([100, 200], [10, 12], [5, 6], [2, 3], [50, 90]),
+            "TG": filter_table([110, 210], [11, 13], [4, 7], [1, 2], [70, 80]),
+            "TB": filter_table([120, 220], [9, 14], [6, 5], [3, 1], [60, 95]),
+        }
+        for table in by_filter.values():
+            table["core_replaced"] = np.array([False, True])
+            table.meta["reject_flags"] = ("core_replaced",)
+
+        l4 = calculate_l4_quantities(by_filter, 0.5)
+
+        assert list(l4["core_replaced"]) == [False, True]
+        assert l4.meta["reject_flags"] == ("core_replaced",)
+        good = good_star_mask(l4, {"width": 100, "height": 100})
+        assert list(good) == [True, False]
 
     def test_per_channel_egain_sums_the_channel_poisson_terms(self):
         """With one gain per channel the Poisson variance is summed per channel."""

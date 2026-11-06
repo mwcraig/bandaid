@@ -33,6 +33,13 @@ Start from the bundled one and edit it:
 bandaid instrument show Seestar50 > my_scope.json
 ```
 
+Then, in `my_scope.json`:
+
+1. Change `name` to your telescope's name.
+1. Change `header_match` to a rule your camera's header satisfies.
+1. Delete the `star_flaggers` entry unless your camera is a Seestar S50: it runs
+    Seestar-specific checks (see [Instrument star flags](#instrument-star-flags)).
+
 A minimal profile for a telescope whose header is already ICRS:
 
 ```json
@@ -128,6 +135,49 @@ Success is a written `.star` file. A `FrameMetadataError` or
 `StarListValidationError` usually means a directive points at a keyword your
 headers do not carry (an absent `@KEY` resolves to null); see
 [troubleshooting](troubleshooting.md).
+
+## Instrument star flags
+
+If your camera spoils some stars in a way the image shows (the Seestar overwrites
+a bright star's core pixel on some frames), you can reject them with a star
+flagger. Write a module with a `flag(inputs, state)` function that takes a
+`StarFlagInputs` (the raw frame, the star positions, each channel's Bayer mask,
+peak and sky, and the frame metadata) and returns one boolean array per channel,
+True for a spoiled star. Register it, and name it in the profile:
+
+```python
+import numpy as np
+
+from bandaid import InstrumentProfile, StarFlagger, register_star_flagger
+
+
+def flag(inputs, state):
+    # Stars centred on a known bad column, x = 812.
+    on_bad_column = np.abs(inputs.centroids[:, 0] - 812) < 2
+    return {"TR": on_bad_column}
+
+
+register_star_flagger("my_scope_cores", StarFlagger(column="bad_core", flag=flag))
+profile = InstrumentProfile(name="MyScope", star_flaggers=("my_scope_cores",))
+```
+
+A star flagged in any channel is dropped from every filter of that frame. A
+flagger that needs per-batch state sets `prepare` (called once with a list of
+raw frames and the batch's metadata, the same mapping `inputs.metadata`
+carries) and `n_state_frames` (how many leading frames of the batch it
+wants). The list holds the leading frames that could be read, belong to the
+batch's instrument and have its shape, so it may be shorter than
+`n_state_frames`; `prepare` must not modify them, since the first is the frame
+photometry runs on next. `prepare` is called only when `n_state_frames` is
+positive and at least one usable frame exists; `flag` then receives the state
+it built, and otherwise None, as it does when a caller prepared the batch
+without state frames. An exception from `prepare` stops the batch with
+`BatchPrepError`, while one from `flag` fails only that frame (an `error`
+result, re-raised under `--fail-fast`). As with writers, registration lasts for
+the process, so a profile naming your flagger works from Python. To ship a
+flagger in the package, as the Seestar's `seestar_core_replaced` is, add its
+name and `"module:attribute"` to the built-in table in `bandaid/instruments.py`;
+its module is then imported only when a profile naming it is used.
 
 ## Bundling it in the package
 

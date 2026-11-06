@@ -7,14 +7,15 @@ rejected at construction. Print every default, including the derived
 `PhotometryConfig().model_dump()`. For which knobs to change and when, see
 [Tune a run](../howto/tune_a_run.md).
 
-| Field              | Type                        | Default  | Meaning                                                                                                                        |
-| ------------------ | --------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `apertures`        | `ApertureConfig`            | defaults | Aperture and annulus geometry.                                                                                                 |
-| `source_selection` | `SourceSelectionConfig`     | defaults | Gaia magnitude limits and SNR floor.                                                                                           |
-| `drift`            | `DriftConfig`               | defaults | Thresholds for the `centroid_drift` diagnostic flag.                                                                           |
-| `centroid`         | `CentroidConfig`            | defaults | Measured-versus-modelled position policy.                                                                                      |
-| `edge_margin_px`   | `float`, `> 0`              | `10.0`   | Catalog stars projected within this many pixels of a frame edge, or off the frame, are not measured (forced targets included). |
-| `instrument`       | `InstrumentProfile \| None` | `None`   | `None` resolves the profile from the frame header; see [Instrument profiles](instrument_profiles.md).                          |
+| Field                   | Type                        | Default  | Meaning                                                                                                                                                                                                        |
+| ----------------------- | --------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apertures`             | `ApertureConfig`            | defaults | Aperture and annulus geometry.                                                                                                                                                                                 |
+| `source_selection`      | `SourceSelectionConfig`     | defaults | Gaia magnitude limits and SNR floor.                                                                                                                                                                           |
+| `drift`                 | `DriftConfig`               | defaults | Thresholds for the `centroid_drift` diagnostic flag.                                                                                                                                                           |
+| `centroid`              | `CentroidConfig`            | defaults | Measured-versus-modelled position policy.                                                                                                                                                                      |
+| `edge_margin_px`        | `float`, `> 0`              | `10.0`   | Catalog stars projected within this many pixels of a frame edge, or off the frame, are not measured (forced targets included).                                                                                 |
+| `instrument`            | `InstrumentProfile \| None` | `None`   | `None` resolves the profile from the frame header; see [Instrument profiles](instrument_profiles.md).                                                                                                          |
+| `instrument_star_flags` | `bool`                      | `True`   | Run the instrument profile's `star_flaggers`, which drop stars the camera spoiled from every filter; `False` leaves the `.star` output and photometry tables identical to those of a profile without flaggers. |
 
 The frame spans `[0, width - 0.5)` by `[0, height - 0.5)`, shrunk by the margin on
 every side. The default covers the half-size (7 px) of the centroiding CNN's
@@ -70,9 +71,10 @@ Derived, read-only: `inner_annulus = max(radii) + gap`, `outer_annulus = inner_a
 | `solve_pool_radius_scale`     | `float`, `> 0`           | `0.9`         | Fraction of `fov_rad` used as the radius of each frame's plate-solve star pool.                                                                                                                                                                |
 | `header_map`                  | mapping                  | Seestar50 map | Per-frame FITS-header dialect.                                                                                                                                                                                                                 |
 | `header_match`                | `tuple[HeaderMatchRule]` | `()`          | Rules used by `detect_instrument`; empty means never auto-detected.                                                                                                                                                                            |
+| `star_flaggers`               | `tuple[str]`             | `()`          | Names of registered star flaggers run on every frame; see [Instrument profiles](instrument_profiles.md#star_flaggers).                                                                                                                         |
 
-The bundled `Seestar50` profile overrides five fields: `header_match`
+The bundled `Seestar50` profile overrides six fields: `header_match`
 (`INSTRUME == "Seestar S50"`), `wcs_scale_tolerance` (`0.005`),
-`wcs_pointing_tolerance` (`0.30`), `header_frame` (`"fk5"`) and `header_equinox`
-(`"date"`). The twirl star counts, WCS match tolerance and minimum star counts
+`wcs_pointing_tolerance` (`0.30`), `header_frame` (`"fk5"`), `header_equinox`
+(`"date"`) and `star_flaggers` (`["seestar_core_replaced"]`). The twirl star counts, WCS match tolerance and minimum star counts
 are module constants in `bandaid.photometry`, not configuration.

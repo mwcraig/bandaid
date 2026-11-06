@@ -13,9 +13,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the compiled sigma-clipped `ApertureStats` (about 26 % less time per frame,
     output differs only at the last bit) and 3.1.1 the first available on
     emscripten-forge for the browser build.
+- `FrameResult.schema_version` is 2: the QA manifest gains `n_core_replaced`.
 
 ### Added
 
+- Seestar S50 stars whose core pixel the camera overwrote are detected and
+    dropped from every filter of that frame; `--no-instrument-flags`
+    (`instrument_star_flags=False`) switches this off, and the QA manifest's new
+    `n_core_replaced` column counts them.
+- Instrument profiles can name star flaggers
+    (`InstrumentProfile.star_flaggers`): `StarFlagger`, `StarFlagInputs` and
+    `register_star_flagger` are exported from `bandaid`,
+    `PhotometryConfig.instrument_star_flags` switches them, and `prepare_batch`
+    takes `state_frames` for flaggers with per-batch state
+    (`BatchPrep.star_flag_state`); a `BatchPrep` built without them gives the
+    Seestar flag with no static list.
 - `prepare_batch` takes `user_specific_metadata` and, before the Gaia query,
     stops with a `FrameMetadataError` naming any output-schema key (`observer`,
     `site_elev`, ...) that is missing or null on the prep frame, instead of

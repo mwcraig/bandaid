@@ -14,17 +14,44 @@ FITS header lives in :func:`~bandaid.photometry.metadata_from_header`; the
 observer-identity layer (site/observer overrides applied last) is the separate
 ``user_specific_metadata`` dict threaded through the batch and is not modelled
 here.
+
+A profile can also name *star flaggers* (``star_flaggers``): instrument-specific
+code, registered here by name with :func:`register_star_flagger`, that marks
+stars whose measurement the camera itself has spoiled. :func:`apply_star_flags`
+runs a profile's flaggers on one frame. Naming flaggers on the profile, rather
+than keying them on the profile's ``name``, keeps a bare or user-built profile
+free of instrument code unless it opts in.
 """
 
+import importlib
 import json
 import logging
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from functools import cache
 from importlib.resources import files as package_files
+
+import numpy as np
 
 from .config import InstrumentProfile
 from .exceptions import InstrumentDetectionError
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    "StarFlagInputs",
+    "StarFlagger",
+    "apply_star_flags",
+    "available_instruments",
+    "default_header_map",
+    "detect_instrument",
+    "load_instrument",
+    "register_instrument",
+    "register_star_flagger",
+    "resolve_config_instrument",
+    "resolve_profile",
+    "star_flaggers_for",
+]
 
 _META_DIR = "meta_json_files"
 _PROFILE_FILENAME = "profile.json"
@@ -32,6 +59,14 @@ _PROFILE_FILENAME = "profile.json"
 # User-registered profiles, keyed by name. Checked before the bundled profiles so
 # a caller can override a bundled telescope in-process.
 _REGISTERED: dict[str, InstrumentProfile] = {}
+
+# Registered star flaggers, keyed by the name a profile's ``star_flaggers`` uses.
+_STAR_FLAGGERS: dict[str, "StarFlagger"] = {}
+
+# Star flaggers shipped with bandaid, as "module:attribute", imported only when a
+# profile names one: a run that never uses the instrument never imports its code.
+# A registration under the same name takes precedence.
+_BUILTIN_STAR_FLAGGERS = {"seestar_core_replaced": "bandaid.seestar:CORE_REPLACED"}
 
 
 def _profiles_root():
@@ -197,7 +232,7 @@ def _inherit_header_identity(profile, previous):
     Returns
     -------
     InstrumentProfile
-        ``profile``, with ``header_match`` and the
+        ``profile``, with ``header_match``, ``star_flaggers`` and the
         ``header_frame``/``header_equinox`` pair taken from ``previous``
         wherever ``profile`` did not set them explicitly.
     """
@@ -209,6 +244,10 @@ def _inherit_header_identity(profile, previous):
     # have no candidates for this name at all.
     if "header_match" not in profile.model_fields_set and previous.header_match:
         inherited["header_match"] = previous.header_match
+    # Likewise the bare-class star_flaggers is empty, which would silently
+    # switch off the replaced profile's instrument flags.
+    if "star_flaggers" not in profile.model_fields_set and previous.star_flaggers:
+        inherited["star_flaggers"] = previous.star_flaggers
     # Likewise the bare-class header frame is ICRS, which would silently stop
     # converting the replaced profile's header pointing. The two fields are
     # only meaningful together, so they are inherited as a pair.
@@ -255,6 +294,9 @@ def register_instrument(profile, *, replace=False):
       shape -- e.g. ``InstrumentProfile(name='Seestar50', thresh=9.9)`` --
       keeps that name auto-detectable. An explicitly supplied
       ``header_match``, including ``()``, is honoured as given.
+      ``star_flaggers`` is inherited the same way, so the replacement keeps
+      running the replaced profile's instrument flags unless it sets
+      ``star_flaggers`` itself (``()`` to run none).
       ``header_frame`` and ``header_equinox`` are inherited the same way, as a
       pair, when ``profile`` sets neither, so the header pointing keeps being
       converted as before.
@@ -455,3 +497,283 @@ def resolve_config_instrument(config, header):
     if not auto_detected:
         return config, False
     return config.model_copy(update={"instrument": detected}), True
+
+
+# eq=False: the generated __eq__ would compare the numpy fields, whose truth
+# value is ambiguous; keep identity semantics, like LoadedFrame.
+@dataclass(frozen=True, eq=False)
+class StarFlagInputs:
+    """
+    What a star flagger sees of one frame.
+
+    Attributes
+    ----------
+    raw : numpy.ndarray
+        The frame's pixel data exactly as read from the FITS file (the
+        camera's integers), not the floating-point copy photometry runs on.
+    centroids : numpy.ndarray
+        ``(N, 2)`` pixel ``x, y`` of the measured stars; row ``i`` is row ``i``
+        of every channel table.
+    bayer_masks : collections.abc.Mapping
+        Channel name to Bayer mask (True where a pixel is *not* in that
+        channel, the `~bandaid.image2sl_qt.generate_bayer_masks` convention),
+        or None for a channel measured over the whole frame.
+    peak_count : collections.abc.Mapping
+        Channel name to the ``(N,)`` ``peak_count`` column of that channel's
+        table.
+    bkgd_count : collections.abc.Mapping
+        Channel name to the ``(N,)`` per-pixel sky (``bkgd_count``) of that
+        channel's table.
+    metadata : collections.abc.Mapping
+        The frame's metadata (``tel_firmware``, ``system_id``, ...), as
+        resolved by the profile's ``header_map``, with the user's metadata
+        overrides applied: the same mapping `StarFlagger`'s ``prepare``
+        receives.
+    """
+
+    raw: np.ndarray
+    centroids: np.ndarray
+    bayer_masks: Mapping
+    peak_count: Mapping
+    bkgd_count: Mapping
+    metadata: Mapping
+
+
+@dataclass(frozen=True)
+class StarFlagger:
+    """
+    Instrument-specific code that flags spoiled stars on a frame.
+
+    Attributes
+    ----------
+    column : str
+        Name of the boolean column the combined flag is written to on every
+        filter's table, e.g. ``"core_replaced"``.
+    flag : collections.abc.Callable
+        ``flag(inputs, state) -> {channel: bool array}``: given the frame's
+        `StarFlagInputs` and the flagger's per-batch state (None when the
+        batch prepared none), return one ``(N,)`` boolean array per channel,
+        one entry per star (``N = len(inputs.centroids)``), True for a
+        flagged star. A channel left out of the mapping flags nothing. An
+        exception fails that frame only, as an ``error`` result or re-raised
+        under ``fail_fast``; it does not stop the batch.
+    prepare : collections.abc.Callable or None
+        ``prepare(raw_frames, metadata) -> state``: build the per-batch state
+        from a list of raw frame arrays and the metadata of the frame the
+        batch is prepared from, with the user's metadata overrides applied:
+        the same mapping a frame's ``StarFlagInputs.metadata`` carries (e.g.
+        ``height``, ``width`` and ``largest_usable_adu_value``). Called once
+        per batch, with the first ``n_state_frames`` of the batch's frames
+        that could be read, belong to the batch's instrument and have its
+        shape, so possibly fewer than ``n_state_frames``; never with none:
+        when no frame is usable ``prepare`` is not called and ``flag`` gets
+        None. It must not modify the arrays, since the first is the frame
+        photometry runs on next. An exception fails the batch as
+        `~bandaid.exceptions.BatchPrepError`. None (default) for a flagger
+        that needs no state.
+    n_state_frames : int
+        How many raw frames, from the start of the batch, ``prepare`` wants;
+        must be positive for ``prepare`` to be called. Default 0 (no state).
+    """
+
+    column: str
+    flag: Callable[[StarFlagInputs, object], Mapping]
+    prepare: Callable[[Sequence[np.ndarray], Mapping], object] | None = None
+    n_state_frames: int = 0
+
+
+def register_star_flagger(name, flagger, *, replace=False):
+    """
+    Register a star flagger so a profile can name it in ``star_flaggers``.
+
+    Parameters
+    ----------
+    name : str
+        The registry key a profile's ``star_flaggers`` refers to.
+    flagger : StarFlagger
+        The flagger to register.
+    replace : bool, optional
+        Whether to allow overriding a name that is already registered or
+        built in (see `star_flaggers_for`). Default False.
+
+    Raises
+    ------
+    ValueError
+        If ``name`` is already registered and ``replace`` is False.
+    """
+    if _is_star_flagger(name) and not replace:
+        msg = (
+            f"star flagger {name!r} is already registered; pass replace=True "
+            "to override it deliberately"
+        )
+        raise ValueError(msg)
+    _STAR_FLAGGERS[name] = flagger
+
+
+def _is_star_flagger(name):
+    """
+    Return whether ``name`` is a registered or built-in star flagger.
+
+    Parameters
+    ----------
+    name : str
+        Star-flagger name.
+
+    Returns
+    -------
+    bool
+        True when `star_flaggers_for` can resolve ``name``.
+    """
+    return name in _STAR_FLAGGERS or name in _BUILTIN_STAR_FLAGGERS
+
+
+def _star_flagger(name):
+    """
+    Look up a star flagger, importing a built-in one on demand.
+
+    Parameters
+    ----------
+    name : str
+        A name for which `_is_star_flagger` is True.
+
+    Returns
+    -------
+    StarFlagger
+        The registered flagger, else the built-in one.
+    """
+    if name in _STAR_FLAGGERS:
+        return _STAR_FLAGGERS[name]
+    module, attribute = _BUILTIN_STAR_FLAGGERS[name].split(":")
+    return getattr(importlib.import_module(module), attribute)
+
+
+def star_flaggers_for(profile):
+    """
+    Resolve a profile's ``star_flaggers`` names to the registered flaggers.
+
+    Parameters
+    ----------
+    profile : InstrumentProfile
+        The profile whose flaggers to resolve.
+
+    Returns
+    -------
+    tuple of (str, StarFlagger)
+        ``(name, flagger)`` pairs in the profile's order; empty when the
+        profile names none.
+
+    Raises
+    ------
+    ValueError
+        If the profile names a flagger that is not registered, or names two
+        flaggers that write the same ``column``.
+
+    Notes
+    -----
+    Two flaggers may not share a ``column``: each flag column has to say
+    which flagger fired, and a second flagger would overwrite the first.
+
+    Besides the flaggers registered with `register_star_flagger`, bandaid
+    ships built-in ones (``seestar_core_replaced``, the Seestar S50
+    core-replacement flag, `bandaid.seestar.CORE_REPLACED`). A built-in's
+    module is imported the first time a profile naming it is resolved, not
+    when bandaid is imported. A registration under a built-in's name takes
+    precedence over it.
+    """
+    unknown = [name for name in profile.star_flaggers if not _is_star_flagger(name)]
+    if unknown:
+        available = ", ".join(sorted({*_STAR_FLAGGERS, *_BUILTIN_STAR_FLAGGERS}))
+        msg = (
+            f"instrument {profile.name!r} names unknown star flagger(s) "
+            f"{', '.join(map(repr, unknown))}; registered: {available}"
+        )
+        raise ValueError(msg)
+    flaggers = tuple((name, _star_flagger(name)) for name in profile.star_flaggers)
+    owners = {}
+    for name, flagger in flaggers:
+        if flagger.column in owners:
+            msg = (
+                f"instrument {profile.name!r} names star flaggers "
+                f"{owners[flagger.column]!r} and {name!r}, which both write "
+                f"column {flagger.column!r}"
+            )
+            raise ValueError(msg)
+        owners[flagger.column] = name
+    return flaggers
+
+
+def apply_star_flags(by_filter_data, inputs, profile, *, state=None):
+    """
+    Run a profile's star flaggers on one frame and stamp their flags.
+
+    Parameters
+    ----------
+    by_filter_data : dict of {str: astropy.table.Table}
+        The frame's per-channel photometry tables, rows aligned with
+        ``inputs.centroids``. Modified in place.
+    inputs : StarFlagInputs
+        What the flaggers see of the frame.
+    profile : InstrumentProfile
+        The frame's instrument; its ``star_flaggers`` names the flaggers.
+    state : collections.abc.Mapping or None, optional
+        Flagger name to the per-batch state its ``prepare`` built. A flagger
+        missing from it, or every flagger when None (default), gets None.
+
+    Raises
+    ------
+    ValueError
+        If `star_flaggers_for` rejects the profile, or a flagger's ``column``
+        is already a column of a table that does not list it in
+        ``meta["reject_flags"]``, or a flagger returns a channel's flags in
+        any shape but ``(n_stars,)``, one entry per star.
+
+    Notes
+    -----
+    Each flagger's per-channel flags are combined with OR -- a star flagged
+    in any channel is flagged -- and the combined boolean column is written,
+    under the flagger's ``column``, to *every* table, so the star is dropped
+    from every filter's star list. The column name is appended to each
+    table's ``meta["reject_flags"]`` (a tuple), which
+    `~bandaid.photometry.good_star_mask` reads to reject flagged rows.
+
+    A column already listed in a table's ``reject_flags`` -- left by an
+    earlier run -- is overwritten. Any other existing column of that name is
+    measured data, so the frame fails before any flagger runs rather than
+    replace it with a flag.
+
+    When the profile names no flagger the tables are left untouched: no
+    column, no ``reject_flags`` key.
+    """
+    flaggers = star_flaggers_for(profile)
+    for _, flagger in flaggers:
+        for filter_name, table in by_filter_data.items():
+            if (
+                flagger.column in table.colnames
+                and flagger.column not in table.meta.get("reject_flags", ())
+            ):
+                msg = (
+                    f"star flagger column {flagger.column!r} is already a column "
+                    f"of the {filter_name!r} table and is not a reject flag"
+                )
+                raise ValueError(msg)
+    state = state or {}
+    n_stars = len(inputs.centroids)
+    for name, flagger in flaggers:
+        flags = flagger.flag(inputs, state.get(name))
+        combined = np.zeros(n_stars, dtype=bool)
+        for channel, channel_flags in flags.items():
+            channel_mask = np.asarray(channel_flags, dtype=bool)
+            if channel_mask.shape != (n_stars,):
+                msg = (
+                    f"star flagger {name!r} returned flags of shape "
+                    f"{channel_mask.shape} for channel {channel!r}; expected "
+                    f"({n_stars},), one entry per star"
+                )
+                raise ValueError(msg)
+            combined |= channel_mask
+        for table in by_filter_data.values():
+            table[flagger.column] = combined
+            reject_flags = tuple(table.meta.get("reject_flags", ()))
+            if flagger.column not in reject_flags:
+                reject_flags = (*reject_flags, flagger.column)
+            table.meta["reject_flags"] = reject_flags

@@ -62,41 +62,83 @@ files (`centroid_method` exists only there). Writing other formats:
 `--output-format` selects a writer registered at import; `starlist` is the only
 bundled one.
 
+### Seestar core-replaced stars
+
+The Seestar S50's hot-pixel correction sometimes overwrites a bright star's
+brightest pixel with the mean of its four same-colour neighbours 2 px away,
+costing the star about 0.3 mag in that channel on that frame. The
+bundled `Seestar50` profile flags such a star (`core_replaced`), and the star is
+absent from every filter's list in that frame's `.star` file, not only from the
+channel that was hit. A star is flagged when
+
+- a pixel within 1.5 px of its centroid, and not in the outer 2 px of the frame,
+    equals `floor` of the mean of its four axis neighbours at ±2 px exactly, on
+    the camera's raw integers, or is on the batch's static list (below); and
+- in that pixel's channel the star's `peak_count` is at least 2000 ADU above its
+    sky and below the profile's `largest_usable_adu_value` (50000 ADU for the
+    Seestar S50; a saturated core is flat and would match by chance).
+
+Some units replace a fixed list of pixels in every frame, with a value that
+differs from the neighbour mean by a fixed amount for each pixel (a constant on
+some units, a fraction of the sky on others). Whichever of the first 20 files of
+a batch load and belong to the batch (one that cannot be read, is from another
+instrument, or has a shape other than the batch's is skipped, not replaced by a
+later file) are scanned for pixels whose difference from the
+neighbour mean is constant across those frames: its robust scatter (1.4826 ×
+the median absolute deviation), as read or after scaling each pixel's frame to
+the batch's median sky of that pixel's Bayer phase, whichever is smaller, is at
+most 5 ADU or 0.25 % of the sky, whichever is larger. How large the difference
+is does not matter. Pixels next to a pixel at or above
+`largest_usable_adu_value` in at least half of those frames (a saturated star
+that stays put) are left out. The same scan with diagonal neighbours, which the
+camera never uses, counts chance matches: if it finds more than 10 pixels, or
+more than 1 % of the static list, whichever is larger, the batch is too dark or
+flat for the test and the static list is switched off with a WARNING. Otherwise
+the log reports both counts at INFO. Fewer than 15 such frames give no static
+list, with an INFO log line. A caller who runs `prepare_batch` and then
+`process_batch` or `process_frame` without passing `state_frames` gets no static
+list (see [API reference](api.md#running-a-batch)). A frame that is not integer (a
+calibrated frame, say) gets no flags. `n_core_replaced` in the QA manifest
+counts the flagged stars per frame, and `--no-instrument-flags` switches the
+flag off. `core_replaced` is not a `.star` field; it is a column of the
+in-memory tables.
+
 ## `qa_manifest.csv`
 
 One row per input frame, including skipped and failed frames (most diagnostics blank).
 Columns are `QA_MANIFEST_COLUMNS`, in this order.
 
-| Column                | Meaning                                                                                                                                              |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `file`                | Input frame.                                                                                                                                         |
-| `status`              | `ok`, `skipped: <FrameError subclass>`, or `error: <exception type>`.                                                                                |
-| `n_detected`          | Stars detected in the frame.                                                                                                                         |
-| `sky_median`          | Median sky background.                                                                                                                               |
-| `fwhm`                | Measured FWHM.                                                                                                                                       |
-| `wcs_solved`          | `True` if a WCS solved, `False` on a plate-solve failure, blank if the frame failed earlier.                                                         |
-| `pointing_offset_deg` | Degrees between the frame's header center and the batch center; blank if no header pointing could be compared.                                       |
-| `wcs_pixscale`        | Solved plate scale in arcsec/pixel, including the scale of a solve rejected for its scale; blank if no WCS solved.                                   |
-| `solve_offset_deg`    | Degrees between the solved center and the frame's own header center; blank if no WCS solved.                                                         |
-| `n_good_stars`        | Stars surviving the quality cuts in the representative channel (`L4` if present, else the first filter). Not the row count of every filter.          |
-| `n_snr20`             | Subset of `n_good_stars` with `snr >= 20`; blank without an `snr` column.                                                                            |
-| `dropped_filters`     | Semicolon-joined filters omitted from the `.star` file because no star survived (for example `TR;TB`); empty if none.                                |
-| `n_centroid_drift`    | Stars with the `centroid_drift` flag set. Diagnostic only; no row is dropped.                                                                        |
-| `n_drift_rejected`    | Subset of `n_centroid_drift` that also passes `good_star_mask`.                                                                                      |
-| `n_forced_measured`   | Forced targets with a surviving measurement in the representative channel, matched by sky position; blank without forced targets.                    |
-| `n_edge_dropped`      | Catalog stars dropped for lying within `edge_margin_px` of a frame edge, inside or outside the frame; blank if the frame failed before photometry.   |
-| `g_cut`               | Batch Gaia G cut of the CNN class (same on every frame); blank when `model_faint_positions` is off.                                                  |
-| `n_cnn_class`         | Stars keeping a CNN centroid (at or brighter than `g_cut`, plus usable forced targets); blank when the policy is off.                                |
-| `plane_fallback`      | `True` when fewer than `min_fit_stars` stars were usable, so no plane was fitted and every star used its CNN centroid; blank when the policy is off. |
-| `plane_n_used`        | Stars defining the offset plane after clipping; `0` on a fallback frame.                                                                             |
-| `plane_n_clipped`     | Stars removed by the clip; `0` on a fallback frame.                                                                                                  |
-| `plane_rms`           | Radial rms of the plane-fit residuals over the stars used, in pixels; blank without a plane.                                                         |
-| `plane_dx_center`     | Plane x offset (CNN minus projected) at the frame center, in pixels.                                                                                 |
-| `plane_dy_center`     | Plane y offset at the frame center, in pixels.                                                                                                       |
-| `plane_dx_slope_x`    | Change in the plane's x offset from the center to the right edge, in pixels.                                                                         |
-| `plane_dx_slope_y`    | Change in the plane's x offset from the center to the top edge, in pixels.                                                                           |
-| `plane_dy_slope_x`    | Change in the plane's y offset from the center to the right edge, in pixels.                                                                         |
-| `plane_dy_slope_y`    | Change in the plane's y offset from the center to the top edge, in pixels.                                                                           |
+| Column                | Meaning                                                                                                                                                                                                                                                                 |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `file`                | Input frame.                                                                                                                                                                                                                                                            |
+| `status`              | `ok`, `skipped: <FrameError subclass>`, or `error: <exception type>`.                                                                                                                                                                                                   |
+| `n_detected`          | Stars detected in the frame.                                                                                                                                                                                                                                            |
+| `sky_median`          | Median sky background.                                                                                                                                                                                                                                                  |
+| `fwhm`                | Measured FWHM.                                                                                                                                                                                                                                                          |
+| `wcs_solved`          | `True` if a WCS solved, `False` on a plate-solve failure, blank if the frame failed earlier.                                                                                                                                                                            |
+| `pointing_offset_deg` | Degrees between the frame's header center and the batch center; blank if no header pointing could be compared.                                                                                                                                                          |
+| `wcs_pixscale`        | Solved plate scale in arcsec/pixel, including the scale of a solve rejected for its scale; blank if no WCS solved.                                                                                                                                                      |
+| `solve_offset_deg`    | Degrees between the solved center and the frame's own header center; blank if no WCS solved.                                                                                                                                                                            |
+| `n_good_stars`        | Stars surviving the quality cuts in the representative channel (`L4` if present, else the first filter). Not the row count of every filter.                                                                                                                             |
+| `n_snr20`             | Subset of `n_good_stars` with `snr >= 20`; blank without an `snr` column.                                                                                                                                                                                               |
+| `dropped_filters`     | Semicolon-joined filters omitted from the `.star` file because no star survived (for example `TR;TB`); empty if none.                                                                                                                                                   |
+| `n_centroid_drift`    | Stars with the `centroid_drift` flag set. Diagnostic only; no row is dropped.                                                                                                                                                                                           |
+| `n_drift_rejected`    | Subset of `n_centroid_drift` that also passes `good_star_mask`.                                                                                                                                                                                                         |
+| `n_forced_measured`   | Forced targets with a surviving measurement in the representative channel, matched by sky position; blank without forced targets.                                                                                                                                       |
+| `n_edge_dropped`      | Catalog stars dropped for lying within `edge_margin_px` of a frame edge, inside or outside the frame; blank if the frame failed before photometry.                                                                                                                      |
+| `g_cut`               | Batch Gaia G cut of the CNN class (same on every frame); blank when `model_faint_positions` is off.                                                                                                                                                                     |
+| `n_cnn_class`         | Stars keeping a CNN centroid (at or brighter than `g_cut`, plus usable forced targets); blank when the policy is off.                                                                                                                                                   |
+| `plane_fallback`      | `True` when fewer than `min_fit_stars` stars were usable, so no plane was fitted and every star used its CNN centroid; blank when the policy is off.                                                                                                                    |
+| `plane_n_used`        | Stars defining the offset plane after clipping; `0` on a fallback frame.                                                                                                                                                                                                |
+| `plane_n_clipped`     | Stars removed by the clip; `0` on a fallback frame.                                                                                                                                                                                                                     |
+| `plane_rms`           | Radial rms of the plane-fit residuals over the stars used, in pixels; blank without a plane.                                                                                                                                                                            |
+| `plane_dx_center`     | Plane x offset (CNN minus projected) at the frame center, in pixels.                                                                                                                                                                                                    |
+| `plane_dy_center`     | Plane y offset at the frame center, in pixels.                                                                                                                                                                                                                          |
+| `plane_dx_slope_x`    | Change in the plane's x offset from the center to the right edge, in pixels.                                                                                                                                                                                            |
+| `plane_dx_slope_y`    | Change in the plane's x offset from the center to the top edge, in pixels.                                                                                                                                                                                              |
+| `plane_dy_slope_x`    | Change in the plane's y offset from the center to the right edge, in pixels.                                                                                                                                                                                            |
+| `plane_dy_slope_y`    | Change in the plane's y offset from the center to the top edge, in pixels.                                                                                                                                                                                              |
+| `n_core_replaced`     | Rows of the frame flagged `core_replaced` by the instrument's star flagger and dropped from every filter (not a subset of `n_good_stars`); blank for a frame with no measured row: the flagger switched off or absent from the profile, or the frame skipped or failed. |
 
 The `plane_*` columns are blank for a frame the centroid policy did not run on,
 except that `plane_rms` is filled for a frame skipped for its offset plane. A

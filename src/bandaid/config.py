@@ -426,6 +426,18 @@ class InstrumentProfile(BaseModel, frozen=True):
         not accidentally claim to *be* a Seestar. Only the bundled Seestar50
         profile (``meta_json_files/Seestar50/profile.json``) carries a rule
         (``INSTRUME == "Seestar S50"``).
+    star_flaggers : tuple of str
+        Names of the star flaggers to run on every frame, each registered with
+        :func:`~bandaid.instruments.register_star_flagger`. A star flagger is
+        instrument-specific code that marks stars whose measurement the camera
+        itself has spoiled; a star it flags is dropped from every filter's star
+        list for that frame. Empty by default -- **including on the bare class
+        default** -- for the same reason as ``header_match``: a user's custom
+        profile runs no instrument code unless it names a registered flagger
+        (or is registered over a profile that does with ``replace=True``
+        without setting ``star_flaggers``; see
+        `~bandaid.instruments.register_instrument`). The bundled Seestar50
+        profile names one.
 
     Notes
     -----
@@ -462,6 +474,7 @@ class InstrumentProfile(BaseModel, frozen=True):
         default_factory=_default_seestar_header_map, validate_default=True
     )
     header_match: tuple[HeaderMatchRule, ...] = ()
+    star_flaggers: tuple[str, ...] = ()
 
     def matches_header(self, header) -> bool:
         """
@@ -726,6 +739,12 @@ class PhotometryConfig(BaseModel, frozen=True):
         calls `~bandaid.instruments.detect_instrument` and carries the resolved
         profile forward. Pass an explicit `InstrumentProfile` (e.g. via
         `~bandaid.instruments.load_instrument`) to bypass auto-detection.
+    instrument_star_flags : bool
+        Whether to run the instrument's star flaggers (its
+        ``star_flaggers``), which drop stars the camera has spoiled from
+        every filter's star list. Default True. False leaves the ``.star``
+        output and the photometry tables identical to those of a profile that
+        names no flagger.
     """
 
     apertures: ApertureConfig = Field(default_factory=ApertureConfig)
@@ -736,3 +755,4 @@ class PhotometryConfig(BaseModel, frozen=True):
     centroid: CentroidConfig = Field(default_factory=CentroidConfig)
     edge_margin_px: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 10.0
     instrument: InstrumentProfile | None = None
+    instrument_star_flags: bool = True

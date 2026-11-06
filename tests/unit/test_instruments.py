@@ -9,19 +9,31 @@ bundled Seestar50 profile reproduces the class defaults, that the registry can b
 extended, and that a profile round-trips through ``to_file``/``from_file``.
 """
 
+import subprocess
+import sys
+
+import numpy as np
 import pytest
 from _helpers import SEESTAR_EGAIN, SEESTAR_RULE
+from astropy.table import Table
 from pydantic import ValidationError
 
+import bandaid
 from bandaid import instruments
 from bandaid.config import HeaderMatchRule, InstrumentProfile
 from bandaid.exceptions import InstrumentDetectionError
 from bandaid.instruments import (
+    StarFlagInputs,
+    StarFlagger,
+    apply_star_flags,
     available_instruments,
     detect_instrument,
     load_instrument,
     register_instrument,
+    register_star_flagger,
+    star_flaggers_for,
 )
+from bandaid.seestar import CORE_REPLACED
 
 EXPECTED_CONE_MARGIN = 0.4
 EXPECTED_WCS_POINTING_TOLERANCE = 0.30
@@ -155,6 +167,13 @@ class TestLoadInstrument:
             EXPECTED_SEESTAR_PIXSCALE
         )
 
+    def test_seestar_names_the_core_replaced_flagger(self):
+        """The bundled Seestar50 profile runs the core-replacement flagger."""
+        profile = load_instrument("Seestar50")
+        assert profile.star_flaggers == ("seestar_core_replaced",)
+        assert star_flaggers_for(profile) == (("seestar_core_replaced", CORE_REPLACED),)
+        assert InstrumentProfile().star_flaggers == ()
+
     def test_unknown_instrument_raises(self):
         """An unregistered, unbundled name raises rather than guessing."""
         with pytest.raises(ValueError, match="NoSuchScope"):
@@ -271,6 +290,22 @@ class TestRegister:
             InstrumentProfile(name="Seestar50", header_match=own_rule), replace=True
         )
         assert load_instrument("Seestar50").header_match == own_rule
+
+    def test_replace_true_without_star_flaggers_inherits_them(self):
+        """A "retune one knob" replacement keeps the replaced ``star_flaggers``."""
+        original = load_instrument("Seestar50")
+        register_instrument(
+            InstrumentProfile(name="Seestar50", thresh=9.9), replace=True
+        )
+        assert load_instrument("Seestar50").star_flaggers == original.star_flaggers
+
+    def test_replace_true_explicit_empty_star_flaggers_stays_empty(self):
+        """An explicit ``star_flaggers=()`` on a replacement stays empty."""
+        register_instrument(
+            InstrumentProfile(name="Seestar50", thresh=9.9, star_flaggers=()),
+            replace=True,
+        )
+        assert load_instrument("Seestar50").star_flaggers == ()
 
     def test_replace_true_inherits_the_previous_header_frame(self):
         """
@@ -453,6 +488,15 @@ class TestFileRoundTrip:
         profile.to_file(path)
         assert InstrumentProfile.from_file(path) == profile
 
+    def test_star_flaggers_roundtrip(self, tmp_path):
+        """A profile naming star flaggers reloads with the same names, as a tuple."""
+        profile = InstrumentProfile(name="Flagged", star_flaggers=("toy", "other"))
+        path = tmp_path / "flagged.json"
+        profile.to_file(path)
+        loaded = InstrumentProfile.from_file(path)
+        assert loaded.star_flaggers == ("toy", "other")
+        assert loaded == profile
+
     def test_from_file_rejects_removed_header_center_offset(self, tmp_path):
         """A profile file still carrying ``header_center_offset`` fails to load."""
         path = tmp_path / "old.json"
@@ -465,3 +509,240 @@ class TestFileRoundTrip:
         path = tmp_path / "old.json"
         path.write_text('{"name": "Old", "header_center_offset": null}')
         assert InstrumentProfile.from_file(path).header_frame == "icrs"
+
+
+_CHANNELS = ("TR", "TG", "TB")
+_N_STARS = 4
+
+
+def _never(inputs, _state):
+    """A flagger ``flag`` callable that flags nothing."""
+    return {name: np.zeros(len(inputs.centroids), bool) for name in _CHANNELS}
+
+
+def _channel_tables():
+    """Return per-channel tables of ``_N_STARS`` rows, keyed like a frame result."""
+    return {
+        name: Table({"x": np.arange(_N_STARS, dtype=float)}, meta={"filter": name})
+        for name in _CHANNELS
+    }
+
+
+def _flag_inputs():
+    """Return a `StarFlagInputs` for ``_N_STARS`` stars on a small raw frame."""
+    peak = {name: np.full(_N_STARS, 100.0) for name in _CHANNELS}
+    return StarFlagInputs(
+        raw=np.zeros((8, 8), dtype=np.uint16),
+        centroids=np.zeros((_N_STARS, 2)),
+        bayer_masks=dict.fromkeys(_CHANNELS),
+        peak_count=peak,
+        bkgd_count={name: np.zeros(_N_STARS) for name in _CHANNELS},
+        metadata={"tel_firmware": "1.0"},
+    )
+
+
+class TestStarFlaggerRegistry:
+    """Star flaggers are registered by name and named by a profile."""
+
+    def test_register_then_resolve(self):
+        """A profile naming a registered flagger resolves to it."""
+        flagger = StarFlagger(column="toy_flag", flag=_never)
+        register_star_flagger("toy", flagger)
+        profile = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        assert star_flaggers_for(profile) == (("toy", flagger),)
+
+    def test_duplicate_name_raises(self):
+        """Registering a name twice without ``replace=True`` raises."""
+        register_star_flagger("toy", StarFlagger(column="toy_flag", flag=_never))
+        with pytest.raises(ValueError, match="toy"):
+            register_star_flagger("toy", StarFlagger(column="other", flag=_never))
+
+    def test_replace_overrides(self):
+        """``replace=True`` swaps the flagger registered under a name."""
+        register_star_flagger("toy", StarFlagger(column="toy_flag", flag=_never))
+        replacement = StarFlagger(column="other", flag=_never)
+        register_star_flagger("toy", replacement, replace=True)
+        profile = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        assert star_flaggers_for(profile) == (("toy", replacement),)
+
+    def test_unknown_name_raises(self):
+        """A profile naming an unregistered flagger fails, naming it."""
+        profile = InstrumentProfile(name="ToyScope", star_flaggers=("missing",))
+        with pytest.raises(ValueError, match="missing"):
+            star_flaggers_for(profile)
+
+    def test_shared_column_raises(self):
+        """Two of a profile's flaggers writing the same column fail, naming it."""
+        register_star_flagger("a", StarFlagger(column="shared", flag=_never))
+        register_star_flagger("b", StarFlagger(column="shared", flag=_never))
+        profile = InstrumentProfile(name="ToyScope", star_flaggers=("a", "b"))
+        with pytest.raises(ValueError, match="'shared'"):
+            star_flaggers_for(profile)
+
+    def test_bare_profile_has_no_flaggers(self):
+        """A bare ``InstrumentProfile()`` runs no instrument code."""
+        assert star_flaggers_for(InstrumentProfile()) == ()
+
+    def test_builtin_seestar_flagger_resolves(self):
+        """``seestar_core_replaced`` is built in and resolves to `CORE_REPLACED`."""
+        profile = InstrumentProfile(
+            name="ToyScope", star_flaggers=("seestar_core_replaced",)
+        )
+        assert star_flaggers_for(profile) == (("seestar_core_replaced", CORE_REPLACED),)
+
+    def test_builtin_name_counts_as_registered(self):
+        """A built-in name needs ``replace=True`` to override; then it resolves."""
+        replacement = StarFlagger(column="other", flag=_never)
+        with pytest.raises(ValueError, match="seestar_core_replaced"):
+            register_star_flagger("seestar_core_replaced", replacement)
+        register_star_flagger("seestar_core_replaced", replacement, replace=True)
+        profile = InstrumentProfile(
+            name="ToyScope", star_flaggers=("seestar_core_replaced",)
+        )
+        assert star_flaggers_for(profile) == (("seestar_core_replaced", replacement),)
+
+    def test_unknown_name_lists_builtins(self):
+        """The unknown-flagger error lists the built-in flaggers as available."""
+        profile = InstrumentProfile(name="ToyScope", star_flaggers=("missing",))
+        with pytest.raises(ValueError, match="seestar_core_replaced"):
+            star_flaggers_for(profile)
+
+    def test_importing_bandaid_does_not_import_seestar(self):
+        """
+        Built-in flaggers are resolved on lookup, not imported with the package.
+
+        The child checks that it imported the same ``bandaid`` as this process,
+        so an editable install of another checkout cannot make the test pass.
+        """
+        code = (
+            "import os, sys, bandaid, bandaid.instruments\n"
+            "same = os.path.samefile(bandaid.__file__, sys.argv[1])\n"
+            "assert same, f'imported {bandaid.__file__}, not {sys.argv[1]}'\n"
+            "sys.exit('bandaid.seestar' in sys.modules)\n"
+        )
+        result = subprocess.run(  # noqa: S603
+            [sys.executable, "-c", code, bandaid.__file__],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+
+class TestApplyStarFlags:
+    """`apply_star_flags` stamps a combined per-star flag on every table."""
+
+    def test_profile_without_flaggers_is_a_no_op(self):
+        """A profile naming no flagger leaves the tables untouched."""
+        tables = _channel_tables()
+        apply_star_flags(tables, _flag_inputs(), InstrumentProfile())
+        for name, table in tables.items():
+            assert table.colnames == ["x"]
+            assert table.meta == {"filter": name}
+
+    def test_flags_are_ored_across_channels_onto_every_table(self):
+        """A star flagged in any channel is flagged on every table."""
+
+        def flag(_inputs, _state):
+            return {
+                "TR": np.array([True, False, False, False]),
+                "TG": np.array([False, False, True, False]),
+                "TB": np.array([False, False, False, False]),
+            }
+
+        register_star_flagger("toy", StarFlagger(column="toy_flag", flag=flag))
+        profile = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        tables = _channel_tables()
+        apply_star_flags(tables, _flag_inputs(), profile)
+        for table in tables.values():
+            assert table["toy_flag"].dtype == bool
+            assert list(table["toy_flag"]) == [True, False, True, False]
+            assert table.meta["reject_flags"] == ("toy_flag",)
+
+    def test_existing_reject_flags_are_kept_and_not_duplicated(self):
+        """A table's earlier ``reject_flags`` survive; a second run adds nothing."""
+        register_star_flagger("toy", StarFlagger(column="toy_flag", flag=_never))
+        profile = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        tables = _channel_tables()
+        for table in tables.values():
+            table["earlier"] = np.zeros(_N_STARS, bool)
+            table.meta["reject_flags"] = ("earlier",)
+        apply_star_flags(tables, _flag_inputs(), profile)
+        apply_star_flags(tables, _flag_inputs(), profile)
+        for table in tables.values():
+            assert table.meta["reject_flags"] == ("earlier", "toy_flag")
+
+    def test_column_clashing_with_a_measured_column_raises(self):
+        """A flagger column that names a measured column fails, leaving it intact."""
+        register_star_flagger("toy", StarFlagger(column="x", flag=_never))
+        profile = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        tables = _channel_tables()
+        with pytest.raises(ValueError, match="'x'"):
+            apply_star_flags(tables, _flag_inputs(), profile)
+        for name, table in tables.items():
+            assert list(table["x"]) == list(range(_N_STARS))
+            assert table.meta == {"filter": name}
+
+    def test_missing_channel_counts_as_unflagged(self):
+        """A channel absent from the flagger's result contributes no flags."""
+
+        def flag(_inputs, _state):
+            return {"TB": np.array([False, True, False, False])}
+
+        register_star_flagger("toy", StarFlagger(column="toy_flag", flag=flag))
+        profile = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        tables = _channel_tables()
+        apply_star_flags(tables, _flag_inputs(), profile)
+        for table in tables.values():
+            assert list(table["toy_flag"]) == [False, True, False, False]
+
+    @pytest.mark.parametrize(
+        "flags",
+        [True, np.array([True]), np.array([1, 3])],
+        ids=["scalar", "length-1", "index-array"],
+    )
+    def test_flags_not_one_per_star_raise(self, flags):
+        """A channel's flags must be one boolean per star, not a scalar or indices."""
+        register_star_flagger(
+            "toy", StarFlagger(column="toy_flag", flag=lambda _i, _s: {"TR": flags})
+        )
+        profile = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        tables = _channel_tables()
+        with pytest.raises(ValueError, match=r"'toy'.*'TR'.*\(4,\)"):
+            apply_star_flags(tables, _flag_inputs(), profile)
+        for table in tables.values():
+            assert "toy_flag" not in table.colnames
+
+    def test_state_is_passed_by_flagger_name(self):
+        """Each flagger receives its own prepared state, or None without one."""
+        seen = {}
+
+        def recorder(name):
+            def flag(inputs, state):
+                seen[name] = state
+                return _never(inputs, state)
+
+            return flag
+
+        register_star_flagger("a", StarFlagger(column="a_flag", flag=recorder("a")))
+        register_star_flagger("b", StarFlagger(column="b_flag", flag=recorder("b")))
+        profile = InstrumentProfile(name="ToyScope", star_flaggers=("a", "b"))
+        tables = _channel_tables()
+        apply_star_flags(tables, _flag_inputs(), profile, state={"a": "state-a"})
+        assert seen == {"a": "state-a", "b": None}
+        assert tables["TG"].meta["reject_flags"] == ("a_flag", "b_flag")
+
+    def test_inputs_reach_the_flagger(self):
+        """The flagger is handed the `StarFlagInputs` it was given."""
+        seen = []
+
+        def flag(inputs, state):
+            seen.append(inputs)
+            return _never(inputs, state)
+
+        register_star_flagger("toy", StarFlagger(column="toy_flag", flag=flag))
+        profile = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        inputs = _flag_inputs()
+        apply_star_flags(_channel_tables(), inputs, profile)
+        assert len(seen) == 1
+        assert seen[0] is inputs
