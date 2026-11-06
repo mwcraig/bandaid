@@ -131,7 +131,7 @@ All are importable from `bandaid`; signatures are in [API reference](api.md).
     current process. A name that already resolves raises unless `replace=True`, and
     a `header_match` rule duplicating another profile's raises. With `replace=True`
     a profile that omits `header_match` (and `header_frame`/`header_equinox`) inherits
-    the replaced profile's.
+    the replaced profile's, as does one that omits `star_flaggers`.
 - `available_instruments()` returns the sorted bundled and registered names.
 - `register_star_flagger(name, flagger, *, replace=False)` registers a
     `StarFlagger` under the name a profile's `star_flaggers` uses. A name already

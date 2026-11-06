@@ -3,8 +3,8 @@ Seestar-specific star flags.
 
 The Seestar S50 camera runs a hot-pixel correction that sometimes overwrites a
 bright star's brightest core pixel with ``floor`` of the mean of its four
-same-color axis neighbors at +-2 px. The star loses roughly 20 % of its flux
-in that channel in that frame. On the camera's raw integers the replaced pixel
+same-color axis neighbors at +-2 px. The star loses about 0.3 mag in that
+channel in that frame. On the camera's raw integers the replaced pixel
 ``c`` satisfies ``0 <= S4 - 4c <= 3``, where ``S4`` is the sum of the pixels at
 ``(+-2, 0)`` and ``(0, +-2)``; the remainder of the integer division is all the
 slack there is. Some firmware/units also replace a fixed list of pixels in every

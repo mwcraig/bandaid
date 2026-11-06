@@ -479,10 +479,10 @@ def main():
     "instrument_flags",
     default=None,
     help=(
-        "Run the instrument's own per-star rejection flags (for the Seestar, "
-        "stars whose core pixel the camera overwrote), dropping flagged stars "
-        "from every filter's output. On unless switched off here or in a "
-        "--config file; --no-instrument-flags disables them."
+        "Run the instrument profile's star flaggers, dropping the stars they "
+        "flag from every filter's output. On unless switched off here or in a "
+        "--config file; --no-instrument-flags disables them. What a profile "
+        "flags is in its documentation."
     ),
 )
 @click.option(

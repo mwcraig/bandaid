@@ -66,7 +66,7 @@ bundled one.
 
 The Seestar S50's hot-pixel correction sometimes overwrites a bright star's
 brightest pixel with the mean of its four same-colour neighbours 2 px away,
-costing the star about 20 % of its flux in that channel on that frame. The
+costing the star about 0.3 mag in that channel on that frame. The
 bundled `Seestar50` profile flags such a star (`core_replaced`), and the star is
 absent from every filter's list in that frame's `.star` file, not only from the
 channel that was hit. A star is flagged when

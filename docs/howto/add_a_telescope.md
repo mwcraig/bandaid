@@ -165,12 +165,19 @@ A star flagged in any channel is dropped from every filter of that frame. A
 flagger that needs per-batch state sets `prepare` (called once with a list of
 raw frames and the batch's metadata, the same mapping `inputs.metadata`
 carries) and `n_state_frames` (how many leading frames of the batch it
-wants); its `flag` then receives that state, or None when a caller prepared the
-batch without state frames. As with writers, registration lasts for the
-process, so a profile naming your flagger works from Python. To ship a flagger
-in the package, as the Seestar's `seestar_core_replaced` is, add its name and
-`"module:attribute"` to the built-in table in `bandaid/instruments.py`; its
-module is then imported only when a profile naming it is used.
+wants). The list holds the leading frames that could be read, belong to the
+batch's instrument and have its shape, so it may be shorter than
+`n_state_frames`; `prepare` must not modify them, since the first is the frame
+photometry runs on next. `prepare` is called only when `n_state_frames` is
+positive and at least one usable frame exists; `flag` then receives the state
+it built, and otherwise None, as it does when a caller prepared the batch
+without state frames. An exception from `prepare` stops the batch with
+`BatchPrepError`, while one from `flag` fails only that frame (an `error`
+result, re-raised under `--fail-fast`). As with writers, registration lasts for
+the process, so a profile naming your flagger works from Python. To ship a
+flagger in the package, as the Seestar's `seestar_core_replaced` is, add its
+name and `"module:attribute"` to the built-in table in `bandaid/instruments.py`;
+its module is then imported only when a profile naming it is used.
 
 ## Bundling it in the package
 

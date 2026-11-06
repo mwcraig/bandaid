@@ -22,9 +22,18 @@ from bandaid.seestar import STATIC_MAP_FRAMES
 prep = prepare_batch(
     frames,
     cnn=cnn,
+    user_specific_metadata={"observer": "ABCD", "site_elev": 300.0},
     state_frames=[fits.getdata(f) for f in frames[:STATIC_MAP_FRAMES]],
 )
 ```
+
+`user_specific_metadata` is the same dict `photometer_frames` is given
+(`--user-metadata` on the command line); Seestar headers carry neither
+`observer` nor `site_elev`, so without it `prepare_batch` raises
+`FrameMetadataError`. For a profile other than Seestar50, the number of frames
+to pass as `state_frames` is the largest `n_state_frames` among its flaggers,
+`max(f.n_state_frames for _, f in star_flaggers_for(profile))`, with
+`star_flaggers_for` imported from `bandaid.instruments`.
 
 This matches what `photometer_frames` does on a clean batch. `prepare_batch`
 leaves out a frame whose shape differs from the batch's, but unlike
