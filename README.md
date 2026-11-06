@@ -19,21 +19,43 @@ Unless you are comfortable working at the command line in a terminal, you should
 
 ## Use it
 
-Install into a Python ≥ 3.12 environment and photometer a folder of frames:
+Install into a Python ≥ 3.12 environment (git must be installed, since two
+dependencies are fetched from GitHub):
 
 ```bash
 $ pip install git+https://github.com/mwcraig/bandaid
-$ bandaid process night-of-2026-06-27/ -o out/ -v
 ```
 
-Full documentation: <https://mwcraig.github.io/bandaid/>
+Seestar headers do not record who you are or how high your site is, and the
+`.star` format needs both, so put your AAVSO observer code and your site
+elevation in metres in a small JSON file, say `site.json`:
+
+```json
+{"observer": "ABCD", "site_elev": 300.0}
+```
+
+then photometer a folder of frames:
+
+```bash
+$ bandaid process night-of-2026-06-27/ -o out/ --user-metadata site.json -v
+```
+
+The first run downloads the centroiding weights from HuggingFace. Full
+documentation, including what to do offline: <https://mwcraig.github.io/bandaid/>
 
 ## Development
 
 ```bash
-$ uv sync
-$ uvx --python 3.12 pre-commit run --all-files
+$ git clone https://github.com/mwcraig/bandaid
+$ cd bandaid
+$ uv sync          # editable install plus the dev group: tests, docs, lint
+$ uv run pytest    # the test suite; no network needed
+$ uv run poe lint  # pre-commit on every file, as CI runs it
 ```
+
+`uv run poe docs-build` builds the documentation. The
+[contributing guide](https://mwcraig.github.io/bandaid/developers/contributing/)
+has the task list, the pre-commit hooks, the code style and the test conventions.
 
 ## Copyright
 

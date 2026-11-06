@@ -144,5 +144,13 @@ Registration lasts for the process; see [Add a telescope](../howto/add_a_telesco
 
 The `header_map` covers only instrument metadata. The `user_specific_metadata`
 dict (`--user-metadata FILE` on the command line, an argument to `process_batch`
-and `process_frame`) is applied last and overrides any metadata key, typically
-`observer`, `site_lat`, `site_lon`, and `site_elev`.
+and `process_frame`) is applied last and overrides any metadata key. It carries
+whatever the headers do not: for the bundled `Seestar50` profile that is
+`observer` and `site_elev`, so
+
+```json
+{"observer": "ABCD", "site_elev": 300.0}
+```
+
+is the minimum ([getting started](../getting_started.md#observer-and-site)); a
+profile whose headers also lack the site position adds `site_lat` and `site_lon`.

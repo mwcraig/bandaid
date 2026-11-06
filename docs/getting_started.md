@@ -30,13 +30,32 @@ the default weights from HuggingFace; the hub caches them, so later runs need no
 network. `bandaid weights` pre-fetches them and prints the cached path. For
 offline use see [Troubleshooting](howto/troubleshooting.md).
 
+## Observer and site
+
+The `.star` format records the observer and the site elevation. Seestar headers
+carry the site latitude and longitude but not your AAVSO observer code or your
+elevation, so you supply both in a JSON file, say `site.json`:
+
+```json
+{"observer": "ABCD", "site_elev": 300.0}
+```
+
+`observer` is your AAVSO observer code and `site_elev` is the elevation of your
+site in metres above mean sea level. Any key in the file overrides the value
+read from the headers, so `site_lat` and `site_lon` (decimal degrees) can go
+there too if the telescope's own position is wrong.
+
 ## Run it
 
-Point `bandaid process` at a folder of frames and give it an output directory:
+Point `bandaid process` at a folder of frames, give it an output directory, and
+pass the metadata file:
 
 ```bash
-$ bandaid process night-of-2026-06-27/ -o out/ -v
+$ bandaid process night-of-2026-06-27/ -o out/ --user-metadata site.json -v
 ```
+
+Without `--user-metadata` the run stops before any frame is processed with a
+`FrameMetadataError` naming `observer` and `site_elev`.
 
 `-v` prints one line per frame; `-vv` adds per-stage detail. The first usable
 frame takes longest because it carries the once-per-batch preparation.
@@ -57,11 +76,13 @@ from bandaid import photometer_frames
 frames, results = photometer_frames(
     ["night-of-2026-06-27/"],
     output_dir="out/",
+    user_specific_metadata={"observer": "ABCD", "site_elev": 300.0},
 )
 # frames  -> the expanded, sorted list of input frames
 # results -> {input frame: written .star path} for each frame that succeeded
 ```
 
 `photometer_frames` does the file expansion, `prepare_batch` and `process_batch`
-that the CLI runs. Pass `config=` to tune the run or `weights=` (for example
+that the CLI runs; `user_specific_metadata` is the contents of `site.json`. Pass
+`config=` to tune the run or `weights=` (for example
 `weights="path/to/centroid_15x15.npz"`) to use your own Ballet weights.

@@ -6,7 +6,7 @@ Start with `qa_manifest.csv`: every frame has a `status` of `ok`,
 skipped, run just that frame with `-vv`; the log shows the chained cause:
 
 ```bash
-bandaid process the_bad_frame.fit -o /tmp/debug -vv
+bandaid process the_bad_frame.fit -o /tmp/debug --user-metadata site.json -vv
 ```
 
 ## Skipped frames
@@ -30,18 +30,20 @@ batch still finishes.
     `wcs_scale_tolerance` ([add a telescope](add_a_telescope.md)).
 - `skipped: WCSPointingError` — every solve landed far from the header pointing.
     Widen `wcs_pointing_tolerance`, or check the header's RA/DEC frame and equinox.
+- `FrameMetadataError` before any frame is processed — a key the output schema
+    requires is missing or null in the metadata of the frame the batch is prepared
+    from; the message lists the keys. For a Seestar they are `observer` and
+    `site_elev`, which its headers never carry: supply them with `--user-metadata`
+    ([getting started](../getting_started.md#observer-and-site)). With your own
+    profile, map them in `header_map`. `InstrumentDetectionError`, a subclass,
+    means the header matched no profile or several; pass `--instrument` or
+    `--profile`.
 - `skipped: FrameMetadataError` — the frame's observation time or airmass cannot
     be derived: a `header_map` directive points at a keyword the header lacks (an
     absent `@KEY` resolves to null) or its value is unparsable. A null behind any
     other required field surfaces as `StarListValidationError` instead. Fix the
     profile and verify with a single-frame `-vv` run
     ([add a telescope](add_a_telescope.md#4-validate)).
-    On the frame the batch is prepared from, the same error stops the run and can
-    also mean a key the output schema requires is missing or null in its metadata
-    (`observer` or `site_elev`, say); the message lists the keys. Map them in
-    `header_map` or supply them with `--user-metadata`.
-    `InstrumentDetectionError`, a subclass, means the header matched no profile or
-    several; pass `--instrument` or `--profile`.
 - `skipped: NoUsableStarsError` — stars were detected but none survived the quality
     cuts, or none project at least `edge_margin_px` from an edge. Lower `min_snr`
     or `edge_margin_px` ([tune a run](tune_a_run.md)).
@@ -106,7 +108,7 @@ On an offline or firewalled machine, fetch them elsewhere and pass the file:
 bandaid weights -o centroid_15x15.npz
 
 # On the offline machine:
-bandaid process night/ -o out/ --weights centroid_15x15.npz
+bandaid process night/ -o out/ --user-metadata site.json --weights centroid_15x15.npz
 ```
 
 `bandaid weights` with no `-o` prints the cached path instead. From Python pass

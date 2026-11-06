@@ -27,7 +27,12 @@ def write_csv(frame_result, output_path):
     return written
 
 
-photometer_frames(["night/"], write_frame=write_csv, output_suffix="")
+photometer_frames(
+    ["night/"],
+    write_frame=write_csv,
+    output_suffix="",
+    user_specific_metadata={"observer": "ABCD", "site_elev": 300.0},
+)
 ```
 
 A frame with no star passing the quality cuts in any filter is skipped before the

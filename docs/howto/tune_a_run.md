@@ -6,10 +6,11 @@ defaults, and valid ranges are listed in the
 
 ## Change a knob from the command line
 
-Two knobs have their own options:
+Two knobs have their own options (`site.json` is the observer and site file from
+[Getting started](../getting_started.md#observer-and-site)):
 
 ```bash
-bandaid process night/ -o out/ --gaia-mag-limit 14 --min-snr 5
+bandaid process night/ -o out/ --user-metadata site.json --gaia-mag-limit 14 --min-snr 5
 ```
 
 Everything else goes through a JSON config. Write the defaults, edit them, check
@@ -18,7 +19,7 @@ them, and pass the file:
 ```bash
 bandaid config init -o config.json
 bandaid config validate config.json
-bandaid process night/ -o out/ --config config.json
+bandaid process night/ -o out/ --user-metadata site.json --config config.json
 ```
 
 Keys you delete from the file take their defaults, so a config can be as short as:
@@ -38,7 +39,12 @@ drive the batch yourself:
 from bandaid import ApertureConfig, PhotometryConfig, photometer_frames
 
 config = PhotometryConfig(apertures=ApertureConfig(gap=5, annulus_width=4))
-photometer_frames(["night/"], config=config, output_dir="out/")
+photometer_frames(
+    ["night/"],
+    config=config,
+    output_dir="out/",
+    user_specific_metadata={"observer": "ABCD", "site_elev": 300.0},
+)
 ```
 
 A config cannot be mutated. To vary one top-level field, copy it with
