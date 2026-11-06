@@ -2,7 +2,7 @@
 
 ~~bandaid~~ turns a folder of Smart Telescope (Seestar) FITS frames into AAVSO-style [starlist files](https://github.com/AAVSO/public-utils/tree/main/schemas/starlist).
 
-## To use bandaid
+## To use ~~bandaid~~
 
 Unless you are comfortable working at the command line in a terminal, you should go here to just drag and drop your images: https://mwcraig.github.io/browser-photom/
 
