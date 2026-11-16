@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The add-a-telescope how-to has a "Before you start" checklist: what the
+    timestamp marks, the gain setting, depth, calibration, pedestal and wide
+    fields.
 - Seestar S50 stars whose core pixel the camera overwrote are detected and
     dropped from every filter of that frame; `--no-instrument-flags`
     (`instrument_star_flags=False`) switches this off, and the QA manifest's new

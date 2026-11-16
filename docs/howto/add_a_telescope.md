@@ -5,6 +5,41 @@ and a `header_map` that translates your FITS keywords into the metadata bandaid
 needs. The profile format is specified in the
 [instrument profile reference](../reference/instrument_profiles.md).
 
+## Before you start
+
+Check these on real frames. A new telescope can differ from the Seestar on any of
+them, and nothing in the output will tell you.
+
+- **What the timestamp marks.** Find out whether `DATE-OBS` is the start, middle
+    or end of the exposure, and whether it is UTC or local time. bandaid treats
+    `obs_time` as the UTC start: it writes the value unchanged to the star list
+    and adds half the exposure to get the mid-exposure time. A camera that stamps
+    the end of the exposure gives times one full exposure late. A profile cannot
+    yet state another convention, so report what you found when you contribute
+    the profile.
+- **One gain setting and exposure.** A profile describes the telescope at one
+    camera gain setting. Choose the setting and exposure observers should use,
+    measure `egain` at that setting (the gain in e-/ADU changes with it), and
+    tell observers to use it.
+- **How faint to go.** At that gain and exposure, estimate the faintest Gaia G
+    magnitude at which photometry is still useful. bandaid measures stars down to
+    `source_selection.gaia_mag_limit` (default 15.0); pass your value with
+    `--gaia-mag-limit` until a profile can carry it.
+- **Raw or calibrated frames.** bandaid does not subtract darks or divide by
+    flats, and will not. The Seestar does both in the camera. If your telescope
+    saves raw frames, calibrate them before running bandaid.
+- **Pedestal.** Check whether the frames carry a constant offset and which
+    header keyword records it. Background subtraction removes it from the
+    photometry, but `largest_usable_adu_value` is compared with the pixel values
+    as stored, so it includes the pedestal.
+- **A wide field.** Two configuration defaults were chosen on the Seestar's
+    0.74° field and may stop a wider telescope: `source_selection.gaia_row_limit`
+    (a `CatalogTruncationError` in a dense field) and
+    `centroid.max_plane_rms_pix` (frames skipped for their position plane).
+    Neither is a profile field. For your own runs, set them in a file passed
+    with `--config` (see [Configuration](../reference/configuration.md)), and
+    report the values you needed.
+
 ## 1. Measure plate scale and gain
 
 - `pixscale` (arcsec/px): run a night with your best guess, then take the median of
@@ -14,8 +49,8 @@ needs. The profile format is specified in the
     wrong-scale false solve.
 - `wcs_scale_tolerance`: once `pixscale` is measured, tighten the default `0.05` to
     the spread of the good solves.
-- `egain` (e-/ADU in the file's own units): measure it by photon transfer. A
-    missing gain fails every frame. Give one number for every channel or, where
+- `egain` (e-/ADU in the file's own units): measure it by photon transfer, at
+    the camera gain setting observers will use. A missing gain fails every frame. Give one number for every channel or, where
     the Bayer channels differ, a mapping of filter name to gain; the Seestar50
     profile ships `{"TR": 0.046, "TG": 0.076, "TB": 0.078}`, measured from flat
     pairs. How the gain is recorded per channel, including the `L4` list, is
@@ -192,5 +227,6 @@ repository.
     profiles.
 1. Run `test_bundled_profiles_have_pairwise_disjoint_header_match_rules` in the
     same file. It fails if your `header_match` collides with another profile's.
-1. Open a pull request. No registry code changes are needed: `available_instruments()`
+1. Open a pull request. Say how each value in the profile was measured and on
+    what data. No registry code changes are needed: `available_instruments()`
     scans `meta_json_files/` for every `<name>/profile.json`.
