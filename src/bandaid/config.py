@@ -171,24 +171,7 @@ class SourceSelectionConfig(BaseModel, frozen=True):
     @model_validator(mode="before")
     @classmethod
     def _reject_moved_gaia_mag_limit(cls, data):
-        """
-        Reject ``gaia_mag_limit``, which moved to the instrument profile.
-
-        Parameters
-        ----------
-        data : object
-            The raw input to validation.
-
-        Returns
-        -------
-        object
-            ``data``, unchanged.
-
-        Raises
-        ------
-        ValueError
-            If ``data`` is a mapping with a ``gaia_mag_limit`` key.
-        """
+        """Reject ``gaia_mag_limit``, which moved to the instrument profile."""
         if isinstance(data, Mapping) and "gaia_mag_limit" in data:
             msg = (
                 "source_selection.gaia_mag_limit has moved to the instrument "
@@ -269,24 +252,7 @@ class CentroidConfig(BaseModel, frozen=True, protected_namespaces=()):
     @model_validator(mode="before")
     @classmethod
     def _reject_moved_max_plane_rms_pix(cls, data):
-        """
-        Reject ``max_plane_rms_pix``, which moved to the instrument profile.
-
-        Parameters
-        ----------
-        data : object
-            The raw input to validation.
-
-        Returns
-        -------
-        object
-            ``data``, unchanged.
-
-        Raises
-        ------
-        ValueError
-            If ``data`` is a mapping with a ``max_plane_rms_pix`` key.
-        """
+        """Reject ``max_plane_rms_pix``, which moved to the instrument profile."""
         if isinstance(data, Mapping) and "max_plane_rms_pix" in data:
             msg = (
                 "centroid.max_plane_rms_pix has moved to the instrument profile "

@@ -35,7 +35,7 @@ from astropy.coordinates import SkyCoord
 
 from .ballet import Ballet
 from .catalog import query_field_catalog
-from .config import InstrumentProfile, PhotometryConfig
+from .config import PhotometryConfig
 from .exceptions import (
     BatchPrepError,
     FrameError,
@@ -555,23 +555,19 @@ def _batch_time_zone(instrument, user_specific_metadata):
     ------
     BatchPrepError
         If ``instrument.obs_time_zone`` is ``"local"`` and `time_zone` is
-        None, or names no known zone, or is not a valid UTC offset in hours.
+        neither a known zone name nor a UTC offset in hours.
     """
     time_zone = (user_specific_metadata or {}).get("time_zone")
-    if instrument.obs_time_zone == "local" and time_zone is None:
-        msg = (
-            f"instrument {instrument.name!r} stamps frames in local time; give "
-            "the zone as time_zone in the user metadata (an IANA name such as "
-            '"America/Chicago", or a UTC offset in hours)'
-        )
-        raise BatchPrepError(msg)
     if instrument.obs_time_zone == "local":
+        # None is not a zone either: timedelta rejects it with a TypeError.
         try:
             _tzinfo_from_time_zone(time_zone)
-        except (ZoneInfoNotFoundError, ValueError) as exc:
+        except (ZoneInfoNotFoundError, ValueError, TypeError) as exc:
             msg = (
-                f"time_zone {time_zone!r} in the user metadata is not a known "
-                'zone name (such as "America/Chicago") or a UTC offset in hours'
+                f"instrument {instrument.name!r} stamps frames in local time; "
+                "give the zone as time_zone in the user metadata (an IANA name "
+                'such as "America/Chicago", or a UTC offset in hours), not '
+                f"{time_zone!r}"
             )
             raise BatchPrepError(msg) from exc
     return time_zone
@@ -616,9 +612,6 @@ def _resolve_batch_instrument(config, header, file, photometry_faint_mag_limit):
     the whole batch with no detection/PSF settings to prepare with. So it is
     wrapped here instead of relying on inheritance. The message names ``file``
     because callers do not add the path.
-
-    The profile is validated again with the given limit, so a non-finite
-    ``photometry_faint_mag_limit`` raises `pydantic.ValidationError`.
     """
     try:
         config, auto_detected = resolve_config_instrument(config, header)
@@ -626,11 +619,8 @@ def _resolve_batch_instrument(config, header, file, photometry_faint_mag_limit):
         msg = f"{file}: {exc}"
         raise BatchPrepError(msg) from exc
     if photometry_faint_mag_limit is not None:
-        instrument = InstrumentProfile.model_validate(
-            {
-                **config.instrument.model_dump(),
-                "photometry_faint_mag_limit": photometry_faint_mag_limit,
-            }
+        instrument = config.instrument.model_copy(
+            update={"photometry_faint_mag_limit": photometry_faint_mag_limit}
         )
         config = config.model_copy(update={"instrument": instrument})
     return config, auto_detected
@@ -1129,9 +1119,7 @@ def prepare_batch(
     ValueError
         If ``config.instrument_star_flags`` is True and the instrument names
         a star flagger that is not registered (see
-        `~bandaid.instruments.star_flaggers_for`). Also raised, as a
-        `pydantic.ValidationError`, if ``photometry_faint_mag_limit`` is not
-        finite.
+        `~bandaid.instruments.star_flaggers_for`).
 
     Notes
     -----
@@ -2695,10 +2683,8 @@ def photometer_frames(
     Raises
     ------
     ValueError
-        If the arguments expand to no FITS frames, or
-        ``photometry_faint_mag_limit`` is not finite. `expand_frame_paths` may
-        also raise `ValueError`/`FileNotFoundError` for a malformed path
-        argument.
+        If the arguments expand to no FITS frames. `expand_frame_paths` may also
+        raise `ValueError`/`FileNotFoundError` for a malformed path argument.
     BatchPrepError
         If `prepare_batch` cannot build the once-per-batch preparation: no
         frame can prepare the batch, or the first frame's header does not resolve to

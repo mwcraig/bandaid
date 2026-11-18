@@ -1504,8 +1504,7 @@ def _obs_time_utc_start(metadata, profile, time_zone):
         If the time cannot be parsed; if it carries no UTC offset, the
         profile's zone is ``"local"`` and ``time_zone`` is None; if it falls in
         the hour a clock change repeats or skips in ``time_zone``; or, for a
-        profile whose time is not the start, if the frame is stacked or has no
-        ``exposure``.
+        profile whose time is not the start, if the frame is stacked.
     """
     obs_time = metadata.get("obs_time")
     default = profile.obs_time_marks == "start" and profile.obs_time_zone == "utc"
@@ -1539,6 +1538,9 @@ def _obs_time_utc_start(metadata, profile, time_zone):
             raise FrameMetadataError(msg)
         when = when.replace(tzinfo=zone)
 
+    # To UTC before the shift: subtracting from a zoned time moves the wall
+    # clock, which is off by the clock change when the exposure spans one.
+    when = when.astimezone(UTC)
     if profile.obs_time_marks != "start":
         if float(metadata.get("stack") or 1) > 1:
             msg = (
@@ -1547,16 +1549,10 @@ def _obs_time_utc_start(metadata, profile, time_zone):
                 "frames only"
             )
             raise FrameMetadataError(msg)
-        if (exposure := metadata.get("exposure")) is None:
-            msg = (
-                f"obs_time_marks {profile.obs_time_marks!r} needs the exposure "
-                "time, but the frame has none"
-            )
-            raise FrameMetadataError(msg)
         fraction = 0.5 if profile.obs_time_marks == "middle" else 1.0
-        when -= timedelta(seconds=fraction * float(exposure))
+        when -= timedelta(seconds=fraction * float(metadata["exposure"]))
 
-    return when.astimezone(UTC).replace(tzinfo=None).isoformat()
+    return when.replace(tzinfo=None).isoformat()
 
 
 # The StarList metadata keys the header map or the user must supply: every

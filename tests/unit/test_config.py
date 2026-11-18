@@ -125,7 +125,7 @@ class TestDefaultsMatchLegacyConstants:
 
     def test_instrument_header_match_defaults_to_empty(self):
         """
-        A bare ``InstrumentProfile()`` carries no header-match rules.
+        A bare profile carries no header-match rules.
 
         Device identity must be opt-in: a bare profile shares the Seestar
         *tuning* defaults, but must not accidentally claim to *be* a Seestar
@@ -175,7 +175,7 @@ class TestDefaultsMatchLegacyConstants:
 
     def test_instrument_star_flaggers_default_to_empty(self):
         """
-        A bare ``InstrumentProfile()`` names no star flaggers.
+        A bare profile names no star flaggers.
 
         Instrument-specific star flags are opt-in like ``header_match``: a
         bare or user-built profile runs no instrument code.

@@ -90,7 +90,7 @@ class TestLoadInstrument:
     """``load_instrument`` returns the bundled profile for a known name."""
 
     def test_seestar_tuning_matches_class_defaults(self):
-        """The bundled Seestar50 tuning equals a bare ``InstrumentProfile()``."""
+        """The bundled Seestar50 tuning equals a bare profile."""
         profile = load_instrument("Seestar50")
         default = make_profile()
         assert profile.name == "Seestar50"
@@ -265,7 +265,7 @@ class TestRegister:
         The documented "override a bundled telescope in-process" path --
         ``InstrumentProfile(name='Seestar50', thresh=9.9)``, the natural
         "retune one knob" shape -- used to leave ``header_match`` empty (a
-        bare ``InstrumentProfile()`` defaults it to ``()``), which silently
+        bare profile defaults it to ``()``), which silently
         stripped Seestar50's detection rule: `detect_instrument` then had no
         candidates, and the next flagless run on real Seestar frames raised
         `~bandaid.exceptions.InstrumentDetectionError` for the whole batch
@@ -317,7 +317,7 @@ class TestRegister:
         """
         ``replace=True`` with a fresh profile keeps the replaced header frame.
 
-        A bare ``InstrumentProfile()`` defaults to an ICRS header, so the
+        A bare profile defaults to an ICRS header, so the
         "retune one knob" shape would otherwise stop converting the Seestar's
         equinox-of-date pointing and move the Gaia cone off the field.
         """
@@ -608,7 +608,7 @@ class TestStarFlaggerRegistry:
             star_flaggers_for(profile)
 
     def test_bare_profile_has_no_flaggers(self):
-        """A bare ``InstrumentProfile()`` runs no instrument code."""
+        """A bare profile runs no instrument code."""
         assert star_flaggers_for(make_profile()) == ()
 
     def test_builtin_seestar_flagger_resolves(self):

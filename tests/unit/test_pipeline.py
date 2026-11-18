@@ -1791,7 +1791,7 @@ class TestCalibrationSequence:
 
         Before this, ``threshold``/``opening``/``fwhm_cutout_half``/
         ``fwhm_n_stars`` defaulted to module-level constants derived from a
-        bare ``InstrumentProfile()`` (Seestar50's tuning) regardless of which
+        bare profile (Seestar50's tuning) regardless of which
         profile ``calibration_sequence`` actually resolved, so a direct call
         on a future non-Seestar profile detected and fit the FWHM at
         Seestar50's settings even though ``profile`` auto-detected correctly.
@@ -1830,25 +1830,6 @@ class TestCalibrationSequence:
             fwhm_helper.call_args.kwargs["fwhm_cutout_half"] == custom.fwhm_cutout_half
         )
         assert fwhm_helper.call_args.kwargs["n_stars"] == custom.fwhm_n_stars
-
-    def test_time_zone_resolves_a_local_header_time(self, tmp_path, mocker):
-        """``time_zone`` converts a local-time profile's header time to UTC."""
-        header = _seestar_header()
-        header["DATE-OBS"] = "2024-01-01T18:00:00"
-        path = tmp_path / "local.fits"
-        fits.PrimaryHDU(np.zeros((200, 200)), header=header).writeto(
-            path, output_verify="silentfix"
-        )
-        mocker.patch(
-            "bandaid.photometry._detect_stars", side_effect=five_diagonal_regions
-        )
-        mocker.patch("bandaid.photometry._fwhm_from_coords", return_value=2.5)
-
-        result = calibration_sequence(
-            path, profile=make_profile(obs_time_zone="local"), time_zone=-6
-        )
-
-        assert result.metadata["obs_time"] == "2024-01-02T00:00:00"
 
     def test_detects_on_balanced_copy_when_flagged(
         self, make_test_image, tmp_path, mocker

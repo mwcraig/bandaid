@@ -506,7 +506,7 @@ def _dummy_prep():
         shape=(1920, 1080),
         # A resolved (non-None) instrument, matching what prepare_batch would
         # have already resolved by the time this prep reaches process_batch; a
-        # bare InstrumentProfile() carries no header_match, so the
+        # bare profile carries no header_match, so the
         # check_frame_consistency batch-mixing guard is a no-op here.
         config=PhotometryConfig(instrument=make_profile()),
     )

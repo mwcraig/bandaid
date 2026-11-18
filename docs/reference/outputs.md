@@ -33,12 +33,8 @@ Per-list fields: `obs_time`, `site_lat`, `site_lon`, `site_elev`, `observer`,
 `egain` is the gain its channel was measured with; the `L4` list records a
 median effective gain (see [Instrument profiles](instrument_profiles.md)).
 
-`obs_time` is the UTC start of the exposure. For a profile with the default
-`obs_time_marks` (`"start"`) and `obs_time_zone` (`"utc"`) it is the header
-value as written; otherwise it is converted and written as an ISO string such
-as `2021-06-15T03:45:00` (see
-[Instrument profiles](instrument_profiles.md#observation-time)). The user
-metadata's `time_zone` is not written.
+`obs_time` is the UTC start of the exposure; see
+[Observation time](instrument_profiles.md#observation-time).
 
 Per-star fields (`staritems` rows):
 

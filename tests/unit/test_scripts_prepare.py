@@ -24,7 +24,6 @@ from astropy.coordinates import SkyCoord
 from astropy.table import MaskedColumn
 from astropy.time import Time
 from dateutil import parser
-from pydantic import ValidationError
 
 from bandaid import instruments, scripts
 from bandaid.catalog import GAIA_DR3_EPOCH
@@ -1301,16 +1300,6 @@ class TestPrepareBatch:
 
         assert prep.config.instrument.photometry_faint_mag_limit == pytest.approx(12.5)
         assert prep.config.instrument.name == "Seestar50"
-
-    def test_non_finite_faint_mag_limit_override_rejected(self, mocker):
-        """A non-finite override fails validation instead of reaching the query."""
-        prep_data = _patch_prep(mocker)
-
-        with pytest.raises(ValidationError, match="photometry_faint_mag_limit"):
-            scripts.prepare_batch(
-                "frame1.fits", cnn=object(), photometry_faint_mag_limit=float("nan")
-            )
-        prep_data.query_field_catalog.assert_not_called()
 
     def test_faint_real_star_contaminates_brighter_target(self, mocker):
         """

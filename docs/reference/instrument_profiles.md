@@ -17,23 +17,6 @@ Every key other than `header_match`, `header_map` and `star_flaggers` (below) is
 [Configuration](configuration.md). Choose `header_frame` and `header_equinox` as described in
 [Add a telescope](../howto/add_a_telescope.md#2-write-a-profile).
 
-## Faint limit and plane rms
-
-- `photometry_faint_mag_limit` is the faintest Gaia G magnitude photometered at
-    the telescope's recommended camera gain setting and exposure. The Gaia stars
-    down to it are the photometry targets; the contaminant catalog runs
-    `source_selection.contaminant_mag_offset` magnitudes deeper. The bundled
-    `Seestar50` profile states `15.0`. `bandaid process   --photometry-faint-mag-limit` (from Python, the
-    `photometry_faint_mag_limit` argument of `photometer_frames` or
-    `prepare_batch`) replaces it for one run, on a given or an auto-detected
-    profile.
-- `max_plane_rms_pix` is the largest post-clip rms, in pixels, of the offset
-    plane that places each frame's faint stars
-    ([Star positions](../explanation/star_positions.md)). A frame whose plane fits
-    worse is skipped with `CentroidPlaneError`. The bundled `Seestar50` profile
-    states `1.0`. What a larger value costs is in
-    [Add a telescope](../howto/add_a_telescope.md#2-write-a-profile).
-
 ## Observation time
 
 bandaid works from the UTC time at the start of each exposure. Two fields say
@@ -118,7 +101,7 @@ when any of its rules match. `detect_instrument(header)` considers every
 bundled or registered profile with a non-empty `header_match` and returns the one
 that matches; zero or several matches raise `InstrumentDetectionError`, naming the
 header values checked and the candidate profiles. An empty `header_match` (the
-default, including on a bare `InstrumentProfile()`) means a profile is never
+default) means a profile is never
 auto-detected. The bundled `Seestar50` rule is `INSTRUME == "Seestar S50"`.
 
 `prepare_batch` wraps a detection failure in `BatchPrepError`, chaining
@@ -146,8 +129,7 @@ filter's table, `L4` included, and is dropped from every filter of that frame's
 
 The bundled `Seestar50` profile names one flagger, the built-in
 `seestar_core_replaced` (see
-[Output files](outputs.md#seestar-core-replaced-stars)). The default is empty,
-including on a bare `InstrumentProfile()`, so a custom profile, even one named
+[Output files](outputs.md#seestar-core-replaced-stars)). The default is empty, so a custom profile, even one named
 `Seestar50`, runs no instrument code unless its `star_flaggers` names a
 flagger, or unless it is registered over the bundled one with
 `register_instrument(..., replace=True)` without setting `star_flaggers`, in
@@ -209,10 +191,8 @@ whatever the headers do not: for the bundled `Seestar50` profile that is
 is the minimum ([getting started](../getting_started.md#observer-and-site)); a
 profile whose headers also lack the site position adds `site_lat` and `site_lon`.
 
-A profile with `"obs_time_zone": "local"` also needs `time_zone`: an IANA zone
-name such as `"America/Chicago"`, or the UTC offset in hours as a number
-(`-6`). It is used only to read the header time and is not written to the star
-list; with a `"utc"` profile it is ignored.
+A profile with `"obs_time_zone": "local"` also needs `time_zone`, an IANA zone
+name or the UTC offset in hours as a number (`-6`):
 
 ```json
 {"observer": "ABCD", "site_elev": 300.0, "time_zone": "America/Chicago"}

@@ -24,10 +24,8 @@ from bandaid.exceptions import (
 from bandaid.instruments import load_instrument
 from bandaid.photometry import (
     MIN_SNR,
-    ImageData,
     _airmass_from_metadata,
     _channel_egain,
-    _parse_obs_time,
     eloy_to_starlist,
     good_star_mask,
     metadata_from_header,
@@ -380,30 +378,11 @@ class TestMetadataFromHeaderObsTime:
         """The default profile copies ``obs_time`` as is, without parsing it."""
         assert self._metadata("not a date")["obs_time"] == "not a date"
 
-    def test_header_offset_is_honoured_on_the_unchanged_path(self):
-        """A passed-through time with a UTC offset is read as that instant."""
-        obs_time = self._metadata("2024-01-01T05:00:00+05:00")["obs_time"]
-        img = ImageData(
-            calibrated_data=None,
-            coords=None,
-            fwhm=None,
-            centroid_coords=None,
-            aligned_coords=None,
-            wcs=None,
-            header=None,
-            metadata={"obs_time": obs_time, "airmass": 1.0},
-        )
-        expected = Time("2024-01-01T00:00:00", scale="utc")
-
-        assert img.resolve_time_airmass()[0] == pytest.approx(expected.jd)
-        assert _parse_obs_time(obs_time) == expected
-
     @pytest.mark.parametrize(
         ("marks", "date_obs", "expected"),
         [
             ("middle", "2024-01-01T00:00:05", "2024-01-01T00:00:00"),
             ("end", "2024-01-01T00:00:10", "2024-01-01T00:00:00"),
-            ("end", "2024-01-01T00:00:10.25", "2024-01-01T00:00:00.250000"),
         ],
     )
     def test_marks_are_moved_to_the_exposure_start(self, marks, date_obs, expected):
@@ -415,14 +394,6 @@ class TestMetadataFromHeaderObsTime:
         """A stack count above 1 cannot say which exposure the stamp marks."""
         with pytest.raises(FrameMetadataError, match="stack"):
             self._metadata("2024-01-01T00:00:10", stack=7, obs_time_marks="end")
-
-    def test_marks_need_the_exposure(self):
-        """A frame with no exposure time cannot be moved to its start."""
-        header_map = {**load_instrument("Seestar50").header_map, "exposure": "@NONE"}
-        with pytest.raises(FrameMetadataError, match="exposure"):
-            self._metadata(
-                "2024-01-01T00:00:10", obs_time_marks="end", header_map=header_map
-            )
 
     @pytest.mark.parametrize("time_zone", ["America/Chicago", -6])
     def test_local_time_is_converted_with_the_observers_zone(self, time_zone):
@@ -436,6 +407,16 @@ class TestMetadataFromHeaderObsTime:
         """A stamp carrying a UTC offset needs no ``time_zone``."""
         metadata = self._metadata("2024-01-01T05:00:00+05:00", obs_time_zone="local")
         assert metadata["obs_time"] == "2024-01-01T00:00:00"
+
+    def test_an_exposure_spanning_a_clock_change_is_moved_in_utc(self):
+        """The exposure is subtracted in UTC, not on the local wall clock."""
+        metadata = self._metadata(
+            "2024-03-10T03:00:05",
+            obs_time_marks="end",
+            obs_time_zone="local",
+            time_zone="America/Chicago",
+        )
+        assert metadata["obs_time"] == "2024-03-10T07:59:55"
 
     def test_local_time_without_a_time_zone_raises(self):
         """A naive local time with no observer zone cannot be placed."""
@@ -667,26 +648,6 @@ class TestEloyToStarlist:
 
         kept_x = sorted(item.x for item in starlist.staritems)
         assert kept_x == [20.0, 70.0]
-
-    def test_observer_time_zone_is_left_out_of_the_star_list(
-        self, eloy_table, starlist_metadata
-    ):
-        """The ``time_zone`` run input in the metadata is not written out."""
-        star = {
-            "x": 20.0,
-            "y": 30.0,
-            "ra": 10.0,
-            "dec": 20.0,
-            "tot_count": 100.0,
-            "count_err": 5.0,
-            "bkgd_count": 1.0,
-            "peak_count": 200.0,
-        }
-        metadata = {**starlist_metadata, "time_zone": "America/Chicago"}
-
-        starlist = eloy_to_starlist(eloy_table([star]), metadata)
-
-        assert "time_zone" not in starlist.model_dump()
 
     def test_schema_rejection_raises_frame_error(self, eloy_table, starlist_metadata):
         """

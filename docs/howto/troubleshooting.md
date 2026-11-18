@@ -43,12 +43,9 @@ batch still finishes.
     absent `@KEY` resolves to null) or its value is unparsable. A null behind any
     other required field surfaces as `StarListValidationError` instead. Fix the
     profile and verify with a single-frame `-vv` run
-    ([add a telescope](add_a_telescope.md#4-validate)). A profile whose
-    `obs_time_marks` is `"middle"` or `"end"` also skips a stacked frame (a
-    `stack` count above 1) and one with no exposure time. A profile with
-    `"obs_time_zone": "local"` and a zone name in `time_zone` also skips a frame
-    stamped in the hour the clocks repeat or skip; on the first frame of the
-    batch any of these stops the run instead
+    ([add a telescope](add_a_telescope.md#4-validate)). A profile that
+    sets `obs_time_marks` or `obs_time_zone` can also skip a frame for its time
+    stamp; on the first frame of the batch that stops the run instead
     ([observation time](../reference/instrument_profiles.md#observation-time)).
 - `skipped: NoUsableStarsError` — stars were detected but none survived the quality
     cuts, or none project at least `edge_margin_px` from an edge. Lower `min_snr`
