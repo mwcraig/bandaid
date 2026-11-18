@@ -2,15 +2,18 @@
 
 Every tuning knob lives on one immutable, validated `PhotometryConfig`. Fields,
 defaults, and valid ranges are listed in the
-[configuration reference](../reference/configuration.md).
+[configuration reference](../reference/configuration.md). The faintest
+magnitude photometered is the instrument profile's `photometry_faint_mag_limit`
+(see [Instrument profiles](../reference/instrument_profiles.md)).
 
 ## Change a knob from the command line
 
-Two knobs have their own options (`site.json` is the observer and site file from
+Two values have their own options (`site.json` is the observer and site file from
 [Getting started](../getting_started.md#observer-and-site)):
 
 ```bash
-bandaid process night/ -o out/ --user-metadata site.json --gaia-mag-limit 14 --min-snr 5
+bandaid process night/ -o out/ --user-metadata site.json \
+    --photometry-faint-mag-limit 14 --min-snr 5
 ```
 
 Everything else goes through a JSON config. Write the defaults, edit them, check
@@ -28,7 +31,9 @@ Keys you delete from the file take their defaults, so a config can be as short a
 {"edge_margin_px": 15.0, "apertures": {"gap": 5.0, "annulus_width": 4.0}}
 ```
 
-`--gaia-mag-limit` and `--min-snr` override the matching fields of the file.
+`--min-snr` overrides the matching field of the file, and
+`--photometry-faint-mag-limit` overrides the instrument profile's
+`photometry_faint_mag_limit`.
 
 ## Change a knob from Python
 
@@ -56,7 +61,8 @@ such as `apertures` are rebuilt as above. Invalid values raise at construction.
 
 Too few stars in the output:
 
-- Raise `source_selection.gaia_mag_limit` to target fainter stars.
+- Raise the faint limit with `--photometry-faint-mag-limit` to target fainter
+    stars.
 - Lower `source_selection.min_snr`. The cut is per star and per filter, so a
     color-disadvantaged channel can hold fewer stars than its siblings.
 - Lower `edge_margin_px` if the manifest's `n_edge_dropped` is large.
@@ -80,6 +86,8 @@ Too many or too few `centroid_drift` flags: `drift.drift_tolerance_fwhm` and
 `drift.drift_cap_pix` set the thresholds. The flag never removes rows; see
 [output files](../reference/outputs.md).
 
-Centroid policy (CNN versus modelled positions, `centroid.model_faint_positions`,
-plane-fit skips): see [star positions](../explanation/star_positions.md) and the
-`centroid` rows of the [configuration reference](../reference/configuration.md).
+Centroid policy (CNN versus modelled positions, `centroid.model_faint_positions`):
+see [star positions](../explanation/star_positions.md) and the `centroid` rows
+of the [configuration reference](../reference/configuration.md). Frames skipped
+for their position plane are governed by the instrument profile's
+`max_plane_rms_pix`.

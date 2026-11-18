@@ -33,6 +33,23 @@ SEESTAR_RULE = load_instrument("Seestar50").header_match[0]
 # The bundled Seestar50 plate scale (arcsec/px), read from profile.json so the
 # test WCSs cannot drift from the profile when it is re-measured.
 SEESTAR_PIXSCALE = load_instrument("Seestar50").header_map["pixscale"]
+
+
+def make_profile(**fields: object) -> InstrumentProfile:
+    """
+    Build an `InstrumentProfile` from ``fields``.
+
+    The two fields without a default take the bundled Seestar50 profile's
+    values unless given; every other field not given takes its class default.
+    """
+    seestar = load_instrument("Seestar50")
+    required = {
+        "photometry_faint_mag_limit": seestar.photometry_faint_mag_limit,
+        "max_plane_rms_pix": seestar.max_plane_rms_pix,
+    }
+    return InstrumentProfile(**{**required, **fields})
+
+
 # The per-channel gains the bundled Seestar50 profile is expected to carry.
 SEESTAR_EGAIN = {"TR": 0.046, "TG": 0.076, "TB": 0.078}
 
@@ -491,7 +508,7 @@ def _dummy_prep():
         # have already resolved by the time this prep reaches process_batch; a
         # bare InstrumentProfile() carries no header_match, so the
         # check_frame_consistency batch-mixing guard is a no-op here.
-        config=PhotometryConfig(instrument=InstrumentProfile()),
+        config=PhotometryConfig(instrument=make_profile()),
     )
 
 

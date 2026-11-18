@@ -237,8 +237,8 @@ def _inherit_header_identity(profile, previous):
         wherever ``profile`` did not set them explicitly.
     """
     inherited = {}
-    # The "retune one knob" override shape --
-    # InstrumentProfile(name='Seestar50', thresh=9.9) -- otherwise leaves
+    # The "retune one knob" override shape -- InstrumentProfile(name='Seestar50',
+    # thresh=9.9, plus the two required fields) -- otherwise leaves
     # header_match at the bare-class default (empty), silently stripping
     # the replaced profile's detection rule: detect_instrument would then
     # have no candidates for this name at all.
@@ -291,8 +291,9 @@ def register_instrument(profile, *, replace=False):
       in-process" use case working. When ``replace=True`` and ``profile``
       omits ``header_match``, the replaced profile's ``header_match`` is
       inherited (rather than silently emptied), so the "retune one knob"
-      shape -- e.g. ``InstrumentProfile(name='Seestar50', thresh=9.9)`` --
-      keeps that name auto-detectable. An explicitly supplied
+      shape -- e.g. ``InstrumentProfile(name='Seestar50', thresh=9.9,
+      photometry_faint_mag_limit=15.0, max_plane_rms_pix=1.0)`` -- keeps that
+      name auto-detectable. An explicitly supplied
       ``header_match``, including ``()``, is honoured as given.
       ``star_flaggers`` is inherited the same way, so the replacement keeps
       running the replaced profile's instrument flags unless it sets

@@ -18,11 +18,13 @@ from _helpers import (
     _consistency_header,
     _patch_prep,
     _stub_load_frame,
+    make_profile,
 )
 from astropy.coordinates import SkyCoord
 from astropy.table import MaskedColumn
 from astropy.time import Time
 from dateutil import parser
+from pydantic import ValidationError
 
 from bandaid import instruments, scripts
 from bandaid.catalog import GAIA_DR3_EPOCH
@@ -30,7 +32,6 @@ from bandaid.config import (
     ApertureConfig,
     CentroidConfig,
     HeaderMatchRule,
-    InstrumentProfile,
     PhotometryConfig,
     SourceSelectionConfig,
 )
@@ -118,11 +119,11 @@ class TestEstimateCenterFromHeader:
 
     # A profile whose header pointing is in the equinox of the observation date,
     # like the bundled Seestar50.
-    OF_DATE = InstrumentProfile(header_frame="fk5", header_equinox="date")
+    OF_DATE = make_profile(header_frame="fk5", header_equinox="date")
 
     def test_icrs_header_is_returned_unchanged(self):
         """An ICRS header pointing passes through unconverted."""
-        profile = InstrumentProfile(header_frame="icrs")
+        profile = make_profile(header_frame="icrs")
         metadata = {"ra": 10.0, "dec": 30.0, "obs_time": "2026-04-28T03:03:43"}
 
         assert scripts.estimate_center_from_header(metadata, profile) == (10.0, 30.0)
@@ -131,14 +132,14 @@ class TestEstimateCenterFromHeader:
         """A bare profile treats the header as ICRS, so nothing is converted."""
         metadata = {"ra": 10.0, "dec": 30.0}
 
-        center = scripts.estimate_center_from_header(metadata, InstrumentProfile())
+        center = scripts.estimate_center_from_header(metadata, make_profile())
 
         assert center == (10.0, 30.0)
 
     def test_icrs_ra_is_wrapped_into_range(self):
         """An out-of-range ICRS header RA is wrapped into [0, 360)."""
         ra, dec = scripts.estimate_center_from_header(
-            {"ra": -0.22, "dec": 0.0}, InstrumentProfile()
+            {"ra": -0.22, "dec": 0.0}, make_profile()
         )
 
         assert ra == pytest.approx(359.78)
@@ -172,7 +173,7 @@ class TestEstimateCenterFromHeader:
 
     def test_fk5_j2000_header_moves_only_by_the_frame_tie(self):
         """An FK5 J2000 header differs from ICRS by well under an arcsecond."""
-        profile = InstrumentProfile(header_frame="fk5", header_equinox="J2000")
+        profile = make_profile(header_frame="fk5", header_equinox="J2000")
 
         ra, dec = scripts.estimate_center_from_header(
             {"ra": 10.0, "dec": 30.0}, profile
@@ -185,7 +186,7 @@ class TestEstimateCenterFromHeader:
 
     def test_fixed_equinox_ignores_the_observation_time(self):
         """A fixed header equinox gives one answer whatever (or no) obs_time."""
-        profile = InstrumentProfile(header_frame="fk5", header_equinox="J2025.5")
+        profile = make_profile(header_frame="fk5", header_equinox="J2025.5")
         pointing = {"ra": 10.0, "dec": 30.0}
 
         without_time = scripts.estimate_center_from_header(pointing, profile)
@@ -219,7 +220,7 @@ class TestEstimateCenterFromHeader:
         # as a numeric string.
         metadata = {"ra": "10.0", "dec": "0.0"}
 
-        center = scripts.estimate_center_from_header(metadata, InstrumentProfile())
+        center = scripts.estimate_center_from_header(metadata, make_profile())
 
         assert center == (10.0, 0.0)
 
@@ -243,11 +244,11 @@ class TestEstimateCenterFromHeader:
         ``KeyError``/``TypeError``/``ValueError``.
         """
         with pytest.raises(FrameMetadataError, match="pointing"):
-            scripts.estimate_center_from_header(metadata, InstrumentProfile())
+            scripts.estimate_center_from_header(metadata, make_profile())
 
     @pytest.mark.parametrize(
         "profile",
-        [InstrumentProfile(), OF_DATE],
+        [make_profile(), OF_DATE],
         ids=["icrs", "fk5-of-date"],
     )
     def test_out_of_range_dec_raises_metadata_error(self, profile):
@@ -313,9 +314,7 @@ class TestPrepareBatch:
         register_star_flagger(
             "stateless", StarFlagger(column="other", flag=_flag_nothing)
         )
-        instrument = InstrumentProfile(
-            name="ToyScope", star_flaggers=("toy", "stateless")
-        )
+        instrument = make_profile(name="ToyScope", star_flaggers=("toy", "stateless"))
         frames = [np.full(_STATE_SHAPE, value, dtype=np.uint16) for value in range(3)]
 
         prep = scripts.prepare_batch(
@@ -351,7 +350,7 @@ class TestPrepareBatch:
                 n_state_frames=1,
             ),
         )
-        instrument = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        instrument = make_profile(name="ToyScope", star_flaggers=("toy",))
 
         prep = scripts.prepare_batch(
             "frame1.fits",
@@ -381,7 +380,7 @@ class TestPrepareBatch:
                 n_state_frames=1,
             ),
         )
-        instrument = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        instrument = make_profile(name="ToyScope", star_flaggers=("toy",))
         override = 12345
 
         prep = scripts.prepare_batch(
@@ -408,7 +407,7 @@ class TestPrepareBatch:
                 n_state_frames=2,
             ),
         )
-        instrument = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        instrument = make_profile(name="ToyScope", star_flaggers=("toy",))
 
         prep = scripts.prepare_batch(
             "frame1.fits", cnn=object(), config=PhotometryConfig(instrument=instrument)
@@ -424,7 +423,7 @@ class TestPrepareBatch:
             "toy",
             StarFlagger(column="core_replaced", flag=_flag_nothing, n_state_frames=2),
         )
-        instrument = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        instrument = make_profile(name="ToyScope", star_flaggers=("toy",))
 
         prep = scripts.prepare_batch(
             "frame1.fits",
@@ -453,7 +452,7 @@ class TestPrepareBatch:
                 n_state_frames=2,
             ),
         )
-        instrument = InstrumentProfile(name="ToyScope", star_flaggers=("toy", "typo"))
+        instrument = make_profile(name="ToyScope", star_flaggers=("toy", "typo"))
         frames = [np.zeros(_STATE_SHAPE, dtype=np.uint16)] * 2
 
         prep = scripts.prepare_batch(
@@ -501,7 +500,7 @@ class TestPrepareBatch:
                 n_state_frames=1,
             ),
         )
-        instrument = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        instrument = make_profile(name="ToyScope", star_flaggers=("toy",))
 
         with pytest.raises(
             BatchPrepError, match="star flagger 'toy' failed to build its state"
@@ -519,7 +518,7 @@ class TestPrepareBatch:
     def test_unknown_flagger_fails_at_prep_without_state_frames(self, mocker):
         """A typo in ``star_flaggers`` fails ``prepare_batch``, state frames or not."""
         _patch_prep(mocker)
-        instrument = InstrumentProfile(name="ToyScope", star_flaggers=("typo",))
+        instrument = make_profile(name="ToyScope", star_flaggers=("typo",))
 
         with pytest.raises(ValueError, match="typo"):
             scripts.prepare_batch(
@@ -534,7 +533,7 @@ class TestPrepareBatch:
         register_star_flagger(
             "toy", StarFlagger(column="core_replaced", flag=_flag_nothing)
         )
-        instrument = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        instrument = make_profile(name="ToyScope", star_flaggers=("toy",))
 
         with caplog.at_level(logging.INFO, logger="bandaid.scripts"):
             scripts.prepare_batch(
@@ -630,7 +629,7 @@ class TestPrepareBatch:
                 n_state_frames=3,
             ),
         )
-        instrument = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        instrument = make_profile(name="ToyScope", star_flaggers=("toy",))
         small = np.zeros(_STATE_SHAPE, dtype=np.uint16)
         large = [np.full((80, 80), value, dtype=np.uint16) for value in range(2)]
 
@@ -666,7 +665,7 @@ class TestPrepareBatch:
                 n_state_frames=2,
             ),
         )
-        instrument = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        instrument = make_profile(name="ToyScope", star_flaggers=("toy",))
 
         prep = scripts.prepare_batch(
             "frame1.fits",
@@ -749,7 +748,7 @@ class TestPrepareBatch:
     def test_explicit_instrument_is_not_marked_auto_detected(self, mocker):
         """An explicit instrument records ``instrument_auto_detected=False``."""
         _patch_prep(mocker)
-        instrument = InstrumentProfile(name="MyScope")
+        instrument = make_profile(name="MyScope")
 
         prep = scripts.prepare_batch(
             "frame1.fits",
@@ -816,7 +815,7 @@ class TestPrepareBatch:
         wrong for any other telescope.
         """
         prep_data = _patch_prep(mocker)
-        instrument = InstrumentProfile(name="MyScope")
+        instrument = make_profile(name="MyScope")
         scripts.prepare_batch(
             "frame1.fits",
             cnn=object(),
@@ -847,7 +846,7 @@ class TestPrepareBatch:
         _stub_load_frame(mocker)
 
         config = PhotometryConfig(
-            instrument=InstrumentProfile(name="Seestar50", fwhm_n_stars=fwhm_n_stars)
+            instrument=make_profile(name="Seestar50", fwhm_n_stars=fwhm_n_stars)
         )
         with pytest.raises(BatchPrepError):
             scripts.prepare_batch("first.fits", cnn=object(), config=config)
@@ -870,12 +869,11 @@ class TestPrepareBatch:
         """
         prep_data = _patch_prep(mocker)
         instrument = load_instrument("Seestar50").model_copy(
-            update={"cone_radius_margin": 0.25}
+            update={"cone_radius_margin": 0.25, "photometry_faint_mag_limit": 14.5}
         )
         config = PhotometryConfig(
             instrument=instrument,
             source_selection=SourceSelectionConfig(
-                gaia_mag_limit=14.5,
                 contaminant_mag_offset=2.0,
                 gaia_row_limit=ROW_LIMIT,
             ),
@@ -913,7 +911,7 @@ class TestPrepareBatch:
     def test_icrs_profile_centers_on_raw_header(self, mocker):
         """A profile with an ICRS header queries Gaia at the header pointing."""
         prep_data = _patch_prep(mocker)
-        instrument = InstrumentProfile(name="IcrsHeader")
+        instrument = make_profile(name="IcrsHeader")
 
         scripts.prepare_batch(
             "frame1.fits",
@@ -1083,7 +1081,7 @@ class TestPrepareBatch:
         """
         assert fake_vizier is not None  # patching Vizier is the fixture's job
         # An extreme-PM bright star and a masked-PM faint star. Fixture mags
-        # (8.8, 13.5, 14.1) are within gaia_mag_limit and the stars are ~arcmin
+        # (8.8, 13.5, 14.1) are within the faint limit and the stars are ~arcmin
         # apart, so none are dropped by the mag cut or contamination flagging.
         # NaN sits beneath the mask, as in the real astroquery round-trip
         # (https://github.com/mwcraig/bandaid/issues/80).
@@ -1179,7 +1177,7 @@ class TestPrepareBatch:
         radecs = np.array([[10.0, 0.0], [10.0 + sep_arcsec / 3600.0, 0.0], [10.2, 0.0]])
         mags = np.array([12.0, 12.0, 10.0])
         _patch_prep(mocker, radecs_mags=(radecs, mags), fwhm_pix=fwhm_pix)
-        no_margin = InstrumentProfile(contamination_seeing_margin=1.0)
+        no_margin = make_profile(contamination_seeing_margin=1.0)
 
         kept = scripts.prepare_batch(
             "frame1.fits",
@@ -1219,7 +1217,7 @@ class TestPrepareBatch:
             "frame1.fits",
             cnn=object(),
             config=PhotometryConfig(
-                instrument=InstrumentProfile(contamination_seeing_margin=1.0)
+                instrument=make_profile(contamination_seeing_margin=1.0)
             ),
         )
         np.testing.assert_allclose(kept.photometry_coords.ra.deg, radecs[:, 0])
@@ -1228,43 +1226,60 @@ class TestPrepareBatch:
             "frame1.fits",
             cnn=object(),
             config=PhotometryConfig(
-                instrument=InstrumentProfile(contamination_seeing_margin=1.3)
+                instrument=make_profile(contamination_seeing_margin=1.3)
             ),
         )
         np.testing.assert_allclose(flagged.photometry_coords.ra.deg, radecs[[2], 0])
 
     @pytest.mark.parametrize(
-        ("gaia_mag_limit", "n_kept"),
+        ("faint_mag_limit", "n_kept"),
         [
-            # Default limit of 15 cuts 15.1/16.0 but keeps 15.0 itself.
+            # The Seestar50 profile's limit of 15 cuts 15.1/16.0 but keeps 15.0.
             (None, 2),
-            # An explicit limit cuts at that magnitude instead.
+            # A per-run override cuts at that magnitude instead.
             (12.0, 1),
         ],
-        ids=["default-limit-15", "custom-limit-12"],
+        ids=["profile-limit-15", "override-12"],
     )
-    def test_gaia_mag_limit_drops_faint_stars(self, mocker, gaia_mag_limit, n_kept):
-        """Stars fainter than the (default or explicit) Gaia mag limit are cut."""
+    def test_faint_mag_limit_drops_faint_stars(self, mocker, faint_mag_limit, n_kept):
+        """Stars fainter than the profile's (or the overriding) limit are cut."""
         radecs = np.array([[10.0, 0.0], [10.1, 0.0], [10.2, 0.0], [10.3, 0.0]])
         mags = np.array([12.0, 15.0, 15.1, 16.0])
         _patch_prep(mocker, radecs_mags=(radecs, mags))
 
-        config_kwargs = (
-            {}
-            if gaia_mag_limit is None
-            else {
-                "config": PhotometryConfig(
-                    source_selection=SourceSelectionConfig(
-                        gaia_mag_limit=gaia_mag_limit
-                    )
-                )
-            }
+        prep = scripts.prepare_batch(
+            "frame1.fits", cnn=object(), photometry_faint_mag_limit=faint_mag_limit
         )
-        prep = scripts.prepare_batch("frame1.fits", cnn=object(), **config_kwargs)
 
         np.testing.assert_array_equal(prep.radecs, radecs[:n_kept])
         # The kept stars are degrees apart, so none are contamination-flagged.
         np.testing.assert_allclose(prep.photometry_coords.ra.deg, radecs[:n_kept, 0])
+
+    @pytest.mark.parametrize(
+        "config",
+        [None, PhotometryConfig(instrument=load_instrument("Seestar50"))],
+        ids=["auto-detected", "explicit"],
+    )
+    def test_faint_mag_limit_override_is_carried_on_the_prep(self, mocker, config):
+        """The overridden limit is the one the prep's instrument carries."""
+        _patch_prep(mocker)
+
+        prep = scripts.prepare_batch(
+            "frame1.fits", cnn=object(), config=config, photometry_faint_mag_limit=12.5
+        )
+
+        assert prep.config.instrument.photometry_faint_mag_limit == pytest.approx(12.5)
+        assert prep.config.instrument.name == "Seestar50"
+
+    def test_non_finite_faint_mag_limit_override_rejected(self, mocker):
+        """A non-finite override fails validation instead of reaching the query."""
+        prep_data = _patch_prep(mocker)
+
+        with pytest.raises(ValidationError, match="photometry_faint_mag_limit"):
+            scripts.prepare_batch(
+                "frame1.fits", cnn=object(), photometry_faint_mag_limit=float("nan")
+            )
+        prep_data.query_field_catalog.assert_not_called()
 
     def test_faint_real_star_contaminates_brighter_target(self, mocker):
         """
@@ -1273,11 +1288,12 @@ class TestPrepareBatch:
         The mag-16 star sits ~1 arcsec from the mag-14 star -- well inside the
         ~7.5 arcsec the contamination model requires for that pair at this FWHM. It
         is fainter than the photometry limit of 15, so it is *not* a photometry
-        target, but it is within the default contaminant limit (gaia_mag_limit + 3
-        = 18), so it still contaminates the mag-14 target. The mag-14 star is
-        therefore flagged and dropped from ``photometry_coords``; only the
-        isolated mag-10 star survives. ``radecs`` (the alignment catalog) keeps
-        both targets regardless of contamination. Fixes
+        target, but it is within the default contaminant limit
+        (photometry_faint_mag_limit + 3 = 18), so it still contaminates the
+        mag-14 target. The mag-14 star is therefore flagged and dropped from
+        ``photometry_coords``; only the isolated mag-10 star survives.
+        ``radecs`` (the alignment catalog) keeps both targets regardless of
+        contamination. Fixes
         https://github.com/mwcraig/bandaid/issues/24.
         """
         radecs = np.array([[10.0, 0.0], [10.0 + 1.0 / 3600.0, 0.0], [10.2, 0.0]])
@@ -1297,10 +1313,10 @@ class TestPrepareBatch:
         ``contaminant_mag_offset`` caps which faint stars can flag a target.
 
         Same close pair as ``test_faint_real_star_contaminates_brighter_target``,
-        but a small ``contaminant_mag_offset=0.5`` shrinks the contaminant limit to
-        ``gaia_mag_limit + 0.5 = 15.5``, which excludes the mag-16 neighbor from the
-        contaminant catalog entirely, so the mag-14 target is no longer flagged and
-        survives into ``photometry_coords``.
+        but a small ``contaminant_mag_offset=0.5`` shrinks the contaminant limit
+        to ``photometry_faint_mag_limit + 0.5 = 15.5``, which excludes the
+        mag-16 neighbor from the contaminant catalog entirely, so the mag-14
+        target is no longer flagged and survives into ``photometry_coords``.
         """
         radecs = np.array([[10.0, 0.0], [10.0 + 1.0 / 3600.0, 0.0], [10.2, 0.0]])
         mags = np.array([14.0, 16.0, 10.0])
@@ -1486,7 +1502,7 @@ class TestPrepareBatch:
         """An explicit selection still skips a later frame naming another profile."""
         with isolate_registry(instruments, "_REGISTERED"):
             register_instrument(
-                InstrumentProfile(
+                make_profile(
                     name="OtherScope",
                     header_match=(
                         HeaderMatchRule(keyword="INSTRUME", pattern="Other Scope"),
@@ -2018,7 +2034,7 @@ class TestBatchPrep:
             "center": (10.0, 0.0),
             "fov_rad": 0.74,
             "shape": (1920, 1080),
-            "config": PhotometryConfig(instrument=InstrumentProfile()),
+            "config": PhotometryConfig(instrument=make_profile()),
         }
         fields.update(overrides)
         return fields
@@ -2041,7 +2057,7 @@ class TestBatchPrep:
     def test_resolved_instrument_constructs_fine(self):
         """A ``config`` with an explicit, resolved instrument constructs fine."""
         prep = scripts.BatchPrep(
-            **self._kwargs(config=PhotometryConfig(instrument=InstrumentProfile()))
+            **self._kwargs(config=PhotometryConfig(instrument=make_profile()))
         )
         assert prep.config.instrument is not None
 
@@ -2092,10 +2108,10 @@ class TestCheckFrameConsistency:
             "shape": (1920, 1080),
             # A resolved (non-None) instrument, matching what prepare_batch
             # would have already resolved by the time check_frame_consistency
-            # runs; a bare InstrumentProfile() carries no header_match, so the
+            # runs; a bare make_profile() carries no header_match, so the
             # batch-mixing guard (only enforced when header_match is
             # non-empty) is a no-op here unless a test overrides this.
-            "config": PhotometryConfig(instrument=InstrumentProfile()),
+            "config": PhotometryConfig(instrument=make_profile()),
         }
         fields.update(overrides)
         return scripts.BatchPrep(
@@ -2139,9 +2155,7 @@ class TestCheckFrameConsistency:
     def _margin_prep(margin) -> scripts.BatchPrep:
         """A prep whose instrument carries the given cone margin."""
         return TestCheckFrameConsistency._prep(
-            config=PhotometryConfig(
-                instrument=InstrumentProfile(cone_radius_margin=margin)
-            )
+            config=PhotometryConfig(instrument=make_profile(cone_radius_margin=margin))
         )
 
     def test_returns_offset_from_batch_center(self):
@@ -2199,7 +2213,7 @@ class TestCheckFrameConsistency:
 
     def test_fk5_of_date_frame_compared_in_icrs(self):
         """With an fk5/"date" profile the frame's converted center is compared."""
-        profile = InstrumentProfile(header_frame="fk5", header_equinox="date")
+        profile = make_profile(header_frame="fk5", header_equinox="date")
         obs_time = "2026-04-28T03:03:43"
         header = _consistency_header(**{"DATE-OBS": obs_time})
         center = scripts.estimate_center_from_header(
@@ -2212,7 +2226,7 @@ class TestCheckFrameConsistency:
 
     def test_fk5_of_date_frame_without_obs_time_labeled_with_file(self):
         """An fk5/"date" frame lacking DATE-OBS is a metadata error naming the file."""
-        profile = InstrumentProfile(header_frame="fk5", header_equinox="date")
+        profile = make_profile(header_frame="fk5", header_equinox="date")
         prep = self._prep(config=PhotometryConfig(instrument=profile))
         header = _consistency_header()
         del header["DATE-OBS"]
@@ -2258,11 +2272,11 @@ class TestCheckFrameConsistency:
         # RA/DEC in the header at all: the check must consult the header_map,
         # not the raw Seestar keywords.
         custom_map = {
-            **dict(InstrumentProfile().header_map),
+            **dict(make_profile().header_map),
             "ra": "@OBJCTRA",
             "dec": "@OBJCTDEC",
         }
-        profile = InstrumentProfile(name="Renamed", header_map=custom_map)
+        profile = make_profile(name="Renamed", header_map=custom_map)
         prep = self._prep(config=PhotometryConfig(instrument=profile))
         header = _consistency_header(OBJCTRA=10.0, OBJCTDEC=0.0)
         del header["RA"]
@@ -2346,7 +2360,7 @@ class TestCheckFrameConsistency:
         *different, registered* instrument; only a header matching nothing at
         all is exempt (see the sibling test above).
         """
-        other = InstrumentProfile(
+        other = make_profile(
             name="OtherScope",
             header_match=(HeaderMatchRule(keyword="INSTRUME", pattern="Other Scope"),),
         )
@@ -2372,10 +2386,10 @@ class TestCheckFrameConsistency:
         ``header`` and the batch instrument, so it runs first.
         """
         custom_header_map = {
-            **dict(InstrumentProfile().header_map),
+            **dict(make_profile().header_map),
             "egain": "@EGAIN",
         }
-        custom = InstrumentProfile(
+        custom = make_profile(
             name="CustomScope",
             header_match=(HeaderMatchRule(keyword="INSTRUME", pattern="CustomScope"),),
             header_map=custom_header_map,
@@ -2444,7 +2458,7 @@ class TestCheckFrameConsistency:
         correct here: the header did carry an identifying keyword, just with
         the wrong value.
         """
-        custom = InstrumentProfile(
+        custom = make_profile(
             name="MultiRuleScope",
             header_match=(
                 HeaderMatchRule(keyword="INSTRUME", pattern="Foo"),
@@ -2473,7 +2487,7 @@ class TestCheckFrameConsistency:
         instrument's own rule, because detection itself could not have picked
         the batch instrument unambiguously from this header.
         """
-        clone = InstrumentProfile(
+        clone = make_profile(
             name="Clone",
             header_match=(SEESTAR_RULE,),
         )
@@ -2504,7 +2518,7 @@ class TestCheckFrameConsistency:
         escape hatch is for a header that identifies nothing, not one that
         positively identifies more than one instrument.
         """
-        clone = InstrumentProfile(
+        clone = make_profile(
             name="Clone",
             header_match=(SEESTAR_RULE,),
         )
@@ -2540,7 +2554,7 @@ class TestCheckFrameConsistency:
         must not send the user hunting for a detection problem.
         """
         register_instrument(
-            InstrumentProfile(
+            make_profile(
                 name="OtherScope",
                 header_match=(
                     HeaderMatchRule(keyword="INSTRUME", pattern="Other Scope"),

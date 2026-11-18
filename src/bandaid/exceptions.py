@@ -207,8 +207,8 @@ class CatalogTruncationError(BatchPrepError):
     """
     The Gaia query hit its row limit before reaching the target magnitude limit.
 
-    Photometry targets brighter than ``gaia_mag_limit`` were dropped, so the
-    batch cannot be trusted.
+    Photometry targets brighter than the instrument's
+    ``photometry_faint_mag_limit`` were dropped, so the batch cannot be trusted.
     """
 
 

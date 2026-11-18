@@ -6,7 +6,7 @@ import warnings
 import astropy.units as u
 import numpy as np
 import pytest
-from _helpers import SEESTAR_EGAIN, _seestar_header
+from _helpers import SEESTAR_EGAIN, _seestar_header, make_profile
 from aavso_starlist_schema import StarItem
 from astropy.coordinates import AltAz, EarthLocation, SkyCoord
 from astropy.io import fits
@@ -14,7 +14,7 @@ from astropy.table import Table
 from astropy.time import Time
 from astropy.utils import iers
 
-from bandaid.config import InstrumentProfile, SourceSelectionConfig
+from bandaid.config import SourceSelectionConfig
 from bandaid.exceptions import (
     FrameMetadataError,
     InstrumentDetectionError,
@@ -200,7 +200,7 @@ class TestAirmassFromMetadata:
             "dec": "@OBJCTDEC",
             "egain": 1.0,
         }
-        profile = InstrumentProfile(name="Renamed", header_map=custom_map)
+        profile = make_profile(name="Renamed", header_map=custom_map)
         ra, dec = self._pointing_at_altitude(89.0)
         header = fits.Header()
         header["NAXIS1"] = 50
@@ -309,7 +309,7 @@ class TestMetadataFromHeader:
         base = load_instrument("Seestar50")
         # Re-point the exposure binding at a different header keyword.
         custom_map = {**base.header_map, "exposure": "@MYEXP"}
-        profile = InstrumentProfile(name="Custom", header_map=custom_map)
+        profile = make_profile(name="Custom", header_map=custom_map)
 
         header = _seestar_header()
         header["MYEXP"] = expected_exposure
@@ -666,7 +666,7 @@ class TestMetadataFromHeaderGuard:
         # no instrument, which is InstrumentDetectionError, not this test's
         # concern): the point here is the *template* keyword resolution.
         with pytest.raises(FrameMetadataError):
-            metadata_from_header(fits.Header(), profile=InstrumentProfile())
+            metadata_from_header(fits.Header(), profile=make_profile())
 
     def test_per_channel_egain_with_a_missing_value_raises(self):
         """A per-channel ``egain`` mapping with a None entry names the channel."""
@@ -675,7 +675,7 @@ class TestMetadataFromHeaderGuard:
             **load_instrument("Seestar50").header_map,
             "egain": {"TR": 0.046, "TG": None, "TB": 0.075},
         }
-        profile = InstrumentProfile(name="Gappy", header_map=header_map)
+        profile = make_profile(name="Gappy", header_map=header_map)
 
         with pytest.raises(FrameMetadataError, match="TG"):
             metadata_from_header(header, profile=profile)

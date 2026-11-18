@@ -6,8 +6,8 @@ constants in :mod:`bandaid.photometry`. Those constants fall into three risk
 classes that this module makes explicit:
 
 - **Science knobs** a user legitimately sets per run -- aperture radii, the
-  background annulus, and the Gaia magnitude limits (`ApertureConfig`,
-  `SourceSelectionConfig`).
+  background annulus, the contaminant depth and the SNR floor
+  (`ApertureConfig`, `SourceSelectionConfig`).
 - **Centroid-drift cuts** that flag/drop measurements whose centroid wandered
   (`DriftConfig`).
 - **Instrument / per-telescope** settings that depend on the pixel scale, the
@@ -138,25 +138,20 @@ class ApertureConfig(BaseModel, frozen=True):
 
 class SourceSelectionConfig(BaseModel, frozen=True):
     """
-    Gaia magnitude limits selecting which catalogue stars are measured and flagged.
+    Settings selecting which catalogue stars are flagged and which reach the output.
 
     These knobs do not perform source *detection* (that is the instrument's
-    ``thresh``/``detection_opening``); they choose which Gaia stars become
-    photometry *targets* and which deeper stars are treated as potential
-    *contaminants*. The derived ``contaminant_mag_limit`` property exposes the
-    resulting contaminant-catalogue depth (``gaia_mag_limit +
-    contaminant_mag_offset``); tune ``contaminant_mag_offset`` rather than setting
-    it directly.
+    ``thresh``/``detection_opening``). The photometry *targets* are the Gaia
+    stars down to the instrument profile's ``photometry_faint_mag_limit``; the
+    *contaminant* catalogue runs ``contaminant_mag_offset`` magnitudes deeper.
 
     Attributes
     ----------
-    gaia_mag_limit : float
-        Magnitude limit for the photometry *targets* -- the stars actually
-        measured and used to align each frame. Must be finite.
     contaminant_mag_offset : float
-        How many magnitudes deeper than ``gaia_mag_limit`` the *contaminant*
-        catalogue runs. Must be positive (and finite), which guarantees the
-        contaminant list is always deeper than the target list.
+        How many magnitudes deeper than the profile's
+        ``photometry_faint_mag_limit`` the *contaminant* catalogue runs. Must be
+        positive (and finite), which guarantees the contaminant list is always
+        deeper than the target list.
     min_snr : float
         Minimum signal-to-noise ratio a star must have to reach the output (see
         `~bandaid.photometry.good_star_mask`). Must be finite and non-negative;
@@ -169,28 +164,39 @@ class SourceSelectionConfig(BaseModel, frozen=True):
         error when target-depth stars are lost. Must be ``>= 1``.
     """
 
-    # Finiteness is enforced by the `allow_inf_nan=False` annotation: a non-finite
-    # limit makes the downstream contaminant mask silently misbehave (a nan limit
-    # yields an all-False mask and a length mismatch), so it is rejected at
-    # construction rather than caught deep in a batch.
-    gaia_mag_limit: Annotated[float, Field(allow_inf_nan=False)] = 15.0
     contaminant_mag_offset: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 3.0
     min_snr: Annotated[float, Field(ge=0, allow_inf_nan=False)] = 2.0
     gaia_row_limit: Annotated[int, Field(ge=1)] = 10000
 
-    @computed_field
-    @property
-    def contaminant_mag_limit(self) -> float:
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_moved_gaia_mag_limit(cls, data):
         """
-        Magnitude limit for the deeper contaminant-flagging catalogue.
+        Reject ``gaia_mag_limit``, which moved to the instrument profile.
+
+        Parameters
+        ----------
+        data : object
+            The raw input to validation.
 
         Returns
         -------
-        float
-            ``gaia_mag_limit + contaminant_mag_offset`` -- always deeper than the
-            target limit because the offset is positive.
+        object
+            ``data``, unchanged.
+
+        Raises
+        ------
+        ValueError
+            If ``data`` is a mapping with a ``gaia_mag_limit`` key.
         """
-        return self.gaia_mag_limit + self.contaminant_mag_offset
+        if isinstance(data, Mapping) and "gaia_mag_limit" in data:
+            msg = (
+                "source_selection.gaia_mag_limit has moved to the instrument "
+                "profile as photometry_faint_mag_limit; delete it here, and use "
+                "--photometry-faint-mag-limit to override the profile for one run"
+            )
+            raise ValueError(msg)
+        return data
 
 
 class DriftConfig(BaseModel, frozen=True):
@@ -238,15 +244,14 @@ class CentroidConfig(BaseModel, frozen=True, protected_namespaces=()):
         Per-axis clipping threshold, in robust standard deviations (1.4826
         times the median absolute deviation), for the one clip and refit of
         the plane.
-    max_plane_rms_pix : float
-        Largest post-clip rms, in pixels, of the plane fit to its own stars. A
-        frame above it is skipped rather than photometered.
 
     Notes
     -----
     The plane is fitted to ``CNN - projected`` positions, so it absorbs the
     small systematic offset between the CNN's centroids and the projected
-    catalog positions. It is unweighted and of first order in each axis.
+    catalog positions. It is unweighted and of first order in each axis. The
+    largest rms a frame's plane may have is the instrument profile's
+    ``max_plane_rms_pix``.
     """
 
     model_faint_positions: bool = True
@@ -260,7 +265,35 @@ class CentroidConfig(BaseModel, frozen=True, protected_namespaces=()):
     # keeps the fit well-determined after clipping.
     min_fit_stars: Annotated[int, Field(ge=3)] = 12
     clip_sigma: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 3.0
-    max_plane_rms_pix: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 1.0
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_moved_max_plane_rms_pix(cls, data):
+        """
+        Reject ``max_plane_rms_pix``, which moved to the instrument profile.
+
+        Parameters
+        ----------
+        data : object
+            The raw input to validation.
+
+        Returns
+        -------
+        object
+            ``data``, unchanged.
+
+        Raises
+        ------
+        ValueError
+            If ``data`` is a mapping with a ``max_plane_rms_pix`` key.
+        """
+        if isinstance(data, Mapping) and "max_plane_rms_pix" in data:
+            msg = (
+                "centroid.max_plane_rms_pix has moved to the instrument profile "
+                "as max_plane_rms_pix; delete it here and set it in the profile"
+            )
+            raise ValueError(msg)
+        return data
 
     @model_validator(mode="after")
     def _fit_set_can_reach_minimum(self) -> "CentroidConfig":
@@ -330,10 +363,13 @@ class InstrumentProfile(BaseModel, frozen=True):
     """
     A named telescope: detection/FWHM/PSF settings plus its FITS-header dialect.
 
-    The defaults are the Seestar50 values, except for ``header_frame``,
-    ``header_equinox`` and ``header_match``, which default to an ICRS header
-    and no detection rule; the Seestar50's values for those three are set only
-    in its bundled profile. Change the tuning values only when pointing a
+    ``photometry_faint_mag_limit`` and ``max_plane_rms_pix`` have no default and
+    must be given. The other defaults are the Seestar50 values, except for
+    ``header_frame``, ``header_equinox``, ``header_match`` and
+    ``star_flaggers``, which default to an ICRS header, no detection rule and
+    no flaggers, and the WCS tolerances, which default to looser windows; the
+    Seestar50's values for those are set only in its bundled profile. Change
+    the tuning values only when pointing a
     different telescope at the sky; they depend on the plate scale, the PSF,
     and the instrument's sensitivity to contamination. A profile bundles the
     two halves of "what a telescope is": the detection tuning knobs *and* the
@@ -347,6 +383,14 @@ class InstrumentProfile(BaseModel, frozen=True):
     ----------
     name : str
         The instrument's name, used as its registry key.
+    photometry_faint_mag_limit : float
+        The faintest Gaia G magnitude at which photometry is done at the
+        telescope's recommended gain setting and exposure. Gaia stars down to it
+        are the photometry targets. Must be finite.
+    max_plane_rms_pix : float
+        Largest post-clip rms, in pixels, of a frame's position offset plane fit
+        to its own stars (see `~bandaid.config.CentroidConfig`). A frame above
+        it is skipped rather than photometered. Must be positive and finite.
     thresh : float
         Source-detection threshold in units of the background sigma.
     detection_opening : int
@@ -455,6 +499,9 @@ class InstrumentProfile(BaseModel, frozen=True):
     """
 
     name: str = "Seestar50"
+    # Finiteness matters: a nan limit yields an all-False target mask.
+    photometry_faint_mag_limit: Annotated[float, Field(allow_inf_nan=False)]
+    max_plane_rms_pix: Annotated[float, Field(gt=0, allow_inf_nan=False)]
     thresh: Annotated[float, Field(gt=0)] = 0.5
     detection_opening: Annotated[int, Field(ge=1)] = 5
     fwhm_cutout_half: Annotated[int, Field(ge=1)] = 25
@@ -721,7 +768,7 @@ class PhotometryConfig(BaseModel, frozen=True):
     apertures : ApertureConfig
         Aperture/annulus geometry.
     source_selection : SourceSelectionConfig
-        Gaia magnitude limits selecting the measured and flagged stars.
+        The contaminant depth, SNR floor and Gaia row limit.
     drift : DriftConfig
         Centroid-drift cuts.
     centroid : CentroidConfig

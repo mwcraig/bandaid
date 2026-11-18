@@ -48,21 +48,14 @@ __all__ = ["main"]
 _DEBUG_VERBOSITY = 2
 
 
-def _override_source_selection(config, *, gaia_mag_limit, min_snr):
+def _override_source_selection(config, *, min_snr):
     """
-    Apply ``--gaia-mag-limit``/``--min-snr`` overrides to ``config.source_selection``.
-
-    Rebuilds the sub-config from *all* of its current fields (robust if more are
-    added later) with just the given overrides applied, so an unset field --
-    e.g. a ``--config`` file's ``contaminant_mag_offset`` -- carries forward
-    unchanged. A no-op (returns ``config`` unchanged) when both overrides are None.
+    Apply a ``--min-snr`` override to ``config.source_selection``.
 
     Parameters
     ----------
     config : PhotometryConfig
         The config to layer the override onto.
-    gaia_mag_limit : float or None
-        Value passed to ``--gaia-mag-limit``; None leaves the field untouched.
     min_snr : float or None
         Value passed to ``--min-snr``; None leaves the field untouched.
 
@@ -75,18 +68,19 @@ def _override_source_selection(config, *, gaia_mag_limit, min_snr):
     ------
     click.ClickException
         If the resulting `~bandaid.config.SourceSelectionConfig` fails validation.
+
+    Notes
+    -----
+    The sub-config is rebuilt from all of its current fields, so the others --
+    e.g. a ``--config`` file's ``contaminant_mag_offset`` -- carry forward
+    unchanged.
     """
-    overrides = {
-        k: v
-        for k, v in {"gaia_mag_limit": gaia_mag_limit, "min_snr": min_snr}.items()
-        if v is not None
-    }
-    if not overrides:
+    if min_snr is None:
         return config
 
     base = config.source_selection.model_dump()
     try:
-        new_source_selection = SourceSelectionConfig(**{**base, **overrides})
+        new_source_selection = SourceSelectionConfig(**{**base, "min_snr": min_snr})
     except ValidationError as exc:
         raise click.ClickException(str(exc)) from exc
     return config.model_copy(update={"source_selection": new_source_selection})
@@ -97,7 +91,6 @@ def _build_config(
     profile,
     config_file,
     *,
-    gaia_mag_limit=None,
     min_snr=None,
     instrument_flags=None,
 ):
@@ -106,9 +99,9 @@ def _build_config(
 
     ``--config`` supplies the full config; ``--instrument`` or ``--profile`` then
     override only its instrument (the frozen config is copied, not mutated).
-    ``--gaia-mag-limit``/``--min-snr`` then override only those fields of the
-    resulting ``source_selection``, carrying its other fields (e.g. a
-    ``--config`` file's ``contaminant_mag_offset``) forward unchanged.
+    ``--min-snr`` then overrides only that field of the resulting
+    ``source_selection``, carrying its other fields (e.g. a ``--config``
+    file's ``contaminant_mag_offset``) forward unchanged.
     ``--instrument-flags/--no-instrument-flags`` likewise overrides only
     ``instrument_star_flags``, and leaves the config's value when omitted. With no
     options a default `PhotometryConfig` is returned, whose ``instrument`` is
@@ -127,9 +120,6 @@ def _build_config(
         :meth:`~bandaid.config.InstrumentProfile.from_file`.
     config_file : str or None
         Path passed to ``--config``, loaded as a full `PhotometryConfig`.
-    gaia_mag_limit : float or None, optional
-        Value passed to ``--gaia-mag-limit``; None (default) leaves
-        ``source_selection.gaia_mag_limit`` untouched.
     min_snr : float or None, optional
         Value passed to ``--min-snr``; None (default) leaves
         ``source_selection.min_snr`` untouched.
@@ -180,9 +170,7 @@ def _build_config(
     if instrument_flags is not None:
         config = config.model_copy(update={"instrument_star_flags": instrument_flags})
 
-    return _override_source_selection(
-        config, gaia_mag_limit=gaia_mag_limit, min_snr=min_snr
-    )
+    return _override_source_selection(config, min_snr=min_snr)
 
 
 def _load_metadata(metadata_file):
@@ -432,11 +420,15 @@ def main():
     help="Path to a full PhotometryConfig JSON file.",
 )
 @click.option(
-    "--gaia-mag-limit",
+    "--photometry-faint-mag-limit",
     default=None,
     type=float,
-    help="Magnitude limit for the photometry targets (overrides the config).",
+    help=(
+        "Faintest Gaia G magnitude to photometer (overrides the instrument "
+        "profile's photometry_faint_mag_limit for this run)."
+    ),
 )
+@click.option("--gaia-mag-limit", default=None, type=float, hidden=True)
 @click.option(
     "--min-snr",
     default=None,
@@ -528,6 +520,7 @@ def process(
     instrument,
     profile,
     config_file,
+    photometry_faint_mag_limit,
     gaia_mag_limit,
     min_snr,
     weights,
@@ -562,9 +555,12 @@ def process(
         Path to an instrument-profile JSON file (alternative to ``instrument``).
     config_file : str or None
         Path to a full `PhotometryConfig` JSON file.
+    photometry_faint_mag_limit : float or None
+        Faintest Gaia G magnitude to photometer; overrides the instrument
+        profile's ``photometry_faint_mag_limit`` when given.
     gaia_mag_limit : float or None
-        Magnitude limit for the photometry targets; overrides
-        ``source_selection.gaia_mag_limit`` when given.
+        The old name of ``photometry_faint_mag_limit``, used when that is not
+        given.
     min_snr : float or None
         Minimum SNR a star must have to reach the output; overrides
         ``source_selection.min_snr`` when given.
@@ -600,7 +596,8 @@ def process(
     click.ClickException
         If the arguments expand to no FITS frames, a path argument is missing or
         not a FITS frame, a config/profile/metadata/forced-targets file or a
-        ``--gaia-mag-limit``/``--min-snr`` override fails validation, every
+        ``--photometry-faint-mag-limit``/``--min-snr`` override fails
+        validation, every
         frame in the batch fails, or the once-per-batch preparation cannot be
         built (e.g. no ``--instrument``/``--profile``/``--config`` given and the
         first frame's header does not auto-detect to exactly one instrument).
@@ -620,7 +617,6 @@ def process(
         instrument,
         profile,
         config_file,
-        gaia_mag_limit=gaia_mag_limit,
         min_snr=min_snr,
         instrument_flags=instrument_flags,
     )
@@ -652,6 +648,11 @@ def process(
             fail_fast=fail_fast,
             write_manifest=qa_manifest,
             forced_targets=forced_targets,
+            photometry_faint_mag_limit=(
+                gaia_mag_limit
+                if photometry_faint_mag_limit is None
+                else photometry_faint_mag_limit
+            ),
         )
     except (ValueError, FileNotFoundError, BatchPrepError, FrameError) as exc:
         raise click.ClickException(str(exc)) from exc

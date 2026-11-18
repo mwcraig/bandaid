@@ -640,6 +640,8 @@ N_CNN_CLASS = 10
 # Gaia G of catalog row i is 8 + i, so the ten brightest rows are G <= 17.
 G_CUT = 17.0
 PLANE_TOLERANCE_PIX = 0.15
+# The Seestar50 profile's plane-rms limit.
+MAX_PLANE_RMS_PIX = 1.0
 
 
 def _catalog_g(n=N_CATALOG):
@@ -721,7 +723,9 @@ def cnn_calls(mocker):
     return calls
 
 
-def _run_policy(projected, gaia_g, *, config=None, g_cut=G_CUT):
+def _run_policy(
+    projected, gaia_g, *, config=None, g_cut=G_CUT, max_plane_rms_pix=MAX_PLANE_RMS_PIX
+):
     """
     Run `centroid_with_catalog_model` on a blank frame of ``FRAME_SHAPE``.
 
@@ -735,6 +739,8 @@ def _run_policy(projected, gaia_g, *, config=None, g_cut=G_CUT):
         Policy settings. By default None (the defaults).
     g_cut : float or None, optional
         The CNN-class magnitude cut. By default `G_CUT`.
+    max_plane_rms_pix : float, optional
+        The plane-rms limit. By default `MAX_PLANE_RMS_PIX`.
 
     Returns
     -------
@@ -745,6 +751,7 @@ def _run_policy(projected, gaia_g, *, config=None, g_cut=G_CUT):
         np.zeros(FRAME_SHAPE),
         projected,
         None,
+        max_plane_rms_pix=max_plane_rms_pix,
         gaia_g=gaia_g,
         g_cut=g_cut,
         config=config,
@@ -759,7 +766,7 @@ class TestCentroidWithCatalogModel:
         """With no magnitudes there is no policy: one CNN call on every star."""
         projected = _fit_stars(N_CATALOG)
 
-        result = centroid_with_catalog_model(np.zeros(FRAME_SHAPE), projected, None)
+        result = _run_policy(projected, None)
 
         assert len(cnn_calls) == 1
         np.testing.assert_array_equal(cnn_calls[0], projected)
@@ -973,7 +980,7 @@ class TestCentroidWithCatalogModel:
         with pytest.raises(CentroidPlaneError, match=r"rms.*exceeds") as excinfo:
             _run_policy(projected, _catalog_g())
 
-        assert excinfo.value.plane_rms > CentroidConfig().max_plane_rms_pix
+        assert excinfo.value.plane_rms > MAX_PLANE_RMS_PIX
         assert f"rms {excinfo.value.plane_rms:.2f} px" in str(excinfo.value)
         assert "exceeds 1 px" in str(excinfo.value)
 
@@ -993,14 +1000,14 @@ class TestCentroidWithCatalogModel:
         self._patch_noisy_cnn(mocker)
         projected = _fit_stars(N_CATALOG)
         achieved = _run_policy(
-            projected, _catalog_g(), config=CentroidConfig(max_plane_rms_pix=100.0)
+            projected, _catalog_g(), max_plane_rms_pix=100.0
         ).plane.rms
 
         self._patch_noisy_cnn(mocker)
         result = _run_policy(
             projected,
             _catalog_g(),
-            config=CentroidConfig(max_plane_rms_pix=achieved * 1.001),
+            max_plane_rms_pix=achieved * 1.001,
         )
         assert result.plane is not None
         assert not result.fallback
@@ -1010,7 +1017,7 @@ class TestCentroidWithCatalogModel:
             _run_policy(
                 projected,
                 _catalog_g(),
-                config=CentroidConfig(max_plane_rms_pix=achieved * 0.999),
+                max_plane_rms_pix=achieved * 0.999,
             )
 
     def test_an_infinite_cut_keeps_every_star_on_its_cnn_centroid(self):

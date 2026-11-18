@@ -48,8 +48,9 @@ batch still finishes.
     cuts, or none project at least `edge_margin_px` from an edge. Lower `min_snr`
     or `edge_margin_px` ([tune a run](tune_a_run.md)).
 - `skipped: CentroidPlaneError` — the per-frame offset plane fits its own stars
-    worse than `max_plane_rms_pix`. Raise `centroid.max_plane_rms_pix` or set
-    `centroid.model_faint_positions` false.
+    worse than the instrument profile's `max_plane_rms_pix`. Raise it in the
+    profile ([add a telescope](add_a_telescope.md#2-write-a-profile) says what
+    that costs) or set `centroid.model_faint_positions` false.
 - `skipped: StarListValidationError` — a row passed filtering but the AAVSO
     starlist schema rejected the frame. The log names the field; with a custom profile, map it in `header_map` or supply it with `--user-metadata`.
 - `skipped: DegenerateBayerChannelError` — a Bayer channel has no pixels or zero
@@ -75,7 +76,7 @@ passed-over frames still appear in the manifest as `skipped:` rows. Causes:
     focus), the detection settings `thresh` and `detection_opening`, or the
     PSF-fit ceiling `fwhm_cutout_half`.
 - Gaia returned too few reference stars in the prep frame's solve pool. Check the
-    pointing, or raise `gaia_mag_limit`.
+    pointing, or raise the faint limit with `--photometry-faint-mag-limit`.
 - The observation time or pointing of the prep frame cannot be read.
 - The first frame's header resolves to no profile, or several
     (`InstrumentDetectionError`); the message names the frame. Pass
@@ -93,7 +94,9 @@ passed-over frames still appear in the manifest as `skipped:` rows. Causes:
     an outage on the catalog side; a failed answer is never cached, so just run
     again.
 - `CatalogTruncationError`: the Gaia query hit its row limit before reaching
-    `gaia_mag_limit`. Raise `source_selection.gaia_row_limit` or lower the limit.
+    the profile's `photometry_faint_mag_limit`. Raise
+    `source_selection.gaia_row_limit` or lower the limit with
+    `--photometry-faint-mag-limit`.
 
 With `--fail-fast` an unexpected error is re-raised instead of logged and skipped;
 the `FrameError` cases above are skipped either way.

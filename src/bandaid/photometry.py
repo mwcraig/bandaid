@@ -137,7 +137,9 @@ _DEFAULT_CENTROID = CentroidConfig()
 # Residuals with a robust scale below this, in pixels, are round-off, not noise.
 _MIN_CLIP_SCALE_PIX = 1e-6
 _DEFAULT_DRIFT = DriftConfig()
-_DEFAULT_INSTRUMENT = InstrumentProfile()
+# A profile's required fields have no default, so the class defaults are read
+# without validating.
+_DEFAULT_INSTRUMENT = InstrumentProfile.model_construct()
 _DEFAULT_SOURCE_SELECTION = SourceSelectionConfig()
 
 # Source-detection threshold (in units of the background sigma) passed to
@@ -2457,7 +2459,14 @@ class CentroidResult:
 
 
 def centroid_with_catalog_model(
-    calibrated_data, aligned_coords, cnn, *, gaia_g=None, g_cut=None, config=None
+    calibrated_data,
+    aligned_coords,
+    cnn,
+    *,
+    max_plane_rms_pix,
+    gaia_g=None,
+    g_cut=None,
+    config=None,
 ):
     """
     Centroid stars, using the modelled-position plane for those outside the CNN class.
@@ -2470,6 +2479,9 @@ def centroid_with_catalog_model(
         ``(N, 2)`` WCS-projected catalog pixel coordinates.
     cnn : object
         Centroiding CNN model, as for `centroid_stars`.
+    max_plane_rms_pix : float
+        Largest post-clip rms, in pixels, the frame's offset plane may have:
+        the instrument profile's ``max_plane_rms_pix``.
     gaia_g : numpy.ndarray or None, optional
         Gaia G magnitude of each row, ``(N,)``, NaN where a row has none (a
         forced target). When None the policy does not run and every star is
@@ -2490,7 +2502,7 @@ def centroid_with_catalog_model(
     ------
     CentroidPlaneError
         If the frame's offset plane fits its own stars with an rms above
-        ``config.max_plane_rms_pix``.
+        ``max_plane_rms_pix``.
 
     Notes
     -----
@@ -2544,10 +2556,10 @@ def centroid_with_catalog_model(
         clip_sigma=config.clip_sigma,
     )
 
-    if plane is not None and plane.rms > config.max_plane_rms_pix:
+    if plane is not None and plane.rms > max_plane_rms_pix:
         msg = (
             f"offset plane rms {plane.rms:.2f} px exceeds "
-            f"{config.max_plane_rms_pix:g} px on {plane.n_used} fit stars"
+            f"{max_plane_rms_pix:g} px on {plane.n_used} fit stars"
         )
         raise CentroidPlaneError(msg, plane_rms=plane.rms, n_fit_stars=plane.n_used)
 
@@ -3805,6 +3817,7 @@ def prepare_image(
         working_image,
         aligned_coords,
         cnn,
+        max_plane_rms_pix=instrument.max_plane_rms_pix,
         gaia_g=None if photometry_coords is None else gaia_g,
         g_cut=g_cut,
         config=config.centroid,

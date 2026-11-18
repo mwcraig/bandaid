@@ -36,7 +36,8 @@ The policy is on by default; its settings are the fields of
     whether it was in a frame's fit set.
 1. **Fallback.** If fewer than `min_fit_stars` (12) fit stars survive the clip,
     the frame has no plane and every star takes its CNN centroid.
-1. **Skip.** If the plane's post-clip rms exceeds `max_plane_rms_pix` (1.0), the
+1. **Skip.** If the plane's post-clip rms exceeds the instrument profile's
+    `max_plane_rms_pix` (1.0 for the Seestar50), the
     frame is skipped with a `CentroidPlaneError`; its manifest status is
     `skipped: CentroidPlaneError` and `plane_rms` holds the rms.
 

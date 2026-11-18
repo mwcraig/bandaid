@@ -23,8 +23,7 @@ them, and nothing in the output will tell you.
     tell observers to use it.
 - **How faint to go.** At that gain and exposure, estimate the faintest Gaia G
     magnitude at which photometry is still useful. bandaid measures stars down to
-    `source_selection.gaia_mag_limit` (default 15.0); pass your value with
-    `--gaia-mag-limit` until a profile can carry it.
+    the profile's `photometry_faint_mag_limit` (15.0 for the Seestar50).
 - **Raw or calibrated frames.** bandaid does not subtract darks or divide by
     flats, and will not. The Seestar does both in the camera. If your telescope
     saves raw frames, calibrate them before running bandaid.
@@ -32,13 +31,14 @@ them, and nothing in the output will tell you.
     header keyword records it. Background subtraction removes it from the
     photometry, but `largest_usable_adu_value` is compared with the pixel values
     as stored, so it includes the pedestal.
-- **A wide field.** Two configuration defaults were chosen on the Seestar's
-    0.74° field and may stop a wider telescope: `source_selection.gaia_row_limit`
-    (a `CatalogTruncationError` in a dense field) and
-    `centroid.max_plane_rms_pix` (frames skipped for their position plane).
-    Neither is a profile field. For your own runs, set them in a file passed
-    with `--config` (see [Configuration](../reference/configuration.md)), and
-    report the values you needed.
+- **A wide field.** Two values were chosen on the Seestar's 0.74° field and may
+    stop a wider telescope. `source_selection.gaia_row_limit` can raise a
+    `CatalogTruncationError` in a dense field; it is not a profile field, so
+    for your own runs set it in a file passed with `--config` (see
+    [Configuration](../reference/configuration.md)) and report the value you
+    needed. The profile's `max_plane_rms_pix` (1.0 for the Seestar50) skips
+    frames whose position plane fits badly; see
+    [step 2](#2-write-a-profile).
 
 ## 1. Measure plate scale and gain
 
@@ -80,6 +80,8 @@ A minimal profile for a telescope whose header is already ICRS:
 ```json
 {
     "name": "MyScope",
+    "photometry_faint_mag_limit": 15.0,
+    "max_plane_rms_pix": 1.0,
     "wcs_scale_tolerance": 0.05,
     "header_match": [{"keyword": "INSTRUME", "pattern": "MyScope Model 1"}],
     "header_map": {
@@ -107,8 +109,10 @@ A minimal profile for a telescope whose header is already ICRS:
 }
 ```
 
-Replace `pixscale`, `fov_rad` and `egain` with your measured values, and the
-keyword names with the ones your headers use. The `header_map` directives and
+Replace `photometry_faint_mag_limit`, `max_plane_rms_pix`, `pixscale`,
+`fov_rad` and `egain` with your measured values, and the keyword names with the
+ones your headers use. `photometry_faint_mag_limit` and `max_plane_rms_pix` have
+no default. The `header_map` directives and
 `header_match` are in the [reference](../reference/instrument_profiles.md).
 Omitted keys take their defaults, so leave the detection and PSF knobs out until
 you have a reason to tune them.
@@ -131,6 +135,14 @@ that carries it can map it instead.
 
 A required key that is missing or null on the first frame the batch is prepared
 from stops the run at once with a `FrameMetadataError` that lists the keys.
+
+`max_plane_rms_pix` is the largest rms, in pixels, of the plane that places the
+faint stars on each frame (see
+[Star positions](../explanation/star_positions.md)); a frame whose plane fits
+worse is skipped. The plane is first order, so on a wide field with optical
+distortion it may fit worse than on the Seestar. Raising the limit keeps those
+frames, at a cost: their faint stars are placed by a plane that misfits by about
+that much.
 
 If the header pointing is not ICRS, set `header_frame` and `header_equinox` to
 match the header's `RADESYS` and `EQUINOX` keywords. The Seestar writes FK5 in the
@@ -193,7 +205,12 @@ def flag(inputs, state):
 
 
 register_star_flagger("my_scope_cores", StarFlagger(column="bad_core", flag=flag))
-profile = InstrumentProfile(name="MyScope", star_flaggers=("my_scope_cores",))
+profile = InstrumentProfile(
+    name="MyScope",
+    photometry_faint_mag_limit=15.0,
+    max_plane_rms_pix=1.0,
+    star_flaggers=("my_scope_cores",),
+)
 ```
 
 A star flagged in any channel is dropped from every filter of that frame. A

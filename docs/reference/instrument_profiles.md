@@ -10,11 +10,29 @@ profile for a new telescope, see [Add a telescope](../howto/add_a_telescope.md).
 
 `InstrumentProfile.to_file(path)` and `InstrumentProfile.from_file(path)` read and
 write this format; `bandaid instrument show NAME` prints it. Omitted keys take the
-defaults in [Configuration](configuration.md).
+defaults in [Configuration](configuration.md), except `photometry_faint_mag_limit`
+and `max_plane_rms_pix`, which every profile must state.
 
 Every key other than `header_match`, `header_map` and `star_flaggers` (below) is a Tier 2 field of
 [Configuration](configuration.md). Choose `header_frame` and `header_equinox` as described in
 [Add a telescope](../howto/add_a_telescope.md#2-write-a-profile).
+
+## Faint limit and plane rms
+
+- `photometry_faint_mag_limit` is the faintest Gaia G magnitude photometered at
+    the telescope's recommended camera gain setting and exposure. The Gaia stars
+    down to it are the photometry targets; the contaminant catalog runs
+    `source_selection.contaminant_mag_offset` magnitudes deeper. The bundled
+    `Seestar50` profile states `15.0`. `bandaid process   --photometry-faint-mag-limit` (from Python, the
+    `photometry_faint_mag_limit` argument of `photometer_frames` or
+    `prepare_batch`) replaces it for one run, on a given or an auto-detected
+    profile.
+- `max_plane_rms_pix` is the largest post-clip rms, in pixels, of the offset
+    plane that places each frame's faint stars
+    ([Star positions](../explanation/star_positions.md)). A frame whose plane fits
+    worse is skipped with `CentroidPlaneError`. The bundled `Seestar50` profile
+    states `1.0`. What a larger value costs is in
+    [Add a telescope](../howto/add_a_telescope.md#2-write-a-profile).
 
 ## `header_map` directives
 

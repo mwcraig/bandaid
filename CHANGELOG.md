@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     output differs only at the last bit) and 3.1.1 the first available on
     emscripten-forge for the browser build.
 - `FrameResult.schema_version` is 2: the QA manifest gains `n_core_replaced`.
+- Breaking: `source_selection.gaia_mag_limit` and `centroid.max_plane_rms_pix`
+    moved to the instrument profile as `photometry_faint_mag_limit` and
+    `max_plane_rms_pix`, required fields (Seestar50: 15.0 and 1.0). Config files
+    that set the old keys are rejected, and code building `InstrumentProfile()`
+    must pass both. `--gaia-mag-limit` is now `--photometry-faint-mag-limit`.
 
 ### Added
 

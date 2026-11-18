@@ -34,7 +34,7 @@ from astropy.coordinates import SkyCoord
 
 from .ballet import Ballet
 from .catalog import query_field_catalog
-from .config import PhotometryConfig
+from .config import InstrumentProfile, PhotometryConfig
 from .exceptions import (
     BatchPrepError,
     FrameError,
@@ -533,7 +533,7 @@ def _check_edge_margin_fits_frame(edge_margin_px, metadata):
         raise BatchPrepError(msg)
 
 
-def _resolve_batch_instrument(config, header, file):
+def _resolve_batch_instrument(config, header, file, photometry_faint_mag_limit):
     """
     Resolve ``config.instrument`` for the batch, wrapping a detection failure.
 
@@ -546,12 +546,15 @@ def _resolve_batch_instrument(config, header, file):
         ``config.instrument`` is None.
     file : str or Path
         The frame ``header`` came from, named in the error message.
+    photometry_faint_mag_limit : float or None
+        Replaces the resolved profile's ``photometry_faint_mag_limit``; None
+        keeps it.
 
     Returns
     -------
     config : PhotometryConfig
-        ``config`` unchanged if ``instrument`` was already set, otherwise a
-        copy with the detected profile.
+        ``config`` unchanged if ``instrument`` was already set and no limit is
+        given, otherwise a copy with the resolved profile.
     auto_detected : bool
         True if ``instrument`` was resolved by detection.
 
@@ -569,12 +572,24 @@ def _resolve_batch_instrument(config, header, file):
     the whole batch with no detection/PSF settings to prepare with. So it is
     wrapped here instead of relying on inheritance. The message names ``file``
     because callers do not add the path.
+
+    The profile is validated again with the given limit, so a non-finite
+    ``photometry_faint_mag_limit`` raises `pydantic.ValidationError`.
     """
     try:
-        return resolve_config_instrument(config, header)
+        config, auto_detected = resolve_config_instrument(config, header)
     except InstrumentDetectionError as exc:
         msg = f"{file}: {exc}"
         raise BatchPrepError(msg) from exc
+    if photometry_faint_mag_limit is not None:
+        instrument = InstrumentProfile.model_validate(
+            {
+                **config.instrument.model_dump(),
+                "photometry_faint_mag_limit": photometry_faint_mag_limit,
+            }
+        )
+        config = config.model_copy(update={"instrument": instrument})
+    return config, auto_detected
 
 
 def _check_solve_pool_floor(
@@ -951,6 +966,7 @@ def prepare_batch(
     frame=None,
     user_specific_metadata=None,
     state_frames=(),
+    photometry_faint_mag_limit=None,
 ):
     """
     Compute the once-per-batch photometry inputs from the prep frame.
@@ -961,8 +977,9 @@ def prepare_batch(
     queries Gaia for the field (propagating the J2016.0 DR3 positions to the
     frame's observation epoch via proper motions), drops contaminated sources,
     and builds the Bayer masks. The query cone is the field radius widened by
-    the instrument's ``cone_radius_margin``; it is filtered to
-    ``contaminant_mag_limit`` and carries a row limit with a truncation check
+    the instrument's ``cone_radius_margin``; it is filtered to the instrument's
+    ``photometry_faint_mag_limit`` plus ``source_selection.contaminant_mag_offset``
+    and carries a row limit with a truncation check
     (`~bandaid.catalog.query_field_catalog`).
 
     Parameters
@@ -983,10 +1000,11 @@ def prepare_batch(
         to every frame. Its ``instrument`` settings drive the FWHM
         detection and the contamination flagging here (evaluated at the largest
         ``apertures`` radius, with the prep frame's FWHM padded by the
-        instrument's ``contamination_seeing_margin``), and its
-        ``source_selection`` settings supply the Gaia target/contaminant
-        magnitude limits. If None (default), a default ``PhotometryConfig`` is
-        used.
+        instrument's ``contamination_seeing_margin``). The instrument's
+        ``photometry_faint_mag_limit`` is the Gaia target limit, and
+        ``source_selection.contaminant_mag_offset`` sets how much deeper the
+        contaminant catalog runs. If None (default), a default
+        ``PhotometryConfig`` is used.
     build_l4 : bool, optional
         Whether each frame also gets a full-frame "L4" luminance channel,
         recorded on the returned `BatchPrep`. Default True.
@@ -1019,6 +1037,10 @@ def prepare_batch(
         and the result is stored by flagger name in the returned bundle's
         ``star_flag_state``. Empty (default) builds no state, and every
         flagger then gets None.
+    photometry_faint_mag_limit : float or None, optional
+        Replaces the resolved instrument's ``photometry_faint_mag_limit`` for
+        this batch, on the instrument the returned `BatchPrep` carries. None
+        (default) keeps the profile's value.
 
     Returns
     -------
@@ -1056,7 +1078,9 @@ def prepare_batch(
     ValueError
         If ``config.instrument_star_flags`` is True and the instrument names
         a star flagger that is not registered (see
-        `~bandaid.instruments.star_flaggers_for`).
+        `~bandaid.instruments.star_flaggers_for`). Also raised, as a
+        `pydantic.ValidationError`, if ``photometry_faint_mag_limit`` is not
+        finite.
 
     Notes
     -----
@@ -1112,7 +1136,7 @@ def prepare_batch(
     # becomes a fatal BatchPrepError.
     first_loaded = frame if frame is not None else _load_frame(candidates[0])
     config, instrument_auto_detected = _resolve_batch_instrument(
-        config, first_loaded.header, candidates[0]
+        config, first_loaded.header, candidates[0], photometry_faint_mag_limit
     )
     instrument = config.instrument
     # Resolve the flagger names now, so a typo in star_flaggers fails the
@@ -1175,9 +1199,10 @@ def prepare_batch(
     logger.info("field center from header pointing: %s", center)
     # The target/contaminant magnitude limits bound the catalog query itself
     # (see query_field_catalog) and are used again below to split the result.
-    # SourceSelectionConfig has already defaulted and finiteness-checked these.
-    gaia_mag_limit = config.source_selection.gaia_mag_limit
-    contaminant_mag_limit = config.source_selection.contaminant_mag_limit
+    gaia_mag_limit = instrument.photometry_faint_mag_limit
+    contaminant_mag_limit = (
+        gaia_mag_limit + config.source_selection.contaminant_mag_offset
+    )
     # A Gaia query failure (network/service error) is fatal for the whole batch;
     # surface it as a BatchPrepError instead of a raw astroquery/requests error.
     # A BatchPrepError raised by the query itself (row-limit truncation) already
@@ -1200,7 +1225,7 @@ def prepare_batch(
             f"({center[0]:.4f}, {center[1]:.4f}): {exc}"
         )
         raise BatchPrepError(msg) from exc
-    # Decouple the stars we *measure* (targets, cut at gaia_mag_limit) from the
+    # Decouple the stars we *measure* (targets, cut at the faint limit) from the
     # stars that can *contaminate* them (a deeper list down to
     # contaminant_mag_limit). A real star fainter than the photometry limit still
     # spills into a brighter target's aperture, so flagging runs against the
@@ -2535,6 +2560,7 @@ def photometer_frames(
     fail_fast=False,
     write_manifest=True,
     forced_targets=None,
+    photometry_faint_mag_limit=None,
 ):
     """
     Expand a set of file arguments and measure per-frame photometry for each.
@@ -2591,6 +2617,10 @@ def photometer_frames(
         catalog, forwarded to `prepare_batch`. Any frame is accepted (e.g.
         FK5) and transformed to ICRS; a scalar `~astropy.coordinates.SkyCoord`
         is accepted and treated as one target. None (default) adds nothing.
+    photometry_faint_mag_limit : float or None, optional
+        Replaces the instrument profile's ``photometry_faint_mag_limit`` for
+        this run, forwarded to `prepare_batch`. None (default) keeps the
+        profile's value.
 
     Returns
     -------
@@ -2601,8 +2631,10 @@ def photometer_frames(
     Raises
     ------
     ValueError
-        If the arguments expand to no FITS frames. `expand_frame_paths` may also
-        raise `ValueError`/`FileNotFoundError` for a malformed path argument.
+        If the arguments expand to no FITS frames, or
+        ``photometry_faint_mag_limit`` is not finite. `expand_frame_paths` may
+        also raise `ValueError`/`FileNotFoundError` for a malformed path
+        argument.
     BatchPrepError
         If `prepare_batch` cannot build the once-per-batch preparation: no
         frame can prepare the batch, or the first frame's header does not resolve to
@@ -2645,6 +2677,7 @@ def photometer_frames(
             forced_targets=forced_targets,
             frame=first_frame,
             user_specific_metadata=user_specific_metadata,
+            photometry_faint_mag_limit=photometry_faint_mag_limit,
         )
     except BatchPrepError as exc:
         # prepare_batch's messages name the frame they concern (the batch may

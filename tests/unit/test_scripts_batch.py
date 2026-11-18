@@ -9,13 +9,12 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from _helpers import _CONSISTENT_HEADER, _dummy_prep
+from _helpers import _CONSISTENT_HEADER, _dummy_prep, make_profile
 from aavso_starlist_schema import StarListSet
 from astropy.table import Table
 
 import bandaid
 from bandaid import scripts
-from bandaid.config import InstrumentProfile
 from bandaid.exceptions import (
     CentroidPlaneError,
     FrameError,
@@ -326,7 +325,7 @@ class TestProcessBatch:
             return {"TR": np.zeros(len(inputs.centroids), dtype=bool)}
 
         register_star_flagger("toy", StarFlagger(column="toy_flag", flag=flag))
-        profile = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        profile = make_profile(name="ToyScope", star_flaggers=("toy",))
 
         def _process(file, *_args: object, **kwargs: object):
             tables = by_filter()
