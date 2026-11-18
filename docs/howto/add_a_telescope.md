@@ -25,7 +25,8 @@ them, and nothing in the output will tell you.
     tell observers to use it.
 - **How faint to go.** At that gain and exposure, estimate the faintest Gaia G
     magnitude at which photometry is still useful. bandaid measures stars down to
-    the profile's `photometry_faint_mag_limit` (15.0 for the Seestar50).
+    the profile's `photometry_faint_mag_limit` (15.0 for the Seestar50, at its
+    gain setting of 80 and exposures of 10 s to 30 s).
 - **Raw or calibrated frames.** bandaid does not subtract darks or divide by
     flats, and will not. The Seestar does both in the camera. If your telescope
     saves raw frames, calibrate them before running bandaid.

@@ -86,3 +86,6 @@ and `max_plane_rms_pix` (`1.0`) and overrides six fields: `header_match`
 `wcs_pointing_tolerance` (`0.30`), `header_frame` (`"fk5"`), `header_equinox`
 (`"date"`) and `star_flaggers` (`["seestar_core_replaced"]`). The twirl star counts, WCS match tolerance and minimum star counts
 are module constants in `bandaid.photometry`, not configuration.
+
+The Seestar50 values are for camera gain setting 80 (the `GAIN` header
+keyword) at sub-frame exposures of 10 s to 30 s.
