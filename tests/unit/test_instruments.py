@@ -348,6 +348,27 @@ class TestRegister:
         replaced = load_instrument("Seestar50")
         assert (replaced.header_frame, replaced.header_equinox) == expected
 
+    def test_replace_true_inherits_the_previous_time_convention(self):
+        """A replacement that does not set them keeps the replaced time fields."""
+        register_instrument(
+            make_profile(name="MyScope", obs_time_marks="end", obs_time_zone="local")
+        )
+        register_instrument(make_profile(name="MyScope", thresh=2.5), replace=True)
+        replaced = load_instrument("MyScope")
+        assert (replaced.obs_time_marks, replaced.obs_time_zone) == ("end", "local")
+
+    def test_replace_true_own_time_convention_is_not_overridden(self):
+        """A replacement that sets the time fields keeps them as given."""
+        register_instrument(
+            make_profile(name="MyScope", obs_time_marks="end", obs_time_zone="local")
+        )
+        register_instrument(
+            make_profile(name="MyScope", obs_time_marks="start", obs_time_zone="utc"),
+            replace=True,
+        )
+        replaced = load_instrument("MyScope")
+        assert (replaced.obs_time_marks, replaced.obs_time_zone) == ("start", "utc")
+
     def test_replace_true_overrides_custom_name(self):
         """``replace=True`` deliberately overrides a previously-registered profile."""
         register_instrument(make_profile(name="MyScope", thresh=1.5))

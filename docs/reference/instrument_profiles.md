@@ -34,6 +34,41 @@ Every key other than `header_match`, `header_map` and `star_flaggers` (below) is
     states `1.0`. What a larger value costs is in
     [Add a telescope](../howto/add_a_telescope.md#2-write-a-profile).
 
+## Observation time
+
+bandaid works from the UTC time at the start of each exposure. Two fields say
+what the header's `obs_time` (usually mapped from `DATE-OBS`) is when it is not
+that:
+
+| Field            | Values                         | Default   | Meaning                                                   |
+| ---------------- | ------------------------------ | --------- | --------------------------------------------------------- |
+| `obs_time_marks` | `"start"`, `"middle"`, `"end"` | `"start"` | The point of the exposure the time marks.                 |
+| `obs_time_zone`  | `"utc"`, `"local"`             | `"utc"`   | The zone of a time that carries no UTC offset of its own. |
+
+- With `"start"` and `"utc"` the header value is used as it is, so star lists
+    from such a profile do not change.
+- Otherwise `metadata_from_header` converts the time once to the UTC start of
+    the exposure and writes it back to `obs_time` as an ISO string such as
+    `2021-06-15T03:45:00` (fractional seconds kept). The star list, the
+    mid-exposure `time` column, the airmass, the Gaia epoch and the equinox of
+    date for `"header_equinox": "date"` all use the converted time.
+- `"middle"` moves the time back by half the `exposure`, `"end"` by all of it.
+    A frame whose `stack` count is above 1 is skipped with `FrameMetadataError`,
+    because the stamp of a stacked frame does not say which exposure it marks.
+- `"local"` reads a time with no offset in the zone the observer gives as
+    `time_zone` in the user metadata ([Observer identity](#observer-identity)).
+    The zone is never derived from the site position. A run without
+    `time_zone`, or with one that names no zone, stops before any frame is
+    processed with `BatchPrepError`.
+- A time that carries its own UTC offset (`2024-01-01T05:00:00+05:00`) is read
+    with that offset, whatever `obs_time_zone` says.
+- With a zone name, a frame stamped in the hour the clocks repeat when they go
+    back, or in the hour that does not exist when they go forward, is skipped
+    with `FrameMetadataError`: its time does not name one instant. A fixed
+    offset in hours has no clock changes.
+
+The bundled `Seestar50` profile keeps the defaults.
+
 ## `header_map` directives
 
 Keys are lower-case metadata names; `metadata_from_header` resolves each against
@@ -149,7 +184,8 @@ All are importable from `bandaid`; signatures are in [API reference](api.md).
     current process. A name that already resolves raises unless `replace=True`, and
     a `header_match` rule duplicating another profile's raises. With `replace=True`
     a profile that omits `header_match` (and `header_frame`/`header_equinox`) inherits
-    the replaced profile's, as does one that omits `star_flaggers`.
+    the replaced profile's, as does one that omits `star_flaggers`,
+    `obs_time_marks` or `obs_time_zone`.
 - `available_instruments()` returns the sorted bundled and registered names.
 - `register_star_flagger(name, flagger, *, replace=False)` registers a
     `StarFlagger` under the name a profile's `star_flaggers` uses. A name already
@@ -172,3 +208,12 @@ whatever the headers do not: for the bundled `Seestar50` profile that is
 
 is the minimum ([getting started](../getting_started.md#observer-and-site)); a
 profile whose headers also lack the site position adds `site_lat` and `site_lon`.
+
+A profile with `"obs_time_zone": "local"` also needs `time_zone`: an IANA zone
+name such as `"America/Chicago"`, or the UTC offset in hours as a number
+(`-6`). It is used only to read the header time and is not written to the star
+list; with a `"utc"` profile it is ignored.
+
+```json
+{"observer": "ABCD", "site_elev": 300.0, "time_zone": "America/Chicago"}
+```

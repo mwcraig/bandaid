@@ -444,6 +444,16 @@ class InstrumentProfile(BaseModel, frozen=True):
         ``"J2000"`` or ``"J2025.5"``. Case-insensitive. ICRS has no equinox, so
         anything but the default is rejected when ``header_frame`` is
         ``"icrs"``.
+    obs_time_marks : {"start", "middle", "end"}
+        The point of the exposure the header ``obs_time`` marks. ``"start"``
+        (the default) is the start; for ``"middle"`` or ``"end"`` the time is
+        moved back to the start by half or all of the ``exposure``, and a
+        stacked frame (``stack`` above 1) is skipped.
+    obs_time_zone : {"utc", "local"}
+        The zone of a header ``obs_time`` that carries no UTC offset. ``"utc"``
+        (the default) is UTC; ``"local"`` is the zone the observer gives as
+        ``time_zone`` in the user metadata. A time that carries its own offset
+        is read with that offset either way.
     cone_radius_margin : float
         Extra radius in degrees added to ``fov_rad`` for the once-per-batch Gaia
         query. It is the amount of pointing drift (between any frame and the
@@ -515,6 +525,8 @@ class InstrumentProfile(BaseModel, frozen=True):
     wcs_pointing_tolerance: Annotated[float | None, Field(gt=0)] = None
     header_frame: Literal["icrs", "fk5"] = "icrs"
     header_equinox: str = "J2000"
+    obs_time_marks: Literal["start", "middle", "end"] = "start"
+    obs_time_zone: Literal["utc", "local"] = "utc"
     cone_radius_margin: Annotated[float, Field(ge=0)] = 0.4
     solve_pool_radius_scale: Annotated[float, Field(gt=0)] = 0.9
     header_map: Mapping = Field(

@@ -49,6 +49,10 @@ Rules:
 - `--user-metadata` is a JSON object whose keys override the frame metadata.
     The `Seestar50` profile needs it for `observer` and `site_elev`, which Seestar
     headers lack ([getting started](../getting_started.md#observer-and-site)).
+    A profile with `"obs_time_zone": "local"` also needs `time_zone`, the
+    observer's IANA zone name or UTC offset in hours; without it the run stops
+    before any frame is processed
+    ([Instrument profiles](instrument_profiles.md#observation-time)).
 - `--config` loads the full configuration. `--instrument` or `--profile` then
     replaces only its instrument; give at most one of the two.
 - `--min-snr` replaces only that `source_selection` field in the loaded

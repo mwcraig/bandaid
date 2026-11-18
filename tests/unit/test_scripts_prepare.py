@@ -823,6 +823,37 @@ class TestPrepareBatch:
         )
         assert prep_data.calibration_sequence.call_args.kwargs["profile"] is instrument
 
+    @pytest.mark.parametrize(
+        "user_metadata", [{}, {"time_zone": "Not/AZone"}], ids=["missing", "unknown"]
+    )
+    def test_local_time_profile_needs_a_known_time_zone_up_front(
+        self, mocker, user_metadata
+    ):
+        """A local-time run with no usable ``time_zone`` fails before any frame."""
+        prep_data = _patch_prep(mocker)
+        instrument = make_profile(name="LocalScope", obs_time_zone="local")
+        with pytest.raises(BatchPrepError, match="time_zone"):
+            scripts.prepare_batch(
+                ["frame1.fits", "frame2.fits"],
+                cnn=object(),
+                config=PhotometryConfig(instrument=instrument),
+                user_specific_metadata=user_metadata,
+            )
+        prep_data.calibration_sequence.assert_not_called()
+
+    def test_observer_time_zone_reaches_the_prep_frame_metadata(self, mocker):
+        """The user metadata's ``time_zone`` resolves the prep frame's time."""
+        prep_data = _patch_prep(mocker)
+        instrument = make_profile(name="LocalScope", obs_time_zone="local")
+        scripts.prepare_batch(
+            "frame1.fits",
+            cnn=object(),
+            config=PhotometryConfig(instrument=instrument),
+            user_specific_metadata={"time_zone": "America/Chicago"},
+        )
+        kwargs = prep_data.calibration_sequence.call_args.kwargs
+        assert kwargs["time_zone"] == "America/Chicago"
+
     def test_first_frame_fwhm_uses_the_per_frame_detection_settings(self, mocker):
         """
         The batch-gating FWHM is measured with the per-frame detection settings.
@@ -2126,6 +2157,14 @@ class TestCheckFrameConsistency:
         """A frame matching the prep's shape and pointing is accepted."""
         header = _consistency_header()
         scripts.check_frame_consistency("ok.fits", header, self._prep())
+
+    def test_local_time_frame_uses_the_observers_time_zone(self):
+        """The ``time_zone`` merged into the prep metadata resolves each frame."""
+        prep = self._prep(
+            config=PhotometryConfig(instrument=make_profile(obs_time_zone="local")),
+            prep_metadata={"time_zone": "America/Chicago"},
+        )
+        scripts.check_frame_consistency("ok.fits", _consistency_header(), prep)
 
     def test_shape_mismatch_raises_frameerror(self):
         """A different image shape is rejected."""

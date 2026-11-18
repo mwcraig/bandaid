@@ -27,6 +27,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
+from zoneinfo import ZoneInfoNotFoundError
 
 import astropy.units as u
 import numpy as np
@@ -58,6 +59,7 @@ from .photometry import (
     _load_frame,
     _parse_obs_time,
     _solve_pool_near,
+    _tzinfo_from_time_zone,
     calibration_sequence,
     estimate_center_from_header,
     good_star_mask,
@@ -533,6 +535,48 @@ def _check_edge_margin_fits_frame(edge_margin_px, metadata):
         raise BatchPrepError(msg)
 
 
+def _batch_time_zone(instrument, user_specific_metadata):
+    """
+    Return the user metadata's ``time_zone``, checked for a local-time instrument.
+
+    Parameters
+    ----------
+    instrument : InstrumentProfile
+        The batch instrument.
+    user_specific_metadata : dict or None
+        The run's user metadata.
+
+    Returns
+    -------
+    str or float or None
+        The ``time_zone`` the user metadata gives, if any.
+
+    Raises
+    ------
+    BatchPrepError
+        If ``instrument.obs_time_zone`` is ``"local"`` and `time_zone` is
+        None, or names no known zone, or is not a valid UTC offset in hours.
+    """
+    time_zone = (user_specific_metadata or {}).get("time_zone")
+    if instrument.obs_time_zone == "local" and time_zone is None:
+        msg = (
+            f"instrument {instrument.name!r} stamps frames in local time; give "
+            "the zone as time_zone in the user metadata (an IANA name such as "
+            '"America/Chicago", or a UTC offset in hours)'
+        )
+        raise BatchPrepError(msg)
+    if instrument.obs_time_zone == "local":
+        try:
+            _tzinfo_from_time_zone(time_zone)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            msg = (
+                f"time_zone {time_zone!r} in the user metadata is not a known "
+                'zone name (such as "America/Chicago") or a UTC offset in hours'
+            )
+            raise BatchPrepError(msg) from exc
+    return time_zone
+
+
 def _resolve_batch_instrument(config, header, file, photometry_faint_mag_limit):
     """
     Resolve ``config.instrument`` for the batch, wrapping a detection failure.
@@ -638,7 +682,7 @@ def _check_solve_pool_floor(
 
 
 def _calibrate_first_usable(
-    candidates, first_loaded, cnn, instrument, instrument_auto_detected
+    candidates, first_loaded, cnn, instrument, instrument_auto_detected, time_zone
 ):
     """
     Run the calibration on each candidate until the preparation accepts one.
@@ -662,6 +706,9 @@ def _calibrate_first_usable(
     instrument_auto_detected : bool
         Whether ``instrument`` was auto-detected; passed to the batch-mixing
         guard run on every candidate after the first.
+    time_zone : str or float or None
+        The observer's time zone from the user metadata, for a local header
+        time.
 
     Returns
     -------
@@ -719,6 +766,7 @@ def _calibrate_first_usable(
                 cnn=cnn,
                 profile=instrument,
                 frame=prep_frame,
+                time_zone=time_zone,
             )
         except FrameError as exc:
             no_fwhm = isinstance(exc, (TooFewStarsError, PSFFitError))
@@ -1027,8 +1075,8 @@ def prepare_batch(
         Values that override the prep frame's header-map metadata, as
         `process_batch` applies them to every frame. Here they count toward
         the check that the output metadata is complete and reach the star
-        flaggers' ``prepare`` (stored as ``prep_metadata``). None (default)
-        adds nothing.
+        flaggers' ``prepare`` (stored as ``prep_metadata``). Its ``time_zone``
+        converts a local header time. None (default) adds nothing.
     state_frames : collections.abc.Sequence of numpy.ndarray, optional
         Raw frame arrays (the camera's integers, as read from the FITS file)
         to build the instrument's star-flagger state from. Those with the
@@ -1067,7 +1115,10 @@ def prepare_batch(
         frame): `prepare_batch` is the one caller that treats that as fatal.
         Also raised if a star flagger's ``prepare`` raises while building its
         state from ``state_frames``: the message names the flagger and the
-        original is chained as ``__cause__``.
+        original is chained as ``__cause__``. Also raised, before any frame is
+        walked, if the instrument's ``obs_time_zone`` is ``"local"`` and
+        ``user_specific_metadata`` has no ``time_zone`` or one that names no
+        zone.
     FrameMetadataError
         If the prep frame's metadata has no parseable observation time
         (``obs_time``, usually mapped from ``DATE-OBS``), which is needed to
@@ -1144,8 +1195,16 @@ def prepare_batch(
     # frames.
     flaggers = _batch_star_flaggers(config, instrument)
 
+    # A local-time instrument needs the observer's zone for every frame, so a
+    # missing or unknown one fails the batch before any frame is walked rather
+    # than failing every frame.
     prep_file, calibration, n_passed_over = _calibrate_first_usable(
-        candidates, first_loaded, cnn, instrument, instrument_auto_detected
+        candidates,
+        first_loaded,
+        cnn,
+        instrument,
+        instrument_auto_detected,
+        _batch_time_zone(instrument, user_specific_metadata),
     )
     metadata = calibration.metadata
     if n_passed_over:
@@ -1491,9 +1550,10 @@ def check_frame_consistency(file, header, prep):
         The batch prep whose ``center``, ``fov_rad``, and ``shape`` the frame is
         checked against; whose ``config.instrument`` supplies the
         ``header_map`` dialect used to read the header and the
-        ``header_match`` rules used for the batch-mixing guard; and whose
+        ``header_match`` rules used for the batch-mixing guard; whose
         ``instrument_auto_detected`` decides whether a no-match header is
-        exempt.
+        exempt; and whose ``prep_metadata`` supplies the observer's
+        ``time_zone`` for a local header time.
 
     Returns
     -------
@@ -1530,7 +1590,11 @@ def check_frame_consistency(file, header, prep):
     )
 
     try:
-        metadata = metadata_from_header(header, profile=batch_instrument)
+        metadata = metadata_from_header(
+            header,
+            profile=batch_instrument,
+            time_zone=prep.prep_metadata.get("time_zone"),
+        )
     except FrameMetadataError as exc:
         # metadata_from_header has only the header, not the path; label it here.
         exc.file = file

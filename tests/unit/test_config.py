@@ -110,6 +110,11 @@ class TestDefaultsMatchLegacyConstants:
         assert cfg.wcs_scale_tolerance == EXPECTED_WCS_SCALE_TOLERANCE
         assert cfg.wcs_pointing_tolerance is None
 
+    def test_instrument_time_is_the_utc_exposure_start(self):
+        """By default the header time is the UTC start of the exposure."""
+        cfg = make_profile()
+        assert (cfg.obs_time_marks, cfg.obs_time_zone) == ("start", "utc")
+
     def test_instrument_carries_seestar_header_map(self):
         """A bare profile defaults to the Seestar50 name and header dialect."""
         cfg = make_profile()

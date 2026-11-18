@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Instrument profiles can say what the header time marks: `obs_time_marks`
+    (`"start"`, `"middle"`, `"end"`) and `obs_time_zone` (`"utc"`, `"local"`,
+    with the observer's `time_zone` in the user metadata). `tzdata` is a new
+    dependency.
 - The add-a-telescope how-to has a "Before you start" checklist: what the
     timestamp marks, the gain setting, depth, calibration, pedestal and wide
     fields.

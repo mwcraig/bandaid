@@ -228,6 +228,21 @@ class TestPrepareImage:
         assert profile.detection_opening == expected_opening
         assert profile.fwhm_n_stars == expected_fwhm_n_stars
 
+    def test_user_time_zone_reaches_calibration(self, stub_prepare_image_externals):
+        """The user metadata's ``time_zone`` resolves the frame's header time."""
+        externals = stub_prepare_image_externals()
+
+        _prepare_without_model(
+            "unused.fits",
+            np.zeros((5, 2)),
+            None,
+            # The stub's metadata has no egain, which the override check needs.
+            user_specific_metadata={"time_zone": "America/Chicago", "egain": 1.0},
+        )
+
+        kwargs = externals.calibration_sequence.call_args.kwargs
+        assert kwargs["time_zone"] == "America/Chicago"
+
     def test_stubbed_calibration_sequence_feeds_centroiding_when_balanced(
         self, stub_prepare_image_externals
     ):
@@ -1815,6 +1830,25 @@ class TestCalibrationSequence:
             fwhm_helper.call_args.kwargs["fwhm_cutout_half"] == custom.fwhm_cutout_half
         )
         assert fwhm_helper.call_args.kwargs["n_stars"] == custom.fwhm_n_stars
+
+    def test_time_zone_resolves_a_local_header_time(self, tmp_path, mocker):
+        """``time_zone`` converts a local-time profile's header time to UTC."""
+        header = _seestar_header()
+        header["DATE-OBS"] = "2024-01-01T18:00:00"
+        path = tmp_path / "local.fits"
+        fits.PrimaryHDU(np.zeros((200, 200)), header=header).writeto(
+            path, output_verify="silentfix"
+        )
+        mocker.patch(
+            "bandaid.photometry._detect_stars", side_effect=five_diagonal_regions
+        )
+        mocker.patch("bandaid.photometry._fwhm_from_coords", return_value=2.5)
+
+        result = calibration_sequence(
+            path, profile=make_profile(obs_time_zone="local"), time_zone=-6
+        )
+
+        assert result.metadata["obs_time"] == "2024-01-02T00:00:00"
 
     def test_detects_on_balanced_copy_when_flagged(
         self, make_test_image, tmp_path, mocker

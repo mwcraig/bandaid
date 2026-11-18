@@ -50,6 +50,9 @@ dependencies = [
     "scikit-image",
     "scipy",
     "twirl",
+    # Zone names for a local-time instrument resolve without a system zone
+    # database (Windows, the browser).
+    "tzdata",
     "aavso-starlist-schema @ git+https://github.com/mwcraig/aavso-starlist-schema.git"
 ]
 

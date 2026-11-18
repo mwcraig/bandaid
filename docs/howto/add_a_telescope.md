@@ -11,12 +11,14 @@ Check these on real frames. A new telescope can differ from the Seestar on any o
 them, and nothing in the output will tell you.
 
 - **What the timestamp marks.** Find out whether `DATE-OBS` is the start, middle
-    or end of the exposure, and whether it is UTC or local time. bandaid treats
-    `obs_time` as the UTC start: it writes the value unchanged to the star list
-    and adds half the exposure to get the mid-exposure time. A camera that stamps
-    the end of the exposure gives times one full exposure late. A profile cannot
-    yet state another convention, so report what you found when you contribute
-    the profile.
+    or end of the exposure, and whether it is UTC or local time. bandaid works
+    from the UTC start. If the header stamps the middle or the end, set
+    `obs_time_marks` to `"middle"` or `"end"`; such a profile accepts only
+    unstacked frames. If it stamps local time with no UTC offset in the string,
+    set `obs_time_zone` to `"local"`, and every observer then gives their zone
+    as `time_zone` in the user metadata (below). A time that carries its own
+    offset needs neither. See
+    [Observation time](../reference/instrument_profiles.md#observation-time).
 - **One gain setting and exposure.** A profile describes the telescope at one
     camera gain setting. Choose the setting and exposure observers should use,
     measure `egain` at that setting (the gain in e-/ADU changes with it), and
@@ -132,6 +134,12 @@ A telescope whose header carries the site can map `site_lat`, `site_lon` and
 (`src/bandaid/meta_json_files/Seestar50/profile.json`); supply those two with
 `--user-metadata`. The observer code usually comes from user metadata; a header
 that carries it can map it instead.
+
+If the profile sets `"obs_time_zone": "local"`, the user metadata also gives the
+observer's zone as `time_zone`: an IANA name such as `"America/Chicago"`, which
+follows the clock changes, or a fixed UTC offset in hours such as `-6`. Without
+it the run stops before any frame is processed. With a zone name, frames
+stamped in the hour the clocks repeat or skip are skipped.
 
 A required key that is missing or null on the first frame the batch is prepared
 from stops the run at once with a `FrameMetadataError` that lists the keys.

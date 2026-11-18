@@ -232,9 +232,10 @@ def _inherit_header_identity(profile, previous):
     Returns
     -------
     InstrumentProfile
-        ``profile``, with ``header_match``, ``star_flaggers`` and the
-        ``header_frame``/``header_equinox`` pair taken from ``previous``
-        wherever ``profile`` did not set them explicitly.
+        ``profile``, with ``header_match``, ``star_flaggers``, the
+        ``header_frame``/``header_equinox`` pair, ``obs_time_marks`` and
+        ``obs_time_zone`` taken from ``previous`` wherever ``profile`` did not
+        set them explicitly.
     """
     inherited = {}
     # The "retune one knob" override shape -- InstrumentProfile(name='Seestar50',
@@ -254,6 +255,12 @@ def _inherit_header_identity(profile, previous):
     if profile.model_fields_set.isdisjoint({"header_frame", "header_equinox"}):
         inherited["header_frame"] = previous.header_frame
         inherited["header_equinox"] = previous.header_equinox
+    # Likewise the bare-class defaults read the header time as the UTC start
+    # of the exposure, which would silently shift the replaced profile's times.
+    for name in ("obs_time_marks", "obs_time_zone"):
+        value = getattr(previous, name)
+        if name not in profile.model_fields_set and value != getattr(profile, name):
+            inherited[name] = value
     return profile.model_copy(update=inherited) if inherited else profile
 
 
@@ -300,7 +307,8 @@ def register_instrument(profile, *, replace=False):
       ``star_flaggers`` itself (``()`` to run none).
       ``header_frame`` and ``header_equinox`` are inherited the same way, as a
       pair, when ``profile`` sets neither, so the header pointing keeps being
-      converted as before.
+      converted as before. ``obs_time_marks`` and ``obs_time_zone`` are each
+      inherited the same way, so the header time keeps being read as before.
     - **Rule conflict.** A new profile whose ``header_match`` shares an exact
       ``(keyword, value)`` pair with a *differently-named* existing profile is
       rejected: `detect_instrument` cannot tell the two apart on a header that
