@@ -2,10 +2,10 @@
 
 import numpy as np
 import pytest
-from _helpers import SEED
+from _helpers import SEED, make_profile
 from astropy.coordinates import SkyCoord
 
-from bandaid.config import ApertureConfig, InstrumentProfile, PhotometryConfig
+from bandaid.config import ApertureConfig, PhotometryConfig
 from bandaid.photometry import (
     CONTAMINATION_TOLERANCE,
     MOFFAT_BETA,
@@ -362,7 +362,7 @@ class TestNeighborContaminationFlagSky:
         through ``aperture_radius_fwhm``.
         """
         config = PhotometryConfig(
-            apertures=ApertureConfig(radii=(2.0,)), instrument=InstrumentProfile()
+            apertures=ApertureConfig(radii=(2.0,)), instrument=make_profile()
         )
         r_ap = max(config.apertures.radii)
         tol = config.instrument.contamination_tolerance

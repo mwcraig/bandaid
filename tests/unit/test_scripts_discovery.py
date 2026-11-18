@@ -7,13 +7,12 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from _helpers import _batch_metadata, _dummy_prep, _stub_load_frame
+from _helpers import _batch_metadata, _dummy_prep, _stub_load_frame, make_profile
 from astropy.coordinates import SkyCoord
 
 from bandaid import scripts
 from bandaid.config import (
     HeaderMatchRule,
-    InstrumentProfile,
     PhotometryConfig,
 )
 from bandaid.exceptions import BatchPrepError
@@ -179,6 +178,7 @@ class TestPhotometerFrames:
             output_suffix=".sl",
             fail_fast=True,
             write_manifest=False,
+            photometry_faint_mag_limit=14.0,
         )
 
         assert frames == expected
@@ -191,6 +191,7 @@ class TestPhotometerFrames:
             forced_targets=None,
             frame=frame_sentinel,
             user_specific_metadata={"observer": "MWC"},
+            photometry_faint_mag_limit=14.0,
         )
         process_call = process_batch.call_args
         # process_batch gets the prep with the star-flag state built from both
@@ -321,7 +322,7 @@ class TestPhotometerFrames:
                 n_state_frames=n_state_frames,
             ),
         )
-        instrument = InstrumentProfile(
+        instrument = make_profile(
             name="ToyScope", star_flaggers=("toy",), header_match=header_match
         )
         frames = sorted(str(p.resolve()) for p in night.glob("*.fit"))

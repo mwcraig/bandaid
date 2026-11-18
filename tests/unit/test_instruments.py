@@ -14,7 +14,7 @@ import sys
 
 import numpy as np
 import pytest
-from _helpers import SEESTAR_EGAIN, SEESTAR_RULE
+from _helpers import SEESTAR_EGAIN, SEESTAR_RULE, make_profile
 from astropy.table import Table
 from pydantic import ValidationError
 
@@ -40,6 +40,8 @@ EXPECTED_WCS_POINTING_TOLERANCE = 0.30
 EXPECTED_WCS_SCALE_TOLERANCE = 0.005
 EXPECTED_SEESTAR_PIXSCALE = 2.376
 EXPECTED_SOLVE_POOL_SCALE = 0.9
+EXPECTED_SEESTAR_FAINT_MAG_LIMIT = 15.0
+EXPECTED_SEESTAR_MAX_PLANE_RMS_PIX = 1.0
 
 
 class TestHeaderMatchRule:
@@ -88,9 +90,9 @@ class TestLoadInstrument:
     """``load_instrument`` returns the bundled profile for a known name."""
 
     def test_seestar_tuning_matches_class_defaults(self):
-        """The bundled Seestar50 tuning equals a bare ``InstrumentProfile()``."""
+        """The bundled Seestar50 tuning equals a bare profile."""
         profile = load_instrument("Seestar50")
-        default = InstrumentProfile()
+        default = make_profile()
         assert profile.name == "Seestar50"
         assert profile.thresh == default.thresh
         assert profile.detection_opening == default.detection_opening
@@ -100,9 +102,15 @@ class TestLoadInstrument:
         assert profile.solve_pool_radius_scale == default.solve_pool_radius_scale
         assert profile.cone_radius_margin == default.cone_radius_margin
 
+    def test_seestar_states_faint_limit_and_plane_rms(self):
+        """The bundled Seestar50 states its faint limit and plane-rms limit."""
+        profile = load_instrument("Seestar50")
+        assert profile.photometry_faint_mag_limit == EXPECTED_SEESTAR_FAINT_MAG_LIMIT
+        assert profile.max_plane_rms_pix == EXPECTED_SEESTAR_MAX_PLANE_RMS_PIX
+
     def test_cone_radius_margin_default(self):
         """The cone margin defaults to 0.4 deg, so small pointing jitter is covered."""
-        assert InstrumentProfile().cone_radius_margin == EXPECTED_CONE_MARGIN
+        assert make_profile().cone_radius_margin == EXPECTED_CONE_MARGIN
         assert load_instrument("Seestar50").cone_radius_margin == EXPECTED_CONE_MARGIN
 
     def test_seestar_carries_the_tight_wcs_tolerances(self):
@@ -114,7 +122,7 @@ class TestLoadInstrument:
         instrument; only the Seestar50 profile has the measured pixscale that
         makes 0.5% and 0.30 deg safe.
         """
-        default = InstrumentProfile()
+        default = make_profile()
         assert default.wcs_pointing_tolerance is None
         assert default.wcs_scale_tolerance != EXPECTED_WCS_SCALE_TOLERANCE
 
@@ -124,7 +132,7 @@ class TestLoadInstrument:
 
     def test_solve_pool_radius_scale_default(self):
         """The solve-pool scale defaults to 0.9 and the bundle does not override it."""
-        assert InstrumentProfile().solve_pool_radius_scale == EXPECTED_SOLVE_POOL_SCALE
+        assert make_profile().solve_pool_radius_scale == EXPECTED_SOLVE_POOL_SCALE
         assert (
             load_instrument("Seestar50").solve_pool_radius_scale
             == EXPECTED_SOLVE_POOL_SCALE
@@ -141,7 +149,7 @@ class TestLoadInstrument:
         profile = load_instrument("Seestar50")
         assert (profile.header_frame, profile.header_equinox) == ("fk5", "date")
 
-        default = InstrumentProfile()
+        default = make_profile()
         assert (default.header_frame, default.header_equinox) == ("icrs", "J2000")
 
     def test_seestar_bundle_carries_header_match_rule(self):
@@ -156,7 +164,7 @@ class TestLoadInstrument:
         assert profile.header_match == (
             HeaderMatchRule(keyword="INSTRUME", pattern="Seestar S50"),
         )
-        assert InstrumentProfile().header_match == ()
+        assert make_profile().header_match == ()
 
     def test_seestar_header_map_carries_dialect(self):
         """The bundled profile carries the Seestar header dialect."""
@@ -172,7 +180,7 @@ class TestLoadInstrument:
         profile = load_instrument("Seestar50")
         assert profile.star_flaggers == ("seestar_core_replaced",)
         assert star_flaggers_for(profile) == (("seestar_core_replaced", CORE_REPLACED),)
-        assert InstrumentProfile().star_flaggers == ()
+        assert make_profile().star_flaggers == ()
 
     def test_unknown_instrument_raises(self):
         """An unregistered, unbundled name raises rather than guessing."""
@@ -224,7 +232,7 @@ class TestRegister:
     def test_register_then_load(self):
         """A registered profile is returned by ``load_instrument`` and listed."""
         custom_thresh = 1.5
-        custom = InstrumentProfile(name="MyScope", thresh=custom_thresh)
+        custom = make_profile(name="MyScope", thresh=custom_thresh)
         register_instrument(custom)
         loaded = load_instrument("MyScope")
         assert loaded is custom
@@ -234,19 +242,19 @@ class TestRegister:
     def test_registering_existing_bundled_name_raises(self):
         """Registering over a bundled name without ``replace=True`` raises."""
         with pytest.raises(ValueError, match="Seestar50"):
-            register_instrument(InstrumentProfile(name="Seestar50"))
+            register_instrument(make_profile(name="Seestar50"))
 
     def test_registering_duplicate_custom_name_raises(self):
         """Re-registering the same custom name without ``replace=True`` raises."""
-        register_instrument(InstrumentProfile(name="MyScope"))
+        register_instrument(make_profile(name="MyScope"))
         with pytest.raises(ValueError, match="MyScope"):
-            register_instrument(InstrumentProfile(name="MyScope"))
+            register_instrument(make_profile(name="MyScope"))
 
     def test_replace_true_overrides_bundled_name(self):
         """``replace=True`` deliberately overrides a bundled profile."""
         custom_thresh = 9.9
         register_instrument(
-            InstrumentProfile(name="Seestar50", thresh=custom_thresh), replace=True
+            make_profile(name="Seestar50", thresh=custom_thresh), replace=True
         )
         assert load_instrument("Seestar50").thresh == custom_thresh
 
@@ -257,7 +265,7 @@ class TestRegister:
         The documented "override a bundled telescope in-process" path --
         ``InstrumentProfile(name='Seestar50', thresh=9.9)``, the natural
         "retune one knob" shape -- used to leave ``header_match`` empty (a
-        bare ``InstrumentProfile()`` defaults it to ``()``), which silently
+        bare profile defaults it to ``()``), which silently
         stripped Seestar50's detection rule: `detect_instrument` then had no
         candidates, and the next flagless run on real Seestar frames raised
         `~bandaid.exceptions.InstrumentDetectionError` for the whole batch
@@ -269,7 +277,7 @@ class TestRegister:
         original = load_instrument("Seestar50")
         custom_thresh = 9.9
         register_instrument(
-            InstrumentProfile(name="Seestar50", thresh=custom_thresh), replace=True
+            make_profile(name="Seestar50", thresh=custom_thresh), replace=True
         )
         replaced = load_instrument("Seestar50")
         assert replaced.thresh == custom_thresh
@@ -278,7 +286,7 @@ class TestRegister:
     def test_replace_true_explicit_empty_header_match_stays_empty(self):
         """An explicit ``header_match=()`` on a replacement stays empty."""
         register_instrument(
-            InstrumentProfile(name="Seestar50", thresh=9.9, header_match=()),
+            make_profile(name="Seestar50", thresh=9.9, header_match=()),
             replace=True,
         )
         assert load_instrument("Seestar50").header_match == ()
@@ -287,22 +295,20 @@ class TestRegister:
         """A replacement that supplies its own ``header_match`` keeps it."""
         own_rule = (HeaderMatchRule(keyword="INSTRUME", pattern="Custom Seestar"),)
         register_instrument(
-            InstrumentProfile(name="Seestar50", header_match=own_rule), replace=True
+            make_profile(name="Seestar50", header_match=own_rule), replace=True
         )
         assert load_instrument("Seestar50").header_match == own_rule
 
     def test_replace_true_without_star_flaggers_inherits_them(self):
         """A "retune one knob" replacement keeps the replaced ``star_flaggers``."""
         original = load_instrument("Seestar50")
-        register_instrument(
-            InstrumentProfile(name="Seestar50", thresh=9.9), replace=True
-        )
+        register_instrument(make_profile(name="Seestar50", thresh=9.9), replace=True)
         assert load_instrument("Seestar50").star_flaggers == original.star_flaggers
 
     def test_replace_true_explicit_empty_star_flaggers_stays_empty(self):
         """An explicit ``star_flaggers=()`` on a replacement stays empty."""
         register_instrument(
-            InstrumentProfile(name="Seestar50", thresh=9.9, star_flaggers=()),
+            make_profile(name="Seestar50", thresh=9.9, star_flaggers=()),
             replace=True,
         )
         assert load_instrument("Seestar50").star_flaggers == ()
@@ -311,14 +317,12 @@ class TestRegister:
         """
         ``replace=True`` with a fresh profile keeps the replaced header frame.
 
-        A bare ``InstrumentProfile()`` defaults to an ICRS header, so the
+        A bare profile defaults to an ICRS header, so the
         "retune one knob" shape would otherwise stop converting the Seestar's
         equinox-of-date pointing and move the Gaia cone off the field.
         """
         original = load_instrument("Seestar50")
-        register_instrument(
-            InstrumentProfile(name="Seestar50", thresh=9.9), replace=True
-        )
+        register_instrument(make_profile(name="Seestar50", thresh=9.9), replace=True)
         replaced = load_instrument("Seestar50")
         assert (replaced.header_frame, replaced.header_equinox) == (
             original.header_frame,
@@ -339,15 +343,36 @@ class TestRegister:
     ):
         """A replacement that sets either frame field keeps both as given."""
         register_instrument(
-            InstrumentProfile(name="Seestar50", **frame_fields), replace=True
+            make_profile(name="Seestar50", **frame_fields), replace=True
         )
         replaced = load_instrument("Seestar50")
         assert (replaced.header_frame, replaced.header_equinox) == expected
 
+    def test_replace_true_inherits_the_previous_time_convention(self):
+        """A replacement that does not set them keeps the replaced time fields."""
+        register_instrument(
+            make_profile(name="MyScope", obs_time_marks="end", obs_time_zone="local")
+        )
+        register_instrument(make_profile(name="MyScope", thresh=2.5), replace=True)
+        replaced = load_instrument("MyScope")
+        assert (replaced.obs_time_marks, replaced.obs_time_zone) == ("end", "local")
+
+    def test_replace_true_own_time_convention_is_not_overridden(self):
+        """A replacement that sets the time fields keeps them as given."""
+        register_instrument(
+            make_profile(name="MyScope", obs_time_marks="end", obs_time_zone="local")
+        )
+        register_instrument(
+            make_profile(name="MyScope", obs_time_marks="start", obs_time_zone="utc"),
+            replace=True,
+        )
+        replaced = load_instrument("MyScope")
+        assert (replaced.obs_time_marks, replaced.obs_time_zone) == ("start", "utc")
+
     def test_replace_true_overrides_custom_name(self):
         """``replace=True`` deliberately overrides a previously-registered profile."""
-        register_instrument(InstrumentProfile(name="MyScope", thresh=1.5))
-        register_instrument(InstrumentProfile(name="MyScope", thresh=2.5), replace=True)
+        register_instrument(make_profile(name="MyScope", thresh=1.5))
+        register_instrument(make_profile(name="MyScope", thresh=2.5), replace=True)
         assert load_instrument("MyScope").thresh == 2.5  # noqa: PLR2004
 
 
@@ -363,7 +388,7 @@ class TestRegisterConflicts:
         that satisfies it -- reject the registration up front rather than
         letting that surface later as a detection-time error on a real frame.
         """
-        clone = InstrumentProfile(
+        clone = make_profile(
             name="Clone",
             header_match=(SEESTAR_RULE,),
         )
@@ -375,7 +400,7 @@ class TestRegisterConflicts:
 
     def test_different_value_same_keyword_registers_fine(self):
         """A rule on the same keyword but a different value does not conflict."""
-        other = InstrumentProfile(
+        other = make_profile(
             name="OtherScope",
             header_match=(
                 HeaderMatchRule(keyword="INSTRUME", pattern="Some Other Scope"),
@@ -386,7 +411,7 @@ class TestRegisterConflicts:
 
     def test_no_header_match_registers_fine(self):
         """A profile with no ``header_match`` rules can never conflict."""
-        bare = InstrumentProfile(name="Bare")
+        bare = make_profile(name="Bare")
         register_instrument(bare)
         assert load_instrument("Bare") is bare
 
@@ -433,7 +458,7 @@ class TestDetectInstrument:
 
     def test_ambiguous_match_raises_naming_candidates(self):
         """Two registered profiles matching the same header raise, naming both."""
-        clone = InstrumentProfile(
+        clone = make_profile(
             name="Clone",
             header_match=(SEESTAR_RULE,),
         )
@@ -453,7 +478,7 @@ class TestDetectInstrument:
         # header_match=() (the bare-class default) means this profile can never
         # be a detection candidate, even though the header value happens to
         # equal its name -- there is no rule to match against.
-        register_instrument(InstrumentProfile(name="NoRules"))
+        register_instrument(make_profile(name="NoRules"))
         with pytest.raises(InstrumentDetectionError):
             detect_instrument({"INSTRUME": "NoRules"})
 
@@ -467,7 +492,7 @@ class TestDetectInstrument:
         in the "all available instruments" listing, not the "auto-detection
         candidates" one.
         """
-        register_instrument(InstrumentProfile(name="NoRules"))
+        register_instrument(make_profile(name="NoRules"))
 
         with pytest.raises(InstrumentDetectionError) as excinfo:
             detect_instrument({"INSTRUME": "Some Other Scope"})
@@ -490,7 +515,7 @@ class TestFileRoundTrip:
 
     def test_star_flaggers_roundtrip(self, tmp_path):
         """A profile naming star flaggers reloads with the same names, as a tuple."""
-        profile = InstrumentProfile(name="Flagged", star_flaggers=("toy", "other"))
+        profile = make_profile(name="Flagged", star_flaggers=("toy", "other"))
         path = tmp_path / "flagged.json"
         profile.to_file(path)
         loaded = InstrumentProfile.from_file(path)
@@ -507,7 +532,10 @@ class TestFileRoundTrip:
     def test_from_file_accepts_null_header_center_offset(self, tmp_path):
         """A profile file with ``"header_center_offset": null`` still loads."""
         path = tmp_path / "old.json"
-        path.write_text('{"name": "Old", "header_center_offset": null}')
+        path.write_text(
+            '{"name": "Old", "photometry_faint_mag_limit": 15.0, '
+            '"max_plane_rms_pix": 1.0, "header_center_offset": null}'
+        )
         assert InstrumentProfile.from_file(path).header_frame == "icrs"
 
 
@@ -548,7 +576,7 @@ class TestStarFlaggerRegistry:
         """A profile naming a registered flagger resolves to it."""
         flagger = StarFlagger(column="toy_flag", flag=_never)
         register_star_flagger("toy", flagger)
-        profile = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        profile = make_profile(name="ToyScope", star_flaggers=("toy",))
         assert star_flaggers_for(profile) == (("toy", flagger),)
 
     def test_duplicate_name_raises(self):
@@ -562,12 +590,12 @@ class TestStarFlaggerRegistry:
         register_star_flagger("toy", StarFlagger(column="toy_flag", flag=_never))
         replacement = StarFlagger(column="other", flag=_never)
         register_star_flagger("toy", replacement, replace=True)
-        profile = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        profile = make_profile(name="ToyScope", star_flaggers=("toy",))
         assert star_flaggers_for(profile) == (("toy", replacement),)
 
     def test_unknown_name_raises(self):
         """A profile naming an unregistered flagger fails, naming it."""
-        profile = InstrumentProfile(name="ToyScope", star_flaggers=("missing",))
+        profile = make_profile(name="ToyScope", star_flaggers=("missing",))
         with pytest.raises(ValueError, match="missing"):
             star_flaggers_for(profile)
 
@@ -575,17 +603,17 @@ class TestStarFlaggerRegistry:
         """Two of a profile's flaggers writing the same column fail, naming it."""
         register_star_flagger("a", StarFlagger(column="shared", flag=_never))
         register_star_flagger("b", StarFlagger(column="shared", flag=_never))
-        profile = InstrumentProfile(name="ToyScope", star_flaggers=("a", "b"))
+        profile = make_profile(name="ToyScope", star_flaggers=("a", "b"))
         with pytest.raises(ValueError, match="'shared'"):
             star_flaggers_for(profile)
 
     def test_bare_profile_has_no_flaggers(self):
-        """A bare ``InstrumentProfile()`` runs no instrument code."""
-        assert star_flaggers_for(InstrumentProfile()) == ()
+        """A bare profile runs no instrument code."""
+        assert star_flaggers_for(make_profile()) == ()
 
     def test_builtin_seestar_flagger_resolves(self):
         """``seestar_core_replaced`` is built in and resolves to `CORE_REPLACED`."""
-        profile = InstrumentProfile(
+        profile = make_profile(
             name="ToyScope", star_flaggers=("seestar_core_replaced",)
         )
         assert star_flaggers_for(profile) == (("seestar_core_replaced", CORE_REPLACED),)
@@ -596,14 +624,14 @@ class TestStarFlaggerRegistry:
         with pytest.raises(ValueError, match="seestar_core_replaced"):
             register_star_flagger("seestar_core_replaced", replacement)
         register_star_flagger("seestar_core_replaced", replacement, replace=True)
-        profile = InstrumentProfile(
+        profile = make_profile(
             name="ToyScope", star_flaggers=("seestar_core_replaced",)
         )
         assert star_flaggers_for(profile) == (("seestar_core_replaced", replacement),)
 
     def test_unknown_name_lists_builtins(self):
         """The unknown-flagger error lists the built-in flaggers as available."""
-        profile = InstrumentProfile(name="ToyScope", star_flaggers=("missing",))
+        profile = make_profile(name="ToyScope", star_flaggers=("missing",))
         with pytest.raises(ValueError, match="seestar_core_replaced"):
             star_flaggers_for(profile)
 
@@ -635,7 +663,7 @@ class TestApplyStarFlags:
     def test_profile_without_flaggers_is_a_no_op(self):
         """A profile naming no flagger leaves the tables untouched."""
         tables = _channel_tables()
-        apply_star_flags(tables, _flag_inputs(), InstrumentProfile())
+        apply_star_flags(tables, _flag_inputs(), make_profile())
         for name, table in tables.items():
             assert table.colnames == ["x"]
             assert table.meta == {"filter": name}
@@ -651,7 +679,7 @@ class TestApplyStarFlags:
             }
 
         register_star_flagger("toy", StarFlagger(column="toy_flag", flag=flag))
-        profile = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        profile = make_profile(name="ToyScope", star_flaggers=("toy",))
         tables = _channel_tables()
         apply_star_flags(tables, _flag_inputs(), profile)
         for table in tables.values():
@@ -662,7 +690,7 @@ class TestApplyStarFlags:
     def test_existing_reject_flags_are_kept_and_not_duplicated(self):
         """A table's earlier ``reject_flags`` survive; a second run adds nothing."""
         register_star_flagger("toy", StarFlagger(column="toy_flag", flag=_never))
-        profile = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        profile = make_profile(name="ToyScope", star_flaggers=("toy",))
         tables = _channel_tables()
         for table in tables.values():
             table["earlier"] = np.zeros(_N_STARS, bool)
@@ -675,7 +703,7 @@ class TestApplyStarFlags:
     def test_column_clashing_with_a_measured_column_raises(self):
         """A flagger column that names a measured column fails, leaving it intact."""
         register_star_flagger("toy", StarFlagger(column="x", flag=_never))
-        profile = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        profile = make_profile(name="ToyScope", star_flaggers=("toy",))
         tables = _channel_tables()
         with pytest.raises(ValueError, match="'x'"):
             apply_star_flags(tables, _flag_inputs(), profile)
@@ -690,7 +718,7 @@ class TestApplyStarFlags:
             return {"TB": np.array([False, True, False, False])}
 
         register_star_flagger("toy", StarFlagger(column="toy_flag", flag=flag))
-        profile = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        profile = make_profile(name="ToyScope", star_flaggers=("toy",))
         tables = _channel_tables()
         apply_star_flags(tables, _flag_inputs(), profile)
         for table in tables.values():
@@ -706,7 +734,7 @@ class TestApplyStarFlags:
         register_star_flagger(
             "toy", StarFlagger(column="toy_flag", flag=lambda _i, _s: {"TR": flags})
         )
-        profile = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        profile = make_profile(name="ToyScope", star_flaggers=("toy",))
         tables = _channel_tables()
         with pytest.raises(ValueError, match=r"'toy'.*'TR'.*\(4,\)"):
             apply_star_flags(tables, _flag_inputs(), profile)
@@ -726,7 +754,7 @@ class TestApplyStarFlags:
 
         register_star_flagger("a", StarFlagger(column="a_flag", flag=recorder("a")))
         register_star_flagger("b", StarFlagger(column="b_flag", flag=recorder("b")))
-        profile = InstrumentProfile(name="ToyScope", star_flaggers=("a", "b"))
+        profile = make_profile(name="ToyScope", star_flaggers=("a", "b"))
         tables = _channel_tables()
         apply_star_flags(tables, _flag_inputs(), profile, state={"a": "state-a"})
         assert seen == {"a": "state-a", "b": None}
@@ -741,7 +769,7 @@ class TestApplyStarFlags:
             return _never(inputs, state)
 
         register_star_flagger("toy", StarFlagger(column="toy_flag", flag=flag))
-        profile = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        profile = make_profile(name="ToyScope", star_flaggers=("toy",))
         inputs = _flag_inputs()
         apply_star_flags(_channel_tables(), inputs, profile)
         assert len(seen) == 1

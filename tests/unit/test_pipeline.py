@@ -14,6 +14,7 @@ from _helpers import (
     _make_tan_wcs,
     _seestar_header,
     five_diagonal_regions,
+    make_profile,
 )
 from aavso_starlist_schema import StarListSet
 from astropy.coordinates import SkyCoord
@@ -30,7 +31,6 @@ from bandaid.ballet import NumpyBallet
 from bandaid.config import (
     CentroidConfig,
     HeaderMatchRule,
-    InstrumentProfile,
     PhotometryConfig,
 )
 from bandaid.exceptions import (
@@ -160,7 +160,7 @@ class TestPrepareImage:
             wcs=wcs,
             # This test only exercises the alignment fallback, not instrument
             # detection, and the written header carries no INSTRUME/TELESCOP.
-            config=PhotometryConfig(instrument=InstrumentProfile()),
+            config=PhotometryConfig(instrument=make_profile()),
         )
 
         assert np.array_equal(img.coords, img.aligned_coords)
@@ -208,7 +208,7 @@ class TestPrepareImage:
         externals = stub_prepare_image_externals()
 
         config = PhotometryConfig(
-            instrument=InstrumentProfile(
+            instrument=make_profile(
                 thresh=expected_thresh,
                 detection_opening=expected_opening,
                 fwhm_n_stars=expected_fwhm_n_stars,
@@ -227,6 +227,21 @@ class TestPrepareImage:
         assert profile.thresh == expected_thresh
         assert profile.detection_opening == expected_opening
         assert profile.fwhm_n_stars == expected_fwhm_n_stars
+
+    def test_user_time_zone_reaches_calibration(self, stub_prepare_image_externals):
+        """The user metadata's ``time_zone`` resolves the frame's header time."""
+        externals = stub_prepare_image_externals()
+
+        _prepare_without_model(
+            "unused.fits",
+            np.zeros((5, 2)),
+            None,
+            # The stub's metadata has no egain, which the override check needs.
+            user_specific_metadata={"time_zone": "America/Chicago", "egain": 1.0},
+        )
+
+        kwargs = externals.calibration_sequence.call_args.kwargs
+        assert kwargs["time_zone"] == "America/Chicago"
 
     def test_stubbed_calibration_sequence_feeds_centroiding_when_balanced(
         self, stub_prepare_image_externals
@@ -312,7 +327,7 @@ class TestPrepareImage:
         externals = stub_prepare_image_externals()
 
         config = PhotometryConfig(
-            instrument=InstrumentProfile(wcs_scale_tolerance=expected_tolerance),
+            instrument=make_profile(wcs_scale_tolerance=expected_tolerance),
         )
         prepare_image("unused.fits", np.zeros((5, 2)), None, config=config)
 
@@ -331,7 +346,7 @@ class TestPrepareImage:
         externals = stub_prepare_image_externals()
 
         config = PhotometryConfig(
-            instrument=InstrumentProfile(wcs_pointing_tolerance=expected_tolerance),
+            instrument=make_profile(wcs_pointing_tolerance=expected_tolerance),
         )
         prepare_image("unused.fits", np.zeros((5, 2)), None, config=config)
 
@@ -398,7 +413,7 @@ class TestPrepareImage:
             "unused.fits",
             np.zeros((5, 2)),
             None,
-            config=PhotometryConfig(instrument=InstrumentProfile()),
+            config=PhotometryConfig(instrument=make_profile()),
         )
 
         kwargs = externals.align.call_args.kwargs
@@ -453,7 +468,7 @@ class TestPrepareImage:
             "unused.fits",
             np.zeros((5, 2)),
             None,
-            config=PhotometryConfig(instrument=InstrumentProfile()),
+            config=PhotometryConfig(instrument=make_profile()),
         )
 
         center = externals.align.call_args.kwargs["expected_center"]
@@ -479,7 +494,7 @@ class TestPrepareImage:
             "fov_rad": 1.0,
             "obs_time": "2025-09-09T05:00:00",
         }
-        profile = InstrumentProfile(header_frame="fk5", header_equinox="date")
+        profile = make_profile(header_frame="fk5", header_equinox="date")
         externals = stub_prepare_image_externals(metadata=metadata)
 
         prepare_image(
@@ -516,9 +531,7 @@ class TestPrepareImage:
                 np.zeros((5, 2)),
                 None,
                 config=PhotometryConfig(
-                    instrument=InstrumentProfile(
-                        header_frame="fk5", header_equinox="date"
-                    )
+                    instrument=make_profile(header_frame="fk5", header_equinox="date")
                 ),
             )
 
@@ -593,7 +606,7 @@ class TestPrepareImage:
             "unused.fits",
             radecs,
             None,
-            config=PhotometryConfig(instrument=InstrumentProfile()),
+            config=PhotometryConfig(instrument=make_profile()),
         )
 
         received = externals.align.call_args.args[1]
@@ -617,7 +630,7 @@ class TestPrepareImage:
             radecs,
             None,
             config=PhotometryConfig(
-                instrument=InstrumentProfile(solve_pool_radius_scale=0.9)
+                instrument=make_profile(solve_pool_radius_scale=0.9)
             ),
         )
         assert len(externals.align.call_args.args[1]) == len(radecs)
@@ -628,7 +641,7 @@ class TestPrepareImage:
             radecs,
             None,
             config=PhotometryConfig(
-                instrument=InstrumentProfile(solve_pool_radius_scale=0.5)
+                instrument=make_profile(solve_pool_radius_scale=0.5)
             ),
         )
         assert len(externals.align.call_args.args[1]) == len(radecs) - 1
@@ -666,7 +679,7 @@ class TestPrepareImage:
                 "unused.fits",
                 radecs,
                 None,
-                config=PhotometryConfig(instrument=InstrumentProfile()),
+                config=PhotometryConfig(instrument=make_profile()),
             )
 
         assert exc_info.value.file == "unused.fits"
@@ -690,7 +703,7 @@ class TestPrepareImage:
             "unused.fits",
             radecs,
             None,
-            config=PhotometryConfig(instrument=InstrumentProfile()),
+            config=PhotometryConfig(instrument=make_profile()),
         )
 
         np.testing.assert_array_equal(externals.align.call_args.args[1], radecs[[1]])
@@ -733,7 +746,7 @@ class TestPrepareImage:
                 "unused.fits",
                 radecs,
                 None,
-                config=PhotometryConfig(instrument=InstrumentProfile()),
+                config=PhotometryConfig(instrument=make_profile()),
             )
 
         text = str(exc_info.value)
@@ -909,7 +922,7 @@ class TestPrepareImage:
     def test_policy_receives_cut_gaia_g_cut_and_config(
         self, stub_prepare_image_externals, mocker
     ):
-        """The centroid policy gets the cut G, the magnitude cut and the config."""
+        """The centroid policy gets the cut G, the cut, the config and the rms limit."""
         aligned = np.array(
             [[50.0, 50.0], [-50.0, 5.0], [60.0, 70.0], [200.0, 5.0], [3.0, 50.0]]
         )
@@ -917,7 +930,7 @@ class TestPrepareImage:
         spy = mocker.spy(photometry, "centroid_with_catalog_model")
         photometry_coords = SkyCoord(ra=np.arange(5.0), dec=np.zeros(5), unit="deg")
         gaia_g = np.array([8.0, 9.0, 10.0, 11.0, 12.0])
-        config = PhotometryConfig(instrument=InstrumentProfile())
+        config = PhotometryConfig(instrument=make_profile(max_plane_rms_pix=2.5))
         g_cut = 9.5
 
         prepare_image(
@@ -934,6 +947,7 @@ class TestPrepareImage:
         np.testing.assert_array_equal(spy.call_args.kwargs["gaia_g"], gaia_g[[0, 2]])
         assert spy.call_args.kwargs["g_cut"] == g_cut
         assert spy.call_args.kwargs["config"] is config.centroid
+        assert spy.call_args.kwargs["max_plane_rms_pix"] == pytest.approx(2.5)
 
     def test_image_data_records_how_each_star_was_centroided(
         self, stub_prepare_image_externals, mocker
@@ -1281,7 +1295,7 @@ _REF_RADECS = np.array(
 # sit at the converted pointing to pass the in-frame check.
 _SYNTHETIC_FIELD_CENTER = estimate_center_from_header(
     {"ra": 10.0, "dec": 20.0, "obs_time": "2024-01-01T00:00:00"},
-    InstrumentProfile(header_frame="fk5", header_equinox="date"),
+    make_profile(header_frame="fk5", header_equinox="date"),
 )
 
 
@@ -1777,13 +1791,13 @@ class TestCalibrationSequence:
 
         Before this, ``threshold``/``opening``/``fwhm_cutout_half``/
         ``fwhm_n_stars`` defaulted to module-level constants derived from a
-        bare ``InstrumentProfile()`` (Seestar50's tuning) regardless of which
+        bare profile (Seestar50's tuning) regardless of which
         profile ``calibration_sequence`` actually resolved, so a direct call
         on a future non-Seestar profile detected and fit the FWHM at
         Seestar50's settings even though ``profile`` auto-detected correctly.
         Now the defaults are pulled from the resolved profile itself.
         """
-        custom = InstrumentProfile(
+        custom = make_profile(
             name="CustomScope",
             header_match=(HeaderMatchRule(keyword="INSTRUME", pattern="Custom Scope"),),
             thresh=3.0,
@@ -2799,7 +2813,7 @@ class TestSmokeRealFrame:
             mocker,
             wcs_image_size=data.shape,
             wcs_crval=estimate_center_from_header(
-                metadata, InstrumentProfile(header_frame="fk5", header_equinox="date")
+                metadata, make_profile(header_frame="fk5", header_equinox="date")
             ),
         )
 
@@ -2854,7 +2868,7 @@ class TestSmokeRealFrame:
         )
         calibrated, coords = result.calibrated_data, result.coords
         max_adu = result.metadata["largest_usable_adu_value"]
-        n_cap = InstrumentProfile().fwhm_n_stars
+        n_cap = make_profile().fwhm_n_stars
 
         # The cap selects at most n_cap unsaturated detections (fewer than the
         # full detection list) to build the PSF the FWHM is fit from.
@@ -2888,7 +2902,7 @@ class TestSmokeRealFrame:
         max_adu = result.metadata["largest_usable_adu_value"]
         cnn = NumpyBallet()
 
-        n_cap = InstrumentProfile().fwhm_n_stars
+        n_cap = make_profile().fwhm_n_stars
         fwhm = _fwhm_from_coords(
             calibrated, coords, max_adu=max_adu, cnn=cnn, n_stars=n_cap
         )

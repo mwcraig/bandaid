@@ -65,12 +65,6 @@ real frames. The decisions behind that list:
     scope, so do not add it or propose it. For a telescope that saves raw
     frames, the user calibrates them before bandaid runs.
 
-The profile cannot yet record the timestamp convention, the faint magnitude
-limit or `centroid.max_plane_rms_pix`; all three are planned as profile fields.
-Until they exist, report the values you found, and set what you need for your
-own runs in a file passed with `--config`. That file is not part of the
-contribution.
-
 A profile that needs a field bandaid does not have yet waits for the field.
 The field is added first, in its own pull request, and the profile's pull
 request is opened on top of it.

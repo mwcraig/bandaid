@@ -6,7 +6,7 @@ import warnings
 import astropy.units as u
 import numpy as np
 import pytest
-from _helpers import SEESTAR_EGAIN, _seestar_header
+from _helpers import SEESTAR_EGAIN, _seestar_header, make_profile
 from aavso_starlist_schema import StarItem
 from astropy.coordinates import AltAz, EarthLocation, SkyCoord
 from astropy.io import fits
@@ -14,7 +14,7 @@ from astropy.table import Table
 from astropy.time import Time
 from astropy.utils import iers
 
-from bandaid.config import InstrumentProfile, SourceSelectionConfig
+from bandaid.config import SourceSelectionConfig
 from bandaid.exceptions import (
     FrameMetadataError,
     InstrumentDetectionError,
@@ -200,7 +200,7 @@ class TestAirmassFromMetadata:
             "dec": "@OBJCTDEC",
             "egain": 1.0,
         }
-        profile = InstrumentProfile(name="Renamed", header_map=custom_map)
+        profile = make_profile(name="Renamed", header_map=custom_map)
         ra, dec = self._pointing_at_altitude(89.0)
         header = fits.Header()
         header["NAXIS1"] = 50
@@ -309,7 +309,7 @@ class TestMetadataFromHeader:
         base = load_instrument("Seestar50")
         # Re-point the exposure binding at a different header keyword.
         custom_map = {**base.header_map, "exposure": "@MYEXP"}
-        profile = InstrumentProfile(name="Custom", header_map=custom_map)
+        profile = make_profile(name="Custom", header_map=custom_map)
 
         header = _seestar_header()
         header["MYEXP"] = expected_exposure
@@ -357,6 +357,81 @@ class TestMetadataFromHeader:
         """
         with pytest.raises(InstrumentDetectionError):
             metadata_from_header({})
+
+
+class TestMetadataFromHeaderObsTime:
+    """``metadata_from_header`` turns the header time into the UTC exposure start."""
+
+    @staticmethod
+    def _metadata(
+        date_obs, *, time_zone=None, stack=None, **profile_fields: object
+    ) -> dict:
+        """Resolve a 10 s unstacked Seestar header stamped ``date_obs``."""
+        header = _seestar_header(with_stackcnt=stack is not None)
+        header["DATE-OBS"] = date_obs
+        if stack is not None:
+            header["STACKCNT"] = stack
+        profile = make_profile(**profile_fields)
+        return metadata_from_header(header, profile=profile, time_zone=time_zone)
+
+    def test_start_utc_passes_the_header_value_through_unparsed(self):
+        """The default profile copies ``obs_time`` as is, without parsing it."""
+        assert self._metadata("not a date")["obs_time"] == "not a date"
+
+    @pytest.mark.parametrize(
+        ("marks", "date_obs", "expected"),
+        [
+            ("middle", "2024-01-01T00:00:05", "2024-01-01T00:00:00"),
+            ("end", "2024-01-01T00:00:10", "2024-01-01T00:00:00"),
+        ],
+    )
+    def test_marks_are_moved_to_the_exposure_start(self, marks, date_obs, expected):
+        """``middle`` subtracts half the exposure, ``end`` all of it."""
+        metadata = self._metadata(date_obs, obs_time_marks=marks)
+        assert metadata["obs_time"] == expected
+
+    def test_a_stacked_frame_is_refused_unless_the_time_marks_the_start(self):
+        """A stack count above 1 cannot say which exposure the stamp marks."""
+        with pytest.raises(FrameMetadataError, match="stack"):
+            self._metadata("2024-01-01T00:00:10", stack=7, obs_time_marks="end")
+
+    @pytest.mark.parametrize("time_zone", ["America/Chicago", -6])
+    def test_local_time_is_converted_with_the_observers_zone(self, time_zone):
+        """A zone name or an offset in hours places a naive local time."""
+        metadata = self._metadata(
+            "2024-01-01T18:00:00", obs_time_zone="local", time_zone=time_zone
+        )
+        assert metadata["obs_time"] == "2024-01-02T00:00:00"
+
+    def test_a_time_with_its_own_offset_ignores_the_profile_zone(self):
+        """A stamp carrying a UTC offset needs no ``time_zone``."""
+        metadata = self._metadata("2024-01-01T05:00:00+05:00", obs_time_zone="local")
+        assert metadata["obs_time"] == "2024-01-01T00:00:00"
+
+    def test_an_exposure_spanning_a_clock_change_is_moved_in_utc(self):
+        """The exposure is subtracted in UTC, not on the local wall clock."""
+        metadata = self._metadata(
+            "2024-03-10T03:00:05",
+            obs_time_marks="end",
+            obs_time_zone="local",
+            time_zone="America/Chicago",
+        )
+        assert metadata["obs_time"] == "2024-03-10T07:59:55"
+
+    def test_local_time_without_a_time_zone_raises(self):
+        """A naive local time with no observer zone cannot be placed."""
+        with pytest.raises(FrameMetadataError, match="time_zone"):
+            self._metadata("2024-01-01T18:00:00", obs_time_zone="local")
+
+    @pytest.mark.parametrize(
+        "date_obs",
+        ["2024-11-03T01:30:00", "2024-03-10T02:30:00"],
+        ids=["repeated-hour", "skipped-hour"],
+    )
+    def test_local_time_in_a_clock_change_hour_raises(self, date_obs):
+        """A local time the clock change makes ambiguous or impossible is refused."""
+        with pytest.raises(FrameMetadataError, match="clocks change"):
+            self._metadata(date_obs, obs_time_zone="local", time_zone="America/Chicago")
 
 
 class TestGoodStarMask:
@@ -666,7 +741,7 @@ class TestMetadataFromHeaderGuard:
         # no instrument, which is InstrumentDetectionError, not this test's
         # concern): the point here is the *template* keyword resolution.
         with pytest.raises(FrameMetadataError):
-            metadata_from_header(fits.Header(), profile=InstrumentProfile())
+            metadata_from_header(fits.Header(), profile=make_profile())
 
     def test_per_channel_egain_with_a_missing_value_raises(self):
         """A per-channel ``egain`` mapping with a None entry names the channel."""
@@ -675,7 +750,7 @@ class TestMetadataFromHeaderGuard:
             **load_instrument("Seestar50").header_map,
             "egain": {"TR": 0.046, "TG": None, "TB": 0.075},
         }
-        profile = InstrumentProfile(name="Gappy", header_map=header_map)
+        profile = make_profile(name="Gappy", header_map=header_map)
 
         with pytest.raises(FrameMetadataError, match="TG"):
             metadata_from_header(header, profile=profile)

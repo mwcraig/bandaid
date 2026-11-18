@@ -659,7 +659,7 @@ def query_field_catalog(
             msg = (
                 f"Gaia query hit its row limit ({scaled_limit}) with the faintest "
                 f"returned source at G={faintest:.2f}; photometry targets brighter "
-                f"than gaia_mag_limit={gaia_mag_limit} were lost."
+                f"than photometry_faint_mag_limit={gaia_mag_limit} were lost."
             )
             raise CatalogTruncationError(msg)
         if faintest < contaminant_mag_limit:

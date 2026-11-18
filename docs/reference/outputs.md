@@ -33,6 +33,9 @@ Per-list fields: `obs_time`, `site_lat`, `site_lon`, `site_elev`, `observer`,
 `egain` is the gain its channel was measured with; the `L4` list records a
 median effective gain (see [Instrument profiles](instrument_profiles.md)).
 
+`obs_time` is the UTC start of the exposure; see
+[Observation time](instrument_profiles.md#observation-time).
+
 Per-star fields (`staritems` rows):
 
 | Field        | Meaning                                                                                                                                              |

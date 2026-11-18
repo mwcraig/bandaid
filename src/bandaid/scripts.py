@@ -27,6 +27,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
+from zoneinfo import ZoneInfoNotFoundError
 
 import astropy.units as u
 import numpy as np
@@ -58,6 +59,7 @@ from .photometry import (
     _load_frame,
     _parse_obs_time,
     _solve_pool_near,
+    _tzinfo_from_time_zone,
     calibration_sequence,
     estimate_center_from_header,
     good_star_mask,
@@ -533,7 +535,45 @@ def _check_edge_margin_fits_frame(edge_margin_px, metadata):
         raise BatchPrepError(msg)
 
 
-def _resolve_batch_instrument(config, header, file):
+def _batch_time_zone(instrument, user_specific_metadata):
+    """
+    Return the user metadata's ``time_zone``, checked for a local-time instrument.
+
+    Parameters
+    ----------
+    instrument : InstrumentProfile
+        The batch instrument.
+    user_specific_metadata : dict or None
+        The run's user metadata.
+
+    Returns
+    -------
+    str or float or None
+        The ``time_zone`` the user metadata gives, if any.
+
+    Raises
+    ------
+    BatchPrepError
+        If ``instrument.obs_time_zone`` is ``"local"`` and `time_zone` is
+        neither a known zone name nor a UTC offset in hours.
+    """
+    time_zone = (user_specific_metadata or {}).get("time_zone")
+    if instrument.obs_time_zone == "local":
+        # None is not a zone either: timedelta rejects it with a TypeError.
+        try:
+            _tzinfo_from_time_zone(time_zone)
+        except (ZoneInfoNotFoundError, ValueError, TypeError) as exc:
+            msg = (
+                f"instrument {instrument.name!r} stamps frames in local time; "
+                "give the zone as time_zone in the user metadata (an IANA name "
+                'such as "America/Chicago", or a UTC offset in hours), not '
+                f"{time_zone!r}"
+            )
+            raise BatchPrepError(msg) from exc
+    return time_zone
+
+
+def _resolve_batch_instrument(config, header, file, photometry_faint_mag_limit):
     """
     Resolve ``config.instrument`` for the batch, wrapping a detection failure.
 
@@ -546,12 +586,15 @@ def _resolve_batch_instrument(config, header, file):
         ``config.instrument`` is None.
     file : str or Path
         The frame ``header`` came from, named in the error message.
+    photometry_faint_mag_limit : float or None
+        Replaces the resolved profile's ``photometry_faint_mag_limit``; None
+        keeps it.
 
     Returns
     -------
     config : PhotometryConfig
-        ``config`` unchanged if ``instrument`` was already set, otherwise a
-        copy with the detected profile.
+        ``config`` unchanged if ``instrument`` was already set and no limit is
+        given, otherwise a copy with the resolved profile.
     auto_detected : bool
         True if ``instrument`` was resolved by detection.
 
@@ -571,10 +614,16 @@ def _resolve_batch_instrument(config, header, file):
     because callers do not add the path.
     """
     try:
-        return resolve_config_instrument(config, header)
+        config, auto_detected = resolve_config_instrument(config, header)
     except InstrumentDetectionError as exc:
         msg = f"{file}: {exc}"
         raise BatchPrepError(msg) from exc
+    if photometry_faint_mag_limit is not None:
+        instrument = config.instrument.model_copy(
+            update={"photometry_faint_mag_limit": photometry_faint_mag_limit}
+        )
+        config = config.model_copy(update={"instrument": instrument})
+    return config, auto_detected
 
 
 def _check_solve_pool_floor(
@@ -623,7 +672,7 @@ def _check_solve_pool_floor(
 
 
 def _calibrate_first_usable(
-    candidates, first_loaded, cnn, instrument, instrument_auto_detected
+    candidates, first_loaded, cnn, instrument, instrument_auto_detected, time_zone
 ):
     """
     Run the calibration on each candidate until the preparation accepts one.
@@ -647,6 +696,9 @@ def _calibrate_first_usable(
     instrument_auto_detected : bool
         Whether ``instrument`` was auto-detected; passed to the batch-mixing
         guard run on every candidate after the first.
+    time_zone : str or float or None
+        The observer's time zone from the user metadata, for a local header
+        time.
 
     Returns
     -------
@@ -704,6 +756,7 @@ def _calibrate_first_usable(
                 cnn=cnn,
                 profile=instrument,
                 frame=prep_frame,
+                time_zone=time_zone,
             )
         except FrameError as exc:
             no_fwhm = isinstance(exc, (TooFewStarsError, PSFFitError))
@@ -951,6 +1004,7 @@ def prepare_batch(
     frame=None,
     user_specific_metadata=None,
     state_frames=(),
+    photometry_faint_mag_limit=None,
 ):
     """
     Compute the once-per-batch photometry inputs from the prep frame.
@@ -961,8 +1015,9 @@ def prepare_batch(
     queries Gaia for the field (propagating the J2016.0 DR3 positions to the
     frame's observation epoch via proper motions), drops contaminated sources,
     and builds the Bayer masks. The query cone is the field radius widened by
-    the instrument's ``cone_radius_margin``; it is filtered to
-    ``contaminant_mag_limit`` and carries a row limit with a truncation check
+    the instrument's ``cone_radius_margin``; it is filtered to the instrument's
+    ``photometry_faint_mag_limit`` plus ``source_selection.contaminant_mag_offset``
+    and carries a row limit with a truncation check
     (`~bandaid.catalog.query_field_catalog`).
 
     Parameters
@@ -983,10 +1038,11 @@ def prepare_batch(
         to every frame. Its ``instrument`` settings drive the FWHM
         detection and the contamination flagging here (evaluated at the largest
         ``apertures`` radius, with the prep frame's FWHM padded by the
-        instrument's ``contamination_seeing_margin``), and its
-        ``source_selection`` settings supply the Gaia target/contaminant
-        magnitude limits. If None (default), a default ``PhotometryConfig`` is
-        used.
+        instrument's ``contamination_seeing_margin``). The instrument's
+        ``photometry_faint_mag_limit`` is the Gaia target limit, and
+        ``source_selection.contaminant_mag_offset`` sets how much deeper the
+        contaminant catalog runs. If None (default), a default
+        ``PhotometryConfig`` is used.
     build_l4 : bool, optional
         Whether each frame also gets a full-frame "L4" luminance channel,
         recorded on the returned `BatchPrep`. Default True.
@@ -1009,8 +1065,8 @@ def prepare_batch(
         Values that override the prep frame's header-map metadata, as
         `process_batch` applies them to every frame. Here they count toward
         the check that the output metadata is complete and reach the star
-        flaggers' ``prepare`` (stored as ``prep_metadata``). None (default)
-        adds nothing.
+        flaggers' ``prepare`` (stored as ``prep_metadata``). Its ``time_zone``
+        converts a local header time. None (default) adds nothing.
     state_frames : collections.abc.Sequence of numpy.ndarray, optional
         Raw frame arrays (the camera's integers, as read from the FITS file)
         to build the instrument's star-flagger state from. Those with the
@@ -1019,6 +1075,10 @@ def prepare_batch(
         and the result is stored by flagger name in the returned bundle's
         ``star_flag_state``. Empty (default) builds no state, and every
         flagger then gets None.
+    photometry_faint_mag_limit : float or None, optional
+        Replaces the resolved instrument's ``photometry_faint_mag_limit`` for
+        this batch, on the instrument the returned `BatchPrep` carries. None
+        (default) keeps the profile's value.
 
     Returns
     -------
@@ -1045,7 +1105,10 @@ def prepare_batch(
         frame): `prepare_batch` is the one caller that treats that as fatal.
         Also raised if a star flagger's ``prepare`` raises while building its
         state from ``state_frames``: the message names the flagger and the
-        original is chained as ``__cause__``.
+        original is chained as ``__cause__``. Also raised, before any frame is
+        walked, if the instrument's ``obs_time_zone`` is ``"local"`` and
+        ``user_specific_metadata`` has no ``time_zone`` or one that names no
+        zone.
     FrameMetadataError
         If the prep frame's metadata has no parseable observation time
         (``obs_time``, usually mapped from ``DATE-OBS``), which is needed to
@@ -1112,7 +1175,7 @@ def prepare_batch(
     # becomes a fatal BatchPrepError.
     first_loaded = frame if frame is not None else _load_frame(candidates[0])
     config, instrument_auto_detected = _resolve_batch_instrument(
-        config, first_loaded.header, candidates[0]
+        config, first_loaded.header, candidates[0], photometry_faint_mag_limit
     )
     instrument = config.instrument
     # Resolve the flagger names now, so a typo in star_flaggers fails the
@@ -1120,8 +1183,16 @@ def prepare_batch(
     # frames.
     flaggers = _batch_star_flaggers(config, instrument)
 
+    # A local-time instrument needs the observer's zone for every frame, so a
+    # missing or unknown one fails the batch before any frame is walked rather
+    # than failing every frame.
     prep_file, calibration, n_passed_over = _calibrate_first_usable(
-        candidates, first_loaded, cnn, instrument, instrument_auto_detected
+        candidates,
+        first_loaded,
+        cnn,
+        instrument,
+        instrument_auto_detected,
+        _batch_time_zone(instrument, user_specific_metadata),
     )
     metadata = calibration.metadata
     if n_passed_over:
@@ -1175,9 +1246,10 @@ def prepare_batch(
     logger.info("field center from header pointing: %s", center)
     # The target/contaminant magnitude limits bound the catalog query itself
     # (see query_field_catalog) and are used again below to split the result.
-    # SourceSelectionConfig has already defaulted and finiteness-checked these.
-    gaia_mag_limit = config.source_selection.gaia_mag_limit
-    contaminant_mag_limit = config.source_selection.contaminant_mag_limit
+    gaia_mag_limit = instrument.photometry_faint_mag_limit
+    contaminant_mag_limit = (
+        gaia_mag_limit + config.source_selection.contaminant_mag_offset
+    )
     # A Gaia query failure (network/service error) is fatal for the whole batch;
     # surface it as a BatchPrepError instead of a raw astroquery/requests error.
     # A BatchPrepError raised by the query itself (row-limit truncation) already
@@ -1200,7 +1272,7 @@ def prepare_batch(
             f"({center[0]:.4f}, {center[1]:.4f}): {exc}"
         )
         raise BatchPrepError(msg) from exc
-    # Decouple the stars we *measure* (targets, cut at gaia_mag_limit) from the
+    # Decouple the stars we *measure* (targets, cut at the faint limit) from the
     # stars that can *contaminate* them (a deeper list down to
     # contaminant_mag_limit). A real star fainter than the photometry limit still
     # spills into a brighter target's aperture, so flagging runs against the
@@ -1466,9 +1538,10 @@ def check_frame_consistency(file, header, prep):
         The batch prep whose ``center``, ``fov_rad``, and ``shape`` the frame is
         checked against; whose ``config.instrument`` supplies the
         ``header_map`` dialect used to read the header and the
-        ``header_match`` rules used for the batch-mixing guard; and whose
+        ``header_match`` rules used for the batch-mixing guard; whose
         ``instrument_auto_detected`` decides whether a no-match header is
-        exempt.
+        exempt; and whose ``prep_metadata`` supplies the observer's
+        ``time_zone`` for a local header time.
 
     Returns
     -------
@@ -1505,7 +1578,11 @@ def check_frame_consistency(file, header, prep):
     )
 
     try:
-        metadata = metadata_from_header(header, profile=batch_instrument)
+        metadata = metadata_from_header(
+            header,
+            profile=batch_instrument,
+            time_zone=prep.prep_metadata.get("time_zone"),
+        )
     except FrameMetadataError as exc:
         # metadata_from_header has only the header, not the path; label it here.
         exc.file = file
@@ -2535,6 +2612,7 @@ def photometer_frames(
     fail_fast=False,
     write_manifest=True,
     forced_targets=None,
+    photometry_faint_mag_limit=None,
 ):
     """
     Expand a set of file arguments and measure per-frame photometry for each.
@@ -2591,6 +2669,10 @@ def photometer_frames(
         catalog, forwarded to `prepare_batch`. Any frame is accepted (e.g.
         FK5) and transformed to ICRS; a scalar `~astropy.coordinates.SkyCoord`
         is accepted and treated as one target. None (default) adds nothing.
+    photometry_faint_mag_limit : float or None, optional
+        Replaces the instrument profile's ``photometry_faint_mag_limit`` for
+        this run, forwarded to `prepare_batch`. None (default) keeps the
+        profile's value.
 
     Returns
     -------
@@ -2645,6 +2727,7 @@ def photometer_frames(
             forced_targets=forced_targets,
             frame=first_frame,
             user_specific_metadata=user_specific_metadata,
+            photometry_faint_mag_limit=photometry_faint_mag_limit,
         )
     except BatchPrepError as exc:
         # prepare_batch's messages name the frame they concern (the batch may
