@@ -18,7 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     moved to the instrument profile as `photometry_faint_mag_limit` and
     `max_plane_rms_pix`, required fields (Seestar50: 15.0 and 1.0). Config files
     that set the old keys are rejected, and code building `InstrumentProfile()`
-    must pass both. `--gaia-mag-limit` is now `--photometry-faint-mag-limit`.
+    must pass both. `--gaia-mag-limit` is renamed
+    `--photometry-faint-mag-limit` (the old name is still accepted).
 
 ### Added
 

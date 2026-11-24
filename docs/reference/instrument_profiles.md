@@ -38,17 +38,22 @@ that:
 - `"middle"` moves the time back by half the `exposure`, `"end"` by all of it.
     A frame whose `stack` count is above 1 is skipped with `FrameMetadataError`,
     because the stamp of a stacked frame does not say which exposure it marks.
+    If it is the first frame of the batch the run stops instead, since the
+    rest of the batch is likely stacked too.
 - `"local"` reads a time with no offset in the zone the observer gives as
-    `time_zone` in the user metadata ([Observer identity](#observer-identity)).
-    The zone is never derived from the site position. A run without
-    `time_zone`, or with one that names no zone, stops before any frame is
-    processed with `BatchPrepError`.
+    `time_zone` in the user metadata ([Observer identity](#observer-identity)):
+    an IANA zone name such as `"America/Chicago"`, or the UTC offset in hours
+    as a number (`-6`). The zone is never derived from the site position. A
+    run without `time_zone`, or with one that names no zone, stops before any
+    frame is processed with `BatchPrepError`. From Python, the zone given to
+    `prepare_batch` is the one every frame is read with.
 - A time that carries its own UTC offset (`2024-01-01T05:00:00+05:00`) is read
     with that offset, whatever `obs_time_zone` says.
 - With a zone name, a frame stamped in the hour the clocks repeat when they go
     back, or in the hour that does not exist when they go forward, is skipped
-    with `FrameMetadataError`: its time does not name one instant. A fixed
-    offset in hours has no clock changes.
+    with `ClockChangeError`: its time does not name one instant. The batch is
+    then prepared from the next frame if that was the first. A fixed offset in
+    hours has no clock changes.
 
 The bundled `Seestar50` profile keeps the defaults.
 
@@ -191,8 +196,7 @@ whatever the headers do not: for the bundled `Seestar50` profile that is
 is the minimum ([getting started](../getting_started.md#observer-and-site)); a
 profile whose headers also lack the site position adds `site_lat` and `site_lon`.
 
-A profile with `"obs_time_zone": "local"` also needs `time_zone`, an IANA zone
-name or the UTC offset in hours as a number (`-6`):
+For a profile with `"obs_time_zone": "local"`:
 
 ```json
 {"observer": "ABCD", "site_elev": 300.0, "time_zone": "America/Chicago"}

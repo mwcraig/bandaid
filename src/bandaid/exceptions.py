@@ -21,6 +21,7 @@ __all__ = [
     "BatchPrepError",
     "CatalogTruncationError",
     "CentroidPlaneError",
+    "ClockChangeError",
     "DegenerateBayerChannelError",
     "FrameError",
     "FrameMetadataError",
@@ -149,6 +150,16 @@ class WCSPointingError(WCSSolveError):
 
 class FrameMetadataError(FrameError):
     """A required FITS header keyword is missing or could not be parsed."""
+
+
+class ClockChangeError(FrameMetadataError):
+    """
+    A local header time falls in the hour a clock change repeats or skips.
+
+    A subclass so that `~bandaid.scripts.prepare_batch` can walk past a first
+    frame stamped in that hour: unlike other metadata failures, it says
+    nothing about the frames that follow.
+    """
 
 
 class NoUsableStarsError(FrameError):

@@ -45,7 +45,8 @@ batch still finishes.
     profile and verify with a single-frame `-vv` run
     ([add a telescope](add_a_telescope.md#4-validate)). A profile that
     sets `obs_time_marks` or `obs_time_zone` can also skip a frame for its time
-    stamp; on the first frame of the batch that stops the run instead
+    stamp: a stacked frame, which on the first frame of the batch stops the run
+    instead, or one stamped in a clock-change hour (`ClockChangeError`)
     ([observation time](../reference/instrument_profiles.md#observation-time)).
 - `skipped: NoUsableStarsError` — stars were detected but none survived the quality
     cuts, or none project at least `edge_margin_px` from an edge. Lower `min_snr`
@@ -68,8 +69,9 @@ batch still finishes.
 
 A `BatchPrepError` is fatal: nothing can proceed without the once-per-batch
 preparation. It is built from the first frame, in batch order, that the
-preparation accepts: a first frame with too few stars to measure an FWHM, or no
-usable PSF to fit to them, is logged and the next frame is tried, and a later
+preparation accepts: a first frame with too few stars to measure an FWHM, no
+usable PSF to fit to them, or a local time in a clock-change hour is logged and
+the next frame is tried, and a later
 frame is passed over the same way for any per-frame failure that would make it
 a `skipped:` row anyway (a file that cannot be read at all still aborts). The
 passed-over frames still appear in the manifest as `skipped:` rows. Causes:

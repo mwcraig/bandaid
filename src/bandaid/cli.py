@@ -68,12 +68,6 @@ def _override_source_selection(config, *, min_snr):
     ------
     click.ClickException
         If the resulting `~bandaid.config.SourceSelectionConfig` fails validation.
-
-    Notes
-    -----
-    The sub-config is rebuilt from all of its current fields, so the others --
-    e.g. a ``--config`` file's ``contaminant_mag_offset`` -- carry forward
-    unchanged.
     """
     if min_snr is None:
         return config
@@ -613,6 +607,8 @@ def process(
         level = logging.WARNING
     configure_logging(level=level, logfile=log_file)
 
+    if photometry_faint_mag_limit is None:
+        photometry_faint_mag_limit = gaia_mag_limit
     config = _build_config(
         instrument,
         profile,
@@ -648,11 +644,7 @@ def process(
             fail_fast=fail_fast,
             write_manifest=qa_manifest,
             forced_targets=forced_targets,
-            photometry_faint_mag_limit=(
-                gaia_mag_limit
-                if photometry_faint_mag_limit is None
-                else photometry_faint_mag_limit
-            ),
+            photometry_faint_mag_limit=photometry_faint_mag_limit,
         )
     except (ValueError, FileNotFoundError, BatchPrepError, FrameError) as exc:
         raise click.ClickException(str(exc)) from exc

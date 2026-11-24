@@ -348,26 +348,22 @@ class TestRegister:
         replaced = load_instrument("Seestar50")
         assert (replaced.header_frame, replaced.header_equinox) == expected
 
-    def test_replace_true_inherits_the_previous_time_convention(self):
-        """A replacement that does not set them keeps the replaced time fields."""
+    @pytest.mark.parametrize(
+        ("own_fields", "expected"),
+        [
+            ({"thresh": 2.5}, ("end", "local")),
+            ({"obs_time_marks": "start", "obs_time_zone": "utc"}, ("start", "utc")),
+        ],
+        ids=["inherited", "own-value-kept"],
+    )
+    def test_replace_true_time_convention(self, own_fields, expected):
+        """A replacement keeps the replaced time fields unless it sets them."""
         register_instrument(
             make_profile(name="MyScope", obs_time_marks="end", obs_time_zone="local")
         )
-        register_instrument(make_profile(name="MyScope", thresh=2.5), replace=True)
+        register_instrument(make_profile(name="MyScope", **own_fields), replace=True)
         replaced = load_instrument("MyScope")
-        assert (replaced.obs_time_marks, replaced.obs_time_zone) == ("end", "local")
-
-    def test_replace_true_own_time_convention_is_not_overridden(self):
-        """A replacement that sets the time fields keeps them as given."""
-        register_instrument(
-            make_profile(name="MyScope", obs_time_marks="end", obs_time_zone="local")
-        )
-        register_instrument(
-            make_profile(name="MyScope", obs_time_marks="start", obs_time_zone="utc"),
-            replace=True,
-        )
-        replaced = load_instrument("MyScope")
-        assert (replaced.obs_time_marks, replaced.obs_time_zone) == ("start", "utc")
+        assert (replaced.obs_time_marks, replaced.obs_time_zone) == expected
 
     def test_replace_true_overrides_custom_name(self):
         """``replace=True`` deliberately overrides a previously-registered profile."""
@@ -420,7 +416,7 @@ class TestRegisterConflicts:
         seestar = load_instrument("Seestar50")
         updated = seestar.model_copy(update={"thresh": 9.9})
         register_instrument(updated, replace=True)
-        assert load_instrument("Seestar50") is updated
+        assert load_instrument("Seestar50") == updated
 
 
 class TestDetectInstrument:

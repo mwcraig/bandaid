@@ -51,9 +51,8 @@ A configuration that still sets `source_selection.gaia_mag_limit` or
 
 ## Tier 2: instrument profile
 
-`instrument` is an `InstrumentProfile`. `photometry_faint_mag_limit` and
-`max_plane_rms_pix` have no default and must be given; the other defaults below
-are the class defaults. The file format is in
+`instrument` is an `InstrumentProfile`. The defaults below are the class
+defaults. The file format is in
 [Instrument profiles](instrument_profiles.md).
 
 | Field                         | Type / constraint                | Default       | Meaning                                                                                                                                                                                                                                        |

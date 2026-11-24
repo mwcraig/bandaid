@@ -2,9 +2,7 @@
 
 Every tuning knob lives on one immutable, validated `PhotometryConfig`. Fields,
 defaults, and valid ranges are listed in the
-[configuration reference](../reference/configuration.md). The faintest
-magnitude photometered is the instrument profile's `photometry_faint_mag_limit`
-(see [Instrument profiles](../reference/instrument_profiles.md)).
+[configuration reference](../reference/configuration.md).
 
 ## Change a knob from the command line
 
@@ -88,6 +86,4 @@ Too many or too few `centroid_drift` flags: `drift.drift_tolerance_fwhm` and
 
 Centroid policy (CNN versus modelled positions, `centroid.model_faint_positions`):
 see [star positions](../explanation/star_positions.md) and the `centroid` rows
-of the [configuration reference](../reference/configuration.md). Frames skipped
-for their position plane are governed by the instrument profile's
-`max_plane_rms_pix`.
+of the [configuration reference](../reference/configuration.md).

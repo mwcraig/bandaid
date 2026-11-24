@@ -16,7 +16,7 @@ them, and nothing in the output will tell you.
     `obs_time_marks` to `"middle"` or `"end"`; such a profile accepts only
     unstacked frames. If it stamps local time with no UTC offset in the string,
     set `obs_time_zone` to `"local"`, and every observer then gives their zone
-    as `time_zone` in the user metadata (below). A time that carries its own
+    as `time_zone` in the user metadata. A time that carries its own
     offset needs neither. See
     [Observation time](../reference/instrument_profiles.md#observation-time).
 - **One gain setting and exposure.** A profile describes the telescope at one
@@ -25,8 +25,7 @@ them, and nothing in the output will tell you.
     tell observers to use it.
 - **How faint to go.** At that gain and exposure, estimate the faintest Gaia G
     magnitude at which photometry is still useful. bandaid measures stars down to
-    the profile's `photometry_faint_mag_limit` (15.0 for the Seestar50, at its
-    gain setting of 80 and exposures of 10 s to 30 s).
+    the profile's `photometry_faint_mag_limit` (15.0 for the Seestar50).
 - **Raw or calibrated frames.** bandaid does not subtract darks or divide by
     flats, and will not. The Seestar does both in the camera. If your telescope
     saves raw frames, calibrate them before running bandaid.
@@ -114,8 +113,7 @@ A minimal profile for a telescope whose header is already ICRS:
 
 Replace `photometry_faint_mag_limit`, `max_plane_rms_pix`, `pixscale`,
 `fov_rad` and `egain` with your measured values, and the keyword names with the
-ones your headers use. `photometry_faint_mag_limit` and `max_plane_rms_pix` have
-no default. The `header_map` directives and
+ones your headers use. The `header_map` directives and
 `header_match` are in the [reference](../reference/instrument_profiles.md).
 Omitted keys take their defaults, so leave the detection and PSF knobs out until
 you have a reason to tune them.
@@ -135,12 +133,6 @@ A telescope whose header carries the site can map `site_lat`, `site_lon` and
 (`src/bandaid/meta_json_files/Seestar50/profile.json`); supply those two with
 `--user-metadata`. The observer code usually comes from user metadata; a header
 that carries it can map it instead.
-
-If the profile sets `"obs_time_zone": "local"`, the user metadata also gives the
-observer's zone as `time_zone`: an IANA name such as `"America/Chicago"`, which
-follows the clock changes, or a fixed UTC offset in hours such as `-6`. Without
-it the run stops before any frame is processed. With a zone name, frames
-stamped in the hour the clocks repeat or skip are skipped.
 
 A required key that is missing or null on the first frame the batch is prepared
 from stops the run at once with a `FrameMetadataError` that lists the keys.

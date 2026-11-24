@@ -159,6 +159,8 @@ Causes and fixes are in [Troubleshooting](../howto/troubleshooting.md).
 
 ::: bandaid.InstrumentDetectionError
 
+::: bandaid.ClockChangeError
+
 ::: bandaid.BatchPrepError
 
 ::: bandaid.CatalogTruncationError

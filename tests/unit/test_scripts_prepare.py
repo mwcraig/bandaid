@@ -37,6 +37,7 @@ from bandaid.config import (
 from bandaid.exceptions import (
     BatchPrepError,
     CatalogTruncationError,
+    ClockChangeError,
     DegenerateBayerChannelError,
     FrameError,
     FrameMetadataError,
@@ -1284,22 +1285,20 @@ class TestPrepareBatch:
         np.testing.assert_array_equal(prep.radecs, radecs[:n_kept])
         # The kept stars are degrees apart, so none are contamination-flagged.
         np.testing.assert_allclose(prep.photometry_coords.ra.deg, radecs[:n_kept, 0])
-
-    @pytest.mark.parametrize(
-        "config",
-        [None, PhotometryConfig(instrument=load_instrument("Seestar50"))],
-        ids=["auto-detected", "explicit"],
-    )
-    def test_faint_mag_limit_override_is_carried_on_the_prep(self, mocker, config):
-        """The overridden limit is the one the prep's instrument carries."""
-        _patch_prep(mocker)
-
-        prep = scripts.prepare_batch(
-            "frame1.fits", cnn=object(), config=config, photometry_faint_mag_limit=12.5
+        # The limit in force is the one the prep's instrument carries.
+        assert prep.config.instrument.photometry_faint_mag_limit == (
+            faint_mag_limit or 15.0
         )
 
-        assert prep.config.instrument.photometry_faint_mag_limit == pytest.approx(12.5)
-        assert prep.config.instrument.name == "Seestar50"
+    @pytest.mark.parametrize("limit", [float("nan"), float("inf")])
+    def test_non_finite_faint_mag_limit_override_is_rejected(self, mocker, limit):
+        """The per-run limit is validated like the profile's own."""
+        _patch_prep(mocker)
+
+        with pytest.raises(ValueError, match="photometry_faint_mag_limit"):
+            scripts.prepare_batch(
+                "frame1.fits", cnn=object(), photometry_faint_mag_limit=limit
+            )
 
     def test_faint_real_star_contaminates_brighter_target(self, mocker):
         """
@@ -1419,6 +1418,32 @@ class TestPrepareBatch:
             ),
         )
         return prep_data, load_frame
+
+    def test_walks_to_next_frame_when_first_is_in_a_clock_change_hour(
+        self, mocker, caplog
+    ):
+        """A first frame stamped in a clock-change hour says nothing of the rest."""
+        self._walk_setup(mocker, {"frame1.fits": ClockChangeError})
+
+        with caplog.at_level("WARNING", logger="bandaid.scripts"):
+            prep = scripts.prepare_batch(["frame1.fits", "frame2.fits"], cnn=object())
+
+        assert prep.prep_file == "frame2.fits"
+        assert caplog.records[0].getMessage() == (
+            "cannot prepare the batch from frame1.fits (no FWHM on frame1.fits); "
+            "trying the next frame to prepare the batch"
+        )
+
+    def test_single_frame_in_a_clock_change_hour_names_no_fwhm(self, mocker):
+        """A one-frame batch stopped by its time is not reported as an FWHM failure."""
+        self._walk_setup(mocker, {"frame1.fits": ClockChangeError})
+
+        with pytest.raises(BatchPrepError) as excinfo:
+            scripts.prepare_batch("frame1.fits", cnn=object())
+
+        assert str(excinfo.value) == (
+            "cannot prepare the batch from frame1.fits: no FWHM on frame1.fits"
+        )
 
     @pytest.mark.parametrize("error", [PSFFitError, TooFewStarsError])
     def test_walks_to_next_frame_when_first_has_no_fwhm(self, mocker, caplog, error):
@@ -2147,13 +2172,15 @@ class TestCheckFrameConsistency:
         header = _consistency_header()
         scripts.check_frame_consistency("ok.fits", header, self._prep())
 
-    def test_local_time_frame_uses_the_observers_time_zone(self):
+    def test_local_time_frame_uses_the_observers_time_zone(self, mocker):
         """The ``time_zone`` merged into the prep metadata resolves each frame."""
         prep = self._prep(
             config=PhotometryConfig(instrument=make_profile(obs_time_zone="local")),
             prep_metadata={"time_zone": "America/Chicago"},
         )
+        resolve = mocker.spy(scripts, "metadata_from_header")
         scripts.check_frame_consistency("ok.fits", _consistency_header(), prep)
+        assert resolve.call_args.kwargs["time_zone"] == "America/Chicago"
 
     def test_shape_mismatch_raises_frameerror(self):
         """A different image shape is rejected."""

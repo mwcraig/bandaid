@@ -50,10 +50,9 @@ def _default_seestar_header_map() -> dict:
     """
     Return the Seestar50 per-frame FITS-header dialect.
 
-    Used as the ``header_map`` default for :class:`InstrumentProfile` so a
-    bare profile behaves exactly like the historical hard-coded Seestar
-    template. Imported lazily to avoid a circular import (``instruments``
-    imports this module).
+    Used as the ``header_map`` default for :class:`InstrumentProfile`: the
+    historical hard-coded Seestar template. Imported lazily to avoid a circular
+    import (``instruments`` imports this module).
 
     Returns
     -------

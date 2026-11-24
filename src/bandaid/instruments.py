@@ -142,13 +142,13 @@ def _load_bundled(name):
 
 def default_header_map():
     """
-    Return the bundled Seestar50 ``header_map`` (the bare-class default).
+    Return the bundled Seestar50 ``header_map`` (the class default).
 
     Reads the profile file directly (without constructing an
     :class:`~bandaid.config.InstrumentProfile`) so it can serve as the
-    ``header_map`` default factory for that class without recursing. Seestar50
-    is the bare-class default instrument; the ``header_map`` of any other
-    bundled profile is reached via ``load_instrument(name).header_map``.
+    ``header_map`` default factory for that class without recursing. The
+    ``header_map`` of any other bundled profile is reached via
+    ``load_instrument(name).header_map``.
 
     Returns
     -------
@@ -255,12 +255,11 @@ def _inherit_header_identity(profile, previous):
     if profile.model_fields_set.isdisjoint({"header_frame", "header_equinox"}):
         inherited["header_frame"] = previous.header_frame
         inherited["header_equinox"] = previous.header_equinox
-    # Likewise the bare-class defaults read the header time as the UTC start
+    # Likewise the class defaults read the header time as the UTC start
     # of the exposure, which would silently shift the replaced profile's times.
     for name in ("obs_time_marks", "obs_time_zone"):
-        value = getattr(previous, name)
-        if name not in profile.model_fields_set and value != getattr(profile, name):
-            inherited[name] = value
+        if name not in profile.model_fields_set:
+            inherited[name] = getattr(previous, name)
     return profile.model_copy(update=inherited) if inherited else profile
 
 

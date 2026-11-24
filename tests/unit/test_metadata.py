@@ -16,6 +16,7 @@ from astropy.utils import iers
 
 from bandaid.config import SourceSelectionConfig
 from bandaid.exceptions import (
+    ClockChangeError,
     FrameMetadataError,
     InstrumentDetectionError,
     NoUsableStarsError,
@@ -359,6 +360,10 @@ class TestMetadataFromHeader:
             metadata_from_header({})
 
 
+_START = "2024-01-01T00:00:00"
+_LOCAL = {"obs_time_zone": "local"}
+
+
 class TestMetadataFromHeaderObsTime:
     """``metadata_from_header`` turns the header time into the UTC exposure start."""
 
@@ -374,64 +379,80 @@ class TestMetadataFromHeaderObsTime:
         profile = make_profile(**profile_fields)
         return metadata_from_header(header, profile=profile, time_zone=time_zone)
 
-    def test_start_utc_passes_the_header_value_through_unparsed(self):
-        """The default profile copies ``obs_time`` as is, without parsing it."""
-        assert self._metadata("not a date")["obs_time"] == "not a date"
-
     @pytest.mark.parametrize(
-        ("marks", "date_obs", "expected"),
+        ("date_obs", "profile_fields", "time_zone", "expected"),
         [
-            ("middle", "2024-01-01T00:00:05", "2024-01-01T00:00:00"),
-            ("end", "2024-01-01T00:00:10", "2024-01-01T00:00:00"),
+            # The default profile copies the value as is, without parsing it.
+            ("not a date", {}, None, "not a date"),
+            ("2024-01-01T00:00:05", {"obs_time_marks": "middle"}, None, _START),
+            ("2024-01-01T00:00:10", {"obs_time_marks": "end"}, None, _START),
+            ("2023-12-31T18:00:00", _LOCAL, "America/Chicago", _START),
+            ("2023-12-31T18:00:00", _LOCAL, -6, _START),
+            # A stamp carrying a UTC offset needs no time_zone.
+            ("2024-01-01T05:00:00+05:00", _LOCAL, None, _START),
+            # The exposure is subtracted in UTC, not on the local wall clock.
+            (
+                "2024-03-10T03:00:05",
+                {"obs_time_marks": "end", **_LOCAL},
+                "America/Chicago",
+                "2024-03-10T07:59:55",
+            ),
+        ],
+        ids=[
+            "passthrough",
+            "middle",
+            "end",
+            "zone-name",
+            "offset-hours",
+            "own-offset",
+            "spans-clock-change",
         ],
     )
-    def test_marks_are_moved_to_the_exposure_start(self, marks, date_obs, expected):
-        """``middle`` subtracts half the exposure, ``end`` all of it."""
-        metadata = self._metadata(date_obs, obs_time_marks=marks)
+    def test_obs_time_is_the_utc_exposure_start(
+        self, date_obs, profile_fields, time_zone, expected
+    ):
+        """The header time is moved to the exposure start and to UTC."""
+        metadata = self._metadata(date_obs, time_zone=time_zone, **profile_fields)
         assert metadata["obs_time"] == expected
 
-    def test_a_stacked_frame_is_refused_unless_the_time_marks_the_start(self):
-        """A stack count above 1 cannot say which exposure the stamp marks."""
-        with pytest.raises(FrameMetadataError, match="stack"):
-            self._metadata("2024-01-01T00:00:10", stack=7, obs_time_marks="end")
-
-    @pytest.mark.parametrize("time_zone", ["America/Chicago", -6])
-    def test_local_time_is_converted_with_the_observers_zone(self, time_zone):
-        """A zone name or an offset in hours places a naive local time."""
-        metadata = self._metadata(
-            "2024-01-01T18:00:00", obs_time_zone="local", time_zone=time_zone
-        )
-        assert metadata["obs_time"] == "2024-01-02T00:00:00"
-
-    def test_a_time_with_its_own_offset_ignores_the_profile_zone(self):
-        """A stamp carrying a UTC offset needs no ``time_zone``."""
-        metadata = self._metadata("2024-01-01T05:00:00+05:00", obs_time_zone="local")
-        assert metadata["obs_time"] == "2024-01-01T00:00:00"
-
-    def test_an_exposure_spanning_a_clock_change_is_moved_in_utc(self):
-        """The exposure is subtracted in UTC, not on the local wall clock."""
-        metadata = self._metadata(
-            "2024-03-10T03:00:05",
-            obs_time_marks="end",
-            obs_time_zone="local",
-            time_zone="America/Chicago",
-        )
-        assert metadata["obs_time"] == "2024-03-10T07:59:55"
-
-    def test_local_time_without_a_time_zone_raises(self):
-        """A naive local time with no observer zone cannot be placed."""
-        with pytest.raises(FrameMetadataError, match="time_zone"):
-            self._metadata("2024-01-01T18:00:00", obs_time_zone="local")
-
     @pytest.mark.parametrize(
-        "date_obs",
-        ["2024-11-03T01:30:00", "2024-03-10T02:30:00"],
-        ids=["repeated-hour", "skipped-hour"],
+        ("date_obs", "kwargs", "error", "match"),
+        [
+            # A stack count above 1 cannot say which exposure the stamp marks.
+            (
+                "2024-01-01T00:00:10",
+                {"stack": 7, "obs_time_marks": "end"},
+                FrameMetadataError,
+                "stack",
+            ),
+            ("2023-12-31T18:00:00", _LOCAL, FrameMetadataError, "time_zone"),
+            (
+                "2023-12-31T18:00:00",
+                {**_LOCAL, "time_zone": "Not/AZone"},
+                FrameMetadataError,
+                "time_zone",
+            ),
+            (
+                "2024-11-03T01:30:00",
+                {**_LOCAL, "time_zone": "America/Chicago"},
+                ClockChangeError,
+                "clocks change",
+            ),
+            (
+                "2024-03-10T02:30:00",
+                {**_LOCAL, "time_zone": "America/Chicago"},
+                ClockChangeError,
+                "clocks change",
+            ),
+        ],
+        ids=["stacked", "no-time-zone", "bad-zone", "repeated-hour", "skipped-hour"],
     )
-    def test_local_time_in_a_clock_change_hour_raises(self, date_obs):
-        """A local time the clock change makes ambiguous or impossible is refused."""
-        with pytest.raises(FrameMetadataError, match="clocks change"):
-            self._metadata(date_obs, obs_time_zone="local", time_zone="America/Chicago")
+    def test_obs_time_that_cannot_be_placed_raises(
+        self, date_obs, kwargs, error, match
+    ):
+        """A time that names no single exposure start is refused."""
+        with pytest.raises(error, match=match):
+            self._metadata(date_obs, **kwargs)
 
 
 class TestGoodStarMask:

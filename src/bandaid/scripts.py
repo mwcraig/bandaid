@@ -27,17 +27,18 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
-from zoneinfo import ZoneInfoNotFoundError
 
 import astropy.units as u
 import numpy as np
 from astropy.coordinates import SkyCoord
+from astropy.time import Time
 
 from .ballet import Ballet
 from .catalog import query_field_catalog
-from .config import PhotometryConfig
+from .config import InstrumentProfile, PhotometryConfig
 from .exceptions import (
     BatchPrepError,
+    ClockChangeError,
     FrameError,
     FrameMetadataError,
     InstrumentDetectionError,
@@ -57,7 +58,7 @@ from .photometry import (
     LoadedFrame,
     _check_output_metadata,
     _load_frame,
-    _parse_obs_time,
+    _obs_datetime,
     _solve_pool_near,
     _tzinfo_from_time_zone,
     calibration_sequence,
@@ -559,15 +560,12 @@ def _batch_time_zone(instrument, user_specific_metadata):
     """
     time_zone = (user_specific_metadata or {}).get("time_zone")
     if instrument.obs_time_zone == "local":
-        # None is not a zone either: timedelta rejects it with a TypeError.
         try:
             _tzinfo_from_time_zone(time_zone)
-        except (ZoneInfoNotFoundError, ValueError, TypeError) as exc:
+        except FrameMetadataError as exc:
             msg = (
                 f"instrument {instrument.name!r} stamps frames in local time; "
-                "give the zone as time_zone in the user metadata (an IANA name "
-                'such as "America/Chicago", or a UTC offset in hours), not '
-                f"{time_zone!r}"
+                f"{exc.reason}"
             )
             raise BatchPrepError(msg) from exc
     return time_zone
@@ -588,7 +586,8 @@ def _resolve_batch_instrument(config, header, file, photometry_faint_mag_limit):
         The frame ``header`` came from, named in the error message.
     photometry_faint_mag_limit : float or None
         Replaces the resolved profile's ``photometry_faint_mag_limit``; None
-        keeps it.
+        keeps it. A value that is not a finite number raises pydantic's
+        ``ValidationError``.
 
     Returns
     -------
@@ -619,8 +618,12 @@ def _resolve_batch_instrument(config, header, file, photometry_faint_mag_limit):
         msg = f"{file}: {exc}"
         raise BatchPrepError(msg) from exc
     if photometry_faint_mag_limit is not None:
-        instrument = config.instrument.model_copy(
-            update={"photometry_faint_mag_limit": photometry_faint_mag_limit}
+        # Validated, so a non-finite limit is refused like the profile's own.
+        instrument = InstrumentProfile.model_validate(
+            {
+                **config.instrument.model_dump(),
+                "photometry_faint_mag_limit": photometry_faint_mag_limit,
+            }
         )
         config = config.model_copy(update={"instrument": instrument})
     return config, auto_detected
@@ -678,8 +681,9 @@ def _calibrate_first_usable(
     Run the calibration on each candidate until the preparation accepts one.
 
     The first candidate is passed over only for a
-    `~bandaid.exceptions.TooFewStarsError` or
-    `~bandaid.exceptions.PSFFitError`; a later one for any
+    `~bandaid.exceptions.TooFewStarsError`, a
+    `~bandaid.exceptions.PSFFitError` or a
+    `~bandaid.exceptions.ClockChangeError`; a later one for any
     `~bandaid.exceptions.FrameError`.
 
     Parameters
@@ -713,14 +717,12 @@ def _calibrate_first_usable(
     ------
     BatchPrepError
         If no candidate is accepted; the last candidate's
-        `~bandaid.exceptions.FrameError` (a
-        `~bandaid.exceptions.TooFewStarsError` or
-        `~bandaid.exceptions.PSFFitError` when there is only one candidate) is
+        `~bandaid.exceptions.FrameError` (one of the three the first
+        candidate is passed over for, when there is only one candidate) is
         chained as ``__cause__``.
     FrameError
-        Raised unchanged from the first candidate when it is neither a
-        `~bandaid.exceptions.TooFewStarsError` nor a
-        `~bandaid.exceptions.PSFFitError`.
+        Raised unchanged from the first candidate when it is none of those
+        three.
     """
     for position, prep_file in enumerate(candidates):
         prep_frame = first_loaded if position == 0 else _load_frame(prep_file)
@@ -760,7 +762,8 @@ def _calibrate_first_usable(
             )
         except FrameError as exc:
             no_fwhm = isinstance(exc, (TooFewStarsError, PSFFitError))
-            if position == 0 and not no_fwhm:
+            # A clock-change hour says nothing about the frames after it.
+            if position == 0 and not (no_fwhm or isinstance(exc, ClockChangeError)):
                 raise
             # Keep the error for the final message, not the pixels its
             # traceback frames reference (the pixel array and the images
@@ -780,7 +783,8 @@ def _calibrate_first_usable(
             last_error = None
             return prep_file, calibration, position
     if len(candidates) == 1:
-        msg = f"cannot measure an FWHM on {prep_file}: {last_error.reason}"
+        what = "measure an FWHM on" if no_fwhm else "prepare the batch from"
+        msg = f"cannot {what} {prep_file}: {last_error.reason}"
     else:
         msg = (
             f"tried all {len(candidates)} frames; "
@@ -1091,7 +1095,8 @@ def prepare_batch(
     BatchPrepError
         If no frame in ``files`` can prepare the batch: too few stars are
         detected to measure an FWHM, or no usable PSF can be fit to them
-        (`~bandaid.exceptions.PSFFitError`), or, for a frame after the first,
+        (`~bandaid.exceptions.PSFFitError`), or its local time falls in a
+        clock-change hour, or, for a frame after the first,
         any other `~bandaid.exceptions.FrameError`; the last frame's error is
         chained as ``__cause__``. Also raised if ``config.edge_margin_px`` is at or
         above half the smaller frame dimension, which would leave no usable
@@ -1119,16 +1124,21 @@ def prepare_batch(
     ValueError
         If ``config.instrument_star_flags`` is True and the instrument names
         a star flagger that is not registered (see
-        `~bandaid.instruments.star_flaggers_for`).
+        `~bandaid.instruments.star_flaggers_for`), or if
+        ``photometry_faint_mag_limit`` is not a finite number.
 
     Notes
     -----
     A frame that yields no FWHM (a clouded or obstructed frame, say) is passed
     over with a warning and the next frame is tried, in the order given, until
     one is accepted or the list runs out. On the first frame only
-    `~bandaid.exceptions.TooFewStarsError` and
-    `~bandaid.exceptions.PSFFitError` advance the walk, and any other
-    `~bandaid.exceptions.FrameError` from it is raised unchanged; on a later
+    `~bandaid.exceptions.TooFewStarsError`,
+    `~bandaid.exceptions.PSFFitError` and
+    `~bandaid.exceptions.ClockChangeError` (a local time in the hour the clocks
+    change, which says nothing about the frames after it) advance the walk,
+    and any other `~bandaid.exceptions.FrameError` from it is raised unchanged
+    (a stacked frame under a profile whose time marks the middle or end, say,
+    since the rest of the batch is likely stacked too); on a later
     frame any `~bandaid.exceptions.FrameError` does (unreadable header metadata
     or a degenerate Bayer channel, say), since `process_batch` would skip that
     frame anyway. Every other failure stays fatal for the batch and never advances
@@ -1221,7 +1231,7 @@ def prepare_batch(
             "positions to the observation epoch"
         )
         raise FrameMetadataError(msg, file=prep_file)
-    obs_epoch = _parse_obs_time(obs_time, file=prep_file)
+    obs_epoch = Time(_obs_datetime(obs_time, file=prep_file))
 
     # Every frame must fill the output schema from the same metadata, so check
     # the prep frame once here: one clear error instead of every frame skipped.
@@ -2297,7 +2307,8 @@ def process_frame(
         The reusable prep bundle from `prepare_batch`.
     user_specific_metadata : dict or None, optional
         User-specific metadata recorded with the output. None (default) is an
-        empty dict.
+        empty dict. A ``time_zone`` in ``prep.prep_metadata`` (the one given
+        to `prepare_batch`) replaces any given here.
     frame : LoadedFrame or None, optional
         The already-loaded contents of ``file``. None (default) loads it here.
     label : str or os.PathLike or None, optional
@@ -2344,9 +2355,17 @@ def process_frame(
         # From here on the frame is loaded, so `file` is only its name:
         # report it under the label.
         pointing_offset = check_frame_consistency(name, frame.header, prep)
+        user_metadata = user_specific_metadata or {}
+        # One zone per frame: the one prepare_batch checked, which the
+        # consistency check above also reads.
+        if "time_zone" in prep.prep_metadata:
+            user_metadata = {
+                **user_metadata,
+                "time_zone": prep.prep_metadata["time_zone"],
+            }
         by_filter = process_one_image(
             name,
-            {} if user_specific_metadata is None else user_specific_metadata,
+            user_metadata,
             prep.radecs,
             prep.cnn,
             prep.bayer_masks,

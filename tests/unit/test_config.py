@@ -421,11 +421,6 @@ class TestValidators:
         with pytest.raises(ValidationError, match=field):
             InstrumentProfile(**fields)
 
-    def test_non_finite_photometry_faint_mag_limit_rejected(self):
-        """A non-finite faint magnitude limit is rejected."""
-        with pytest.raises(ValidationError, match="photometry_faint_mag_limit"):
-            make_profile(photometry_faint_mag_limit=float("inf"))
-
     @pytest.mark.parametrize(
         ("section", "key", "names"),
         [

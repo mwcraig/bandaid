@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, timedelta, timezone
 from typing import NamedTuple
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import astropy.units as u
 import numpy as np
@@ -58,6 +58,7 @@ from .config import (
 )
 from .exceptions import (
     CentroidPlaneError,
+    ClockChangeError,
     DegenerateBayerChannelError,
     FrameMetadataError,
     InstrumentDetectionError,
@@ -1410,8 +1411,10 @@ def metadata_from_header(header, *, profile=None, time_zone=None):
     FrameMetadataError
         If a required header keyword is missing or cannot be parsed, or if the
         system gain (``egain``) is absent with no template default. Also raised
-        if ``obs_time`` cannot be converted to the UTC start of the exposure;
-        see `_obs_time_utc_start`. If ``profile`` is None and ``header``
+        if ``obs_time`` cannot be converted to the UTC start of the exposure
+        (the subclass `~bandaid.exceptions.ClockChangeError` for a local time
+        in a clock-change hour); see `_obs_time_utc_start`. If ``profile`` is
+        None and ``header``
         matches zero or more than one bundled/registered instrument profile,
         the subclass `~bandaid.exceptions.InstrumentDetectionError` propagates
         instead (from `~bandaid.instruments.resolve_profile`).
@@ -1451,13 +1454,48 @@ def metadata_from_header(header, *, profile=None, time_zone=None):
     return metadata
 
 
+def _obs_datetime(obs_time, *, file=None):
+    """
+    Parse a header observation time as a `datetime.datetime`.
+
+    Parameters
+    ----------
+    obs_time : str
+        The ``obs_time`` metadata value (usually from ``DATE-OBS``).
+    file : str or Path, optional
+        The frame to attach to the error.
+
+    Returns
+    -------
+    datetime.datetime
+        The parsed time, with a zone only if the string carries an offset.
+
+    Raises
+    ------
+    FrameMetadataError
+        If ``obs_time`` cannot be parsed.
+
+    Notes
+    -----
+    ``dateutil`` mirrors `build_photometry_table`'s tolerant ``DATE-OBS``
+    parsing, so every consumer accepts the same header date forms.
+    """
+    try:
+        return parser.parse(obs_time)
+    # OverflowError: dateutil raises it for all-digit strings too large for a
+    # C long (e.g. a corrupted numeric DATE-OBS), documented in parser.parse.
+    except (ValueError, TypeError, OverflowError) as exc:
+        msg = f"could not parse observation time (obs_time) {obs_time!r}"
+        raise FrameMetadataError(msg, file=file) from exc
+
+
 def _tzinfo_from_time_zone(time_zone):
     """
     Return the `datetime.tzinfo` for the observer's ``time_zone``.
 
     Parameters
     ----------
-    time_zone : str or float
+    time_zone : str or float or None
         An IANA zone name such as ``"America/Chicago"``, or a UTC offset in
         hours.
 
@@ -1468,15 +1506,22 @@ def _tzinfo_from_time_zone(time_zone):
 
     Raises
     ------
-    zoneinfo.ZoneInfoNotFoundError
-        If ``time_zone`` is a name no zone has.
-    ValueError
-        If ``time_zone`` is not a valid zone name, or an offset of a day or
+    FrameMetadataError
+        If ``time_zone`` is None, a name no zone has, or an offset of a day or
         more.
-    """  # noqa: DOC502
-    if isinstance(time_zone, str):
-        return ZoneInfo(time_zone)
-    return timezone(timedelta(hours=time_zone))
+    """
+    try:
+        if isinstance(time_zone, str):
+            return ZoneInfo(time_zone)
+        return timezone(timedelta(hours=time_zone))
+    # TypeError covers None; OverflowError an infinite offset.
+    except (ZoneInfoNotFoundError, ValueError, TypeError, OverflowError) as exc:
+        msg = (
+            "give the observer's zone as time_zone in the user metadata (an IANA "
+            'name such as "America/Chicago", or a UTC offset in hours), not '
+            f"{time_zone!r}"
+        )
+        raise FrameMetadataError(msg) from exc
 
 
 def _obs_time_utc_start(metadata, profile, time_zone):
@@ -1502,30 +1547,22 @@ def _obs_time_utc_start(metadata, profile, time_zone):
     ------
     FrameMetadataError
         If the time cannot be parsed; if it carries no UTC offset, the
-        profile's zone is ``"local"`` and ``time_zone`` is None; if it falls in
-        the hour a clock change repeats or skips in ``time_zone``; or, for a
-        profile whose time is not the start, if the frame is stacked.
+        profile's zone is ``"local"`` and ``time_zone`` is not a zone; or, for
+        a profile whose time is not the start, if the frame is stacked.
+    ClockChangeError
+        If the time falls in the hour a clock change repeats or skips in
+        ``time_zone``.
     """
     obs_time = metadata.get("obs_time")
     default = profile.obs_time_marks == "start" and profile.obs_time_zone == "utc"
     if default or obs_time is None:
         return obs_time
-    try:
-        when = parser.parse(obs_time)
-    except (ValueError, TypeError, OverflowError) as exc:
-        msg = f"could not parse observation time (obs_time) {obs_time!r}"
-        raise FrameMetadataError(msg) from exc
+    when = _obs_datetime(obs_time)
 
-    if when.tzinfo is None and profile.obs_time_zone == "utc":
-        when = when.replace(tzinfo=UTC)
-    elif when.tzinfo is None:
-        if time_zone is None:
-            msg = (
-                f"observation time {obs_time!r} is local time; give the zone as "
-                "time_zone in the user metadata"
-            )
-            raise FrameMetadataError(msg)
-        zone = _tzinfo_from_time_zone(time_zone)
+    if when.tzinfo is None:
+        zone = (
+            UTC if profile.obs_time_zone == "utc" else _tzinfo_from_time_zone(time_zone)
+        )
         # The two folds differ only in the hour the clocks repeat or skip.
         if (
             when.replace(tzinfo=zone, fold=0).utcoffset()
@@ -1535,7 +1572,7 @@ def _obs_time_utc_start(metadata, profile, time_zone):
                 f"observation time {obs_time!r} falls in the hour the clocks "
                 f"change in {time_zone}, so it names no single time"
             )
-            raise FrameMetadataError(msg)
+            raise ClockChangeError(msg)
         when = when.replace(tzinfo=zone)
 
     # To UTC before the shift: subtracting from a zoned time moves the wall
@@ -3480,42 +3517,6 @@ def _drop_edge_catalog_stars(
     )
 
 
-def _parse_obs_time(obs_time, *, file=None):
-    """
-    Parse a header observation time as `~astropy.time.Time`.
-
-    Parameters
-    ----------
-    obs_time : str
-        The ``obs_time`` metadata value (usually from ``DATE-OBS``).
-    file : str or Path, optional
-        The frame to attach to the error.
-
-    Returns
-    -------
-    astropy.time.Time
-        The parsed time.
-
-    Raises
-    ------
-    FrameMetadataError
-        If ``obs_time`` cannot be parsed.
-
-    Notes
-    -----
-    ``dateutil`` mirrors `build_photometry_table`'s tolerant
-    ``DATE-OBS`` parsing, so every consumer accepts the same header date forms
-    (``Time()`` alone is stricter than ``dateutil``).
-    """
-    try:
-        return Time(parser.parse(obs_time))
-    # OverflowError: dateutil raises it for all-digit strings too large for a
-    # C long (e.g. a corrupted numeric DATE-OBS), documented in parser.parse.
-    except (ValueError, TypeError, OverflowError) as exc:
-        msg = f"could not parse observation time (obs_time) {obs_time!r}"
-        raise FrameMetadataError(msg, file=file) from exc
-
-
 def _solve_pool_near(radecs, center_ra, center_dec, radius_deg):
     """
     Boolean mask of the catalog stars within a radius of a sky position.
@@ -3654,7 +3655,7 @@ def estimate_center_from_header(metadata, profile):
                 "(obs_time, usually mapped from DATE-OBS), but none was resolved"
             )
             raise FrameMetadataError(msg)
-        equinox = _parse_obs_time(obs_time)
+        equinox = Time(_obs_datetime(obs_time))
     else:
         equinox = Time(profile.header_equinox)
     icrs = SkyCoord(ra, dec, frame=FK5(equinox=equinox)).icrs
