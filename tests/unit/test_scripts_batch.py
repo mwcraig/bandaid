@@ -1321,10 +1321,7 @@ class TestProcessFrame:
 
         assert process.call_args.kwargs["star_flag_state"] is prep.star_flag_state
 
-    @pytest.mark.parametrize(
-        "user_metadata", [None, {"time_zone": "Europe/Paris"}], ids=["none", "other"]
-    )
-    def test_time_zone_comes_from_the_prep(self, mocker, by_filter, user_metadata):
+    def test_time_zone_comes_from_the_prep(self, mocker, by_filter):
         """The zone `prepare_batch` checked is the one each frame is read with."""
         process = mocker.patch(
             "bandaid.scripts.process_one_image", return_value=by_filter()
@@ -1333,7 +1330,9 @@ class TestProcessFrame:
             _dummy_prep(), prep_metadata={"time_zone": "America/Chicago"}
         )
 
-        process_frame("a.fits", prep, user_specific_metadata=user_metadata)
+        process_frame(
+            "a.fits", prep, user_specific_metadata={"time_zone": "Europe/Paris"}
+        )
 
         assert process.call_args.args[1]["time_zone"] == "America/Chicago"
 

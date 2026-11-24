@@ -425,6 +425,25 @@ class TestMetadataFromHeaderObsTime:
                 FrameMetadataError,
                 "stack",
             ),
+            # Stacked wins over the clock-change hour, which a batch walks past.
+            (
+                "2024-11-03T01:30:00",
+                {
+                    "stack": 7,
+                    "obs_time_marks": "end",
+                    **_LOCAL,
+                    "time_zone": "America/Chicago",
+                },
+                FrameMetadataError,
+                "stack",
+            ),
+            # dateutil reads this offset; astropy cannot place it.
+            (
+                "2024-06-01T03:00:00+25:00",
+                {"obs_time_marks": "end"},
+                FrameMetadataError,
+                "could not parse",
+            ),
             ("2023-12-31T18:00:00", _LOCAL, FrameMetadataError, "time_zone"),
             (
                 "2023-12-31T18:00:00",
@@ -445,7 +464,15 @@ class TestMetadataFromHeaderObsTime:
                 "clocks change",
             ),
         ],
-        ids=["stacked", "no-time-zone", "bad-zone", "repeated-hour", "skipped-hour"],
+        ids=[
+            "stacked",
+            "stacked-in-repeated-hour",
+            "bad-offset",
+            "no-time-zone",
+            "bad-zone",
+            "repeated-hour",
+            "skipped-hour",
+        ],
     )
     def test_obs_time_that_cannot_be_placed_raises(
         self, date_obs, kwargs, error, match

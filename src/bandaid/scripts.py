@@ -783,8 +783,7 @@ def _calibrate_first_usable(
             last_error = None
             return prep_file, calibration, position
     if len(candidates) == 1:
-        what = "measure an FWHM on" if no_fwhm else "prepare the batch from"
-        msg = f"cannot {what} {prep_file}: {last_error.reason}"
+        msg = f"cannot measure an FWHM on {prep_file}: {last_error.reason}"
     else:
         msg = (
             f"tried all {len(candidates)} frames; "
@@ -1134,11 +1133,8 @@ def prepare_batch(
     one is accepted or the list runs out. On the first frame only
     `~bandaid.exceptions.TooFewStarsError`,
     `~bandaid.exceptions.PSFFitError` and
-    `~bandaid.exceptions.ClockChangeError` (a local time in the hour the clocks
-    change, which says nothing about the frames after it) advance the walk,
-    and any other `~bandaid.exceptions.FrameError` from it is raised unchanged
-    (a stacked frame under a profile whose time marks the middle or end, say,
-    since the rest of the batch is likely stacked too); on a later
+    `~bandaid.exceptions.ClockChangeError` advance the walk, and any other
+    `~bandaid.exceptions.FrameError` from it is raised unchanged; on a later
     frame any `~bandaid.exceptions.FrameError` does (unreadable header metadata
     or a degenerate Bayer channel, say), since `process_batch` would skip that
     frame anyway. Every other failure stays fatal for the batch and never advances

@@ -45,8 +45,7 @@ that:
     an IANA zone name such as `"America/Chicago"`, or the UTC offset in hours
     as a number (`-6`). The zone is never derived from the site position. A
     run without `time_zone`, or with one that names no zone, stops before any
-    frame is processed with `BatchPrepError`. From Python, the zone given to
-    `prepare_batch` is the one every frame is read with.
+    frame is processed with `BatchPrepError`.
 - A time that carries its own UTC offset (`2024-01-01T05:00:00+05:00`) is read
     with that offset, whatever `obs_time_zone` says.
 - With a zone name, a frame stamped in the hour the clocks repeat when they go

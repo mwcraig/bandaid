@@ -1481,12 +1481,16 @@ def _obs_datetime(obs_time, *, file=None):
     parsing, so every consumer accepts the same header date forms.
     """
     try:
-        return parser.parse(obs_time)
+        when = parser.parse(obs_time)
+        # dateutil reads some times (a UTC offset over a day, say) that
+        # neither astropy nor a conversion to UTC can place.
+        Time(when)
     # OverflowError: dateutil raises it for all-digit strings too large for a
     # C long (e.g. a corrupted numeric DATE-OBS), documented in parser.parse.
     except (ValueError, TypeError, OverflowError) as exc:
         msg = f"could not parse observation time (obs_time) {obs_time!r}"
         raise FrameMetadataError(msg, file=file) from exc
+    return when
 
 
 def _tzinfo_from_time_zone(time_zone):
@@ -1558,6 +1562,15 @@ def _obs_time_utc_start(metadata, profile, time_zone):
     if default or obs_time is None:
         return obs_time
     when = _obs_datetime(obs_time)
+    # Checked before the zone, so a stacked frame in a clock-change hour is
+    # reported as stacked: prepare_batch walks past the other.
+    if profile.obs_time_marks != "start" and float(metadata.get("stack") or 1) > 1:
+        msg = (
+            f"frame is a stack of {metadata['stack']} exposures, and "
+            f"obs_time_marks {profile.obs_time_marks!r} is for unstacked "
+            "frames only"
+        )
+        raise FrameMetadataError(msg)
 
     if when.tzinfo is None:
         zone = (
@@ -1579,13 +1592,6 @@ def _obs_time_utc_start(metadata, profile, time_zone):
     # clock, which is off by the clock change when the exposure spans one.
     when = when.astimezone(UTC)
     if profile.obs_time_marks != "start":
-        if float(metadata.get("stack") or 1) > 1:
-            msg = (
-                f"frame is a stack of {metadata['stack']} exposures, and "
-                f"obs_time_marks {profile.obs_time_marks!r} is for unstacked "
-                "frames only"
-            )
-            raise FrameMetadataError(msg)
         fraction = 0.5 if profile.obs_time_marks == "middle" else 1.0
         when -= timedelta(seconds=fraction * float(metadata["exposure"]))
 
