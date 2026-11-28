@@ -13,7 +13,7 @@ import json
 
 import numpy as np
 import pytest
-from _helpers import SEESTAR_RULE
+from _helpers import SEESTAR_RULE, make_profile
 from pydantic import ValidationError
 
 from bandaid.config import (
@@ -29,7 +29,6 @@ from bandaid.config import (
 # Legacy module-level constants the config defaults must reproduce. Pinned as
 # explicit literals (rather than read back off the config-derived photometry.*
 # constants) so these tests actually catch an accidental default change.
-EXPECTED_GAIA_MAG_LIMIT = 15
 EXPECTED_CONTAMINANT_OFFSET = 3
 EXPECTED_RADII = (1.0,)
 EXPECTED_GAP = 4.0
@@ -62,7 +61,6 @@ EXPECTED_CNN_CLASS_SIZE = 30
 EXPECTED_FIT_N_STARS = 30
 EXPECTED_MIN_FIT_STARS = 12
 EXPECTED_CLIP_SIGMA = 3.0
-EXPECTED_MAX_PLANE_RMS_PIX = 1.0
 
 
 class TestDefaultsMatchLegacyConstants:
@@ -78,13 +76,9 @@ class TestDefaultsMatchLegacyConstants:
         assert tuple(cfg.annulus) == EXPECTED_ANNULUS
 
     def test_source_selection(self):
-        """The Gaia limit defaults to 15, offset to 3, and the SNR floor to 2."""
+        """The contaminant offset defaults to 3 and the SNR floor to 2."""
         cfg = SourceSelectionConfig()
-        assert cfg.gaia_mag_limit == EXPECTED_GAIA_MAG_LIMIT
-        assert (
-            cfg.contaminant_mag_limit
-            == EXPECTED_GAIA_MAG_LIMIT + EXPECTED_CONTAMINANT_OFFSET
-        )
+        assert cfg.contaminant_mag_offset == EXPECTED_CONTAMINANT_OFFSET
         assert cfg.min_snr == EXPECTED_MIN_SNR
         assert cfg.gaia_row_limit == EXPECTED_GAIA_ROW_LIMIT
 
@@ -102,11 +96,10 @@ class TestDefaultsMatchLegacyConstants:
         assert cfg.fit_n_stars == EXPECTED_FIT_N_STARS
         assert cfg.min_fit_stars == EXPECTED_MIN_FIT_STARS
         assert cfg.clip_sigma == EXPECTED_CLIP_SIGMA
-        assert cfg.max_plane_rms_pix == EXPECTED_MAX_PLANE_RMS_PIX
 
     def test_instrument(self):
         """Detection/FWHM/PSF settings default to the legacy literal values."""
-        cfg = InstrumentProfile()
+        cfg = make_profile()
         assert cfg.thresh == EXPECTED_THRESH
         assert cfg.detection_opening == EXPECTED_DETECTION_OPENING
         assert cfg.fwhm_cutout_half == EXPECTED_FWHM_CUTOUT_HALF
@@ -117,9 +110,14 @@ class TestDefaultsMatchLegacyConstants:
         assert cfg.wcs_scale_tolerance == EXPECTED_WCS_SCALE_TOLERANCE
         assert cfg.wcs_pointing_tolerance is None
 
+    def test_instrument_time_is_the_utc_exposure_start(self):
+        """By default the header time is the UTC start of the exposure."""
+        cfg = make_profile()
+        assert (cfg.obs_time_marks, cfg.obs_time_zone) == ("start", "utc")
+
     def test_instrument_carries_seestar_header_map(self):
         """A bare profile defaults to the Seestar50 name and header dialect."""
-        cfg = InstrumentProfile()
+        cfg = make_profile()
         assert cfg.name == "Seestar50"
         # The header_map is the per-frame FITS dialect (the old basic.json).
         assert cfg.header_map["obs_time"] == "@DATE-OBS"
@@ -127,19 +125,19 @@ class TestDefaultsMatchLegacyConstants:
 
     def test_instrument_header_match_defaults_to_empty(self):
         """
-        A bare ``InstrumentProfile()`` carries no header-match rules.
+        A bare profile carries no header-match rules.
 
         Device identity must be opt-in: a bare profile shares the Seestar
         *tuning* defaults, but must not accidentally claim to *be* a Seestar
         for auto-detection purposes. Only the bundled Seestar50 profile (loaded
         from ``profile.json``) carries a rule.
         """
-        cfg = InstrumentProfile()
+        cfg = make_profile()
         assert cfg.header_match == ()
 
     def test_matches_header_true_when_any_rule_matches(self):
         """``matches_header`` is True when at least one rule matches (OR)."""
-        cfg = InstrumentProfile(
+        cfg = make_profile(
             name="TwoRules",
             header_match=(
                 SEESTAR_RULE,
@@ -150,7 +148,7 @@ class TestDefaultsMatchLegacyConstants:
 
     def test_matches_header_false_when_no_rule_matches(self):
         """``matches_header`` is False when every rule fails to match."""
-        cfg = InstrumentProfile(
+        cfg = make_profile(
             name="OneRule",
             header_match=(SEESTAR_RULE,),
         )
@@ -158,7 +156,7 @@ class TestDefaultsMatchLegacyConstants:
 
     def test_matches_header_false_for_empty_header_match(self):
         """A profile with no rules never matches (device identity is opt-in)."""
-        cfg = InstrumentProfile()
+        cfg = make_profile()
         assert cfg.matches_header({"INSTRUME": "Seestar S50"}) is False
 
     def test_photometry_config_composes_defaults(self):
@@ -177,12 +175,12 @@ class TestDefaultsMatchLegacyConstants:
 
     def test_instrument_star_flaggers_default_to_empty(self):
         """
-        A bare ``InstrumentProfile()`` names no star flaggers.
+        A bare profile names no star flaggers.
 
         Instrument-specific star flags are opt-in like ``header_match``: a
         bare or user-built profile runs no instrument code.
         """
-        assert InstrumentProfile().star_flaggers == ()
+        assert make_profile().star_flaggers == ()
 
     def test_instrument_star_flags_enabled_by_default(self):
         """The instrument star flags are on unless switched off."""
@@ -194,7 +192,7 @@ class TestImmutability:
 
     def test_cannot_mutate(self):
         """Assigning to a field on a constructed config raises."""
-        cfg = PhotometryConfig(instrument=InstrumentProfile())
+        cfg = PhotometryConfig(instrument=make_profile())
         with pytest.raises(ValidationError):
             cfg.instrument.detection_opening = 7
 
@@ -207,16 +205,14 @@ class TestImmutability:
         would otherwise leak across every later use, so the mapping itself is
         structurally read-only.
         """
-        cfg = InstrumentProfile()
+        cfg = make_profile()
         with pytest.raises(TypeError):
             cfg.header_map["obs_time"] = "@NOPE"
 
     def test_cannot_mutate_a_per_channel_egain(self):
         """A per-channel ``egain`` mapping inside ``header_map`` is read-only too."""
         egain = {"TR": 0.046, "TG": 0.075, "TB": 0.075}
-        cfg = InstrumentProfile(
-            header_map={**InstrumentProfile().header_map, "egain": egain}
-        )
+        cfg = make_profile(header_map={**make_profile().header_map, "egain": egain})
 
         with pytest.raises(TypeError):
             cfg.header_map["egain"]["TR"] = 9.0
@@ -226,9 +222,7 @@ class TestImmutability:
     def test_per_channel_egain_round_trips_through_json(self):
         """A frozen per-channel ``egain`` still serialises to plain JSON and back."""
         egain = {"TR": 0.046, "TG": 0.075, "TB": 0.075}
-        cfg = InstrumentProfile(
-            header_map={**InstrumentProfile().header_map, "egain": egain}
-        )
+        cfg = make_profile(header_map={**make_profile().header_map, "egain": egain})
 
         dumped = cfg.model_dump_json()
         assert json.loads(dumped)["header_map"]["egain"] == egain
@@ -270,30 +264,30 @@ class TestValidators:
     def test_non_positive_fwhm_n_stars_rejected(self, n_stars):
         """A zero or negative FWHM star cap is rejected at construction."""
         with pytest.raises(ValidationError):
-            InstrumentProfile(fwhm_n_stars=n_stars)
+            make_profile(fwhm_n_stars=n_stars)
 
     @pytest.mark.parametrize("tolerance", [0.0, -0.05])
     def test_non_positive_wcs_scale_tolerance_rejected(self, tolerance):
         """A zero or negative WCS plate-scale tolerance is rejected."""
         with pytest.raises(ValidationError):
-            InstrumentProfile(wcs_scale_tolerance=tolerance)
+            make_profile(wcs_scale_tolerance=tolerance)
 
     @pytest.mark.parametrize("tolerance", [0.0, -0.25])
     def test_non_positive_wcs_pointing_tolerance_rejected(self, tolerance):
         """A zero or negative WCS pointing tolerance is rejected."""
         with pytest.raises(ValidationError):
-            InstrumentProfile(wcs_pointing_tolerance=tolerance)
+            make_profile(wcs_pointing_tolerance=tolerance)
 
     @pytest.mark.parametrize("scale", [0.0, -0.9])
     def test_non_positive_solve_pool_radius_scale_rejected(self, scale):
         """A zero or negative solve-pool radius scale is rejected."""
         with pytest.raises(ValidationError):
-            InstrumentProfile(solve_pool_radius_scale=scale)
+            make_profile(solve_pool_radius_scale=scale)
 
     @pytest.mark.parametrize("scale", [0.5, 1.0])
     def test_positive_solve_pool_radius_scale_accepted(self, scale):
         """Positive solve-pool radius scales are accepted."""
-        profile = InstrumentProfile(solve_pool_radius_scale=scale)
+        profile = make_profile(solve_pool_radius_scale=scale)
         assert profile.solve_pool_radius_scale == scale
 
     @pytest.mark.parametrize("limit", [0, -1])
@@ -316,12 +310,12 @@ class TestValidators:
         measured seeing already contaminates, so it is rejected up front.
         """
         with pytest.raises(ValidationError, match="contamination_seeing_margin"):
-            InstrumentProfile(contamination_seeing_margin=margin)
+            make_profile(contamination_seeing_margin=margin)
 
     @pytest.mark.parametrize("equinox", ["date", "J2000", "B1950", "J2025.5"])
     def test_valid_header_equinox_accepted(self, equinox):
         """``"date"`` and astropy J/B epoch strings are valid header equinoxes."""
-        profile = InstrumentProfile(header_frame="fk5", header_equinox=equinox)
+        profile = make_profile(header_frame="fk5", header_equinox=equinox)
         assert profile.header_equinox == equinox
 
     @pytest.mark.parametrize(
@@ -336,26 +330,26 @@ class TestValidators:
     )
     def test_header_equinox_is_case_insensitive(self, equinox, stored):
         """Any casing is accepted and stored in one canonical form."""
-        profile = InstrumentProfile(header_frame="fk5", header_equinox=equinox)
+        profile = make_profile(header_frame="fk5", header_equinox=equinox)
         assert profile.header_equinox == stored
 
     @pytest.mark.parametrize("equinox", ["now", "2000", "junk", "2025-01-01"])
     def test_invalid_header_equinox_rejected(self, equinox):
         """Anything that is neither ``"date"`` nor a J/B epoch string is rejected."""
         with pytest.raises(ValidationError, match="header_equinox"):
-            InstrumentProfile(header_frame="fk5", header_equinox=equinox)
+            make_profile(header_frame="fk5", header_equinox=equinox)
 
     def test_unknown_header_frame_rejected(self):
         """Only ``"icrs"`` and ``"fk5"`` are accepted header frames."""
         with pytest.raises(ValidationError, match="header_frame"):
-            InstrumentProfile(header_frame="galactic")
+            make_profile(header_frame="galactic")
 
     @pytest.mark.parametrize(
         ("frame", "stored"), [("FK5", "fk5"), ("Fk5", "fk5"), ("ICRS", "icrs")]
     )
     def test_header_frame_is_case_insensitive(self, frame, stored):
         """A frame copied from a FITS ``RADESYS`` card (upper case) is accepted."""
-        assert InstrumentProfile(header_frame=frame).header_frame == stored
+        assert make_profile(header_frame=frame).header_frame == stored
 
     @pytest.mark.parametrize("equinox", ["date", "B1950", "J2025.5", "Date"])
     def test_icrs_header_frame_rejects_an_equinox(self, equinox):
@@ -366,20 +360,20 @@ class TestValidators:
         default by mistake and the pointing would go unconverted.
         """
         with pytest.raises(ValidationError, match="header_frame"):
-            InstrumentProfile(header_frame="icrs", header_equinox=equinox)
+            make_profile(header_frame="icrs", header_equinox=equinox)
         with pytest.raises(ValidationError, match="header_frame"):
-            InstrumentProfile(header_equinox=equinox)
+            make_profile(header_equinox=equinox)
 
     @pytest.mark.parametrize("equinox", ["J2000", "j2000"])
     def test_icrs_header_frame_accepts_the_default_equinox(self, equinox):
         """The default ``"J2000"`` equinox is accepted alongside ``"icrs"``."""
-        profile = InstrumentProfile(header_frame="icrs", header_equinox=equinox)
+        profile = make_profile(header_frame="icrs", header_equinox=equinox)
         assert (profile.header_frame, profile.header_equinox) == ("icrs", "J2000")
 
     def test_removed_header_center_offset_rejected(self):
         """The removed ``header_center_offset`` key is a hard error with a hint."""
         with pytest.raises(ValidationError) as excinfo:
-            InstrumentProfile(header_center_offset=[-0.32, 0.15])
+            make_profile(header_center_offset=[-0.32, 0.15])
         assert "header_frame" in str(excinfo.value)
         assert "header_equinox" in str(excinfo.value)
         with pytest.raises(ValidationError, match="header_frame"):
@@ -392,30 +386,20 @@ class TestValidators:
         Profiles written for a non-Seestar telescope were told to set the key
         to ``null`` to center on the raw header, which is what ``"icrs"`` means.
         """
-        data = {"name": "Other", "header_center_offset": None}
+        data = {
+            "name": "Other",
+            "photometry_faint_mag_limit": 15.0,
+            "max_plane_rms_pix": 1.0,
+            "header_center_offset": None,
+        }
+        original = dict(data)
 
         profile = InstrumentProfile.model_validate(data)
 
         assert (profile.header_frame, profile.header_equinox) == ("icrs", "J2000")
         # The caller's mapping is left as it was.
-        assert data == {"name": "Other", "header_center_offset": None}
-        assert InstrumentProfile(header_center_offset=None).header_frame == "icrs"
-
-    def test_contaminant_default_tracks_gaia(self):
-        """The derived contaminant limit follows a custom Gaia limit by +3."""
-        gaia_limit = 14
-        cfg = SourceSelectionConfig(gaia_mag_limit=gaia_limit)
-        assert cfg.contaminant_mag_limit == gaia_limit + EXPECTED_CONTAMINANT_OFFSET
-
-    def test_contaminant_offset_is_configurable(self):
-        """A custom offset shifts the derived contaminant limit by that amount."""
-        gaia_limit = 15
-        offset = 2
-        cfg = SourceSelectionConfig(
-            gaia_mag_limit=gaia_limit, contaminant_mag_offset=offset
-        )
-        assert cfg.contaminant_mag_offset == offset
-        assert cfg.contaminant_mag_limit == gaia_limit + offset
+        assert data == original
+        assert make_profile(header_center_offset=None).header_frame == "icrs"
 
     def test_non_positive_contaminant_offset_rejected(self):
         """A zero or negative contaminant offset is rejected."""
@@ -427,19 +411,33 @@ class TestValidators:
         with pytest.raises(ValidationError, match="contaminant_mag_offset"):
             SourceSelectionConfig(contaminant_mag_offset=float("inf"))
 
-    def test_string_inputs_are_coerced(self):
-        """String numeric inputs coerce cleanly instead of raising TypeError."""
-        expected_gaia = 15.0
-        expected_offset = 2.0
-        cfg = SourceSelectionConfig(gaia_mag_limit="15", contaminant_mag_offset="2")
-        assert cfg.gaia_mag_limit == expected_gaia
-        assert cfg.contaminant_mag_offset == expected_offset
-        assert cfg.contaminant_mag_limit == expected_gaia + expected_offset
+    @pytest.mark.parametrize(
+        "field", ["photometry_faint_mag_limit", "max_plane_rms_pix"]
+    )
+    def test_profile_field_is_required(self, field):
+        """A profile must state its faint limit and plane-rms limit."""
+        fields = {"photometry_faint_mag_limit": 15.0, "max_plane_rms_pix": 1.0}
+        del fields[field]
+        with pytest.raises(ValidationError, match=field):
+            InstrumentProfile(**fields)
 
-    def test_non_finite_gaia_limit_rejected(self):
-        """A non-finite Gaia magnitude limit is rejected."""
-        with pytest.raises(ValidationError, match="gaia_mag_limit"):
-            SourceSelectionConfig(gaia_mag_limit=float("inf"))
+    @pytest.mark.parametrize(
+        ("section", "key", "names"),
+        [
+            (
+                "source_selection",
+                "gaia_mag_limit",
+                ("photometry_faint_mag_limit", "--photometry-faint-mag-limit"),
+            ),
+            ("centroid", "max_plane_rms_pix", ("max_plane_rms_pix", "profile")),
+        ],
+    )
+    def test_removed_config_key_names_its_new_home(self, section, key, names):
+        """A config file that still sets a moved key fails, naming where it went."""
+        with pytest.raises(ValidationError) as excinfo:
+            PhotometryConfig.model_validate({section: {key: 15.0}})
+        for name in names:
+            assert name in str(excinfo.value)
 
     @pytest.mark.parametrize("edge_margin_px", [0.0, -1.0, float("nan")])
     def test_non_positive_edge_margin_rejected(self, edge_margin_px):
@@ -480,8 +478,8 @@ class TestValidators:
     )
     def test_non_positive_or_non_finite_max_plane_rms_rejected(self, max_plane_rms_pix):
         """A plane-rms limit that is not a positive finite number is rejected."""
-        with pytest.raises(ValidationError):
-            CentroidConfig(max_plane_rms_pix=max_plane_rms_pix)
+        with pytest.raises(ValidationError, match="max_plane_rms_pix"):
+            make_profile(max_plane_rms_pix=max_plane_rms_pix)
 
     def test_non_finite_min_snr_rejected(self):
         """A non-finite minimum SNR floor is rejected with a clear message."""
@@ -510,7 +508,7 @@ class TestOverrides:
     def test_instrument_override(self):
         """A custom detection opening is preserved on the nested config."""
         opening = 7
-        cfg = PhotometryConfig(instrument=InstrumentProfile(detection_opening=opening))
+        cfg = PhotometryConfig(instrument=make_profile(detection_opening=opening))
         assert cfg.instrument.detection_opening == opening
 
     def test_aperture_override(self):

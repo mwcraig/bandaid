@@ -21,6 +21,7 @@ __all__ = [
     "BatchPrepError",
     "CatalogTruncationError",
     "CentroidPlaneError",
+    "ClockChangeError",
     "DegenerateBayerChannelError",
     "FrameError",
     "FrameMetadataError",
@@ -151,6 +152,10 @@ class FrameMetadataError(FrameError):
     """A required FITS header keyword is missing or could not be parsed."""
 
 
+class ClockChangeError(FrameMetadataError):
+    """A local header time falls in the hour a clock change repeats or skips."""
+
+
 class NoUsableStarsError(FrameError):
     """No stars survived photometry filtering, so the frame yields no output."""
 
@@ -207,8 +212,8 @@ class CatalogTruncationError(BatchPrepError):
     """
     The Gaia query hit its row limit before reaching the target magnitude limit.
 
-    Photometry targets brighter than ``gaia_mag_limit`` were dropped, so the
-    batch cannot be trusted.
+    Photometry targets brighter than the instrument's
+    ``photometry_faint_mag_limit`` were dropped, so the batch cannot be trusted.
     """
 
 

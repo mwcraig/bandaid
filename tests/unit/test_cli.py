@@ -16,6 +16,7 @@ import logging
 import astropy.units as u
 import numpy as np
 import pytest
+from _helpers import make_profile
 from astropy.table import Table
 from click.testing import CliRunner
 
@@ -35,7 +36,7 @@ def runner():
 @pytest.fixture
 def extra_instrument():
     """Register a second instrument so an override can be told from the default."""
-    profile = InstrumentProfile(name="TestScope")
+    profile = make_profile(name="TestScope")
     register_instrument(profile)
     yield profile
     _REGISTERED.pop("TestScope", None)
@@ -129,6 +130,7 @@ def test_process_forwards_every_flag(runner, patched_photometer, tmp_path):
     assert call_kwargs["write_frame"] is write_starlist_set
     assert call_kwargs["output_suffix"] == ".starlist"
     assert call_kwargs["write_manifest"] is False
+    assert call_kwargs["photometry_faint_mag_limit"] is None
     # No --instrument/--profile/--config flag: the config carries instrument=None,
     # meaning "resolve from the frame header" (auto-detect), not a hard default.
     config = call_kwargs["config"]
@@ -420,7 +422,7 @@ def test_process_instrument_override(
 
 def test_process_profile_file_override(runner, patched_photometer, tmp_path):
     """``--profile FILE`` loads an unbundled profile onto the config."""
-    profile = InstrumentProfile(name="MyScope")
+    profile = make_profile(name="MyScope")
     profile_file = tmp_path / "scope.json"
     profile.to_file(profile_file)
 
@@ -436,30 +438,31 @@ def test_process_profile_file_override(runner, patched_photometer, tmp_path):
     assert config.instrument.name == "MyScope"
 
 
-# CLI-override values for the source_selection override tests below: distinct
-# from both the SourceSelectionConfig defaults and the config-file values in
-# test_process_gaia_mag_limit_and_min_snr_win_over_config_file, so a passing
-# assertion actually proves the CLI flag (not some other default) won.
-_OVERRIDE_GAIA_MAG_LIMIT = 13.0
+# CLI-override values for the override tests below: distinct from both the
+# defaults and the config-file values in
+# test_process_min_snr_wins_over_config_file, so a passing assertion actually
+# proves the CLI flag (not some other default) won.
+_OVERRIDE_FAINT_MAG_LIMIT = 13.0
 _OVERRIDE_MIN_SNR = 3.0
-_CONFIG_FILE_GAIA_MAG_LIMIT = 10.0
 _CONFIG_FILE_MIN_SNR = 1.0
 _CONFIG_FILE_CONTAMINANT_OFFSET = 2.5
 
 
-def test_process_gaia_mag_limit_override(runner, patched_photometer, tmp_path):
-    """``--gaia-mag-limit`` overrides the source-selection default."""
+@pytest.mark.parametrize("flag", ["--photometry-faint-mag-limit", "--gaia-mag-limit"])
+def test_process_photometry_faint_mag_limit_forwarded(
+    runner, patched_photometer, tmp_path, flag
+):
+    """The faint-limit flag, or its old name, reaches ``photometer_frames``."""
     frame = tmp_path / "a.fit"
     frame.write_bytes(b"")
 
     result = runner.invoke(
-        cli.main,
-        ["process", str(frame), "--gaia-mag-limit", str(_OVERRIDE_GAIA_MAG_LIMIT)],
+        cli.main, ["process", str(frame), flag, str(_OVERRIDE_FAINT_MAG_LIMIT)]
     )
 
     assert result.exit_code == 0, result.output
-    source_selection = patched_photometer.call_args.kwargs["config"].source_selection
-    assert source_selection.gaia_mag_limit == _OVERRIDE_GAIA_MAG_LIMIT
+    call_kwargs = patched_photometer.call_args.kwargs
+    assert call_kwargs["photometry_faint_mag_limit"] == _OVERRIDE_FAINT_MAG_LIMIT
 
 
 def test_process_min_snr_override(runner, patched_photometer, tmp_path):
@@ -476,13 +479,10 @@ def test_process_min_snr_override(runner, patched_photometer, tmp_path):
     assert source_selection.min_snr == _OVERRIDE_MIN_SNR
 
 
-def test_process_gaia_mag_limit_and_min_snr_win_over_config_file(
-    runner, patched_photometer, tmp_path
-):
-    """CLI flags override a ``--config`` file's source_selection, field for field."""
+def test_process_min_snr_wins_over_config_file(runner, patched_photometer, tmp_path):
+    """``--min-snr`` overrides a ``--config`` file's value, keeping its other fields."""
     base_config = PhotometryConfig(
         source_selection=SourceSelectionConfig(
-            gaia_mag_limit=_CONFIG_FILE_GAIA_MAG_LIMIT,
             min_snr=_CONFIG_FILE_MIN_SNR,
             contaminant_mag_offset=_CONFIG_FILE_CONTAMINANT_OFFSET,
         )
@@ -500,8 +500,6 @@ def test_process_gaia_mag_limit_and_min_snr_win_over_config_file(
             str(frame),
             "--config",
             str(config_file),
-            "--gaia-mag-limit",
-            str(_OVERRIDE_GAIA_MAG_LIMIT),
             "--min-snr",
             str(_OVERRIDE_MIN_SNR),
         ],
@@ -509,7 +507,6 @@ def test_process_gaia_mag_limit_and_min_snr_win_over_config_file(
 
     assert result.exit_code == 0, result.output
     source_selection = patched_photometer.call_args.kwargs["config"].source_selection
-    assert source_selection.gaia_mag_limit == _OVERRIDE_GAIA_MAG_LIMIT
     assert source_selection.min_snr == _OVERRIDE_MIN_SNR
     # The config file's other source_selection field is preserved, not reset.
     assert source_selection.contaminant_mag_offset == _CONFIG_FILE_CONTAMINANT_OFFSET

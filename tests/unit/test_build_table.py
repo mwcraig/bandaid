@@ -13,6 +13,7 @@ from _helpers import (
     _peak_image_photometry,
     _single_source_photometry_inputs,
     filter_table,
+    make_profile,
 )
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
@@ -20,7 +21,7 @@ from astropy.table import Table
 from astropy.time import Time
 
 import bandaid.photometry as photometry_module
-from bandaid.config import InstrumentProfile, PhotometryConfig, SourceSelectionConfig
+from bandaid.config import PhotometryConfig, SourceSelectionConfig
 from bandaid.photometry import (
     ANNULUS,
     RELATIVE_RADII,
@@ -325,7 +326,7 @@ class TestBuildPhotometryTable:
         # in _make_image_data still carries a (different) DATE-OBS, which must
         # not be consulted.
         custom_map = {"obs_time": "@DATE-LOC", "egain": 1.0, "airmass": 1.5}
-        profile = InstrumentProfile(name="Renamed", header_map=custom_map)
+        profile = make_profile(name="Renamed", header_map=custom_map)
         header = fits.Header()
         header["NAXIS1"] = 50
         header["NAXIS2"] = 50

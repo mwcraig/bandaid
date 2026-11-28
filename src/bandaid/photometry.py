@@ -14,7 +14,9 @@ import logging
 import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, timedelta, timezone
 from typing import NamedTuple
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import astropy.units as u
 import numpy as np
@@ -56,6 +58,7 @@ from .config import (
 )
 from .exceptions import (
     CentroidPlaneError,
+    ClockChangeError,
     DegenerateBayerChannelError,
     FrameMetadataError,
     InstrumentDetectionError,
@@ -137,7 +140,9 @@ _DEFAULT_CENTROID = CentroidConfig()
 # Residuals with a robust scale below this, in pixels, are round-off, not noise.
 _MIN_CLIP_SCALE_PIX = 1e-6
 _DEFAULT_DRIFT = DriftConfig()
-_DEFAULT_INSTRUMENT = InstrumentProfile()
+# A profile's required fields have no default, so the class defaults are read
+# without validating.
+_DEFAULT_INSTRUMENT = InstrumentProfile.model_construct()
 _DEFAULT_SOURCE_SELECTION = SourceSelectionConfig()
 
 # Source-detection threshold (in units of the background sigma) passed to
@@ -981,6 +986,7 @@ def calibration_sequence(
     fwhm_n_stars=None,
     profile=None,
     frame=None,
+    time_zone=None,
 ) -> CalibrationResult:
     """
     Find sources and compute FWHM for an image.
@@ -1036,6 +1042,9 @@ def calibration_sequence(
         (the default) means "resolve from the header"; see Notes.
     frame : LoadedFrame or None, optional
         Pre-loaded frame; when None the file is opened once via the loader.
+    time_zone : str or float or None, optional
+        The observer's time zone, passed to `metadata_from_header` to convert
+        a local header time. Default None.
 
     Returns
     -------
@@ -1086,7 +1095,9 @@ def calibration_sequence(
         # metadata_from_header's own resolve_profile call a no-op rather than
         # a second auto-detection.
         resolved_profile, _ = resolve_profile(profile, header)
-        metadata = metadata_from_header(header, profile=resolved_profile)
+        metadata = metadata_from_header(
+            header, profile=resolved_profile, time_zone=time_zone
+        )
     except FrameMetadataError as exc:
         # metadata_from_header has only the header, not the path; label it
         # here. InstrumentDetectionError is itself a FrameMetadataError, so
@@ -1370,7 +1381,7 @@ def _channel_egain(egain, filter_name):
         raise FrameMetadataError(msg) from exc
 
 
-def metadata_from_header(header, *, profile=None):
+def metadata_from_header(header, *, profile=None, time_zone=None):
     """
     Build a metadata dictionary from an instrument's header dialect and a header.
 
@@ -1384,21 +1395,36 @@ def metadata_from_header(header, *, profile=None):
         resolve_profile` detects it (and logs the detected name), the same
         "auto-detect" semantics as
         `~bandaid.config.PhotometryConfig.instrument`.
+    time_zone : str or float or None, optional
+        The observer's time zone, used when the profile's ``obs_time_zone`` is
+        ``"local"``: an IANA zone name such as ``"America/Chicago"`` or a UTC
+        offset in hours. Default None.
 
     Returns
     -------
     dict
-        Metadata dictionary with header lookups resolved.
+        Metadata dictionary with header lookups resolved, and ``obs_time``
+        converted to the UTC start of the exposure.
 
     Raises
     ------
     FrameMetadataError
         If a required header keyword is missing or cannot be parsed, or if the
-        system gain (``egain``) is absent with no template default. If
-        ``profile`` is None and ``header`` matches zero or more than one
-        bundled/registered instrument profile, the subclass
-        `~bandaid.exceptions.InstrumentDetectionError` propagates instead
-        (from `~bandaid.instruments.resolve_profile`).
+        system gain (``egain``) is absent with no template default. Also raised
+        if ``obs_time`` cannot be converted to the UTC start of the exposure
+        (the subclass `~bandaid.exceptions.ClockChangeError` for a local time
+        in a clock-change hour); see `_obs_time_utc_start`. If ``profile`` is
+        None and ``header``
+        matches zero or more than one bundled/registered instrument profile,
+        the subclass `~bandaid.exceptions.InstrumentDetectionError` propagates
+        instead (from `~bandaid.instruments.resolve_profile`).
+
+    Notes
+    -----
+    With the profile's ``obs_time_marks`` ``"start"`` and ``obs_time_zone``
+    ``"utc"`` (the defaults), ``obs_time`` is the header value, untouched.
+    Otherwise it is rewritten as an ISO UTC string such as
+    ``"2021-06-15T03:45:00"``, and everything downstream reads that.
     """
     profile, _ = resolve_profile(profile, header)
     template = profile.header_map
@@ -1423,8 +1449,153 @@ def metadata_from_header(header, *, profile=None):
         raise FrameMetadataError(msg) from exc
 
     _check_egain(metadata)
+    metadata["obs_time"] = _obs_time_utc_start(metadata, profile, time_zone)
 
     return metadata
+
+
+def _obs_datetime(obs_time, *, file=None):
+    """
+    Parse a header observation time as a `datetime.datetime`.
+
+    Parameters
+    ----------
+    obs_time : str
+        The ``obs_time`` metadata value (usually from ``DATE-OBS``).
+    file : str or Path, optional
+        The frame to attach to the error.
+
+    Returns
+    -------
+    datetime.datetime
+        The parsed time, with a zone only if the string carries an offset.
+
+    Raises
+    ------
+    FrameMetadataError
+        If ``obs_time`` cannot be parsed.
+
+    Notes
+    -----
+    ``dateutil`` mirrors `build_photometry_table`'s tolerant ``DATE-OBS``
+    parsing, so every consumer accepts the same header date forms.
+    """
+    try:
+        when = parser.parse(obs_time)
+        # dateutil reads some times (a UTC offset over a day, say) that
+        # neither astropy nor a conversion to UTC can place.
+        Time(when)
+    # OverflowError: dateutil raises it for all-digit strings too large for a
+    # C long (e.g. a corrupted numeric DATE-OBS), documented in parser.parse.
+    except (ValueError, TypeError, OverflowError) as exc:
+        msg = f"could not parse observation time (obs_time) {obs_time!r}"
+        raise FrameMetadataError(msg, file=file) from exc
+    return when
+
+
+def _tzinfo_from_time_zone(time_zone):
+    """
+    Return the `datetime.tzinfo` for the observer's ``time_zone``.
+
+    Parameters
+    ----------
+    time_zone : str or float or None
+        An IANA zone name such as ``"America/Chicago"``, or a UTC offset in
+        hours.
+
+    Returns
+    -------
+    datetime.tzinfo
+        The named zone, or a fixed offset.
+
+    Raises
+    ------
+    FrameMetadataError
+        If ``time_zone`` is None, a name no zone has, or an offset of a day or
+        more.
+    """
+    try:
+        if isinstance(time_zone, str):
+            return ZoneInfo(time_zone)
+        return timezone(timedelta(hours=time_zone))
+    # TypeError covers None; OverflowError an infinite offset.
+    except (ZoneInfoNotFoundError, ValueError, TypeError, OverflowError) as exc:
+        msg = (
+            "give the observer's zone as time_zone in the user metadata (an IANA "
+            'name such as "America/Chicago", or a UTC offset in hours), not '
+            f"{time_zone!r}"
+        )
+        raise FrameMetadataError(msg) from exc
+
+
+def _obs_time_utc_start(metadata, profile, time_zone):
+    """
+    Return the frame's ``obs_time`` as the UTC start of the exposure.
+
+    Parameters
+    ----------
+    metadata : dict
+        The frame metadata resolved from the header.
+    profile : InstrumentProfile
+        Supplies ``obs_time_marks`` and ``obs_time_zone``.
+    time_zone : str or float or None
+        The observer's time zone; see `metadata_from_header`.
+
+    Returns
+    -------
+    object
+        ``metadata["obs_time"]`` itself for a ``"start"``/``"utc"`` profile
+        or a missing time; otherwise an ISO UTC string with no offset suffix.
+
+    Raises
+    ------
+    FrameMetadataError
+        If the time cannot be parsed; if it carries no UTC offset, the
+        profile's zone is ``"local"`` and ``time_zone`` is not a zone; or, for
+        a profile whose time is not the start, if the frame is stacked.
+    ClockChangeError
+        If the time falls in the hour a clock change repeats or skips in
+        ``time_zone``.
+    """
+    obs_time = metadata.get("obs_time")
+    default = profile.obs_time_marks == "start" and profile.obs_time_zone == "utc"
+    if default or obs_time is None:
+        return obs_time
+    when = _obs_datetime(obs_time)
+    # Checked before the zone, so a stacked frame in a clock-change hour is
+    # reported as stacked: prepare_batch walks past the other.
+    if profile.obs_time_marks != "start" and float(metadata.get("stack") or 1) > 1:
+        msg = (
+            f"frame is a stack of {metadata['stack']} exposures, and "
+            f"obs_time_marks {profile.obs_time_marks!r} is for unstacked "
+            "frames only"
+        )
+        raise FrameMetadataError(msg)
+
+    if when.tzinfo is None:
+        zone = (
+            UTC if profile.obs_time_zone == "utc" else _tzinfo_from_time_zone(time_zone)
+        )
+        # The two folds differ only in the hour the clocks repeat or skip.
+        if (
+            when.replace(tzinfo=zone, fold=0).utcoffset()
+            != when.replace(tzinfo=zone, fold=1).utcoffset()
+        ):
+            msg = (
+                f"observation time {obs_time!r} falls in the hour the clocks "
+                f"change in {time_zone}, so it names no single time"
+            )
+            raise ClockChangeError(msg)
+        when = when.replace(tzinfo=zone)
+
+    # To UTC before the shift: subtracting from a zoned time moves the wall
+    # clock, which is off by the clock change when the exposure spans one.
+    when = when.astimezone(UTC)
+    if profile.obs_time_marks != "start":
+        fraction = 0.5 if profile.obs_time_marks == "middle" else 1.0
+        when -= timedelta(seconds=fraction * float(metadata["exposure"]))
+
+    return when.replace(tzinfo=None).isoformat()
 
 
 # The StarList metadata keys the header map or the user must supply: every
@@ -2457,7 +2628,14 @@ class CentroidResult:
 
 
 def centroid_with_catalog_model(
-    calibrated_data, aligned_coords, cnn, *, gaia_g=None, g_cut=None, config=None
+    calibrated_data,
+    aligned_coords,
+    cnn,
+    *,
+    max_plane_rms_pix,
+    gaia_g=None,
+    g_cut=None,
+    config=None,
 ):
     """
     Centroid stars, using the modelled-position plane for those outside the CNN class.
@@ -2470,6 +2648,9 @@ def centroid_with_catalog_model(
         ``(N, 2)`` WCS-projected catalog pixel coordinates.
     cnn : object
         Centroiding CNN model, as for `centroid_stars`.
+    max_plane_rms_pix : float
+        Largest post-clip rms, in pixels, the frame's offset plane may have:
+        the instrument profile's ``max_plane_rms_pix``.
     gaia_g : numpy.ndarray or None, optional
         Gaia G magnitude of each row, ``(N,)``, NaN where a row has none (a
         forced target). When None the policy does not run and every star is
@@ -2490,7 +2671,7 @@ def centroid_with_catalog_model(
     ------
     CentroidPlaneError
         If the frame's offset plane fits its own stars with an rms above
-        ``config.max_plane_rms_pix``.
+        ``max_plane_rms_pix``.
 
     Notes
     -----
@@ -2544,10 +2725,10 @@ def centroid_with_catalog_model(
         clip_sigma=config.clip_sigma,
     )
 
-    if plane is not None and plane.rms > config.max_plane_rms_pix:
+    if plane is not None and plane.rms > max_plane_rms_pix:
         msg = (
             f"offset plane rms {plane.rms:.2f} px exceeds "
-            f"{config.max_plane_rms_pix:g} px on {plane.n_used} fit stars"
+            f"{max_plane_rms_pix:g} px on {plane.n_used} fit stars"
         )
         raise CentroidPlaneError(msg, plane_rms=plane.rms, n_fit_stars=plane.n_used)
 
@@ -3342,42 +3523,6 @@ def _drop_edge_catalog_stars(
     )
 
 
-def _parse_obs_time(obs_time, *, file=None):
-    """
-    Parse a header observation time as `~astropy.time.Time`.
-
-    Parameters
-    ----------
-    obs_time : str
-        The ``obs_time`` metadata value (usually from ``DATE-OBS``).
-    file : str or Path, optional
-        The frame to attach to the error.
-
-    Returns
-    -------
-    astropy.time.Time
-        The parsed time.
-
-    Raises
-    ------
-    FrameMetadataError
-        If ``obs_time`` cannot be parsed.
-
-    Notes
-    -----
-    ``dateutil`` mirrors `build_photometry_table`'s tolerant
-    ``DATE-OBS`` parsing, so every consumer accepts the same header date forms
-    (``Time()`` alone is stricter than ``dateutil``).
-    """
-    try:
-        return Time(parser.parse(obs_time))
-    # OverflowError: dateutil raises it for all-digit strings too large for a
-    # C long (e.g. a corrupted numeric DATE-OBS), documented in parser.parse.
-    except (ValueError, TypeError, OverflowError) as exc:
-        msg = f"could not parse observation time (obs_time) {obs_time!r}"
-        raise FrameMetadataError(msg, file=file) from exc
-
-
 def _solve_pool_near(radecs, center_ra, center_dec, radius_deg):
     """
     Boolean mask of the catalog stars within a radius of a sky position.
@@ -3516,7 +3661,7 @@ def estimate_center_from_header(metadata, profile):
                 "(obs_time, usually mapped from DATE-OBS), but none was resolved"
             )
             raise FrameMetadataError(msg)
-        equinox = _parse_obs_time(obs_time)
+        equinox = Time(_obs_datetime(obs_time))
     else:
         equinox = Time(profile.header_equinox)
     icrs = SkyCoord(ra, dec, frame=FK5(equinox=equinox)).icrs
@@ -3597,7 +3742,8 @@ def prepare_image(
         coordinates than those used for WCS alignment. By default None (centroiding is
         done on detected coords).
     user_specific_metadata : dict or None, optional
-        User-specific metadata to include in the output. By default None.
+        User-specific metadata to include in the output. Its ``time_zone``, if
+        any, converts a local header time. By default None.
     wcs : `astropy.wcs.WCS` or None, optional
         Precomputed WCS to reuse instead of solving one for this image; passed
         through to `align`. By default None.
@@ -3691,6 +3837,7 @@ def prepare_image(
         cnn=cnn,
         profile=instrument,
         frame=frame,
+        time_zone=(user_specific_metadata or {}).get("time_zone"),
     )
     calibrated_data = calibration.calibrated_data
     metadata = calibration.metadata
@@ -3805,6 +3952,7 @@ def prepare_image(
         working_image,
         aligned_coords,
         cnn,
+        max_plane_rms_pix=instrument.max_plane_rms_pix,
         gaia_g=None if photometry_coords is None else gaia_g,
         g_cut=g_cut,
         config=config.centroid,

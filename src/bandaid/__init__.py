@@ -51,6 +51,7 @@ from .exceptions import (
     BatchPrepError,
     CatalogTruncationError,
     CentroidPlaneError,
+    ClockChangeError,
     DegenerateBayerChannelError,
     FrameError,
     FrameMetadataError,

@@ -9,13 +9,12 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from _helpers import _CONSISTENT_HEADER, _dummy_prep
+from _helpers import _CONSISTENT_HEADER, _dummy_prep, make_profile
 from aavso_starlist_schema import StarListSet
 from astropy.table import Table
 
 import bandaid
 from bandaid import scripts
-from bandaid.config import InstrumentProfile
 from bandaid.exceptions import (
     CentroidPlaneError,
     FrameError,
@@ -326,7 +325,7 @@ class TestProcessBatch:
             return {"TR": np.zeros(len(inputs.centroids), dtype=bool)}
 
         register_star_flagger("toy", StarFlagger(column="toy_flag", flag=flag))
-        profile = InstrumentProfile(name="ToyScope", star_flaggers=("toy",))
+        profile = make_profile(name="ToyScope", star_flaggers=("toy",))
 
         def _process(file, *_args: object, **kwargs: object):
             tables = by_filter()
@@ -1321,6 +1320,21 @@ class TestProcessFrame:
         process_frame("a.fits", prep, user_specific_metadata={})
 
         assert process.call_args.kwargs["star_flag_state"] is prep.star_flag_state
+
+    def test_time_zone_comes_from_the_prep(self, mocker, by_filter):
+        """The zone `prepare_batch` checked is the one each frame is read with."""
+        process = mocker.patch(
+            "bandaid.scripts.process_one_image", return_value=by_filter()
+        )
+        prep = dataclasses.replace(
+            _dummy_prep(), prep_metadata={"time_zone": "America/Chicago"}
+        )
+
+        process_frame(
+            "a.fits", prep, user_specific_metadata={"time_zone": "Europe/Paris"}
+        )
+
+        assert process.call_args.args[1]["time_zone"] == "America/Chicago"
 
     def test_qa_counts_core_replaced_stars(self, patched_process_one_image, by_filter):
         """``n_core_replaced`` counts the stars a ``core_replaced`` flag marks."""

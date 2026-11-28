@@ -30,7 +30,7 @@ once-per-batch preparation. Output naming is described in
 | `--instrument NAME`                          | auto-detect       | Bundled or registered instrument profile.                                                                                                                                                                                |
 | `--profile FILE`                             | none              | Instrument-profile JSON file (alternative to `--instrument`).                                                                                                                                                            |
 | `--config FILE`                              | none              | Full `PhotometryConfig` JSON file.                                                                                                                                                                                       |
-| `--gaia-mag-limit FLOAT`                     | config value      | Overrides `source_selection.gaia_mag_limit`.                                                                                                                                                                             |
+| `--photometry-faint-mag-limit FLOAT`         | profile value     | Overrides the instrument profile's `photometry_faint_mag_limit` for this run. `--gaia-mag-limit` is accepted as its old name.                                                                                            |
 | `--min-snr FLOAT`                            | config value      | Overrides `source_selection.min_snr`.                                                                                                                                                                                    |
 | `--weights FILE`                             | downloaded        | Ballet centroider weights; omitted means the default weights are downloaded.                                                                                                                                             |
 | `--user-metadata FILE`                       | none              | JSON object of per-frame metadata overrides (see [Instrument profiles](instrument_profiles.md)).                                                                                                                         |
@@ -51,8 +51,9 @@ Rules:
     headers lack ([getting started](../getting_started.md#observer-and-site)).
 - `--config` loads the full configuration. `--instrument` or `--profile` then
     replaces only its instrument; give at most one of the two.
-- `--gaia-mag-limit` and `--min-snr` replace only those two `source_selection`
-    fields in the loaded configuration.
+- `--min-snr` replaces only that `source_selection` field in the loaded
+    configuration. `--photometry-faint-mag-limit` replaces only that field of the
+    instrument profile, whether the profile was given or auto-detected.
 - Instrument selection (explicit option, config, or header auto-detection) follows
     the precedence list in [Instrument profiles](instrument_profiles.md).
 - `--forced-targets` values are ICRS degrees. An ECSV angular unit (for example

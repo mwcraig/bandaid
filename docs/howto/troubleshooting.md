@@ -43,13 +43,18 @@ batch still finishes.
     absent `@KEY` resolves to null) or its value is unparsable. A null behind any
     other required field surfaces as `StarListValidationError` instead. Fix the
     profile and verify with a single-frame `-vv` run
-    ([add a telescope](add_a_telescope.md#4-validate)).
+    ([add a telescope](add_a_telescope.md#4-validate)). A profile that
+    sets `obs_time_marks` or `obs_time_zone` can also skip a frame for its time
+    stamp: a stacked frame, which on the first frame of the batch stops the run
+    instead, or one stamped in a clock-change hour (`ClockChangeError`)
+    ([observation time](../reference/instrument_profiles.md#observation-time)).
 - `skipped: NoUsableStarsError` — stars were detected but none survived the quality
     cuts, or none project at least `edge_margin_px` from an edge. Lower `min_snr`
     or `edge_margin_px` ([tune a run](tune_a_run.md)).
 - `skipped: CentroidPlaneError` — the per-frame offset plane fits its own stars
-    worse than `max_plane_rms_pix`. Raise `centroid.max_plane_rms_pix` or set
-    `centroid.model_faint_positions` false.
+    worse than the instrument profile's `max_plane_rms_pix`. Raise it in the
+    profile ([add a telescope](add_a_telescope.md#2-write-a-profile) says what
+    that costs) or set `centroid.model_faint_positions` false.
 - `skipped: StarListValidationError` — a row passed filtering but the AAVSO
     starlist schema rejected the frame. The log names the field; with a custom profile, map it in `header_map` or supply it with `--user-metadata`.
 - `skipped: DegenerateBayerChannelError` — a Bayer channel has no pixels or zero
@@ -64,8 +69,9 @@ batch still finishes.
 
 A `BatchPrepError` is fatal: nothing can proceed without the once-per-batch
 preparation. It is built from the first frame, in batch order, that the
-preparation accepts: a first frame with too few stars to measure an FWHM, or no
-usable PSF to fit to them, is logged and the next frame is tried, and a later
+preparation accepts: a first frame with too few stars to measure an FWHM, no
+usable PSF to fit to them, or a local time in a clock-change hour is logged and
+the next frame is tried, and a later
 frame is passed over the same way for any per-frame failure that would make it
 a `skipped:` row anyway (a file that cannot be read at all still aborts). The
 passed-over frames still appear in the manifest as `skipped:` rows. Causes:
@@ -75,8 +81,12 @@ passed-over frames still appear in the manifest as `skipped:` rows. Causes:
     focus), the detection settings `thresh` and `detection_opening`, or the
     PSF-fit ceiling `fwhm_cutout_half`.
 - Gaia returned too few reference stars in the prep frame's solve pool. Check the
-    pointing, or raise `gaia_mag_limit`.
+    pointing, or raise the faint limit with `--photometry-faint-mag-limit`.
 - The observation time or pointing of the prep frame cannot be read.
+- The profile's `obs_time_zone` is `"local"` and the user metadata has no
+    `time_zone`, or one that is neither a known IANA zone name nor a UTC offset
+    in hours. Add it to the `--user-metadata` file
+    ([observation time](../reference/instrument_profiles.md#observation-time)).
 - The first frame's header resolves to no profile, or several
     (`InstrumentDetectionError`); the message names the frame. Pass
     `--instrument` or fix the header.
@@ -93,7 +103,9 @@ passed-over frames still appear in the manifest as `skipped:` rows. Causes:
     an outage on the catalog side; a failed answer is never cached, so just run
     again.
 - `CatalogTruncationError`: the Gaia query hit its row limit before reaching
-    `gaia_mag_limit`. Raise `source_selection.gaia_row_limit` or lower the limit.
+    the profile's `photometry_faint_mag_limit`. Raise
+    `source_selection.gaia_row_limit` or lower the limit with
+    `--photometry-faint-mag-limit`.
 
 With `--fail-fast` an unexpected error is re-raised instead of logged and skipped;
 the `FrameError` cases above are skipped either way.

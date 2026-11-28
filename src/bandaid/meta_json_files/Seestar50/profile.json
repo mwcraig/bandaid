@@ -1,5 +1,7 @@
 {
     "name": "Seestar50",
+    "photometry_faint_mag_limit": 15.0,
+    "max_plane_rms_pix": 1.0,
     "thresh": 0.5,
     "detection_opening": 5,
     "fwhm_cutout_half": 25,
